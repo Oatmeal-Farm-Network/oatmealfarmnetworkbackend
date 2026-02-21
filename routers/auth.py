@@ -2,9 +2,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from database import get_db
-import sys
-import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from auth import create_access_token, get_current_user
 import models
 
@@ -16,29 +13,37 @@ class LoginRequest(BaseModel):
 
 @router.post("/login")
 def login(request: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(models.People).filter(
-        models.People.PeopleEmail == request.email
-    ).first()
+    try:
+        user = db.query(models.People).filter(
+            models.People.PeopleEmail == request.email,
+            models.People.PeopleActive == 1
+        ).first()
 
-    if not user or user.PeoplePassword != request.password:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password"
-        )
+        if not user or user.PeoplePassword != request.password:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or password"
+            )
 
-    token = create_access_token(data={"sub": user.PeopleID})
+        token = create_access_token(data={"sub": user.PeopleID})
 
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "people_id": user.PeopleID,
-        "first_name": user.PeopleFirstName,
-        "last_name": user.PeopleLastName,
-        "access_level": user.accesslevel or 0
-    }
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "people_id": user.PeopleID,
+            "first_name": user.PeopleFirstName,
+            "last_name": user.PeopleLastName,
+            "access_level": user.accesslevel or 0
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise
 
 @router.get("/me")
-def get_me(current_user = Depends(get_current_user)):
+def get_me(current_user=Depends(get_current_user)):
     return {
         "people_id": current_user.PeopleID,
         "first_name": current_user.PeopleFirstName,
