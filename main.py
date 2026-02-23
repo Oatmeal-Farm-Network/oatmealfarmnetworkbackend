@@ -16,6 +16,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://localhost:3000",
+        "https://oatmealfarmnetwork-802455386518.us-central1.run.app",
         "https://oatmealfarmnewtorkbackend-802455386518.us-central1.run.app",
     ],
     allow_credentials=True,

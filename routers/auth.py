@@ -8,18 +8,18 @@ import models
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 class LoginRequest(BaseModel):
-    email: str
-    password: str
+    Email: str
+    Password: str
 
 @router.post("/login")
 def login(request: LoginRequest, db: Session = Depends(get_db)):
     try:
         user = db.query(models.People).filter(
-            models.People.PeopleEmail == request.email,
+            models.People.PeopleEmail == request.Email,
             models.People.PeopleActive == 1
         ).first()
 
-        if not user or user.PeoplePassword != request.password:
+        if not user or user.PeoplePassword != request.Password:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email or password"
