@@ -98,12 +98,7 @@ def get_businesses(
         if state:
             query = query.filter(models.Address.AddressState == state)
 
-        # Sort: businesses with logos first, then alphabetically by name
-        query = query.order_by(
-            models.Business.Logo.is_(None),
-            models.Business.Logo == "0",
-            models.Business.BusinessName
-        )
+        query = query.order_by(models.Business.BusinessName)
 
         results = query.all()
 
