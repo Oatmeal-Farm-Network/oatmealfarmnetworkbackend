@@ -5,6 +5,7 @@ from routers import auth
 from database import get_db, SessionLocal
 import os
 from dotenv import load_dotenv
+from routers import businesses
 
 load_dotenv()
 print("SECRET_KEY loaded:", os.getenv("SECRET_KEY"))
@@ -25,6 +26,7 @@ app.add_middleware(
 )
 
 app.include_router(auth.router)
+app.include_router(businesses.router)
 
 @app.get("/health")
 def health_check():

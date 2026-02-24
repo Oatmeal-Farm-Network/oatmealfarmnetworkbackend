@@ -64,7 +64,6 @@ def GetMyBusinesses(PeopleID: int, Db: Session = Depends(get_db)):
     )
     return [{"BusinessID": B.BusinessID, "BusinessName": B.BusinessName} for B in Businesses]
 
-
 @router.get("/account-home")
 def GetAccountHome(BusinessID: int, Db: Session = Depends(get_db)):
     Result = (
@@ -98,3 +97,63 @@ def GetAccountHome(BusinessID: int, Db: Session = Depends(get_db)):
         "AddressZip": A.AddressZip,
     }
 
+
+
+@router.get("/business-types")
+def GetBusinessTypes(Db: Session = Depends(get_db)):
+    Types = Db.query(models.BusinessTypeLookup).order_by(models.BusinessTypeLookup.BusinessType).all()
+    return [{"BusinessTypeID": T.BusinessTypeID, "BusinessType": T.BusinessType} for T in Types]
+
+@router.put("/change-business-type")
+def ChangeBusinessType(BusinessID: int, BusinessTypeID: int, Db: Session = Depends(get_db)):
+    Business = Db.query(models.Business).filter(models.Business.BusinessID == BusinessID).first()
+    if not Business:
+        raise HTTPException(status_code=404, detail="Business not found")
+    Business.BusinessTypeID = BusinessTypeID
+    Db.commit()
+    return {"status": "success"}
+
+
+
+@router.get("/animals")
+def GetAnimals(BusinessID: int, Db: Session = Depends(get_db)):
+    Results = (
+        Db.query(
+            models.Animal,
+            models.SpeciesAvailable,
+            models.Pricing
+        )
+        .join(models.SpeciesAvailable, models.Animal.SpeciesID == models.SpeciesAvailable.SpeciesID)
+        .outerjoin(models.Pricing, models.Animal.AnimalID == models.Pricing.AnimalID)
+        .filter(models.Animal.BusinessID == BusinessID)
+        .order_by(models.SpeciesAvailable.SpeciesPriority, models.Animal.FullName)
+        .all()
+    )
+
+    SpeciesMap = {
+        2: "Alpaca", 3: "Dog", 4: "Llama", 5: "Horse", 6: "Goat",
+        7: "Donkey", 8: "Cattle", 9: "Bison", 10: "Sheep", 11: "Rabbit",
+        12: "Pig", 13: "Chicken", 14: "Turkey", 15: "Duck", 17: "Yak",
+        18: "Camels", 19: "Emus", 21: "Deer", 22: "Geese", 23: "Bees",
+        25: "Alligators", 26: "Guinea Fowl", 27: "Musk Ox", 28: "Ostriches",
+        29: "Pheasants", 30: "Pigeons", 31: "Quails", 33: "Snails", 34: "Buffalo"
+    }
+
+    Animals = []
+    for A, S, P in Results:
+        Price = float(P.Price) if P and P.Price else 0
+        StudFee = float(P.StudFee) if P and P.StudFee else 0
+        SalePrice = float(P.SalePrice) if P and P.SalePrice else 0
+
+        Animals.append({
+            "AnimalID": A.AnimalID,
+            "FullName": A.FullName,
+            "SpeciesID": A.SpeciesID,
+            "SpeciesName": SpeciesMap.get(A.SpeciesID, "Unknown"),
+            "Price": Price,
+            "StudFee": StudFee,
+            "SalePrice": SalePrice,
+            "PublishForSale": A.PublishForSale,
+        })
+
+    return Animals
