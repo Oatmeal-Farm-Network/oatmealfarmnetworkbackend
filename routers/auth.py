@@ -97,8 +97,6 @@ def GetAccountHome(BusinessID: int, Db: Session = Depends(get_db)):
         "AddressZip": A.AddressZip,
     }
 
-
-
 @router.get("/business-types")
 def GetBusinessTypes(Db: Session = Depends(get_db)):
     Types = Db.query(models.BusinessTypeLookup).order_by(models.BusinessTypeLookup.BusinessType).all()
@@ -112,8 +110,6 @@ def ChangeBusinessType(BusinessID: int, BusinessTypeID: int, Db: Session = Depen
     Business.BusinessTypeID = BusinessTypeID
     Db.commit()
     return {"status": "success"}
-
-
 
 @router.get("/animals")
 def GetAnimals(BusinessID: int, Db: Session = Depends(get_db)):
