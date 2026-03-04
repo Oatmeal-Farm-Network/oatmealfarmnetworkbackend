@@ -1,26 +1,25 @@
+# database.py
 from sqlalchemy import create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from dotenv import load_dotenv
+from sqlalchemy.orm import sessionmaker, declarative_base
 import os
+from dotenv import load_dotenv
 
-load_dotenv()  # reads your .env file
+load_dotenv()
 
-SERVER   = os.getenv("DB_SERVER")
-DATABASE = os.getenv("DB_NAME")
-USERNAME = os.getenv("DB_USER")
-PASSWORD = os.getenv("DB_PASSWORD")
-
-DATABASE_URL = f"mssql+pymssql://{USERNAME}:{PASSWORD}@{SERVER}/{DATABASE}"
+SQLALCHEMY_DATABASE_URL = f"mssql+pymssql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}@{os.getenv('DB_SERVER')}/{os.getenv('DB_NAME')}"
 
 engine = create_engine(
-    DATABASE_URL,
-    connect_args={"timeout": 30},
-    pool_pre_ping=True
+    SQLALCHEMY_DATABASE_URL,
+    echo=False  # cannot use fast_executemany with pymssql
 )
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# Declarative base
 Base = declarative_base()
 
+# Session factory
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# Dependency for FastAPI
 def get_db():
     db = SessionLocal()
     try:

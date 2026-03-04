@@ -69,10 +69,11 @@ class Animal(Base):
     BreedID2          = Column(Integer)
     BreedID3          = Column(Integer)
     BreedID4          = Column(Integer)
-    CategoryID        = Column(Integer)
+    Category          = Column(Integer)
     DOBday            = Column(Integer)
     DOBMonth          = Column(Integer)
     DOBYear           = Column(Integer)
+    Temperment       = Column(Integer)
     Height            = Column(Decimal(10, 2))
     Weight            = Column(Decimal(10, 2))
     Gaited            = Column(SmallInteger)
@@ -392,3 +393,5 @@ class Websites(Base):
     Website     = Column(String(500))
     websitepath = Column(String(500))
     watermark   = Column(DateTime)
+
+

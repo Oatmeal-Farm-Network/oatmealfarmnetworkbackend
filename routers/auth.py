@@ -4,13 +4,20 @@ from pydantic import BaseModel
 from database import get_db
 from auth import create_access_token, get_current_user
 import models
+from sqlalchemy import select
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+# -------------------------
+# Pydantic models
+# -------------------------
 class LoginRequest(BaseModel):
     Email: str
     Password: str
 
+# -------------------------
+# Login
+# -------------------------
 @router.post("/login")
 def login(request: LoginRequest, db: Session = Depends(get_db)):
     try:
@@ -41,6 +48,9 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
         traceback.print_exc()
         raise
 
+# -------------------------
+# Get current user
+# -------------------------
 @router.get("/me")
 def get_me(current_user=Depends(get_current_user)):
     return {
@@ -51,6 +61,9 @@ def get_me(current_user=Depends(get_current_user)):
         "AccessLevel": current_user.accesslevel
     }
 
+# -------------------------
+# My businesses
+# -------------------------
 @router.get("/my-businesses")
 def GetMyBusinesses(PeopleID: int, Db: Session = Depends(get_db)):
     Businesses = (
@@ -64,6 +77,9 @@ def GetMyBusinesses(PeopleID: int, Db: Session = Depends(get_db)):
     )
     return [{"BusinessID": B.BusinessID, "BusinessName": B.BusinessName} for B in Businesses]
 
+# -------------------------
+# Account home
+# -------------------------
 @router.get("/account-home")
 def GetAccountHome(BusinessID: int, Db: Session = Depends(get_db)):
     Result = (
@@ -97,6 +113,9 @@ def GetAccountHome(BusinessID: int, Db: Session = Depends(get_db)):
         "AddressZip": A.AddressZip,
     }
 
+# -------------------------
+# Business types
+# -------------------------
 @router.get("/business-types")
 def GetBusinessTypes(Db: Session = Depends(get_db)):
     Types = Db.query(models.BusinessTypeLookup).order_by(models.BusinessTypeLookup.BusinessType).all()
@@ -111,20 +130,30 @@ def ChangeBusinessType(BusinessID: int, BusinessTypeID: int, Db: Session = Depen
     Db.commit()
     return {"status": "success"}
 
+# -------------------------
+# Animals endpoint (optimized)
+# -------------------------
 @router.get("/animals")
 def GetAnimals(BusinessID: int, Db: Session = Depends(get_db)):
-    Results = (
-        Db.query(
-            models.Animal,
-            models.SpeciesAvailable,
-            models.Pricing
+    # Only select the columns needed
+    stmt = (
+        select(
+            models.Animal.AnimalID,
+            models.Animal.FullName,
+            models.Animal.SpeciesID,
+            models.Animal.PublishForSale,
+            models.Pricing.Price,
+            models.Pricing.StudFee,
+            models.Pricing.SalePrice,
+            models.SpeciesAvailable.SpeciesPriority
         )
         .join(models.SpeciesAvailable, models.Animal.SpeciesID == models.SpeciesAvailable.SpeciesID)
         .outerjoin(models.Pricing, models.Animal.AnimalID == models.Pricing.AnimalID)
-        .filter(models.Animal.BusinessID == BusinessID)
+        .where(models.Animal.BusinessID == BusinessID)
         .order_by(models.SpeciesAvailable.SpeciesPriority, models.Animal.FullName)
-        .all()
     )
+
+    Results = Db.execute(stmt).all()
 
     SpeciesMap = {
         2: "Alpaca", 3: "Dog", 4: "Llama", 5: "Horse", 6: "Goat",
@@ -136,20 +165,17 @@ def GetAnimals(BusinessID: int, Db: Session = Depends(get_db)):
     }
 
     Animals = []
-    for A, S, P in Results:
-        Price = float(P.Price) if P and P.Price else 0
-        StudFee = float(P.StudFee) if P and P.StudFee else 0
-        SalePrice = float(P.SalePrice) if P and P.SalePrice else 0
-
+    for row in Results:
+        A_ID, A_Name, A_SpeciesID, A_Publish, P_Price, P_StudFee, P_SalePrice, _ = row
         Animals.append({
-            "AnimalID": A.AnimalID,
-            "FullName": A.FullName,
-            "SpeciesID": A.SpeciesID,
-            "SpeciesName": SpeciesMap.get(A.SpeciesID, "Unknown"),
-            "Price": Price,
-            "StudFee": StudFee,
-            "SalePrice": SalePrice,
-            "PublishForSale": A.PublishForSale,
+            "AnimalID": A_ID,
+            "FullName": A_Name,
+            "SpeciesID": A_SpeciesID,
+            "SpeciesName": SpeciesMap.get(A_SpeciesID, "Unknown"),
+            "Price": float(P_Price) if P_Price else 0,
+            "StudFee": float(P_StudFee) if P_StudFee else 0,
+            "SalePrice": float(P_SalePrice) if P_SalePrice else 0,
+            "PublishForSale": A_Publish,
         })
 
     return Animals
