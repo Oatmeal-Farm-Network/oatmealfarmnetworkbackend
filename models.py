@@ -341,15 +341,27 @@ class Produce(Base):
 
 # ── FIELDS ───────────────────────────────────────────────────────
 class Field(Base):
-    __tablename__ = "Fields"
-    FieldID           = Column(Integer, primary_key=True, index=True)
-    BusinessID        = Column(Integer)
-    Name              = Column(String(255))
-    CropType          = Column(String(255))
-    Latitude          = Column(Decimal(9, 6))
-    Longitude         = Column(Decimal(9, 6))
-    FieldSizeHectares = Column(Decimal(10, 2))
-    PlantingDate      = Column(Date)
+    __tablename__ = "Field"
+    FieldID                  = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    BusinessID               = Column(Integer)
+    Name                     = Column(String(255))
+    Address                  = Column(String(500))
+    Latitude                 = Column(Decimal(9, 6))
+    Longitude                = Column(Decimal(9, 6))
+    FieldSizeHectares        = Column(Decimal(10, 2))
+    CropType                 = Column(String(255))
+    PlantingDate             = Column(Date)
+    MonitoringEnabled        = Column(Boolean)
+    MonitoringIntervalDays   = Column(Integer)
+    AlertThresholdHealth     = Column(Integer)
+    CreatedAt                = Column(DateTime)
+    CreatedByPeopleID        = Column(Integer)
+    UpdatedAt                = Column(DateTime)
+    DeletedAt                = Column(DateTime)
+    BoundaryGeoJSON          = Column(Text)
+    FieldDescription         = Column(Text)
+    AddressID                = Column(Integer)
+    SoilID                   = Column(Integer)
 
 # ── BUSINESS ACCESS ──────────────────────────────────────────────
 class BusinessAccess(Base):

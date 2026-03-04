@@ -4,8 +4,10 @@ from sqlalchemy.orm import Session
 from routers import auth
 from database import get_db, SessionLocal
 import os
+import models
 from dotenv import load_dotenv
 from routers import businesses
+from routers import precision_ag
 
 load_dotenv()
 print("SECRET_KEY loaded:", os.getenv("SECRET_KEY"))
@@ -27,6 +29,7 @@ app.add_middleware(
 
 app.include_router(auth.router)
 app.include_router(businesses.router)
+app.include_router(precision_ag.router)
 
 @app.get("/health")
 def health_check():
@@ -58,5 +61,3 @@ def test_people2():
         return {"error": str(e)}
     finally:
         db.close()
-
-        
