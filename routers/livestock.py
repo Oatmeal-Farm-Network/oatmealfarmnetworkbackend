@@ -42,11 +42,10 @@ def cache_set(key, value):
 
 @router.get("/counts")
 def get_counts(db: Session = Depends(get_db)):
+    cached = cache_get('counts')
+    if cached:
+        return cached
     try:
-        cached = cache_get('counts')
-        if cached:
-            return cached
-
         rows = db.execute(
             text("SELECT SpeciesID, COUNT(*) AS BreedCount FROM SpeciesBreedLookupTable GROUP BY SpeciesID")
         ).fetchall()
@@ -65,13 +64,14 @@ def get_counts(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/species/{slug}")
-def get_species(slug: str, db: Session = Depends(get_db)):
+@router.get("/species/{slug}/letters")
+def get_species_letters(slug: str, db: Session = Depends(get_db)):
+    """Returns species info + list of available first letters for breeds."""
+    cache_key = f'letters_{slug}'
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
     try:
-        cached = cache_get(f'species_{slug}')
-        if cached:
-            return cached
-
         species_id = SLUG_TO_SPECIES_ID.get(slug)
         if not species_id:
             raise HTTPException(status_code=404, detail="Species not found")
@@ -90,13 +90,76 @@ def get_species(slug: str, db: Session = Depends(get_db)):
                 "main_image": info_row.SpeciesImage1,
             }
 
-        sql = text("""
-            SELECT BreedLookupID, Breed, Breeddescription, BreedImage, BreedImageCaption
-            FROM SpeciesBreedLookupTable
-            WHERE SpeciesID = :sid
-            ORDER BY Breed
-        """)
-        rows = db.execute(sql, {"sid": species_id}).fetchall()
+        # Get distinct first letters
+        rows = db.execute(
+            text("""
+               SELECT DISTINCT UPPER(LEFT(Breed, 1)) AS FirstLetter
+FROM SpeciesBreedLookupTable
+WHERE SpeciesID = :sid 
+AND Breed IS NOT NULL 
+AND Breed != ''
+AND LEFT(Breed, 1) LIKE '[A-Z]'
+ORDER BY FirstLetter
+            """),
+            {"sid": species_id}
+        ).fetchall()
+
+        letters = [r.FirstLetter for r in rows if r.FirstLetter]
+
+        result = {"species_info": species_info, "letters": letters}
+        cache_set(cache_key, result)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/species/{slug}")
+def get_species(slug: str, letter: str = None, db: Session = Depends(get_db)):
+    """Returns breeds for a species, optionally filtered by first letter."""
+    cache_key = f'species_{slug}_{letter or "all"}'
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+    try:
+        species_id = SLUG_TO_SPECIES_ID.get(slug)
+        if not species_id:
+            raise HTTPException(status_code=404, detail="Species not found")
+
+        info_row = db.execute(
+            text("SELECT SingularTerm, PluralTerm, SpeciesText1, SpeciesImage1 FROM SpeciesAvailable WHERE SpeciesID = :sid"),
+            {"sid": species_id}
+        ).fetchone()
+
+        species_info = None
+        if info_row:
+            species_info = {
+                "singular": info_row.SingularTerm,
+                "plural": info_row.PluralTerm,
+                "description": info_row.SpeciesText1,
+                "main_image": info_row.SpeciesImage1,
+            }
+
+        if letter:
+            sql = text("""
+               SELECT BreedLookupID, Breed, Breeddescription, BreedImage, BreedImageCaption
+                FROM SpeciesBreedLookupTable
+                WHERE SpeciesID = :sid 
+                AND UPPER(LEFT(Breed, 1)) = :letter
+                AND LEFT(Breed, 1) LIKE '[A-Z]'
+                ORDER BY Breed
+            """)
+            rows = db.execute(sql, {"sid": species_id, "letter": letter.upper()}).fetchall()
+        else:
+            sql = text("""
+                SELECT BreedLookupID, Breed, Breeddescription, BreedImage, BreedImageCaption
+                FROM SpeciesBreedLookupTable
+                WHERE SpeciesID = :sid
+                ORDER BY Breed
+            """)
+            rows = db.execute(sql, {"sid": species_id}).fetchall()
 
         result = {
             "species_info": species_info,
@@ -111,7 +174,7 @@ def get_species(slug: str, db: Session = Depends(get_db)):
                 for r in rows
             ]
         }
-        cache_set(f'species_{slug}', result)
+        cache_set(cache_key, result)
         return result
     except HTTPException:
         raise
@@ -122,11 +185,10 @@ def get_species(slug: str, db: Session = Depends(get_db)):
 
 @router.get("/breed/{breed_id}")
 def get_breed(breed_id: int, db: Session = Depends(get_db)):
+    cached = cache_get(f'breed_{breed_id}')
+    if cached:
+        return cached
     try:
-        cached = cache_get(f'breed_{breed_id}')
-        if cached:
-            return cached
-
         sql = text("""
             SELECT BreedLookupID, Breed, Breeddescription, BreedImage,
                    BreedImageCaption, BreedImageOrientation, Breedvideo
@@ -157,11 +219,10 @@ def get_breed(breed_id: int, db: Session = Depends(get_db)):
 
 @router.get("/about/{slug}")
 def get_about(slug: str, db: Session = Depends(get_db)):
+    cached = cache_get(f'about_{slug}')
+    if cached:
+        return cached
     try:
-        cached = cache_get(f'about_{slug}')
-        if cached:
-            return cached
-
         species_id = SLUG_TO_SPECIES_ID.get(slug)
         if not species_id:
             raise HTTPException(status_code=404, detail="Species not found")

@@ -3,12 +3,29 @@ from sqlalchemy import text
 from database import get_db
 from fastapi import Depends
 from sqlalchemy.orm import Session
+import time
 
 router = APIRouter(prefix="/api/plant-knowledgebase", tags=["plant-knowledgebase"])
+
+# ── Simple in-memory cache ────────────────────────────────────────
+_cache = {}
+CACHE_TTL = 300  # 5 minutes
+
+def cache_get(key):
+    entry = _cache.get(key)
+    if entry and (time.time() - entry["ts"]) < CACHE_TTL:
+        return entry["val"]
+    return None
+
+def cache_set(key, value):
+    _cache[key] = {"val": value, "ts": time.time()}
 
 
 @router.get("/counts")
 def get_plant_counts(db: Session = Depends(get_db)):
+    cached = cache_get("counts")
+    if cached:
+        return cached
     try:
         sql = text("""
             SELECT PT.PlantType, COUNT(PV.PlantVarietyID) AS VarietyCount
@@ -25,7 +42,9 @@ def get_plant_counts(db: Session = Depends(get_db)):
         for row in rows:
             counts[row.PlantType] = row.VarietyCount
             total += row.VarietyCount
-        return {"counts": counts, "total": total}
+        result = {"counts": counts, "total": total}
+        cache_set("counts", result)
+        return result
     except Exception as e:
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -33,6 +52,10 @@ def get_plant_counts(db: Session = Depends(get_db)):
 
 @router.get("/plants")
 def get_plants(plant_type: str = None, db: Session = Depends(get_db)):
+    cache_key = "plants_" + (plant_type or "all")
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
     try:
         if plant_type:
             sql = text("""
@@ -59,7 +82,7 @@ def get_plants(plant_type: str = None, db: Session = Depends(get_db)):
             """)
             rows = db.execute(sql).fetchall()
 
-        return [
+        result = [
             {
                 "plant_id": row.PlantID,
                 "plant_name": row.PlantName,
@@ -70,6 +93,8 @@ def get_plants(plant_type: str = None, db: Session = Depends(get_db)):
             }
             for row in rows
         ]
+        cache_set(cache_key, result)
+        return result
     except Exception as e:
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -77,8 +102,11 @@ def get_plants(plant_type: str = None, db: Session = Depends(get_db)):
 
 @router.get("/varietals/{plant_id}")
 def get_varietals(plant_id: int, db: Session = Depends(get_db)):
+    cache_key = "varietals_" + str(plant_id)
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
     try:
-        # Get plant name
         plant_row = db.execute(
             text("SELECT PlantName, PlantDescription FROM Plant WHERE PlantID = :pid"),
             {"pid": plant_id}
@@ -87,7 +115,6 @@ def get_varietals(plant_id: int, db: Session = Depends(get_db)):
         if not plant_row:
             raise HTTPException(status_code=404, detail="Plant not found")
 
-        # Get varietals with lookup joins — matches Varietals.asp query
         sql = text("""
             SELECT PV.PlantVarietyID, PV.PlantVarietyName, PV.PlantVarietyDescription,
                    ST.SoilTexture, PH.PHRange, OM.OrganicMatterContent,
@@ -108,7 +135,7 @@ def get_varietals(plant_id: int, db: Session = Depends(get_db)):
         """)
         rows = db.execute(sql, {"plant_id": plant_id}).fetchall()
 
-        return {
+        result = {
             "plant_name": plant_row.PlantName,
             "plant_description": plant_row.PlantDescription,
             "varietals": [
@@ -129,6 +156,8 @@ def get_varietals(plant_id: int, db: Session = Depends(get_db)):
                 for r in rows
             ]
         }
+        cache_set(cache_key, result)
+        return result
     except HTTPException:
         raise
     except Exception as e:
@@ -138,8 +167,11 @@ def get_varietals(plant_id: int, db: Session = Depends(get_db)):
 
 @router.get("/varietal-detail/{variety_id}")
 def get_varietal_detail(variety_id: int, db: Session = Depends(get_db)):
+    cache_key = "varietal_detail_" + str(variety_id)
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
     try:
-        # Main detail query — matches VarietalDetail.asp
         sql = text("""
             SELECT PV.PlantVarietyID, PV.PlantVarietyName, PV.PlantVarietyDescription,
                    PV.PlantVarietyImage, P.PlantName,
@@ -169,7 +201,6 @@ def get_varietal_detail(variety_id: int, db: Session = Depends(get_db)):
         if not row:
             raise HTTPException(status_code=404, detail="Varietal not found")
 
-        # Nutrient profile query
         nutrients_sql = text("""
             SELECT NL.Nutrient AS NutrientName, NL.Description,
                    PNT.NutrientLow, PNT.NutrientID AS NutrientHigh
@@ -180,7 +211,7 @@ def get_varietal_detail(variety_id: int, db: Session = Depends(get_db)):
         """)
         nutrient_rows = db.execute(nutrients_sql, {"vid": variety_id}).fetchall()
 
-        return {
+        result = {
             "plant_variety_id": row.PlantVarietyID,
             "plant_variety_name": row.PlantVarietyName,
             "plant_variety_description": row.PlantVarietyDescription,
@@ -216,6 +247,8 @@ def get_varietal_detail(variety_id: int, db: Session = Depends(get_db)):
                 for n in nutrient_rows
             ]
         }
+        cache_set(cache_key, result)
+        return result
     except HTTPException:
         raise
     except Exception as e:

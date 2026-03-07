@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from database import get_db
 import models
+import datetime
 
 router = APIRouter(prefix="/api/businesses", tags=["businesses"])
 
@@ -38,16 +39,102 @@ def get_countries(db: Session = Depends(get_db)):
 @router.get("/states")
 def get_states(country: str, db: Session = Depends(get_db)):
     try:
-        results = (
-            db.query(models.StateProvince.name)
-            .join(models.Country, models.StateProvince.country_id == models.Country.country_id)
-            .filter(models.Country.name == country)
-            .filter(models.StateProvince.name != None)
-            .order_by(models.StateProvince.name)
-            .all()
-        )
-        return [r[0] for r in results if r[0]]
+        from sqlalchemy import text
+        rows = db.execute(
+            text("""SELECT sp.StateIndex, sp.name
+                    FROM state_province sp
+                    JOIN country c ON sp.country_id = c.country_id
+                    WHERE c.name = :country
+                    ORDER BY sp.name"""),
+            {"country": country}
+        ).fetchall()
+        return [{"StateIndex": r.StateIndex, "name": r.name} for r in rows]
     except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/types")
+def get_business_types(db: Session = Depends(get_db)):
+    try:
+        from sqlalchemy import text
+        rows = db.execute(
+            text("SELECT BusinessTypeID, BusinessType FROM businesstypelookup ORDER BY BusinessType")
+        ).fetchall()
+        return [{"BusinessTypeID": r.BusinessTypeID, "BusinessType": r.BusinessType} for r in rows]
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/create")
+def create_account(payload: dict, db: Session = Depends(get_db)):
+    try:
+        from sqlalchemy import text
+
+        people_id = payload.get("PeopleID")
+        if not people_id:
+            raise HTTPException(status_code=400, detail="PeopleID is required")
+
+        # 1. Create Address record
+        address = models.Address(
+            AddressStreet = payload.get("AddressStreet", ""),
+            AddressCity   = payload.get("AddressCity", ""),
+            AddressState  = payload.get("StateIndex", ""),
+            AddressZip    = payload.get("AddressZip", ""),
+        )
+        db.add(address)
+        db.flush()
+
+        # 2. Create Websites record if website provided
+        websites_id = None
+        website = payload.get("BusinessWebsite", "")
+        if website:
+            ws = models.Websites(Website=website)
+            db.add(ws)
+            db.flush()
+            websites_id = ws.WebsitesID
+
+        # 3. Create Business record
+        business = models.Business(
+            BusinessTypeID    = payload.get("BusinessTypeID"),
+            BusinessName      = payload.get("BusinessName", ""),
+            AddressID         = address.AddressID,
+            WebsitesID        = websites_id,
+            SubscriptionLevel = 0,
+            AccessLevel       = 1,
+        )
+        db.add(business)
+        db.flush()
+
+        # 4. Create BusinessAccess record linking user to business
+        access = models.BusinessAccess(
+            BusinessID    = business.BusinessID,
+            PeopleID      = int(people_id),
+            AccessLevelID = 1,
+            Active        = 1,
+            CreatedAt     = datetime.datetime.utcnow(),
+            Role          = "Owner",
+        )
+        db.add(access)
+
+        # 5. Update People phone if provided
+        phone = payload.get("PeoplePhone", "")
+        if phone:
+            db.execute(
+                text("UPDATE People SET PeoplePhone = :phone WHERE PeopleID = :pid"),
+                {"phone": phone, "pid": int(people_id)}
+            )
+
+        db.commit()
+        return {"BusinessID": business.BusinessID, "message": "Account created successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -99,7 +186,6 @@ def get_businesses(
             query = query.filter(models.Address.AddressState == state)
 
         query = query.order_by(models.Business.BusinessName)
-
         results = query.all()
 
         businesses = []
