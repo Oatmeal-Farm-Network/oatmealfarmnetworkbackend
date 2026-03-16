@@ -24,6 +24,7 @@ services:
     env_file:
       - .env
     environment:
+      PYTHONPATH: "/app"
       REDIS_ENABLED: "true"
       REDIS_URL: "redis://redis:6379/0"
       GOOGLE_APPLICATION_CREDENTIALS: "/app/credentials/animated-flare-421518-987b2bb1581d.json"
