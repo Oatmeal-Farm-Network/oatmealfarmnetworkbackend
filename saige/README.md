@@ -45,7 +45,7 @@ Frontend (Next.js/React) → Backend API (FastAPI) → LangGraph Workflow → Go
 ## 📁 Project Structure
 
 ```
-charlie_lgraph/
+saige/
 ├── main.py                 # LangGraph workflow and business logic
 ├── api.py                  # FastAPI REST API endpoints
 ├── requirements.txt        # Python dependencies
@@ -149,7 +149,7 @@ charlie_lgraph/
 
 ```bash
 git clone <repository-url>
-cd charlie_lgraph
+cd saige
 ```
 
 ### 2. Backend Setup
