@@ -3,7 +3,10 @@ from typing import List, Dict, Any, Optional
 from config import (
     GCP_PROJECT, GCP_LOCATION, GCP_CREDENTIALS,
     EMBEDDING_MODEL, TOP_K_RESULTS,
-    FIRESTORE_DATABASE, FIRESTORE_COLLECTION,
+    FIRESTORE_DATABASE,
+    LIVESTOCK_KNOWLEDGE_COLLECTION,
+    PLANT_KNOWLEDGE_COLLECTION,
+    BAKASURA_DOCS_COLLECTION,
     RAG_AVAILABLE
 )
 
@@ -15,9 +18,11 @@ if RAG_AVAILABLE:
 
 
 class RAGSystem:
-    """RAG system using Firestore Vector Search for livestock knowledge."""
+    """RAG system using Firestore Vector Search for a single collection."""
 
-    def __init__(self):
+    def __init__(self, collection_name: str, label: str = ""):
+        self._collection_name = collection_name
+        self._label = label or collection_name
         self._db = None
         self._initialized = False
         self._embeddings = None
@@ -31,9 +36,9 @@ class RAGSystem:
                     project=GCP_PROJECT,
                     location=GCP_LOCATION
                 )
-                print(f"[RAG] Embeddings initialized ({EMBEDDING_MODEL})")
+                print(f"[RAG:{self._label}] Embeddings initialized ({EMBEDDING_MODEL})")
             except Exception as e:
-                print(f"[RAG] Embeddings init failed: {e}")
+                print(f"[RAG:{self._label}] Embeddings init failed: {e}")
 
     @property
     def firestore_db(self):
@@ -48,7 +53,7 @@ class RAGSystem:
                         scopes=["https://www.googleapis.com/auth/cloud-platform"]
                     )
                 except Exception as e:
-                    print(f"[RAG] Credentials load failed: {e}")
+                    print(f"[RAG:{self._label}] Credentials load failed: {e}")
             try:
                 if credentials:
                     self._db = firestore.Client(
@@ -56,16 +61,16 @@ class RAGSystem:
                     )
                 else:
                     self._db = firestore.Client(project=GCP_PROJECT, database=FIRESTORE_DATABASE)
-                print(f"[RAG] Connected to Firestore ({FIRESTORE_DATABASE})")
+                print(f"[RAG:{self._label}] Connected to Firestore ({FIRESTORE_DATABASE})")
             except Exception as e:
-                print(f"[RAG] Firestore connection failed: {e}")
+                print(f"[RAG:{self._label}] Firestore connection failed: {e}")
         return self._db
 
     @property
     def collection(self):
         """Get the Firestore collection."""
         if self.firestore_db:
-            return self.firestore_db.collection(FIRESTORE_COLLECTION)
+            return self.firestore_db.collection(self._collection_name)
         return None
 
     def _get_embedding(self, text: str) -> List[float]:
@@ -82,13 +87,13 @@ class RAGSystem:
                 docs = list(self.collection.limit(1).get())
                 self._initialized = len(docs) > 0
                 if self._initialized:
-                    print(f"[RAG] Index ready")
+                    print(f"[RAG:{self._label}] Index ready")
             except Exception as e:
-                print(f"[RAG] Init error: {e}")
+                print(f"[RAG:{self._label}] Init error: {e}")
         return self._initialized
 
     def search(self, query: str, n_results: int = TOP_K_RESULTS) -> List[Dict[str, Any]]:
-        """Search for relevant livestock documents."""
+        """Search for relevant documents."""
         if not self._initialized:
             self.initialize()
         if not self.collection or not query:
@@ -108,7 +113,7 @@ class RAGSystem:
                     "metadata": doc.to_dict().get("metadata", {})}
                    for doc in results]
         except Exception as e:
-            print(f"[RAG] Search error: {e}")
+            print(f"[RAG:{self._label}] Search error: {e}")
             return []
 
     def get_context_for_query(self, query: str) -> str:
@@ -116,10 +121,16 @@ class RAGSystem:
         results = self.search(query)
         if not results:
             return ""
-        context_parts = ["Relevant livestock information from database:\n"]
+        context_parts = [f"Relevant {self._label} information from database:\n"]
         for i, result in enumerate(results, 1):
             context_parts.append(f"{i}. {result['content']}")
         return "\n".join(context_parts)
 
 
-rag = RAGSystem()
+# RAG instances — one per collection
+rag_livestock = RAGSystem(LIVESTOCK_KNOWLEDGE_COLLECTION, label="livestock_knowledge")
+rag_plant = RAGSystem(PLANT_KNOWLEDGE_COLLECTION, label="plant_knowledge")
+rag_bakasura = RAGSystem(BAKASURA_DOCS_COLLECTION, label="bakasura-docs")
+
+# Backward-compatible alias
+rag = rag_livestock

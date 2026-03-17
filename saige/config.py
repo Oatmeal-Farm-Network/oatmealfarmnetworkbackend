@@ -79,7 +79,11 @@ GCP_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
 EMBEDDING_MODEL = "text-embedding-004"
 TOP_K_RESULTS = 10
 FIRESTORE_DATABASE = os.getenv("FIRESTORE_DATABASE", "charlie").strip()
-FIRESTORE_COLLECTION = "livestock_knowledge"
+LIVESTOCK_KNOWLEDGE_COLLECTION = "livestock_knowledge"
+PLANT_KNOWLEDGE_COLLECTION = "plant_knowledge"
+BAKASURA_DOCS_COLLECTION = "bakasura-docs"
+# Backward-compatible alias
+FIRESTORE_COLLECTION = LIVESTOCK_KNOWLEDGE_COLLECTION
 SYNC_INTERVAL_HOURS = int(os.getenv("SYNC_INTERVAL_HOURS", "24"))
 
 # ============================================================================
