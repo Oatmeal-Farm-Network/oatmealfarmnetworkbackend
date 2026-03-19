@@ -10,7 +10,11 @@ SQLALCHEMY_DATABASE_URL = f"mssql+pymssql://{os.getenv('DB_USER')}:{os.getenv('D
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
-    echo=False  # cannot use fast_executemany with pymssql
+    echo=False,
+    pool_pre_ping=True,
+    pool_recycle=300,
+    pool_size=5,
+    max_overflow=10,
 )
 
 # Declarative base
