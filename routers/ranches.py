@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api/ranches", tags=["ranches"])
 _cache: dict = {}
 CACHE_TTL = 300
 
-GCP_BUCKET_URL = "https://storage.googleapis.com/oatmeal-farm-network-images/Animals"
+GCP_BUCKET_URL = "https://storage.googleapis.com/oatmeal-farm-network-images/Animals/Uploads"
 
 SLUG_TO_SPECIES_ID = {
     'alpacas': 2, 'bison': 9, 'buffalo': 34, 'camels': 18, 'cattle': 8,
@@ -51,21 +51,43 @@ def cache_set(key, value):
 
 
 def _fix_logo(url):
+    """Normalize BusinessLogo values to GCP bucket URLs."""
     if not url:
         return None
     url = url.strip()
     if not url or len(url) < 4:
         return None
-    matches = re.findall(r'https?://[^\s]+', url)
-    if matches:
-        url = matches[-1]
-    url = re.sub(r'^http:', 'https:', url, flags=re.IGNORECASE)
-    # Rewrite old domain to GCP
-    if 'oatmealfarmnetwork.com/uploads/' in url.lower():
-        filename = url.split('/')[-1].strip()
-        if filename and len(filename) > 4:
+
+    # Already a full URL — rewrite old domains to GCP
+    if url.lower().startswith('http'):
+        url = re.sub(r'^http:', 'https:', url, flags=re.IGNORECASE)
+        # Rewrite old domain uploads to GCP
+        for old_domain in ['oatmealfarmnetwork.com', 'livestockofamerica.com',
+                           'livestockoftheworld.com', 'alpacainfinity.com',
+                           'globallivestocksolutions.com']:
+            if old_domain in url.lower():
+                filename = url.split('/')[-1].strip()
+                if filename and len(filename) > 3:
+                    return f"{GCP_BUCKET_URL}/{filename}"
+        return url
+
+    # Starts with /uploads/ or /Uploads/ — strip the path prefix
+    if url.lower().startswith('/uploads/'):
+        filename = url[9:].strip()  # len('/uploads/') == 9
+        if filename and len(filename) > 3:
             return f"{GCP_BUCKET_URL}/{filename}"
-    return url if url.startswith('https://') else None
+        return None
+
+    # Plain filename with no path — use directly
+    if '/' not in url and len(url) > 4:
+        return f"{GCP_BUCKET_URL}/{url}"
+
+    # Anything else — extract just the filename
+    filename = url.split('/')[-1].strip()
+    if filename and len(filename) > 3:
+        return f"{GCP_BUCKET_URL}/{filename}"
+
+    return None
 
 
 def _safe_str(val):
@@ -149,10 +171,12 @@ def get_ranches(
                 biz.BusinessTruthSocial,
                 addr.AddressCity, addr.AddressState, addr.AddressCountry,
                 (SELECT COUNT(*) FROM Animals a3
-                 WHERE a3.PeopleID = ba.PeopleID AND a3.SpeciesID = :sid
+                 JOIN BusinessAccess ba3 ON a3.PeopleID = ba3.PeopleID
+                 WHERE ba3.BusinessID = biz.BusinessID AND a3.SpeciesID = :sid
                    AND a3.PublishForSale = 1) AS AnimalCount,
                 (SELECT COUNT(*) FROM Animals a4
-                 WHERE a4.PeopleID = ba.PeopleID AND a4.SpeciesID = :sid
+                 JOIN BusinessAccess ba4 ON a4.PeopleID = ba4.PeopleID
+                 WHERE ba4.BusinessID = biz.BusinessID AND a4.SpeciesID = :sid
                    AND a4.PublishStud = 1) AS StudCount
             FROM BusinessAccess ba
             JOIN Business biz ON ba.BusinessID = biz.BusinessID

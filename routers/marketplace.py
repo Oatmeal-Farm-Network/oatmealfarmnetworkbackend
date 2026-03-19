@@ -17,7 +17,7 @@ router = APIRouter(prefix="/api/marketplace", tags=["marketplace"])
 
 _cache: dict = {}
 CACHE_TTL = 300
-GCP_BUCKET_URL = "https://storage.googleapis.com/oatmeal-farm-network-images/Animals"
+GCP_BUCKET_URL = "https://storage.googleapis.com/oatmeal-farm-network-images/Animals/Uploads"
 
 SLUG_TO_SPECIES_ID = {
     'alpacas': 2, 'bison': 9, 'buffalo': 34, 'camels': 18, 'cattle': 8,
@@ -40,12 +40,12 @@ SLUG_TO_LABEL = {
 }
 
 ANCESTRY_MAP = {
-    'Full Peruvian':    "AND (a.PercentPeruvian='Full Peruvian' OR a.PercentPeruvian='FullPeruvian') ",
-    'Partial Peruvian': "AND LEN(ISNULL(a.PercentPeruvian,''))>1 AND a.PercentPeruvian NOT IN ('Full Peruvian','FullPeruvian') ",
-    'Full Chilean':     "AND (a.PercentChilean='Full Chilean' OR a.PercentChilean='FullChilean') ",
-    'Partial Chilean':  "AND LEN(ISNULL(a.PercentChilean,''))>1 ",
-    'Full Bolivian':    "AND (a.PercentBolivian='Full Bolivian' OR a.PercentBolivian='FullBolivian') ",
-    'Partial Bolivian': "AND LEN(ISNULL(a.PercentBolivian,''))>1 ",
+    'Full Peruvian':    "AND (ap.PercentPeruvian='Full Peruvian' OR ap.PercentPeruvian='FullPeruvian') ",
+    'Partial Peruvian': "AND LEN(ISNULL(ap.PercentPeruvian,''))>1 AND ap.PercentPeruvian NOT IN ('Full Peruvian','FullPeruvian') ",
+    'Full Chilean':     "AND (ap.PercentChilean='Full Chilean' OR ap.PercentChilean='FullChilean') ",
+    'Partial Chilean':  "AND LEN(ISNULL(ap.PercentChilean,''))>1 ",
+    'Full Bolivian':    "AND (ap.PercentBolivian='Full Bolivian' OR ap.PercentBolivian='FullBolivian') ",
+    'Partial Bolivian': "AND LEN(ISNULL(ap.PercentBolivian,''))>1 ",
 }
 
 ACCOYO_MAP = {
@@ -125,6 +125,7 @@ def _row_to_animal(row):
 BASE_JOINS = """
     JOIN Pricing p ON a.AnimalID = p.AnimalID
     LEFT JOIN Photos ph ON a.AnimalID = ph.AnimalID
+    LEFT JOIN ancestrypercents ap ON a.AnimalID = ap.AnimalID
     LEFT JOIN SpeciesBreedLookupTable b  ON a.BreedID  = b.BreedLookupID
     LEFT JOIN SpeciesBreedLookupTable b2 ON a.BreedID2 = b2.BreedLookupID
     LEFT JOIN SpeciesBreedLookupTable b3 ON a.BreedID3 = b3.BreedLookupID
@@ -145,6 +146,41 @@ SELECT_COLS = """
     addr.AddressCity, addr.AddressState,
     biz.BusinessName
 """
+
+
+# ── Species info (plural term etc) ───────────────────────────────────────────
+
+@router.get("/species/{slug}")
+def get_species_info(slug: str, db: Session = Depends(get_db)):
+    cached = cache_get(f'species_{slug}')
+    if cached:
+        return cached
+    try:
+        sid = SLUG_TO_SPECIES_ID.get(slug)
+        if not sid:
+            raise HTTPException(status_code=404, detail="Species not found")
+        row = db.execute(text("""
+            SELECT Species, SingularTerm, SingularTerm, MaleTerm, FemaleTerm, StudTerm
+            FROM speciesavailable
+            WHERE SpeciesID = :sid
+        """), {"sid": sid}).fetchone()
+        if not row:
+            return {"singular_term": SLUG_TO_LABEL.get(slug, slug)}
+        result = {
+            "species": str(row.Species or '').strip(),
+            "singular_term": str(row.SingularTerm or SLUG_TO_LABEL.get(slug, slug)).strip(),
+            "singular_term": str(row.SingularTerm or '').strip(),
+            "male_term": str(row.MaleTerm or '').strip(),
+            "female_term": str(row.FemaleTerm or '').strip(),
+            "stud_term": str(row.StudTerm or '').strip(),
+        }
+        cache_set(f'species_{slug}', result)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ── Homepage random listings ──────────────────────────────────────────────────

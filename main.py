@@ -15,6 +15,7 @@ from routers import produce
 from routers import processed_food
 from routers import services
 from routers import marketplace
+from routers import ranches          # near the top with other imports
 
 load_dotenv()
 print("SECRET_KEY loaded:", os.getenv("SECRET_KEY"))
@@ -45,6 +46,7 @@ app.include_router(produce.router)
 app.include_router(processed_food.router)
 app.include_router(services.router)
 app.include_router(marketplace.router)
+app.include_router(ranches.router)   # with the other include_router calls
 
 @app.get("/health")
 def health_check():
