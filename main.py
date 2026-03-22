@@ -6,6 +6,7 @@ from database import get_db, SessionLocal
 import os
 import models
 from dotenv import load_dotenv
+
 from routers import businesses
 from routers import precision_ag
 from routers import plant_knowledgebase
@@ -14,9 +15,14 @@ from routers import livestock
 from routers import produce
 from routers import processed_food
 from routers import services
-from routers import marketplace
-from routers import ranches          # near the top with other imports
+from routers import ranches
 from routers import meat
+
+# ✅ FIXED: use correct module (no dot)
+import marketplace_catalog
+
+# ✅ Stripe router (already correct)
+from marketplace_stripe import stripe_router
 
 load_dotenv()
 print("SECRET_KEY loaded:", os.getenv("SECRET_KEY"))
@@ -25,18 +31,19 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-   allow_origins=[
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "https://oatmealfarmnetwork-802455386518.us-central1.run.app",
-    "https://oatmealfarmnewtorkbackend-802455386518.us-central1.run.app",
-    "https://crop-detection-dcecevhvh5ard2ah.eastus-01.azurewebsites.net",  # add this
-],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "https://oatmealfarmnetwork-802455386518.us-central1.run.app",
+        "https://oatmealfarmnewtorkbackend-802455386518.us-central1.run.app",
+        "https://crop-detection-dcecevhvh5ard2ah.eastus-01.azurewebsites.net",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ✅ Routers
 app.include_router(auth.router)
 app.include_router(businesses.router)
 app.include_router(precision_ag.router)
@@ -46,9 +53,14 @@ app.include_router(livestock.router)
 app.include_router(produce.router)
 app.include_router(processed_food.router)
 app.include_router(services.router)
-app.include_router(marketplace.router)
-app.include_router(ranches.router)   # with the other include_router calls
+app.include_router(ranches.router)
 app.include_router(meat.router)
+
+# ✅ FIXED: correct marketplace router usage
+app.include_router(marketplace_catalog.router, prefix="/api/marketplace")
+
+# ✅ Stripe
+app.include_router(stripe_router, prefix="/api/marketplace/payments")
 
 @app.get("/health")
 def health_check():
