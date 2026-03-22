@@ -15,14 +15,10 @@ from routers import livestock
 from routers import produce
 from routers import processed_food
 from routers import services
-from routers import marketplace
-from routers import ranches          # near the top with other imports
+from routers import ranches
 from routers import meat
 
-# ✅ FIXED: use correct module (no dot)
-import marketplace_catalog
-
-# ✅ Stripe router (already correct)
+from routers.marketplace import marketplace_router
 from marketplace_stripe import stripe_router
 
 load_dotenv()
@@ -44,7 +40,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ Routers
 app.include_router(auth.router)
 app.include_router(businesses.router)
 app.include_router(precision_ag.router)
@@ -57,15 +52,14 @@ app.include_router(services.router)
 app.include_router(ranches.router)
 app.include_router(meat.router)
 
-# ✅ FIXED: correct marketplace router usage
-app.include_router(marketplace_catalog.router, prefix="/api/marketplace")
-
-# ✅ Stripe
+app.include_router(marketplace_router, prefix="/api/marketplace")
 app.include_router(stripe_router, prefix="/api/marketplace/payments")
+
 
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
 
 @app.get("/test-env")
 def test_env():
@@ -76,11 +70,13 @@ def test_env():
         "password_set": bool(os.getenv("DB_PASSWORD"))
     }
 
+
 @app.get("/test-db")
 def test_db(db: Session = Depends(get_db)):
     from sqlalchemy import text
     result = db.execute(text("SELECT 1")).fetchone()
     return {"db": "connected", "result": str(result)}
+
 
 @app.get("/test-people2")
 def test_people2():

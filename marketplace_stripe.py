@@ -15,7 +15,7 @@ STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 PLATFORM_FEE_PERCENT = 2.5
 OFN_BASE_URL = os.getenv("OFN_BASE_URL", "https://oatmealfarmnetwork.com")
 
-from main import get_db_cursor  # Adjust to your DB helper
+from database import get_db_cursor
 
 # ============================================================
 # 1. CREATE PAYMENT INTENT (after sellers confirm)

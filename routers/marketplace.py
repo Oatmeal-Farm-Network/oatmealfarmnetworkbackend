@@ -1,7 +1,8 @@
 # marketplace.py
 # FastAPI routes for the Farm2Restaurant Marketplace
-# Mount in your main.py: from marketplace import marketplace_router
-#                         app.include_router(marketplace_router, prefix="/api/marketplace")
+# Mount in your main.py:
+# from routers.marketplace import marketplace_router
+# app.include_router(marketplace_router, prefix="/api/marketplace")
 
 from fastapi import APIRouter, HTTPException, Query, Request, Depends
 from pydantic import BaseModel
@@ -10,12 +11,9 @@ from datetime import datetime, date
 import os
 import json
 
-marketplace_router = APIRouter()
+from database import get_db_cursor
 
-# --- Database helper (adapt to your existing db connection) ---
-# Assumes you have a get_db_connection() that returns a pyodbc or aioodbc connection
-# Replace with your actual database helper import
-from main import get_db_cursor  # Adjust this import to match your setup
+marketplace_router = APIRouter()
 
 PLATFORM_FEE_PERCENT = 2.5
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
