@@ -31,7 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from config import (
     FIRESTORE_AVAILABLE,
-    FIRESTORE_DATABASE,
+    CHAT_HISTORY_DATABASE,
     GCP_CREDENTIALS,
     GCP_PROJECT,
     THREADS_COLLECTION,
@@ -87,13 +87,13 @@ class ChatHistory:
             try:
                 kwargs: Dict[str, Any] = {
                     "project": GCP_PROJECT,
-                    "database": FIRESTORE_DATABASE,
+                    "database": CHAT_HISTORY_DATABASE,
                 }
                 if credentials:
                     kwargs["credentials"] = credentials
                 self._db = firestore.Client(**kwargs)
                 logger.info(
-                    "[ChatHistory] Connected to Firestore (%s)", FIRESTORE_DATABASE
+                    "[ChatHistory] Connected to Firestore (%s)", CHAT_HISTORY_DATABASE
                 )
             except Exception as e:
                 logger.error("[ChatHistory] Firestore connection failed: %s", e)

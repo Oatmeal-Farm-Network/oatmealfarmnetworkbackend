@@ -6,7 +6,7 @@ from langgraph.types import interrupt
 from config import RAG_AVAILABLE, WEATHER_AVAILABLE, MAX_QUESTIONS
 from models import FarmState, AssessmentDecision, QueryClassification, QueryTypeClassification, WeatherQueryParsed, FollowUpEntityExtraction
 from llm import llm
-from rag import rag_livestock, rag_plant, rag_bakasura
+from rag import rag_livestock, rag_plant, rag_bakasura, rag_news
 from weather import weather_service, get_weather_tool, weather_tools
 
 VALID_ADVISORY_TYPES = {"weather", "livestock", "crops", "mixed"}
@@ -646,6 +646,15 @@ def bakasura_advisory_node(state: FarmState):
     )
 
 
+def news_advisory_node(state: FarmState):
+    """News articles advisory with RAG (news_articles) and weather tool."""
+    return run_advisory_agent(
+        state,
+        role_prompt="You are an agricultural news analyst. Provide insights and advice based on the latest farming news, market trends, and agricultural developments.",
+        rag_systems=[rag_news]
+    )
+
+
 def mixed_advisory_node(state: FarmState):
     """Integrated advisory using all three RAG collections and weather tool."""
     return run_advisory_agent(
@@ -1043,4 +1052,8 @@ def route_to_advisory(state: FarmState) -> str:
         return "livestock_advisory_node"
     elif advisory_type == "mixed":
         return "mixed_advisory_node"
+    elif advisory_type == "bakasura":
+        return "bakasura_advisory_node"
+    elif advisory_type == "news":
+        return "news_advisory_node"
     return "crop_advisory_node"
