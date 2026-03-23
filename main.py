@@ -22,7 +22,6 @@ from routers.marketplace import marketplace_router
 from marketplace_stripe import stripe_router
 
 load_dotenv()
-print("SECRET_KEY loaded:", os.getenv("SECRET_KEY"))
 
 app = FastAPI()
 
