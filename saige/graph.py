@@ -10,6 +10,8 @@ from nodes import (
     livestock_advisory_node,
     crop_advisory_node,
     mixed_advisory_node,
+    bakasura_advisory_node,
+    news_advisory_node,
     route_after_assessment,
     route_to_advisory,
 )
@@ -26,6 +28,8 @@ builder.add_node("weather_advisory_node", weather_advisory_node)
 builder.add_node("livestock_advisory_node", livestock_advisory_node)
 builder.add_node("crop_advisory_node", crop_advisory_node)
 builder.add_node("mixed_advisory_node", mixed_advisory_node)
+builder.add_node("bakasura_advisory_node", bakasura_advisory_node)
+builder.add_node("news_advisory_node", news_advisory_node)
 
 # Add edges
 builder.add_edge(START, "assessment_node")
@@ -43,7 +47,9 @@ builder.add_conditional_edges(
         "weather_advisory_node": "weather_advisory_node",
         "livestock_advisory_node": "livestock_advisory_node",
         "crop_advisory_node": "crop_advisory_node",
-        "mixed_advisory_node": "mixed_advisory_node"
+        "mixed_advisory_node": "mixed_advisory_node",
+        "bakasura_advisory_node": "bakasura_advisory_node",
+        "news_advisory_node": "news_advisory_node"
     }
 )
 
@@ -51,6 +57,8 @@ builder.add_edge("weather_advisory_node", END)
 builder.add_edge("livestock_advisory_node", END)
 builder.add_edge("crop_advisory_node", END)
 builder.add_edge("mixed_advisory_node", END)
+builder.add_edge("bakasura_advisory_node", END)
+builder.add_edge("news_advisory_node", END)
 
 # Compile with checkpointing (Redis if available, otherwise MemorySaver)
 if REDIS_ENABLED and REDIS_AVAILABLE:
