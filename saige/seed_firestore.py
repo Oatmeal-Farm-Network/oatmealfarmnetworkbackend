@@ -23,7 +23,7 @@ from config import (
 from google.cloud import firestore
 from google.cloud.firestore_v1.vector import Vector
 from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
-from langchain_google_vertexai import VertexAIEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 
 # ============================================================================
@@ -48,8 +48,8 @@ def get_firestore_client():
 
 def get_embeddings_client():
     """Initialize VertexAI embeddings client."""
-    return VertexAIEmbeddings(
-        model_name=EMBEDDING_MODEL,
+    return GoogleGenerativeAIEmbeddings(
+        model=EMBEDDING_MODEL,
         project=GCP_PROJECT,
         location=GCP_LOCATION,
     )

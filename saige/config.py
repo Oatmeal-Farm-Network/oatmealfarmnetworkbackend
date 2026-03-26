@@ -24,7 +24,7 @@ if FIRESTORE_AVAILABLE:
         import pymssql
         from google.cloud.firestore_v1.vector import Vector
         from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
-        from langchain_google_vertexai import VertexAIEmbeddings
+        from langchain_google_genai import GoogleGenerativeAIEmbeddings
         RAG_AVAILABLE = True
     except ImportError:
         print("[Warning] RAG dependencies not installed. Livestock RAG will be disabled.")
@@ -86,6 +86,7 @@ BAKASURA_DOCS_COLLECTION = "bakasura-docs"
 NEWS_ARTICLES_COLLECTION = "news_articles"
 # Backward-compatible alias
 FIRESTORE_COLLECTION = LIVESTOCK_KNOWLEDGE_COLLECTION
+
 SYNC_INTERVAL_HOURS = int(os.getenv("SYNC_INTERVAL_HOURS", "24"))
 
 # ============================================================================
