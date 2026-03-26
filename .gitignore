@@ -14,8 +14,7 @@ credentials/
 *key*.json
 animated-flare-*.json
 
-# still working on this file, ignore for now
-saige/memory_management/
+
 
 # Python
 __pycache__/

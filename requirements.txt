@@ -4,6 +4,9 @@
 
 # LangChain ecosystem for LLM orchestration
 langchain>=0.3.0
+langchain-core
+langchain-community
+
 
 # Agent workflow framework
 langgraph>=0.2.0
@@ -24,6 +27,7 @@ google-cloud-aiplatform==1.138.0
 
 # Firestore database for RAG document storage
 google-cloud-firestore>=2.0.0
+
 
 
 # =========================================================

@@ -24,7 +24,7 @@ if FIRESTORE_AVAILABLE:
         import pymssql
         from google.cloud.firestore_v1.vector import Vector
         from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
-        from langchain_google_vertexai import VertexAIEmbeddings
+        from langchain_google_genai import GoogleGenerativeAIEmbeddings
         RAG_AVAILABLE = True
     except ImportError:
         print("[Warning] RAG dependencies not installed. Livestock RAG will be disabled.")
@@ -79,7 +79,7 @@ GCP_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
 EMBEDDING_MODEL = "text-embedding-004"
 TOP_K_RESULTS = 10
 FIRESTORE_DATABASE = os.getenv("FIRESTORE_DATABASE", "charlie").strip()
-FIRESTORE_COLLECTION = "livestock_knowledge"
+FIRESTORE_COLLECTION = ["livestock_knowledge", "chat_sessions"]
 SYNC_INTERVAL_HOURS = int(os.getenv("SYNC_INTERVAL_HOURS", "24"))
 
 # ============================================================================

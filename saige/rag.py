@@ -11,7 +11,7 @@ if RAG_AVAILABLE:
     from google.cloud import firestore
     from google.cloud.firestore_v1.vector import Vector
     from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
-    from langchain_google_vertexai import VertexAIEmbeddings
+    from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 
 class RAGSystem:
@@ -26,8 +26,8 @@ class RAGSystem:
         """Initialize embeddings model."""
         if self._embeddings is None and GCP_PROJECT and RAG_AVAILABLE:
             try:
-                self._embeddings = VertexAIEmbeddings(
-                    model_name=EMBEDDING_MODEL,
+                self._embeddings = GoogleGenerativeAIEmbeddings(
+                    model=EMBEDDING_MODEL,
                     project=GCP_PROJECT,
                     location=GCP_LOCATION
                 )
