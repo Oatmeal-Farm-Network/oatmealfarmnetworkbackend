@@ -6,7 +6,7 @@ from langgraph.types import interrupt
 from config import RAG_AVAILABLE, WEATHER_AVAILABLE, MAX_QUESTIONS
 from models import FarmState, AssessmentDecision, QueryClassification, QueryTypeClassification, WeatherQueryParsed, FollowUpEntityExtraction
 from llm import llm
-from rag import rag
+from rag import rag_livestock, rag_plant, rag_bakasura, rag_news
 from weather import weather_service, get_weather_tool, weather_tools
 
 VALID_ADVISORY_TYPES = {"weather", "livestock", "crops", "mixed"}
@@ -471,7 +471,7 @@ Assessment: {assessment}"""
 # UNIFIED ADVISORY ENGINE (DRY Principle)
 # ============================================================================
 
-def run_advisory_agent(state: FarmState, role_prompt: str, use_rag: bool = False) -> Dict[str, Any]:
+def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = None) -> Dict[str, Any]:
     """
     Unified engine for all advisory nodes (Crop, Livestock, Mixed).
     Handles context gathering, RAG retrieval, and the Tool-Calling Loop.
@@ -507,15 +507,19 @@ def run_advisory_agent(state: FarmState, role_prompt: str, use_rag: bool = False
 
     # 2. RAG Retrieval (Centralized)
     rag_context = ""
-    if use_rag and RAG_AVAILABLE:
+    if rag_systems and RAG_AVAILABLE:
         query_text = f"{', '.join(crops)} {', '.join(issues)} {assessment} {latest_user_message}"
-        try:
-            rag.initialize()
-            rag_context = rag.get_context_for_query(query_text)
-            if rag_context:
-                print(f"[Advisory Agent] RAG context retrieved")
-        except Exception as e:
-            print(f"[Advisory Agent] RAG error: {e}")
+        context_parts = []
+        for rag_sys in rag_systems:
+            try:
+                rag_sys.initialize()
+                ctx = rag_sys.get_context_for_query(query_text)
+                if ctx:
+                    context_parts.append(ctx)
+                    print(f"[Advisory Agent] RAG context retrieved from {rag_sys._label}")
+            except Exception as e:
+                print(f"[Advisory Agent] RAG error ({rag_sys._label}): {e}")
+        rag_context = "\n\n".join(context_parts)
 
     # 3. Construct Full Prompt
     rag_section = f"RELEVANT KNOWLEDGE BASE:\n{rag_context}" if rag_context else ""
@@ -616,29 +620,47 @@ Write like you're talking to a friend."""
 # ============================================================================
 
 def livestock_advisory_node(state: FarmState):
-    """Livestock advisory with RAG and weather tool integration."""
+    """Livestock advisory with RAG (livestock_knowledge) and weather tool."""
     return run_advisory_agent(
         state,
         role_prompt="You are an expert livestock veterinarian and breed specialist. Provide practical advice on animal health, breed selection, and management.",
-        use_rag=True
+        rag_systems=[rag_livestock]
     )
 
 
 def crop_advisory_node(state: FarmState):
-    """Crop advisory with weather tool integration."""
+    """Crop advisory with RAG (plant_knowledge) and weather tool."""
     return run_advisory_agent(
         state,
         role_prompt="You are an expert agronomist specializing in crop pathology, soil health, and sustainable farming practices.",
-        use_rag=False
+        rag_systems=[rag_plant]
+    )
+
+
+def bakasura_advisory_node(state: FarmState):
+    """Bakasura docs advisory with RAG (bakasura-docs) and weather tool."""
+    return run_advisory_agent(
+        state,
+        role_prompt="You are a knowledgeable farm advisor with access to the Bakasura knowledge base. Provide accurate, practical guidance based on available documentation.",
+        rag_systems=[rag_bakasura]
+    )
+
+
+def news_advisory_node(state: FarmState):
+    """News articles advisory with RAG (news_articles) and weather tool."""
+    return run_advisory_agent(
+        state,
+        role_prompt="You are an agricultural news analyst. Provide insights and advice based on the latest farming news, market trends, and agricultural developments.",
+        rag_systems=[rag_news]
     )
 
 
 def mixed_advisory_node(state: FarmState):
-    """Integrated crop+livestock advisory with RAG and weather tool."""
+    """Integrated advisory using all three RAG collections and weather tool."""
     return run_advisory_agent(
         state,
         role_prompt="You are an integrated farming systems expert specializing in permaculture, mixed farming, and sustainable agricultural practices.",
-        use_rag=True
+        rag_systems=[rag_livestock, rag_plant, rag_bakasura]
     )
 
 
@@ -1030,4 +1052,8 @@ def route_to_advisory(state: FarmState) -> str:
         return "livestock_advisory_node"
     elif advisory_type == "mixed":
         return "mixed_advisory_node"
+    elif advisory_type == "bakasura":
+        return "bakasura_advisory_node"
+    elif advisory_type == "news":
+        return "news_advisory_node"
     return "crop_advisory_node"

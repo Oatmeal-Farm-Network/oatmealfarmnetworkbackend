@@ -35,6 +35,7 @@ import PlantVarietalDetail from './PlantVarietalDetail.jsx';
 import Marketplaces from './Marketplaces.jsx';
 import ContactUs from './ContactUs.jsx';
 import ContactUsConfirm from './ContactUsConfirm.jsx';
+import MeatInventory from './MeatInventory'; 
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
@@ -72,6 +73,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
           <Route path="/directory" element={<DirectoryList />} />
           <Route path="/directory/:directoryType" element={<DirectoryDetail />} />
           <Route path="/profile" element={<BusinessProfile />} />
+          <Route path="/produce/meat" element={<MeatInventory />} />
         </Routes>
       </AccountProvider>
     </BrowserRouter>
