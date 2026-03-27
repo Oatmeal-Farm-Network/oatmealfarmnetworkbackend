@@ -62,7 +62,7 @@ jobs:
             --cpu 1 \
             --min-instances 0 \
             --max-instances 10 \
-            --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$REGION,ALLOW_ALL_ORIGINS=true,GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }},FRONTEND_URL=https://oatmealfarmnetwork-802455386518.us-central1.run.app,AUTH_BACKEND_URL=https://oatmealfarmnewtorkbackend-802455386518.us-central1.run.app"
+            --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$REGION,ALLOW_ALL_ORIGINS=true,GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }},FRONTEND_URL=https://oatmealfarmnetwork-802455386518.us-central1.run.app,SECRET_KEY=${{ secrets.SECRET_KEY }}"
 
       - name: Show deployed URL
         run: |
