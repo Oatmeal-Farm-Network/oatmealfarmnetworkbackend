@@ -7,6 +7,7 @@ from config import (
     LIVESTOCK_KNOWLEDGE_COLLECTION,
     PLANT_KNOWLEDGE_COLLECTION,
     BAKASURA_DOCS_COLLECTION,
+    NEWS_ARTICLES_COLLECTION,
     RAG_AVAILABLE
 )
 
@@ -14,7 +15,7 @@ if RAG_AVAILABLE:
     from google.cloud import firestore
     from google.cloud.firestore_v1.vector import Vector
     from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
-    from langchain_google_vertexai import VertexAIEmbeddings
+    from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 
 class RAGSystem:
@@ -31,8 +32,8 @@ class RAGSystem:
         """Initialize embeddings model."""
         if self._embeddings is None and GCP_PROJECT and RAG_AVAILABLE:
             try:
-                self._embeddings = VertexAIEmbeddings(
-                    model_name=EMBEDDING_MODEL,
+                self._embeddings = GoogleGenerativeAIEmbeddings(
+                    model=EMBEDDING_MODEL,
                     project=GCP_PROJECT,
                     location=GCP_LOCATION
                 )
@@ -131,6 +132,7 @@ class RAGSystem:
 rag_livestock = RAGSystem(LIVESTOCK_KNOWLEDGE_COLLECTION, label="livestock_knowledge")
 rag_plant = RAGSystem(PLANT_KNOWLEDGE_COLLECTION, label="plant_knowledge")
 rag_bakasura = RAGSystem(BAKASURA_DOCS_COLLECTION, label="bakasura-docs")
+rag_news = RAGSystem(NEWS_ARTICLES_COLLECTION, label="news_articles")
 
 # Backward-compatible alias
 rag = rag_livestock
