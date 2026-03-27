@@ -21,7 +21,7 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY config.py database.py rag.py weather.py models.py llm.py nodes.py graph.py chat_history.py redis_client.py message_buffer.py api.py main.py ./
+COPY config.py database.py rag.py weather.py models.py llm.py nodes.py graph.py chat_history.py redis_client.py message_buffer.py api.py main.py jwt_auth.py ./
 
 # Expose port (FastAPI default)
 EXPOSE 8000
