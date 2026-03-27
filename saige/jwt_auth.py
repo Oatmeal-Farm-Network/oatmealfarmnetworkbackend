@@ -8,7 +8,7 @@ _bearer = HTTPBearer()
 
 AUTH_BACKEND_URL = os.getenv(
     "AUTH_BACKEND_URL",
-    "https://oatmealfarmnewtorkbackend-802455386518.us-central1.run.app",
+    "https://oatmealfarmnetworkbackend-802455386518.us-central1.run.app",
 )
 
 
