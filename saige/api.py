@@ -6,7 +6,7 @@ import time
 import re
 from typing import Optional
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Query, Request, Depends
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
@@ -23,7 +23,6 @@ from message_buffer import message_buffer, get_last_n, push_message
 from redis_client import RedisClientManager, get_redis_manager
 from llm import llm
 from models import FollowUpEntityExtraction
-from jwt_auth import get_current_user
 
 
 def _is_missing_checkpoint_index_error(exc: Exception) -> bool:
@@ -204,6 +203,7 @@ print(f"[API] CORS enabled for origins: {allowed_origins}")
 class ChatRequest(BaseModel):
     user_input: str = Field(..., min_length=1, max_length=MAX_MESSAGE_CHARS)
     thread_id: str = Field(..., min_length=1, max_length=128)
+    user_id: str = Field(..., min_length=1, max_length=64)
 
     @field_validator("user_input")
     @classmethod
@@ -459,7 +459,8 @@ async def firestore_health():
 # ============================================================================
 
 @app.post("/chat")
-async def chat(request: ChatRequest, user_id: str = Depends(get_current_user)):
+async def chat(request: ChatRequest):
+    user_id = request.user_id
     """
     Main chat endpoint for farm advisory system.
 
@@ -888,9 +889,9 @@ Examples:
 
 @app.get("/threads")
 async def list_threads(
+    user_id: str = Query(...),
     limit: int = Query(default=20, ge=1, le=100),
     cursor: Optional[str] = Query(default=None),
-    user_id: str = Depends(get_current_user),
 ):
     """List all chat threads for a user with cursor-based pagination."""
     threads, next_cursor = chat_history.get_threads(user_id, limit=limit, cursor=cursor)
@@ -900,9 +901,9 @@ async def list_threads(
 @app.get("/threads/{thread_id}/messages")
 async def get_thread_messages(
     thread_id: str,
+    user_id: str = Query(...),
     limit: int = Query(default=50, ge=1, le=200),
     cursor: Optional[str] = Query(default=None),
-    user_id: str = Depends(get_current_user),
 ):
     """Get messages for a specific thread with cursor-based pagination."""
     messages, next_cursor = chat_history.get_messages(
@@ -914,7 +915,7 @@ async def get_thread_messages(
 
 
 @app.delete("/threads/{thread_id}")
-async def delete_thread(thread_id: str, user_id: str = Depends(get_current_user)):
+async def delete_thread(thread_id: str, user_id: str = Query(...)):
     """Delete a chat thread."""
     success = chat_history.delete_thread(user_id, thread_id)
     if not success:
@@ -926,7 +927,7 @@ async def delete_thread(thread_id: str, user_id: str = Depends(get_current_user)
 # ============================================================================
 
 @app.get("/analytics")
-async def get_analytics(user_id: str = Depends(get_current_user)):
+async def get_analytics(user_id: str = Query(...)):
     """Aggregate analytics for a user's chat sessions."""
     data = chat_history.get_analytics(user_id)
     if not data:
