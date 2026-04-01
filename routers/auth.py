@@ -15,6 +15,64 @@ class LoginRequest(BaseModel):
     Email: str
     Password: str
 
+class ForgotPasswordRequest(BaseModel):
+    Email: str
+
+
+# -------------------------
+# Forgot password
+# -------------------------
+@router.post("/forgot-password")
+async def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    import os, sendgrid
+    from sendgrid.helpers.mail import Mail
+
+    email = body.Email.strip().lower()
+
+    user = db.query(models.People).filter(
+        models.People.PeopleEmail == email
+    ).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="Email not found")
+
+    if not user.PeoplePassword:
+        raise HTTPException(status_code=500, detail="No password on file. Please contact support.")
+
+    SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
+    FROM_EMAIL       = os.getenv("FROM_EMAIL", "john@oatmeal-ai.com")
+    SITE_NAME        = os.getenv("SITE_NAME", "Oatmeal Farm Network")
+
+    if not SENDGRID_API_KEY:
+        raise HTTPException(status_code=503, detail="Email service not configured.")
+
+    html_body = f"""
+    <font face="arial">
+    Dear {user.PeopleFirstName},<br><br>
+    Your {SITE_NAME} password is provided below:<br><br>
+    Your password: <b>{user.PeoplePassword}</b><br><br>
+    If you did not request this email, please contact us at 458.225.4903.<br><br>
+    Thank You.<br><br>
+    Sincerely,<br><br>
+    {SITE_NAME}
+    </font>
+    """
+
+    try:
+        sg = sendgrid.SendGridAPIClient(api_key=SENDGRID_API_KEY)
+        sg.send(Mail(
+            from_email=FROM_EMAIL,
+            to_emails=email,
+            subject=f"Your {SITE_NAME} Password",
+            html_content=html_body,
+        ))
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Failed to send email. Please try again.")
+
+    return {"message": "Password sent", "email": email}
+
+
 # -------------------------
 # Login
 # -------------------------
@@ -48,6 +106,7 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
         traceback.print_exc()
         raise
 
+
 # -------------------------
 # Get current user
 # -------------------------
@@ -60,6 +119,7 @@ def get_me(current_user=Depends(get_current_user)):
         "PeopleEmail": current_user.PeopleEmail,
         "AccessLevel": current_user.accesslevel
     }
+
 
 # -------------------------
 # My businesses
@@ -76,6 +136,7 @@ def GetMyBusinesses(PeopleID: int, Db: Session = Depends(get_db)):
         .all()
     )
     return [{"BusinessID": B.BusinessID, "BusinessName": B.BusinessName} for B in Businesses]
+
 
 # -------------------------
 # Account home
@@ -113,6 +174,7 @@ def GetAccountHome(BusinessID: int, Db: Session = Depends(get_db)):
         "AddressZip": A.AddressZip,
     }
 
+
 # -------------------------
 # Business types
 # -------------------------
@@ -120,6 +182,7 @@ def GetAccountHome(BusinessID: int, Db: Session = Depends(get_db)):
 def GetBusinessTypes(Db: Session = Depends(get_db)):
     Types = Db.query(models.BusinessTypeLookup).order_by(models.BusinessTypeLookup.BusinessType).all()
     return [{"BusinessTypeID": T.BusinessTypeID, "BusinessType": T.BusinessType} for T in Types]
+
 
 @router.put("/change-business-type")
 def ChangeBusinessType(BusinessID: int, BusinessTypeID: int, Db: Session = Depends(get_db)):
@@ -129,6 +192,7 @@ def ChangeBusinessType(BusinessID: int, BusinessTypeID: int, Db: Session = Depen
     Business.BusinessTypeID = BusinessTypeID
     Db.commit()
     return {"status": "success"}
+
 
 # -------------------------
 # Animals endpoint (optimized)
@@ -179,6 +243,7 @@ def GetAnimals(BusinessID: int, Db: Session = Depends(get_db)):
 
     return Animals
 
+
 # -------------------------
 # Species breeds
 # -------------------------
@@ -194,6 +259,7 @@ def get_species_breeds(species_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 # -------------------------
 # Species registration types
 # -------------------------
@@ -208,6 +274,8 @@ def get_registration_types(species_id: int, db: Session = Depends(get_db)):
         return [{"type": r.RegistrationType} for r in rows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
 # -------------------------
 # Add animal
 # -------------------------

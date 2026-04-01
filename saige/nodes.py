@@ -1,4 +1,4 @@
-# --- nodes.py --- (All node functions, routing, and advisory engine)
+﻿# --- nodes.py --- (All node functions, routing, and advisory engine)
 import re
 from typing import Dict, Any, List, Optional
 from langgraph.types import interrupt
@@ -160,22 +160,43 @@ def assessment_node(state: FarmState):
         if first_user_message and len(first_user_message) > 5:
             msg_lower = first_user_message.lower()
 
-            # Use LLM to intelligently classify the query and determine next steps
+            # FAST PRE-CHECK
+            gp = ["what is my","what's my","who am i","my people","my user","my id","my account","peopleid","people_id","userid","user_id","hello","hi ","hey ","good morning","thank you","thanks","how are you","who are you"]
+            if any(p in msg_lower for p in gp):
+                print(f"[Assessment] Pre-check match: fast-tracking general question")
+                return {
+                    "assessment_summary": f"General question: {first_user_message}",
+                    "current_issues": [first_user_message],
+                    "advisory_type": "mixed"
+                }
+
             print(f"[Assessment] Using LLM for smart query classification...")
 
             try:
                 classifier = llm.with_structured_output(QueryTypeClassification)
-                classification_prompt = f"""Analyze this farmer's query and classify it:
+                classification_prompt = f"""Analyze this query and classify it. Your job is to decide whether to answer directly or ask clarifying questions.
 
 Query: "{first_user_message}"
 
-Classify the query type, whether it's specific, if it needs clarification, and extract any mentioned items.
+CLASSIFICATION RULES:
+1. Use query_type='general' for ANY non-farming question: greetings, identity/account questions,
+   tech questions, general chat, or anything not about crops/livestock/weather/soil.
+2. Default needs_clarification=False. Only set True if the query is completely unintelligible
+   without more context (e.g., "help", "something is wrong", "what should I do").
+3. Most farming questions can be answered directly — do NOT ask follow-ups just because
+   location or farm size isn't mentioned.
 
 Examples:
-- "weather in California" → query_type: weather, is_specific: false, needs_clarification: false, items: []
-- "cattle breeds for my farm" → query_type: livestock, is_specific: true, needs_clarification: true, items: ["cattle"]
-- "animal recommendation for maize field" → query_type: mixed, is_specific: false, needs_clarification: true, items: ["maize"]
-- "my tomato plants have yellow leaves" → query_type: crops, is_specific: true, needs_clarification: false, items: ["tomato"]"""
+- "what is my user ID" → query_type: general, is_specific: true, needs_clarification: false
+- "what is my people ID" → query_type: general, is_specific: true, needs_clarification: false
+- "hello" → query_type: general, is_specific: true, needs_clarification: false
+- "weather in California" → query_type: weather, is_specific: true, needs_clarification: false
+- "best goat breeds for meat" → query_type: livestock, is_specific: true, needs_clarification: false
+- "my tomato leaves are yellow" → query_type: crops, is_specific: true, needs_clarification: false
+- "cattle breeds for my farm" → query_type: livestock, is_specific: true, needs_clarification: false
+- "what should I plant" → query_type: crops, is_specific: false, needs_clarification: true
+- "help with my farm" → query_type: mixed, is_specific: false, needs_clarification: true
+- "animal recommendation for maize field" → query_type: mixed, is_specific: true, needs_clarification: false"""
 
                 classification_result = classifier.invoke(classification_prompt)
                 
@@ -183,6 +204,15 @@ Examples:
                 is_specific = classification_result.is_specific
                 needs_clarification = classification_result.needs_clarification
                 detected_items = classification_result.items
+
+                # Handle general (non-farming) queries — answer directly, no quiz
+                if classification_result.query_type.lower() == "general":
+                    print(f"[Assessment] General (non-farming) query - fast-tracking")
+                    return {
+                        "assessment_summary": f"General question: {first_user_message}",
+                        "current_issues": [first_user_message],
+                        "advisory_type": "mixed"
+                    }
 
                 print(f"[Assessment] Parsed: type={query_type}, specific={is_specific}, needs_clarification={needs_clarification}, items={detected_items}")
 
@@ -195,7 +225,7 @@ Examples:
                         "advisory_type": "weather"
                     }
 
-                elif query_type and is_specific and not needs_clarification:
+                elif query_type and not needs_clarification:
                     print(f"[Assessment] Specific query detected - fast-tracking to {query_type}")
                     return {
                         "assessment_summary": f"Farmer seeks assistance with: {first_user_message}",
@@ -477,6 +507,31 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
     Handles context gathering, RAG retrieval, and the Tool-Calling Loop.
     """
     print(f"\n[Advisory Agent] Processing with role: {role_prompt[:50]}...")
+
+    # Handle general questions directly without RAG or farming prompts
+    _assessment = state.get("assessment_summary", "")
+    if _assessment.startswith("General question:"):
+        print(f"[Advisory Agent] General question - answering directly")
+        _history = state.get("history") or []
+        _msg = ""
+        for _h in reversed(_history):
+            if _h.startswith("User:"):
+                _msg = _h.replace("User:", "", 1).strip()
+                break
+        _pid = state.get("people_id")
+        _ml = _msg.lower()
+        if any(k in _ml for k in ["peopleid", "people_id", "people id", "user id", "userid", "my id"]):
+            _answer = f"Your PeopleID is {_pid}." if _pid else "Your PeopleID is not available in this context."
+        elif any(k in _ml for k in ["businessid", "business_id", "business id", "my business"]):
+            _bid = state.get("business_id")
+            _answer = f"Your BusinessID is {_bid}." if _bid else "No BusinessID is set in this session. Try opening Saige from your business page."
+        else:
+            try:
+                _resp = llm.invoke(f"You are Saige, a friendly assistant. Answer directly: {_msg}")
+                _answer = _resp.content if hasattr(_resp, "content") else str(_resp)
+            except Exception as _e:
+                _answer = "I am here to help! Could you rephrase your question?"
+        return {"diagnosis": _answer, "recommendations": []}
 
     # 1. Gather Context from State
     location = state.get("location", "Unknown")

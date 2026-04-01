@@ -1,4 +1,4 @@
-# --- api.py --- (Enhanced API for farm advisory system)
+﻿# --- api.py --- (Enhanced API for farm advisory system)
 import os
 import json
 import logging

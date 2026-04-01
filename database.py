@@ -5,6 +5,7 @@ import os
 from dotenv import load_dotenv
 import pymssql
 
+
 load_dotenv()
 
 SQLALCHEMY_DATABASE_URL = (

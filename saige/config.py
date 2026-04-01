@@ -93,7 +93,7 @@ SYNC_INTERVAL_HOURS = int(os.getenv("SYNC_INTERVAL_HOURS", "24"))
 # ASSESSMENT CONFIGURATION
 # ============================================================================
 
-MAX_QUESTIONS = 8
+MAX_QUESTIONS = 2
 
 # ============================================================================
 # API CONFIGURATION

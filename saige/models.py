@@ -1,4 +1,4 @@
-# --- models.py --- (State definition and Pydantic models)
+﻿# --- models.py --- (State definition and Pydantic models)
 from typing import TypedDict, List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 
@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 # ============================================================================
 
 class FarmState(TypedDict, total=False):
+    people_id: Optional[str]
+    business_id: Optional[str]
     """State for managing farm information and diagnostics"""
     farm_name: Optional[str]
     location: Optional[str]
@@ -53,10 +55,30 @@ class WeatherQueryParsed(BaseModel):
 
 class QueryTypeClassification(BaseModel):
     """Structured classification of farmer's query for fast-tracking assessment."""
-    query_type: str = Field(description="Type of query: 'weather', 'livestock', 'crops', or 'mixed'")
-    is_specific: bool = Field(description="True if specific crop or animal is named (e.g., 'cattle', 'tomato'), False if generic (e.g., 'animal', 'crop')")
-    needs_clarification: bool = Field(description="True if query is vague or needs more info like location, animal type, etc.")
-    items: List[str] = Field(default_factory=list, description="List of specific crops/animals mentioned (e.g., ['cattle'], ['tomato', 'maize']), empty list if none")
+    query_type: str = Field(
+        description=(
+            "Type of query: 'weather', 'livestock', 'crops', 'mixed', or 'general'. "
+            "Use 'general' for any non-farming question: greetings, identity questions, "
+            "account info, tech support, general chat, or anything unrelated to crops/livestock/weather."
+        )
+    )
+    is_specific: bool = Field(
+        description="True if the query contains enough detail to answer directly (specific crop, animal, symptom, or location named). False if too vague."
+    )
+    needs_clarification: bool = Field(
+        description=(
+            "True ONLY if the query is so vague that no useful answer is possible without more info. "
+            "Default to False — most questions can be answered directly. "
+            "DO set True for: 'help with my farm', 'something is wrong', 'what should I do' (no context). "
+            "DO NOT set True for: 'best goat breeds for meat', 'my tomato leaves are yellow', "
+            "'what is my user ID', 'how do I treat mastitis', 'what breeds suit hot climates'. "
+            "General (non-farming) questions should ALWAYS have needs_clarification=False."
+        )
+    )
+    items: List[str] = Field(
+        default_factory=list,
+        description="List of specific crops/animals mentioned (e.g., ['cattle'], ['tomato', 'maize']), empty list if none"
+    )
 
 
 class FollowUpEntityExtraction(BaseModel):
