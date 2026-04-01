@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 class FarmState(TypedDict, total=False):
     """State for managing farm information and diagnostics"""
+    people_id: Optional[str]
     farm_name: Optional[str]
     location: Optional[str]
     farm_size: Optional[str]

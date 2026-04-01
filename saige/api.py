@@ -546,7 +546,7 @@ async def chat(request: ChatRequest):
     if state.next:
         # Resume the existing conversation
         print(f"[API] Resuming conversation for thread {request.thread_id}")
-        events = safe_graph_stream(Command(resume=request.user_input), config, stream_mode="values")
+        events = safe_graph_stream({"history": initial_history, "people_id": user_id}, config, stream_mode="values")
     else:
         # Check if this is a follow-up question in a completed conversation
         existing_state = state.values if state.values else {}

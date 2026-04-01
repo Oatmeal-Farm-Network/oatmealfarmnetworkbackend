@@ -160,22 +160,53 @@ def assessment_node(state: FarmState):
         if first_user_message and len(first_user_message) > 5:
             msg_lower = first_user_message.lower()
 
+            # FAST PRE-CHECK: bypass LLM for non-farming questions
+            general_patterns = [
+                "what is my", "what's my", "who am i", "my people", "my user",
+                "my id", "my account", "my name", "my email", "my password",
+                "peopleid", "people_id", "userid", "user_id",
+                "hello", "hi ", "hey ", "good morning", "good afternoon",
+                "thank you", "thanks", "how are you", "who are you",
+                "what can you do", "help me understand", "what is saige",
+            ]
+            matched = any(p in msg_lower for p in general_patterns)
+            print(f"[Assessment] Pre-check: msg_lower={msg_lower[:60]!r}, matched={matched}")
+            if matched:
+                print(f"[Assessment] Pre-check: general question detected - fast-tracking")
+                return {
+                    "assessment_summary": f"General question: {first_user_message}",
+                    "current_issues": [first_user_message],
+                    "advisory_type": "mixed"
+                }
+
             # Use LLM to intelligently classify the query and determine next steps
             print(f"[Assessment] Using LLM for smart query classification...")
 
             try:
                 classifier = llm.with_structured_output(QueryTypeClassification)
-                classification_prompt = f"""Analyze this farmer's query and classify it:
+                classification_prompt = f"""Analyze this query and classify it. Your job is to decide whether to answer directly or ask clarifying questions.
 
 Query: "{first_user_message}"
 
-Classify the query type, whether it's specific, if it needs clarification, and extract any mentioned items.
+CLASSIFICATION RULES:
+1. Use query_type='general' for ANY non-farming question: greetings, identity/account questions,
+   tech questions, general chat, or anything not about crops/livestock/weather/soil.
+2. Default needs_clarification=False. Only set True if the query is completely unintelligible
+   without more context (e.g., "help", "something is wrong", "what should I do").
+3. Most farming questions can be answered directly — do NOT ask follow-ups just because
+   location or farm size isn't mentioned.
 
 Examples:
-- "weather in California" → query_type: weather, is_specific: false, needs_clarification: false, items: []
-- "cattle breeds for my farm" → query_type: livestock, is_specific: true, needs_clarification: true, items: ["cattle"]
-- "animal recommendation for maize field" → query_type: mixed, is_specific: false, needs_clarification: true, items: ["maize"]
-- "my tomato plants have yellow leaves" → query_type: crops, is_specific: true, needs_clarification: false, items: ["tomato"]"""
+- "what is my user ID" → query_type: general, is_specific: true, needs_clarification: false
+- "what is my people ID" → query_type: general, is_specific: true, needs_clarification: false
+- "hello" → query_type: general, is_specific: true, needs_clarification: false
+- "weather in California" → query_type: weather, is_specific: true, needs_clarification: false
+- "best goat breeds for meat" → query_type: livestock, is_specific: true, needs_clarification: false
+- "my tomato leaves are yellow" → query_type: crops, is_specific: true, needs_clarification: false
+- "cattle breeds for my farm" → query_type: livestock, is_specific: true, needs_clarification: false
+- "what should I plant" → query_type: crops, is_specific: false, needs_clarification: true
+- "help with my farm" → query_type: mixed, is_specific: false, needs_clarification: true
+- "animal recommendation for maize field" → query_type: mixed, is_specific: true, needs_clarification: false"""
 
                 classification_result = classifier.invoke(classification_prompt)
                 
@@ -183,6 +214,15 @@ Examples:
                 is_specific = classification_result.is_specific
                 needs_clarification = classification_result.needs_clarification
                 detected_items = classification_result.items
+
+                # Handle general (non-farming) queries — answer directly, no quiz
+                if classification_result.query_type.lower() == "general":
+                    print(f"[Assessment] General (non-farming) query - fast-tracking")
+                    return {
+                        "assessment_summary": f"General question: {first_user_message}",
+                        "current_issues": [first_user_message],
+                        "advisory_type": "mixed"
+                    }
 
                 print(f"[Assessment] Parsed: type={query_type}, specific={is_specific}, needs_clarification={needs_clarification}, items={detected_items}")
 
@@ -195,7 +235,7 @@ Examples:
                         "advisory_type": "weather"
                     }
 
-                elif query_type and is_specific and not needs_clarification:
+                elif query_type and not needs_clarification:
                     print(f"[Assessment] Specific query detected - fast-tracking to {query_type}")
                     return {
                         "assessment_summary": f"Farmer seeks assistance with: {first_user_message}",
