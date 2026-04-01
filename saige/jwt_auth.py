@@ -1,3 +1,4 @@
+print('LOADING JWT_AUTH: ' + r'F:\Oatmeal AI\OatmealFarmNetwork Repo\Backend\oatmealfarmnetworkbackend\saige\jwt_auth.py')
 # --- jwt_auth.py --- (JWT authentication dependency for FastAPI)
 import os
 from jose import JWTError, jwt
@@ -29,3 +30,4 @@ def get_current_user(
         return str(people_id)
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token.")
+
