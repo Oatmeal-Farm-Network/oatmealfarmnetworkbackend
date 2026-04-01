@@ -6,7 +6,7 @@ import time
 import re
 from typing import Optional
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Query, Request, Depends
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
@@ -23,6 +23,7 @@ from message_buffer import message_buffer, get_last_n, push_message
 from redis_client import RedisClientManager, get_redis_manager
 from llm import llm
 from models import FollowUpEntityExtraction
+from jwt_auth import get_current_user
 
 
 def _is_missing_checkpoint_index_error(exc: Exception) -> bool:
@@ -34,9 +35,6 @@ def _is_missing_checkpoint_index_error(exc: Exception) -> bool:
 def safe_graph_stream(input_data, config, stream_mode="values"):
     """
     Yield events from graph.stream(), with fallback when Redis checkpoint indexes are missing.
-
-    Important: graph.stream() errors can occur during iteration (not only at creation time),
-    so this wrapper must iterate and yield inside the try/except.
     """
     try:
         primary_stream = graph.stream(input_data, config, stream_mode=stream_mode)
@@ -47,7 +45,6 @@ def safe_graph_stream(input_data, config, stream_mode="values"):
             print("[API] [WARN] Redis checkpoint indexes missing, using MemorySaver fallback for this request")
             from langgraph.checkpoint.memory import MemorySaver
             from graph import builder
-
             temp_graph = builder.compile(checkpointer=MemorySaver())
             for event in temp_graph.stream(input_data, config, stream_mode=stream_mode):
                 yield event
@@ -148,6 +145,20 @@ app_kwargs["lifespan"] = app_lifespan
 
 app = FastAPI(**app_kwargs)
 
+
+@app.options("/{rest_of_path:path}")
+async def options_handler(rest_of_path: str):
+    """Handle all CORS preflight requests without auth."""
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "Authorization, Content-Type, Accept",
+            "Access-Control-Max-Age": "86400",
+        },
+    )
+
 # ============================================================================
 # GLOBAL EXCEPTION HANDLER
 # ============================================================================
@@ -168,33 +179,26 @@ async def global_exception_handler(request: Request, exc: Exception):
 # ============================================================================
 
 @app.middleware("http")
-async def log_requests(request: Request, call_next):
+async def cors_and_logging_middleware(request: Request, call_next):
+    # Handle preflight
+    if request.method == "OPTIONS":
+        return JSONResponse(
+            content={},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Max-Age": "86400",
+            },
+        )
     start_time = time.time()
     response = await call_next(request)
     duration = time.time() - start_time
-    logger.info(
-        f"{request.method} {request.url.path} "
-        f"status={response.status_code} duration={duration:.3f}s"
-    )
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "*"
+    logger.info(f"{request.method} {request.url.path} status={response.status_code} duration={duration:.3f}s")
     return response
-
-# ============================================================================
-# CORS
-# ============================================================================
-
-allowed_origins = [FRONTEND_URL]
-if ALLOW_ALL_ORIGINS:
-    allowed_origins = ["*"]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-print(f"[API] CORS enabled for origins: {allowed_origins}")
 
 # ============================================================================
 # REQUEST MODELS
@@ -203,7 +207,8 @@ print(f"[API] CORS enabled for origins: {allowed_origins}")
 class ChatRequest(BaseModel):
     user_input: str = Field(..., min_length=1, max_length=MAX_MESSAGE_CHARS)
     thread_id: str = Field(..., min_length=1, max_length=128)
-    user_id: str = Field(..., min_length=1, max_length=64)
+    business_id: Optional[str] = None  # from URL query param (?BusinessID=...)
+    # NOTE: people_id is NOT here — extracted from Bearer JWT by get_current_user()
 
     @field_validator("user_input")
     @classmethod
@@ -215,7 +220,6 @@ class ChatRequest(BaseModel):
 
 
 def _looks_like_new_question(text: str) -> bool:
-    """Heuristic guard to avoid treating fresh questions as slot-only answers."""
     normalized = (text or "").strip().lower()
     if not normalized:
         return False
@@ -235,7 +239,6 @@ def _looks_like_new_question(text: str) -> bool:
 
 
 def _build_assessment_summary(current_issues, crops, location) -> str:
-    """Build a compact summary so completed threads can route without re-assessment."""
     summary_parts = [
         f"Farmer seeks assistance with: {', '.join(current_issues) if current_issues else 'general farm advice'}"
     ]
@@ -247,25 +250,15 @@ def _build_assessment_summary(current_issues, crops, location) -> str:
 
 
 def _extract_soil_info(text: str) -> dict | None:
-    """Best-effort parser for common soil test metrics in free-text user input."""
     raw_text = (text or "").strip()
     if not raw_text:
         return None
-
     lowered = raw_text.lower()
     soil_markers = [
-        "soil test",
-        "soil report",
-        "ph",
-        "ec",
-        "electrical conductivity",
-        "cec",
-        "organic matter",
-        "soil:water",
-        "cmol",
+        "soil test", "soil report", "ph", "ec", "electrical conductivity",
+        "cec", "organic matter", "soil:water", "cmol",
     ]
     looks_like_soil_input = any(marker in lowered for marker in soil_markers)
-
     patterns = {
         "ph": r"\bph\b[^0-9]{0,20}([0-9]+(?:\.[0-9]+)?)",
         "electrical_conductivity": r"\b(?:electrical conductivity|ec)\b[^0-9]{0,20}([0-9]+(?:\.[0-9]+)?)",
@@ -275,7 +268,6 @@ def _extract_soil_info(text: str) -> dict | None:
         "phosphorus": r"\b(?:available\s*)?(?:p|phosphorus)\b[^0-9]{0,20}([0-9]+(?:\.[0-9]+)?)",
         "potassium": r"\b(?:available\s*)?(?:k|potassium)\b[^0-9]{0,20}([0-9]+(?:\.[0-9]+)?)",
     }
-
     extracted: dict = {}
     for key, pattern in patterns.items():
         match = re.search(pattern, raw_text, flags=re.IGNORECASE)
@@ -285,20 +277,16 @@ def _extract_soil_info(text: str) -> dict | None:
             extracted[key] = float(match.group(1))
         except (TypeError, ValueError):
             continue
-
-    # Avoid false positives from generic numeric messages.
     if not looks_like_soil_input and len(extracted) < 2:
         return None
     if not looks_like_soil_input and not extracted:
         return None
-
     result = {"raw_text": raw_text}
     result.update(extracted)
     return result
 
 
 def _buffer_messages_to_history(messages: list[dict]) -> list[str]:
-    """Convert short-term Redis messages to graph history format."""
     history: list[str] = []
     for msg in messages or []:
         role = str(msg.get("role") or "").strip().lower()
@@ -313,22 +301,15 @@ def _buffer_messages_to_history(messages: list[dict]) -> list[str]:
 
 
 # ============================================================================
-# RATE LIMITER (Task 5 — per-thread rate limiting via Redis INCR + EXPIRE)
+# RATE LIMITER
 # ============================================================================
 
 def _check_rate_limit(thread_id: str) -> tuple[bool, int]:
-    """
-    Check per-thread rate limit using Redis.
-    Returns (allowed, current_count).
-    If Redis is unavailable the request is always allowed (fail-open).
-    """
     if not RATE_LIMIT_ENABLED or not REDIS_ENABLED:
         return True, 0
-
-    client = message_buffer.client  # reuse the shared text client
+    client = message_buffer.client
     if client is None:
-        return True, 0  # fail-open when Redis is down
-
+        return True, 0
     key = REDIS_RATE_LIMIT_KEY_TEMPLATE.format(thread_id=thread_id)
     try:
         pipe = client.pipeline(transaction=True)
@@ -348,7 +329,6 @@ def _check_rate_limit(thread_id: str) -> tuple[bool, int]:
 
 @app.get("/")
 async def root():
-    """API health check"""
     return {
         "status": "healthy",
         "version": "2.1.0",
@@ -365,164 +345,75 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
     return {"status": "healthy", "service": "farm-advisory-api"}
 
 
 @app.get("/health/redis")
 async def redis_health_check(request: Request):
-    """
-    Redis connectivity health endpoint.
-    - 200 disabled: Redis intentionally turned off
-    - 200 healthy: Redis reachable
-    - 503 unhealthy: Redis enabled but unreachable
-    """
     if not REDIS_ENABLED:
-        return {
-            "status": "disabled",
-            "service": "redis",
-            "message": "Redis is disabled by configuration",
-        }
-
+        return {"status": "disabled", "service": "redis", "message": "Redis is disabled by configuration"}
     redis_manager = _resolve_redis_manager(request)
     healthy, latency_ms, info = _check_redis_health(redis_manager)
-
     if healthy:
-        return {
-            "status": "healthy",
-            "service": "redis",
-            "latency_ms": round(latency_ms, 2),
-            "mode": info.get("mode"),
-            "target": info.get("target"),
-        }
-
+        return {"status": "healthy", "service": "redis", "latency_ms": round(latency_ms, 2), "mode": info.get("mode"), "target": info.get("target")}
     error_message = info.get("last_error") or "Redis unreachable"
-    logger.error(
-        f"[API] /health/redis unhealthy (mode={info.get('mode')}, target={info.get('target', 'n/a')}): {error_message}"
-    )
-    return JSONResponse(
-        status_code=503,
-        content={
-            "status": "unhealthy",
-            "service": "redis",
-            "mode": info.get("mode"),
-            "target": info.get("target"),
-            "error": error_message,
-        },
-    )
+    return JSONResponse(status_code=503, content={"status": "unhealthy", "service": "redis", "mode": info.get("mode"), "target": info.get("target"), "error": error_message})
 
 
 @app.get("/ready")
 async def readiness_check(request: Request):
-    """Readiness probe - checks that critical services are connectable."""
     checks = {"graph": True}
-    
-    # Check Firestore
     try:
-        if chat_history.firestore_db:
-            checks["firestore"] = True
-        else:
-            checks["firestore"] = False
+        checks["firestore"] = bool(chat_history.firestore_db)
     except Exception:
         checks["firestore"] = False
-    
-    # Check Redis if enabled
     if REDIS_ENABLED:
         redis_manager = _resolve_redis_manager(request)
         checks["redis"] = _check_redis_health(redis_manager)[0]
-    
-    # All critical services must be ready (graph is always required)
     critical_checks = {k: v for k, v in checks.items() if k in ["graph", "redis"]}
     all_ready = all(critical_checks.values()) if critical_checks else True
-    
-    return JSONResponse(
-        status_code=200 if all_ready else 503,
-        content={"status": "ready" if all_ready else "not_ready", "checks": checks}
-    )
+    return JSONResponse(status_code=200 if all_ready else 503, content={"status": "ready" if all_ready else "not_ready", "checks": checks})
 
 
 @app.get("/health/firestore")
 async def firestore_health():
-    """Deep health check — performs an actual Firestore read/write/delete cycle."""
     ok = chat_history.health_check()
-    status_code = 200 if ok else 503
-    return JSONResponse(
-        status_code=status_code,
-        content={
-            "status": "healthy" if ok else "unhealthy",
-            "service": "firestore",
-        },
-    )
+    return JSONResponse(status_code=200 if ok else 503, content={"status": "healthy" if ok else "unhealthy", "service": "firestore"})
+
 
 # ============================================================================
 # CHAT ENDPOINT
 # ============================================================================
 
 @app.post("/chat")
-async def chat(request: ChatRequest):
-    user_id = request.user_id
-    """
-    Main chat endpoint for farm advisory system.
+async def chat(
+    request: ChatRequest,
+    people_id: str = Depends(get_current_user),  # extracted from Bearer JWT
+):
+    """Main chat endpoint for farm advisory system."""
+    user_id = people_id
+    business_id = request.business_id
 
-    Features:
-    - User-driven assessment (starts with open question)
-    - Hybrid routing (keyword matching + LLM fallback)
-    - Specialized advisory nodes (livestock/crops/mixed)
-    - Livestock RAG integration
-    - Chat persistence to Firestore
-    - Task 5: input size cap, per-thread rate limiting, bounded storage
-    """
-    # --- Task 5: per-thread rate limit ---
+    # --- Rate limit ---
     allowed, req_count = _check_rate_limit(request.thread_id)
     if not allowed:
-        logger.warning(
-            f"[RateLimit] Thread {request.thread_id} exceeded limit "
-            f"({req_count}/{RATE_LIMIT_MAX_REQUESTS} in {RATE_LIMIT_WINDOW_SECONDS}s)"
-        )
-        return JSONResponse(
-            status_code=429,
-            content={
-                "status": "error",
-                "message": (
-                    f"Too many requests. Please wait before sending another message. "
-                    f"(limit: {RATE_LIMIT_MAX_REQUESTS} per {RATE_LIMIT_WINDOW_SECONDS}s)"
-                ),
-            },
-        )
+        logger.warning(f"[RateLimit] Thread {request.thread_id} exceeded limit ({req_count}/{RATE_LIMIT_MAX_REQUESTS} in {RATE_LIMIT_WINDOW_SECONDS}s)")
+        return JSONResponse(status_code=429, content={"status": "error", "message": f"Too many requests. Please wait before sending another message. (limit: {RATE_LIMIT_MAX_REQUESTS} per {RATE_LIMIT_WINDOW_SECONDS}s)"})
 
     turn_start = time.time()
     config = {"configurable": {"thread_id": request.thread_id}}
     last_n = get_last_n(request.thread_id, SHORT_TERM_N)
     short_term_history = _buffer_messages_to_history(last_n)
 
-    # Save user message to chat history (Firestore - long-term)
-    chat_history.save_message(
-        user_id=user_id,
-        thread_id=request.thread_id,
-        role="user",
-        content=request.user_input,
-    )
-    
-    # Add to message buffer (Redis - fast short-term context)
-    push_message(
-        thread_id=request.thread_id,
-        message={
-            "role": "user",
-            "content": request.user_input,
-        },
-    )
+    chat_history.save_message(user_id=user_id, thread_id=request.thread_id, role="user", content=request.user_input)
+    push_message(thread_id=request.thread_id, message={"role": "user", "content": request.user_input})
 
-    # Check if the thread is already waiting for an answer
-    # Handle Redis index creation errors gracefully (indexes are created on first write)
     try:
         state = graph.get_state(config)
     except Exception as state_error:
-        # If Redis indexes don't exist yet, they'll be created on first put during streaming
-        # For now, treat as new conversation (empty state)
         error_str = str(state_error)
         if "No such index" in error_str or "checkpoint" in error_str.lower():
             print(f"[API] [INFO] Redis indexes will be created on first write, treating as new conversation")
-            # Create a minimal state object to continue
             class EmptyState:
                 def __init__(self):
                     self.next = []
@@ -531,32 +422,25 @@ async def chat(request: ChatRequest):
             state = EmptyState()
         else:
             raise state_error
-    
-    # Early stage detection based on user input (for better UX)
+
     early_stage = "default"
     user_input_lower = request.user_input.lower()
-    weather_keywords = ["weather", "temperature", "forecast", "rain", "climate", "temperature"]
-    if any(kw in user_input_lower for kw in weather_keywords):
+    if any(kw in user_input_lower for kw in ["weather", "temperature", "forecast", "rain", "climate"]):
         early_stage = "weather"
     elif any(kw in user_input_lower for kw in ["cattle", "cow", "sheep", "goat", "pig", "chicken", "livestock", "animal", "breed"]):
         early_stage = "livestock"
     elif any(kw in user_input_lower for kw in ["crop", "plant", "wheat", "rice", "corn", "tomato", "guava", "orange"]):
         early_stage = "crops"
-    
+
     if state.next:
-        # Resume the existing conversation
         print(f"[API] Resuming conversation for thread {request.thread_id}")
         events = safe_graph_stream(Command(resume=request.user_input), config, stream_mode="values")
     else:
-        # Check if this is a follow-up question in a completed conversation
         existing_state = state.values if state.values else {}
         has_completed_conversation = existing_state.get("assessment_summary") and not state.next
-        
+
         if has_completed_conversation:
-            # This is a follow-up question - intelligently extract entities and preserve context
             print(f"[API] Follow-up question in thread {request.thread_id} - extracting entities and preserving context")
-            
-            # Use LLM to intelligently extract entities from follow-up input
             try:
                 entity_extractor = llm.with_structured_output(FollowUpEntityExtraction)
                 extraction_prompt = f"""Analyze this follow-up input from a farmer and extract entities:
@@ -570,11 +454,7 @@ User's new input: "{request.user_input}"
 
 Determine:
 1. Is this an answer to a previous question? (location, crop type, animal type, farm size, etc.)
-2. What entities are mentioned? Extract:
-   - Location (city, state, region like "Hayward, California", "San Jose", "North region")
-   - Crops/plants (e.g., "wheat", "tomato", "orange", "guava")
-   - Animals/livestock (e.g., "cattle", "chicken", "sheep")
-   - Farm size (e.g., "5 acres", "10 hectares")
+2. What entities are mentioned? Extract location, crops/plants, animals/livestock, farm size.
 3. Is this a new question or an answer?
 
 Examples:
@@ -584,29 +464,18 @@ Examples:
 - "how often should I water" → is_new_question: true, is_answer: false
 - "5 acres" → is_answer: true, entity_type: "farm_size", extracted_farm_size: "5 acres"
 """
-
                 extracted = entity_extractor.invoke(extraction_prompt)
                 print(f"[API] Entity extraction: is_answer={extracted.is_answer}, entity_type={extracted.entity_type}, is_new_question={extracted.is_new_question}")
-                
             except Exception as e:
                 print(f"[API] Entity extraction error: {e} - falling back to simple detection")
                 extracted = None
-            
-            # Keep conversation continuity instead of resetting into assessment mode.
+
             existing_history = short_term_history or (existing_state.get("history", []) if existing_state else [])
             new_history = (existing_history + [f"User: {request.user_input}"])[-SHORT_TERM_N:]
             parsed_soil_info = _extract_soil_info(request.user_input)
 
-            # Build update: preserve conversation state, clear response fields for regeneration.
-            update = {
-                "history": new_history,
-                "diagnosis": None,
-                "recommendations": [],
-                # Let routing recalculate type from current query/context.
-                "advisory_type": None,
-            }
-            
-            # Intelligently handle extracted entities
+            update = {"history": new_history, "diagnosis": None, "recommendations": [], "advisory_type": None}
+
             is_entity_only_answer = (
                 bool(extracted and extracted.is_answer)
                 and bool(extracted and not extracted.is_new_question)
@@ -614,97 +483,78 @@ Examples:
             )
 
             if is_entity_only_answer:
-                # This is an answer to a previous question - extract and set entities
                 print(f"[API] Processing answer: entity_type={extracted.entity_type}")
                 applied_entity_update = False
-                
                 if extracted.entity_type == "location" and extracted.extracted_location:
                     update["location"] = extracted.extracted_location
                     applied_entity_update = True
-                    print(f"[API] Extracted location: {extracted.extracted_location}")
                 elif extracted.entity_type == "crop" and extracted.extracted_crops:
                     existing_crops = existing_state.get("crops", [])
                     update["crops"] = existing_crops + [c for c in extracted.extracted_crops if c not in existing_crops]
                     applied_entity_update = True
-                    print(f"[API] Extracted crops: {extracted.extracted_crops}")
                 elif extracted.entity_type == "animal" and extracted.extracted_animals:
                     existing_crops = existing_state.get("crops", [])
                     update["crops"] = existing_crops + [a for a in extracted.extracted_animals if a not in existing_crops]
                     applied_entity_update = True
-                    print(f"[API] Extracted animals: {extracted.extracted_animals}")
                 elif extracted.entity_type == "farm_size" and extracted.extracted_farm_size:
                     update["farm_size"] = extracted.extracted_farm_size
                     applied_entity_update = True
-                    print(f"[API] Extracted farm size: {extracted.extracted_farm_size}")
-                
-                # Preserve existing context
                 if existing_state.get("crops") and not update.get("crops"):
                     update["crops"] = existing_state["crops"]
                 if existing_state.get("location") and not update.get("location"):
                     update["location"] = existing_state["location"]
                 if existing_state.get("current_issues"):
-                    # Keep only latest issue to reduce stale multi-turn noise.
                     update["current_issues"] = existing_state["current_issues"][-1:]
-
-                # If no concrete entity was extracted, keep this answer as new issue detail.
                 if not applied_entity_update:
                     issue_details = list(existing_state.get("current_issues", []))
                     detail = request.user_input.strip()
                     if detail and detail not in issue_details:
                         issue_details.append(detail)
                     update["current_issues"] = issue_details[-3:]
-                    print("[API] No concrete entity extracted; appended answer detail to current_issues")
             else:
-                # This is a new question - set as current issue
                 update["current_issues"] = [request.user_input]
-                
-                # Preserve existing context if available
                 if existing_state.get("crops"):
                     update["crops"] = existing_state["crops"]
                 if existing_state.get("location"):
                     update["location"] = existing_state["location"]
 
-            # Capture soil test metrics when user shares report values.
             if parsed_soil_info:
                 existing_soil_info = existing_state.get("soil_info")
                 merged_soil_info = dict(existing_soil_info) if isinstance(existing_soil_info, dict) else {}
                 merged_soil_info.update(parsed_soil_info)
                 update["soil_info"] = merged_soil_info
-                print(f"[API] Parsed soil info keys: {list(parsed_soil_info.keys())}")
 
-            # Keep assessment marked complete so follow-ups route directly to advisory.
             merged_issues = update.get("current_issues", existing_state.get("current_issues", []))
             merged_crops = update.get("crops", existing_state.get("crops", []))
             merged_location = update.get("location", existing_state.get("location"))
-            update["assessment_summary"] = _build_assessment_summary(
-                merged_issues,
-                merged_crops,
-                merged_location,
-            )
+            update["assessment_summary"] = _build_assessment_summary(merged_issues, merged_crops, merged_location)
 
             events = safe_graph_stream(update, config, stream_mode="values")
         else:
-            # Start a brand new conversation with user's first message
+            # New conversation — seed people_id and business_id into graph state
             print(f"[API] Starting new conversation for thread {request.thread_id}")
-            print(f"[API] First message: {request.user_input[:100]}...")
+            print(f"[API] people_id={people_id}, business_id={business_id}")
             initial_history = (short_term_history + [f"User: {request.user_input}"])[-SHORT_TERM_N:] if short_term_history else [f"User: {request.user_input}"]
-            events = safe_graph_stream({"history": initial_history}, config, stream_mode="values")
+            events = safe_graph_stream(
+                {
+                    "history": initial_history,
+                    "people_id": people_id,
+                    "business_id": business_id,
+                },
+                config,
+                stream_mode="values",
+            )
 
-    # Collect all events to ensure state is fully updated
     events_list = []
     for event in events:
         events_list.append(event)
         print(f"[API] Event keys: {list(event.keys())}")
 
-    # Get the latest state after streaming
-    # Handle Redis index creation errors gracefully (indexes should exist after streaming)
     try:
         final_state = graph.get_state(config)
     except Exception as state_error:
-        # If Redis indexes still don't exist, create a minimal state
         error_str = str(state_error)
         if "No such index" in error_str or "checkpoint" in error_str.lower():
-            print(f"[API] [WARN] Redis indexes not available, using empty state")
             class EmptyState:
                 def __init__(self):
                     self.next = []
@@ -713,17 +563,14 @@ Examples:
             final_state = EmptyState()
         else:
             raise state_error
+
     print(f"[API] Final state - Next nodes: {final_state.next}")
     print(f"[API] Final state - Has tasks: {len(final_state.tasks) if final_state.tasks else 0}")
-    
-    # Determine processing stage for UI feedback
+
     final_values = final_state.values if final_state.values else {}
-    
-    # Start with early detection, then refine based on actual state
     processing_stage = early_stage if early_stage != "default" else "assessment"
-    
+
     if final_state.next:
-        # Still processing - determine stage from next nodes (more accurate)
         next_nodes = list(final_state.next)
         if "assessment_node" in next_nodes:
             processing_stage = "assessment"
@@ -738,7 +585,6 @@ Examples:
         elif "mixed_advisory_node" in next_nodes:
             processing_stage = "mixed"
     else:
-        # Completed - use advisory_type to show final stage (most accurate)
         advisory_type = final_values.get("advisory_type", "unknown")
         if advisory_type == "weather":
             processing_stage = "weather"
@@ -749,130 +595,52 @@ Examples:
         elif advisory_type == "mixed":
             processing_stage = "mixed"
         elif early_stage != "default":
-            # Use early detection if advisory_type not set yet
             processing_stage = early_stage
         else:
-            # Check if we're in assessment phase
-            if final_values.get("assessment_summary"):
-                processing_stage = "assessment"
-            else:
-                processing_stage = "default"
+            processing_stage = "assessment" if final_values.get("assessment_summary") else "default"
 
     if final_state.next:
-        # We hit an interrupt! Send the UI schema
         print(f"[API] Interrupt detected - need user input")
         if final_state.tasks and final_state.tasks[0].interrupts:
             ui_value = final_state.tasks[0].interrupts[0].value
-
-            # Save the AI question to chat history (Firestore - long-term)
             latency_ms = int((time.time() - turn_start) * 1000)
             question_text = ui_value.get("question", "") if isinstance(ui_value, dict) else str(ui_value)
             chat_history.save_message(
-                user_id=user_id,
-                thread_id=request.thread_id,
-                role="assistant",
-                content=question_text,
-                metadata={
-                    "type": "quiz",
-                    "options": ui_value.get("options", []) if isinstance(ui_value, dict) else [],
-                    "latency_ms": latency_ms,
-                },
+                user_id=user_id, thread_id=request.thread_id, role="assistant", content=question_text,
+                metadata={"type": "quiz", "options": ui_value.get("options", []) if isinstance(ui_value, dict) else [], "latency_ms": latency_ms},
             )
-            
-            # Add to message buffer (Redis - fast short-term context)
-            push_message(
-                thread_id=request.thread_id,
-                message={
-                    "role": "assistant",
-                    "content": question_text,
-                    "metadata": {
-                        "type": "quiz",
-                        "options": ui_value.get("options", []) if isinstance(ui_value, dict) else [],
-                    },
-                },
-            )
-
-            return {
-                "status": "requires_input",
-                "ui": ui_value,
-                "processing_stage": processing_stage
-            }
+            push_message(thread_id=request.thread_id, message={"role": "assistant", "content": question_text, "metadata": {"type": "quiz", "options": ui_value.get("options", []) if isinstance(ui_value, dict) else []}})
+            return {"status": "requires_input", "ui": ui_value, "processing_stage": processing_stage}
         else:
-            print(f"[API] Warning: Next nodes exist but no interrupt found")
-            return {
-                "status": "error",
-                "message": "Graph in unexpected state - next nodes but no interrupt",
-                "processing_stage": processing_stage
-            }
+            return {"status": "error", "message": "Graph in unexpected state - next nodes but no interrupt", "processing_stage": processing_stage}
 
-    # Get diagnosis/advice from final state
     diagnosis = final_values.get("diagnosis", "")
     recommendations = final_values.get("recommendations", [])
     assessment_summary = final_values.get("assessment_summary", "")
     advisory_type = final_values.get("advisory_type", "unknown")
 
-    print(f"[API] Final values:")
-    print(f"  - assessment_summary: {assessment_summary[:100] if assessment_summary else 'None'}...")
-    print(f"  - advisory_type: {advisory_type}")
-    print(f"  - diagnosis: {diagnosis[:100] if diagnosis else 'None'}...")
-    print(f"  - diagnosis length: {len(diagnosis) if diagnosis else 0}")
-    print(f"  - diagnosis type: {type(diagnosis)}")
-    print(f"  - recommendations count: {len(recommendations)}")
-    print(f"  - processing_stage: {processing_stage}")
-    print(f"  - All final_values keys: {list(final_values.keys())}")
-    
-    # Debug: Check if diagnosis is empty string vs None
+    print(f"[API] Final values: advisory_type={advisory_type}, diagnosis_len={len(diagnosis) if diagnosis else 0}, recommendations={len(recommendations)}")
+
     if not diagnosis or (isinstance(diagnosis, str) and not diagnosis.strip()):
-        print(f"[API] WARNING: Diagnosis is empty or None!")
-        print(f"[API] Advisory type: {advisory_type}")
-        print(f"[API] Current issues: {final_values.get('current_issues', [])}")
-        print(f"[API] Location: {final_values.get('location', 'Not set')}")
-        
-        # For weather queries, provide a fallback message
         if advisory_type == "weather":
             diagnosis = "I'm processing your weather request. Please make sure you've provided a location (e.g., 'Hayward, California')."
-            print(f"[API] Using fallback weather message")
 
-    # Save the assistant's final response to chat history (Firestore - long-term)
     latency_ms = int((time.time() - turn_start) * 1000)
     chat_history.save_message(
-        user_id=user_id,
-        thread_id=request.thread_id,
-        role="assistant",
+        user_id=user_id, thread_id=request.thread_id, role="assistant",
         content=diagnosis if diagnosis else "No diagnosis generated",
-        metadata={
-            "advisory_type": advisory_type,
-            "recommendations": recommendations,
-            "latency_ms": latency_ms,
-        },
+        metadata={"advisory_type": advisory_type, "recommendations": recommendations, "latency_ms": latency_ms},
     )
+    push_message(thread_id=request.thread_id, message={"role": "assistant", "content": diagnosis if diagnosis else "No diagnosis generated", "metadata": {"advisory_type": advisory_type, "recommendations": recommendations}})
 
-    # Add to message buffer (Redis - fast short-term context)
-    push_message(
-        thread_id=request.thread_id,
-        message={
-            "role": "assistant",
-            "content": diagnosis if diagnosis else "No diagnosis generated",
-            "metadata": {"advisory_type": advisory_type, "recommendations": recommendations},
-        },
-    )
-
-    # Persist farm context and mark complete
     farm_context = {
         "location": final_values.get("location"),
         "crops": final_values.get("crops"),
         "farm_size": final_values.get("farm_size"),
         "assessment_summary": assessment_summary,
     }
+    chat_history.mark_complete(user_id=user_id, thread_id=request.thread_id, advisory_type=advisory_type, farm_context={k: v for k, v in farm_context.items() if v})
 
-    chat_history.mark_complete(
-        user_id=user_id,
-        thread_id=request.thread_id,
-        advisory_type=advisory_type,
-        farm_context={k: v for k, v in farm_context.items() if v},
-    )
-
-    # Response format unchanged for backward compatibility
     print(f"[API] Conversation complete for thread {request.thread_id}")
     return {
         "status": "complete",
@@ -887,52 +655,63 @@ Examples:
 # THREAD MANAGEMENT ENDPOINTS
 # ============================================================================
 
+@app.options("/threads")
+async def threads_options():
+    return JSONResponse(content={}, headers={
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    })
+
 @app.get("/threads")
 async def list_threads(
-    user_id: str = Query(...),
+    people_id: str = Depends(get_current_user),
     limit: int = Query(default=20, ge=1, le=100),
     cursor: Optional[str] = Query(default=None),
 ):
-    """List all chat threads for a user with cursor-based pagination."""
-    threads, next_cursor = chat_history.get_threads(user_id, limit=limit, cursor=cursor)
+    """List all chat threads for the authenticated user."""
+    threads, next_cursor = chat_history.get_threads(people_id, limit=limit, cursor=cursor)
     return {"threads": threads, "next_cursor": next_cursor}
 
 
 @app.get("/threads/{thread_id}/messages")
 async def get_thread_messages(
     thread_id: str,
-    user_id: str = Query(...),
+    people_id: str = Depends(get_current_user),
     limit: int = Query(default=50, ge=1, le=200),
     cursor: Optional[str] = Query(default=None),
 ):
-    """Get messages for a specific thread with cursor-based pagination."""
-    messages, next_cursor = chat_history.get_messages(
-        user_id, thread_id, limit=limit, cursor=cursor
-    )
+    """Get messages for a specific thread."""
+    messages, next_cursor = chat_history.get_messages(people_id, thread_id, limit=limit, cursor=cursor)
     if not messages and cursor is None:
         return JSONResponse(status_code=404, content={"error": "Thread not found"})
     return {"thread_id": thread_id, "messages": messages, "next_cursor": next_cursor}
 
 
 @app.delete("/threads/{thread_id}")
-async def delete_thread(thread_id: str, user_id: str = Query(...)):
-    """Delete a chat thread."""
-    success = chat_history.delete_thread(user_id, thread_id)
+async def delete_thread(
+    thread_id: str,
+    people_id: str = Depends(get_current_user),
+):
+    """Delete a chat thread belonging to the authenticated user."""
+    success = chat_history.delete_thread(people_id, thread_id)
     if not success:
         return JSONResponse(status_code=404, content={"error": "Thread not found"})
     return {"status": "deleted", "thread_id": thread_id}
+
 
 # ============================================================================
 # ANALYTICS ENDPOINT
 # ============================================================================
 
 @app.get("/analytics")
-async def get_analytics(user_id: str = Query(...)):
-    """Aggregate analytics for a user's chat sessions."""
-    data = chat_history.get_analytics(user_id)
+async def get_analytics(people_id: str = Depends(get_current_user)):
+    """Aggregate analytics for the authenticated user's chat sessions."""
+    data = chat_history.get_analytics(people_id)
     if not data:
         return {"status": "no_data", "message": "No analytics data available."}
     return data
+
 
 # ============================================================================
 # MAIN
@@ -942,5 +721,4 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", "8000"))
     print(f"[API] Starting Farm Advisory API on port {port}")
-    print(f"[API] Features: User-driven assessment + Hybrid routing + Livestock RAG + Chat persistence")
     uvicorn.run(app, host="0.0.0.0", port=port)
