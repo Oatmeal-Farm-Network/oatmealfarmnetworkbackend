@@ -160,16 +160,7 @@ def assessment_node(state: FarmState):
         if first_user_message and len(first_user_message) > 5:
             msg_lower = first_user_message.lower()
 
-            # FAST PRE-CHECK
-            gp = ["what is my","what's my","who am i","my people","my user","my id","my account","peopleid","people_id","userid","user_id","hello","hi ","hey ","good morning","thank you","thanks","how are you","who are you"]
-            if any(p in msg_lower for p in gp):
-                print(f"[Assessment] Pre-check match: fast-tracking general question")
-                return {
-                    "assessment_summary": f"General question: {first_user_message}",
-                    "current_issues": [first_user_message],
-                    "advisory_type": "mixed"
-                }
-
+            # Use LLM to intelligently classify the query and determine next steps
             print(f"[Assessment] Using LLM for smart query classification...")
 
             try:

@@ -3,7 +3,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 
 from models import FarmState
-from nodes import (
+from oatmealfarmnetworkbackend.saige.nodes import (
     assessment_node,
     routing_node,
     weather_advisory_node,

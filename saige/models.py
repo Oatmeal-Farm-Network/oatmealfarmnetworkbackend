@@ -11,6 +11,7 @@ class FarmState(TypedDict, total=False):
     people_id: Optional[str]
     business_id: Optional[str]
     """State for managing farm information and diagnostics"""
+    people_id: Optional[str]
     farm_name: Optional[str]
     location: Optional[str]
     farm_size: Optional[str]
