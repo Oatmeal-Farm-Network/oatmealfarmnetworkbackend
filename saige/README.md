@@ -1,416 +1,461 @@
-# AI Agricultural Assistant
+# Saige — AI Agricultural Advisory Assistant
 
-A conversational AI chatbot application that helps diagnose crop and plant issues through an interactive Q&A system. Built with LangGraph, FastAPI, Next.js, and Google Gemini AI.
+A conversational AI system that provides farm-specific advice across livestock, crops, weather, and mixed topics. Built with LangGraph, FastAPI, and Google Gemini AI, backed by Firestore RAG and Redis for short-term memory.
 
-## 📋 Table of Contents
+## Table of Contents
 
 - [Overview](#overview)
 - [Architecture](#architecture)
 - [Project Structure](#project-structure)
-- [Features](#features)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
+- [Graph & Node Design](#graph--node-design)
+- [RAG Collections](#rag-collections)
+- [Chat History & Message Buffer](#chat-history--message-buffer)
+- [API Reference](#api-reference)
 - [Configuration](#configuration)
+- [Prerequisites & Installation](#prerequisites--installation)
 - [Running the Application](#running-the-application)
-- [API Documentation](#api-documentation)
 - [Technologies Used](#technologies-used)
+- [Security Notes](#security-notes)
 
+---
 
-## 👋 New to this repository?
+## Overview
 
-Start with the newcomer guide: [`docs/NEWCOMER_GUIDE.md`](docs/NEWCOMER_GUIDE.md).
+Saige guides farmers through a structured diagnostic conversation:
 
-## 🎯 Overview
+1. **Assessment** — open-ended questions build a farm context (location, crops/animals, issues)
+2. **Routing** — hybrid keyword + LLM classifier picks the right advisory node
+3. **Advisory** — the selected node generates advice, optionally augmented by RAG knowledge and live weather data
 
-This application provides an intelligent agricultural assistant that:
-- Guides users through a structured diagnostic process
-- Asks targeted questions with multiple-choice options
-- Allows custom text input for detailed answers
-- Provides final diagnosis and recommendations based on collected information
-- Maintains conversation state across multiple interactions
+Supported advisory domains:
+- **Livestock** — breed recommendations, health, husbandry (RAG: `rag_livestock`)
+- **Crops / Plants** — disease, soil, agronomy (RAG: `rag_plant`)
+- **Weather** — current conditions and forecasts via Open-Meteo
+- **Bakasura** — product/service knowledge base (RAG: `rag_bakasura`)
+- **News** — agricultural news and market updates (RAG: `rag_news`)
+- **Mixed** — any query spanning multiple domains (uses all RAG collections)
 
-## 🏗️ Architecture
+---
 
-The application follows a three-tier architecture:
+## Architecture
 
 ```
-Frontend (Next.js/React) → Backend API (FastAPI) → LangGraph Workflow → Google Gemini AI
+Frontend (Next.js/React)
+        │
+        ▼
+FastAPI REST API  (api.py)
+        │
+        ├── Redis  ── short-term message buffer (last N messages)
+        │              rate limiter (per-thread INCR/EXPIRE)
+        │              LangGraph checkpoints (RedisSaver)
+        │
+        ├── Firestore ── chat history persistence (chat-history DB)
+        │                RAG knowledge collections (charlie DB)
+        │
+        └── LangGraph Workflow  (graph.py)
+                │
+                ├── assessment_node
+                ├── routing_node
+                ├── weather_advisory_node
+                ├── livestock_advisory_node
+                ├── crop_advisory_node
+                ├── mixed_advisory_node
+                ├── bakasura_advisory_node
+                └── news_advisory_node
+                        │
+                        └── Google Gemini AI  (llm.py)
 ```
 
-1. **Frontend**: React/Next.js UI with chat interface and quiz forms
-2. **API Layer**: FastAPI REST API handling HTTP requests
-3. **Business Logic**: LangGraph state machine managing conversation flow
-4. **AI Layer**: Google Gemini AI for question generation and diagnosis
+---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 saige/
-├── main.py                 # LangGraph workflow and business logic
-├── api.py                  # FastAPI REST API endpoints
-├── requirements.txt        # Python dependencies
-├── .env                    # Environment variables (create this)
-├── credentials/            # Google Cloud service account files (if using Vertex AI)
-│   └── *.json
-└── frontend/               # Next.js frontend application
-    ├── app/
-    │   ├── layout.tsx      # Root layout component
-    │   ├── page.tsx        # Main page component
-    │   └── globals.css     # Global styles
-    ├── components/
-    │   └── advisor.tsx     # Main chat/quiz component
-    ├── package.json        # Node.js dependencies
-    ├── next.config.ts      # Next.js configuration
-    └── tsconfig.json       # TypeScript configuration
+├── api.py                  # FastAPI app, endpoints, rate limiting, middleware
+├── graph.py                # LangGraph StateGraph construction and compilation
+├── nodes.py                # All node functions, routing logic, advisory engine
+├── models.py               # FarmState TypedDict and Pydantic models
+├── config.py               # Centralized env-var configuration and feature flags
+├── llm.py                  # Google Gemini LLM initialization
+├── rag.py                  # Firestore vector search (livestock, plant, bakasura, news)
+├── chat_history.py         # Firestore-backed conversation persistence
+├── message_buffer.py       # Redis short-term message buffer (last N messages)
+├── jwt_auth.py             # JWT Bearer token verification (FastAPI dependency)
+├── redis_client.py         # RedisClientManager (connection pooling, health checks)
+├── weather.py              # Open-Meteo weather service and LangChain tool wrapper
+├── database.py             # Azure SQL (pymssql) query helpers
+├── Data_Contract.py        # Pydantic data contracts for external integrations
+├── main.py                 # Application entry point / server startup
+├── sync_embeddings.py      # Script to sync embeddings into Firestore RAG collections
+├── seed_firestore.py       # Script to seed initial knowledge data into Firestore
+├── test_api_flow.py        # Integration tests for the full API flow
+├── test_main.py            # Unit tests for core logic
+└── test_redis.py           # Redis connectivity and buffer tests
 ```
 
-### File Descriptions
+---
 
-#### Backend Files
+## Graph & Node Design
 
-**`main.py`** - Core Business Logic & LangGraph Workflow
-- **Purpose**: Contains the LangGraph state machine that orchestrates the diagnostic conversation
-- **Key Components**:
-  - `initialize_llm()`: Configures Google Gemini AI (supports both Vertex AI and Developer API)
-  - `AdvisorState`: TypedDict defining conversation state (history, advice)
-  - `UI_Decision`: Pydantic model for structured LLM output (questions, options, advice)
-  - `advisor_node()`: Main node function that:
-    - Analyzes conversation history
-    - Generates questions with multiple-choice options
-    - Determines when to provide final diagnosis
-    - Manages conversation flow with interrupts
-  - `graph`: Compiled LangGraph state machine with checkpointing
+### State: `FarmState`
 
-**`api.py`** - REST API Design & Endpoints
-- **Purpose**: FastAPI application providing HTTP interface between frontend and backend
-- **Key Components**:
-  - `FastAPI` app instance with CORS middleware
-  - `ChatRequest`: Pydantic model for request validation
-  - `POST /chat` endpoint that:
-    - Handles new conversations and quiz responses
-    - Manages thread state with LangGraph checkpoints
-    - Returns quiz UI schemas or final advice
-    - Supports conversation resumption via thread_id
+| Field | Type | Purpose |
+|---|---|---|
+| `location` | `str` | Farmer's location (used for weather queries) |
+| `farm_size` | `str` | Farm area |
+| `crops` | `List[str]` | Crops or animals being raised |
+| `current_issues` | `List[str]` | Reported problems or goals |
+| `history` | `List[str]` | Conversation turns (`"User: ..."`, `"AI: ..."`) |
+| `assessment_summary` | `str` | Compact summary produced at assessment completion |
+| `advisory_type` | `str` | Final routed type: `weather`/`livestock`/`crops`/`mixed` |
+| `diagnosis` | `str` | Final advisory text |
+| `recommendations` | `List[str]` | Structured recommendations |
+| `weather_conditions` | `dict` | Fetched weather data |
+| `soil_info` | `dict` | Parsed soil test metrics |
 
-**`requirements.txt`** - Python Dependencies
-- Core frameworks: LangGraph, LangChain
-- Google AI integration: langchain-google-genai, google-auth
-- Web framework: FastAPI, Uvicorn
-- Utilities: Pydantic, python-dotenv
+### Graph Flow
 
-#### Frontend Files
-
-**`frontend/components/advisor.tsx`** - Main Chat Component
-- **Purpose**: React component implementing the chat UI with quiz forms
-- **Key Features**:
-  - Message bubbles (AI left, user right)
-  - Interactive quiz forms with radio buttons
-  - Custom text input for answers
-  - "Thinking" indicator during processing
-  - State management for conversation flow
-  - Unique thread_id generation per session
-
-**`frontend/app/page.tsx`** - Main Page
-- Simple wrapper that renders the Advisor component
-
-**`frontend/app/layout.tsx`** - Root Layout
-- Next.js root layout with fonts and metadata
-
-**`frontend/next.config.ts`** - Next.js Configuration
-- API proxy configuration (routes `/api/*` to FastAPI backend)
-- React compiler settings
-
-**`frontend/package.json`** - Node.js Dependencies
-- Next.js 16.1.5
-- React 19.2.3
-- TypeScript
-- Tailwind CSS
-
-## ✨ Features
-
-- **Interactive Quiz System**: Radio buttons + custom text input for flexible answers
-- **Conversation State Management**: Maintains context across multiple questions
-- **Smart Question Generation**: AI generates specific, relevant questions with descriptive options
-- **Adaptive Diagnosis**: Provides advice when sufficient information is collected
-- **Thinking Indicator**: Visual feedback during AI processing
-- **Dual Authentication**: Supports both Google Cloud Vertex AI and Gemini Developer API
-- **Cost-Effective**: Uses Gemini 2.5 Flash Lite model by default
-- **Responsive UI**: Dark-themed, modern chat interface
-
-## 📦 Prerequisites
-
-- **Python 3.11+**
-- **Node.js 18+** and npm
-- **Google Cloud Account** (for Vertex AI) OR **Google AI API Key** (for Developer API)
-
-## 🚀 Installation
-
-### 1. Clone the Repository
-
-```bash
-git clone <repository-url>
-cd saige
+```
+START → assessment_node ──(complete?)──▶ routing_node
+             ▲                                │
+             │ (more questions)               ▼
+             └──────────────────── weather / livestock / crop /
+                                   mixed / bakasura / news → END
 ```
 
-### 2. Backend Setup
+- `assessment_node` uses LLM-structured output (`AssessmentDecision`) to decide whether to ask another question or mark the assessment complete. It respects `MAX_QUESTIONS = 8`.
+- `routing_node` classifies the `assessment_summary` using keyword scoring + LLM fallback (`QueryClassification`) to select one of six advisory routes.
+- Each advisory node fetches relevant RAG context and/or weather data, then generates a final response via Gemini.
+
+---
+
+## RAG Collections
+
+All RAG retrieval uses Firestore vector search with `text-embedding-004` embeddings (top-K = 10).
+
+| Collection constant | Firestore collection | Used by |
+|---|---|---|
+| `LIVESTOCK_KNOWLEDGE_COLLECTION` | `livestock_knowledge` | `livestock_advisory_node` |
+| `PLANT_KNOWLEDGE_COLLECTION` | `plant_knowledge` | `crop_advisory_node` |
+| `BAKASURA_DOCS_COLLECTION` | `bakasura-docs` | `bakasura_advisory_node` |
+| `NEWS_ARTICLES_COLLECTION` | `news_articles` | `news_advisory_node` |
+
+`mixed_advisory_node` queries **all three** advisory collections (`livestock_knowledge`, `plant_knowledge`, `bakasura-docs`).
+
+RAG is enabled only when `FIRESTORE_AVAILABLE` and the full RAG dependency stack (pymssql, VertexAI embeddings) is installed. Both degrade gracefully when unavailable.
+
+---
+
+## Chat History & Message Buffer
+
+### Firestore Chat History (`chat_history.py`)
+
+Persists every conversation to the `chat-history` Firestore database under:
+
+```
+threads/{thread_id}               ← thread metadata (user_id, status, preview, …)
+  └── messages/{message_id}       ← individual messages (role, content, ts, metadata)
+```
+
+Key operations:
+- `save_message()` — upserts thread doc, writes message subcollection entry
+- `mark_complete()` — sets `status: complete`, records `advisory_type` and `farm_context`
+- `get_threads()` / `get_messages()` — paginated reads (cursor-based)
+- `get_analytics()` — aggregate stats (completion rate, type distribution, response latency)
+- `delete_thread()` — batch-deletes messages then the thread doc
+
+### Redis Message Buffer (`message_buffer.py`)
+
+Keeps the last `SHORT_TERM_N` (default 20) messages per thread in Redis for fast in-context history injection. TTL defaults to 24 hours (`SHORT_TERM_TTL_SECONDS`).
+
+Key format: `thread:{thread_id}:last_messages`
+
+---
+
+## API Reference
+
+Base URL: `http://localhost:8000`
+
+### Authentication
+
+All non-health endpoints require a valid JWT in the `Authorization` header:
+
+```
+Authorization: Bearer <token>
+```
+
+Tokens are issued by the Oatmeal Farm Network auth backend and verified against `SECRET_KEY` using HS256. The `sub` claim is used as the `user_id`. A missing, expired, or invalid token returns `401`.
+
+### `POST /chat`
+
+Main advisory endpoint. Requires JWT.
+
+**Request:**
+```json
+{
+  "user_input": "my cattle have been losing weight",
+  "thread_id": "thread_abc123"
+}
+```
+
+**Response — assessment question:**
+```json
+{
+  "status": "requires_input",
+  "ui": {
+    "type": "quiz",
+    "question": "What type of cattle are you raising?",
+    "options": ["Beef cattle", "Dairy cattle", "Mixed herd", "Not sure"]
+  }
+}
+```
+
+**Response — advisory complete:**
+```json
+{
+  "status": "complete",
+  "advice": "Based on the symptoms described, your cattle may be experiencing …",
+  "advisory_type": "livestock"
+}
+```
+
+**Rate limiting:** 20 requests per 60-second window per `thread_id` (Redis-backed, fail-open).
+
+### `GET /`
+
+Health check. Returns API version and feature list.
+
+### `GET /health`
+
+Shallow liveness probe.
+
+### `GET /health/redis`
+
+Redis connectivity check. Returns latency and connection mode.
+- `200 disabled` — Redis off by config
+- `200 healthy` — reachable
+- `503 unhealthy` — enabled but unreachable
+
+### `GET /health/firestore`
+
+Deep Firestore health check (write/read/delete cycle).
+
+### `GET /ready`
+
+Readiness probe. Checks graph, Redis, and Firestore. Returns `503` if any critical service is down.
+
+### `GET /threads` *(if enabled)*
+
+List conversation threads for the authenticated user (paginated). Requires JWT.
+
+### `GET /threads/{thread_id}/messages` *(if enabled)*
+
+Fetch messages for a thread (paginated). Requires JWT.
+
+### `DELETE /threads/{thread_id}` *(if enabled)*
+
+Delete a thread and all its messages. Requires JWT.
+
+### `GET /analytics` *(if enabled)*
+
+Aggregate conversation stats for the authenticated user. Requires JWT.
+
+---
+
+## Configuration
+
+### Environment Variables
+
+Create a `.env` file in the `saige/` directory (or project root):
+
+```env
+# --- Authentication ---
+SECRET_KEY=your_jwt_secret_key               # HS256 signing secret (required)
+
+# --- GCP / Gemini ---
+GOOGLE_API_KEY=your_gemini_api_key           # Developer API (simplest)
+GEMINI_MODEL=gemini-2.5-flash-lite
+
+# --- OR Vertex AI ---
+GOOGLE_CLOUD_PROJECT=your-gcp-project
+GOOGLE_CLOUD_LOCATION=us-central1
+GOOGLE_APPLICATION_CREDENTIALS=./credentials/service-account.json
+
+# --- Firestore ---
+FIRESTORE_DATABASE=charlie                   # RAG knowledge database
+CHAT_HISTORY_DATABASE=chat-history           # Conversation persistence database
+
+# --- Redis ---
+REDIS_ENABLED=true
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_PASSWORD=                              # Leave blank for no auth
+REDIS_DB=0
+REDIS_SSL=false
+# Or use a full URL (takes precedence):
+# REDIS_URL=redis://localhost:6379/0
+
+# --- Azure SQL (optional, for database.py) ---
+DB_HOST=
+DB_PORT=1433
+DB_USER=
+DB_PASSWORD=
+DB_NAME=
+
+# --- API ---
+FRONTEND_URL=http://localhost:3000
+ALLOW_ALL_ORIGINS=false
+
+# --- Safety controls ---
+MAX_MESSAGE_CHARS=4000
+MAX_STORED_CONTENT_CHARS=2000
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_MAX_REQUESTS=20
+RATE_LIMIT_WINDOW_SECONDS=60
+
+# --- Tuning ---
+SHORT_TERM_N=20                              # Last N messages kept in Redis buffer
+SHORT_TERM_TTL_SECONDS=86400                 # 24h default
+SYNC_INTERVAL_HOURS=24
+```
+
+### Full Variable Reference
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SECRET_KEY` | — | HS256 JWT signing secret (required for all protected endpoints) |
+| `GOOGLE_API_KEY` | — | Gemini Developer API key |
+| `GEMINI_MODEL` | `gemini-2.5-flash-lite` | LLM model (Developer API) |
+| `GOOGLE_CLOUD_PROJECT` | — | GCP project (Vertex AI) |
+| `GOOGLE_CLOUD_LOCATION` | `us-central1` | GCP region |
+| `GOOGLE_APPLICATION_CREDENTIALS` | — | Service account JSON path |
+| `FIRESTORE_DATABASE` | `charlie` | RAG knowledge Firestore DB |
+| `CHAT_HISTORY_DATABASE` | `chat-history` | Chat persistence Firestore DB |
+| `REDIS_ENABLED` | `true` | Enable/disable Redis entirely |
+| `REDIS_URL` | — | Full Redis URL (overrides host/port) |
+| `REDIS_HOST` | `localhost` | Redis host |
+| `REDIS_PORT` | `6379` | Redis port |
+| `REDIS_PASSWORD` | — | Redis auth password |
+| `REDIS_SSL` | `false` | Enable TLS for Redis |
+| `REDIS_SSL_CERT_REQS` | `required` | TLS cert policy (`required`/`optional`/`none`) |
+| `SHORT_TERM_N` | `20` | Messages kept in Redis buffer per thread |
+| `SHORT_TERM_TTL_SECONDS` | `86400` | Buffer TTL in seconds |
+| `MAX_MESSAGE_CHARS` | `4000` | Max chars per user message |
+| `RATE_LIMIT_MAX_REQUESTS` | `20` | Rate limit — max requests per window |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate limit — window size in seconds |
+| `FRONTEND_URL` | `http://localhost:3000` | Allowed CORS origin |
+| `ALLOW_ALL_ORIGINS` | `false` | Allow all CORS origins |
+
+---
+
+## Prerequisites & Installation
+
+### Prerequisites
+
+- Python 3.11+
+- Redis 7+ (or GCP Memorystore)
+- Google Cloud project with Firestore and Vertex AI enabled (for RAG)
+- Node.js 18+ (for the frontend)
+
+### Backend Setup
 
 ```bash
-# Create virtual environment
-python -m venv venv
-
-# Activate virtual environment
-# On Windows:
-venv\Scripts\activate
-# On macOS/Linux:
-source venv/bin/activate
-
-# Install Python dependencies
+# From the repo root
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+
+# Copy and fill in your env vars
+cp .env.example .env
 ```
 
-### 3. Frontend Setup
+### Frontend Setup
 
 ```bash
 cd frontend
 npm install
 ```
 
-## ⚙️ Configuration
+---
 
-### Environment Variables
+## Running the Application
 
-Create a `.env` file in the root directory with the following variables:
-
-#### Option 1: Gemini Developer API (Simplest)
-
-```env
-GOOGLE_API_KEY=your_api_key_here
-GEMINI_MODEL=gemini-2.5-flash-lite
-```
-
-Get your API key from: https://aistudio.google.com/app/apikey
-
-#### Option 2: Vertex AI with Service Account
-
-```env
-GOOGLE_CLOUD_PROJECT=your-project-id
-GOOGLE_CLOUD_LOCATION=us-central1
-GOOGLE_APPLICATION_CREDENTIALS=./credentials/your-service-account.json
-VERTEX_AI_MODEL=gemini-2.5-flash-lite
-```
-
-**Setting up Vertex AI:**
-1. Create a service account in Google Cloud Console
-2. Download the JSON key file
-3. Place it in the `credentials/` directory
-4. Enable Vertex AI API in your project
-
-#### Option 3: Vertex AI with Application Default Credentials
-
-```env
-GOOGLE_CLOUD_PROJECT=your-project-id
-GOOGLE_CLOUD_LOCATION=us-central1
-GOOGLE_GENAI_USE_VERTEXAI=true
-```
-
-Then run: `gcloud auth application-default login`
-
-### Environment Variable Reference
-
-| Variable | Purpose | Required | Default |
-|----------|---------|----------|---------|
-| `GOOGLE_API_KEY` | Gemini Developer API key | Yes* | - |
-| `GEMINI_API_KEY` | Alternative API key name | Yes* | - |
-| `GEMINI_MODEL` | Model for Developer API | No | `gemini-2.5-flash-lite` |
-| `GOOGLE_CLOUD_PROJECT` | GCP project ID (Vertex AI) | Yes** | - |
-| `GOOGLE_CLOUD_LOCATION` | GCP region | No | `us-central1` |
-| `GOOGLE_APPLICATION_CREDENTIALS` | Service account JSON path | No | - |
-| `GOOGLE_GENAI_USE_VERTEXAI` | Force Vertex AI mode | No | `false` |
-| `VERTEX_AI_MODEL` | Model for Vertex AI | No | `gemini-2.5-flash-lite` |
-
-*Required if using Gemini Developer API  
-**Required if using Vertex AI
-
-## 🏃 Running the Application
-
-### 1. Start the Backend Server
+### Backend
 
 ```bash
-# Make sure you're in the root directory with .env file
+# From the saige/ directory
 uvicorn api:app --reload --port 8000
 ```
 
-The API will be available at `http://localhost:8000`
+API available at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`.
 
-### 2. Start the Frontend Server
+### Frontend
 
 ```bash
-# In a new terminal, navigate to frontend directory
 cd frontend
 npm run dev
 ```
 
-The frontend will be available at `http://localhost:3000`
+Frontend available at `http://localhost:3000`.
 
-### 3. Access the Application
-
-Open your browser and navigate to: `http://localhost:3000`
-
-## 📡 API Documentation
-
-### Endpoint: `POST /chat`
-
-**Request Body:**
-```json
-{
-  "user_input": "my maize has yellow leaves",
-  "thread_id": "thread_1234567890_abc123"
-}
-```
-
-**Response - Quiz Required:**
-```json
-{
-  "status": "requires_input",
-  "ui": {
-    "type": "quiz",
-    "question": "Can you tell me more about the yellowing?",
-    "options": [
-      "Older/lower leaves are yellowing first",
-      "Newer/upper leaves are yellowing first",
-      "All leaves are uniformly yellowing",
-      "Not sure/Other"
-    ]
-  }
-}
-```
-
-**Response - Diagnosis Complete:**
-```json
-{
-  "status": "complete",
-  "advice": "Based on the symptoms you described, this appears to be nitrogen deficiency..."
-}
-```
-
-### API Flow
-
-1. **New Conversation**: Frontend sends initial user message with unique `thread_id`
-2. **Quiz Response**: Frontend sends selected option or custom text with same `thread_id`
-3. **State Management**: Backend uses `thread_id` to maintain conversation state
-4. **Interrupts**: LangGraph pauses execution when question is needed, resumes with user answer
-5. **Completion**: When enough info is collected, final advice is returned
-
-## 🛠️ Technologies Used
-
-### Backend
-- **LangGraph** (0.2.0+): State machine for conversation orchestration
-- **LangChain** (0.3.0+): LLM integration framework
-- **FastAPI**: Modern Python web framework
-- **Uvicorn**: ASGI server
-- **Pydantic**: Data validation
-- **python-dotenv**: Environment variable management
-
-### AI/ML
-- **langchain-google-genai**: Google Gemini AI integration
-- **google-auth**: Google Cloud authentication
-- **Google Gemini 2.5 Flash Lite**: Cost-effective AI model
-
-### Frontend
-- **Next.js 16.1.5**: React framework
-- **React 19.2.3**: UI library
-- **TypeScript**: Type safety
-- **Tailwind CSS 4**: Styling
-
-## 🔧 Development
-
-### Project Workflow
-
-1. **User sends message** → `frontend/components/advisor.tsx` → `POST /chat`
-2. **API receives request** → `api.py` → checks thread state
-3. **LangGraph processes** → `main.py` → `advisor_node()` function
-4. **AI generates response** → Google Gemini → structured output
-5. **State updated** → Checkpoint saved → Response sent to frontend
-6. **UI updates** → Quiz form or advice displayed
-
-### Key Design Patterns
-
-- **State Machine**: LangGraph manages conversation flow with interrupts
-- **Checkpointing**: Conversation state persisted per thread_id
-- **Structured Output**: Pydantic models ensure consistent AI responses
-- **RESTful API**: Clean separation between frontend and backend
-- **Component-based UI**: React components for modularity
-
-## 📝 Notes
-
-- Maximum 10 questions per conversation (safety limit)
-- Questions are generated dynamically based on conversation history
-- Model automatically decides when sufficient information is collected
-- Supports both free-text and multiple-choice answers
-- Each browser session gets a unique thread_id
-
-## 🔒 Security & Git Configuration
-
-### Protected Files
-
-The `.gitignore` file is configured to prevent sensitive files from being committed to Git:
-
-**Excluded from Git:**
-- ✅ `.env` files (contains API keys)
-- ✅ `credentials/` directory (service account JSON files)
-- ✅ `*.json` files (except package.json, tsconfig.json)
-- ✅ Virtual environments (`venv/`, `char_lg/`, etc.)
-- ✅ `__pycache__/` and Python cache files
-- ✅ `node_modules/`
-- ✅ Build artifacts and temporary files
-
-**Before pushing to GitHub:**
-1. Ensure `.env` file exists and is not tracked by Git
-2. Verify `credentials/` directory is excluded
-3. Check that no API keys or secrets are in committed files
-4. Review `git status` to confirm sensitive files are ignored
-
-### Creating Environment File
-
-After cloning, create a `.env` file in the root directory:
+### Utility Scripts
 
 ```bash
-cp .env.example .env  # If .env.example exists
-# Or create manually with your API keys
+# Seed initial knowledge data into Firestore
+python seed_firestore.py
+
+# Sync/refresh embeddings in RAG collections
+python sync_embeddings.py
 ```
 
+---
+
+## Technologies Used
+
+| Layer | Technology |
+|---|---|
+| LLM | Google Gemini 2.5 Flash Lite (via `langchain-google-genai` or Vertex AI) |
+| Orchestration | LangGraph (StateGraph, interrupts, checkpointing) |
+| API | FastAPI 0.100+ / Uvicorn |
+| Vector search | Firestore vector search + `text-embedding-004` |
+| Short-term memory | Redis (message buffer + LangGraph RedisSaver checkpoints) |
+| Long-term persistence | Google Cloud Firestore |
+| Weather data | Open-Meteo (via `requests`) |
+| Database | Azure SQL / pymssql |
+| Authentication | `python-jose` (JWT HS256 Bearer tokens) |
+| Validation | Pydantic v2 |
+| Frontend | Next.js, React 19, TypeScript, Tailwind CSS |
+
+---
+
+## Security Notes
+
 **Never commit:**
-- API keys
-- Service account JSON files
-- Environment variables with secrets
-- Personal credentials
+- `.env` files (API keys, database credentials)
+- `credentials/` directory (GCP service account JSON files)
+- Any file containing secrets or tokens
 
-## 🐛 Troubleshooting
+The `.gitignore` excludes `.env`, `credentials/`, virtual environments, `__pycache__`, and `node_modules`.
 
-### Backend Issues
+**Production checklist:**
+- Set a strong, randomly generated `SECRET_KEY` (minimum 32 characters)
+- Set `ALLOW_ALL_ORIGINS=false` and configure `FRONTEND_URL` explicitly
+- Enable `REDIS_SSL=true` with `REDIS_SSL_CERT_REQS=required` when using managed Redis
+- Rotate API keys, JWT secrets, and service account credentials periodically
+- Review `git status` before pushing to confirm no secrets are staged
 
-**Error: "GOOGLE_API_KEY environment variable is not set"**
-- Solution: Create `.env` file with `GOOGLE_API_KEY=your_key`
+---
 
-**Error: "Model not found" (Vertex AI)**
-- Solution: Enable Vertex AI API in Google Cloud Console
+## Troubleshooting
 
-**Error: "401 UNAUTHENTICATED"**
-- Solution: Verify API key or service account credentials
-
-### Frontend Issues
-
-**CORS errors**
-- Solution: Ensure backend is running on port 8000 and frontend on 3000
-
-**API not responding**
-- Solution: Check `next.config.ts` proxy configuration matches backend URL
-
-## 📄 License
-
-[Add your license here]
-
-## 👥 Contributors
-
-[Add contributors here]
-
+| Error | Solution |
+|---|---|
+| `401 Invalid or expired token` | Ensure a valid JWT is sent in the `Authorization: Bearer <token>` header |
+| `500 JWT_SECRET is not configured` | Set `SECRET_KEY` in your `.env` file |
+| `GOOGLE_API_KEY not set` | Create `.env` with `GOOGLE_API_KEY=...` |
+| `RAG disabled (requires Firestore)` | Install `google-cloud-firestore` and set `GOOGLE_CLOUD_PROJECT` |
+| `Redis checkpoint indexes missing` | API falls back to `MemorySaver` automatically; restart Redis and re-run |
+| `401 UNAUTHENTICATED` | Verify API key or service account credentials file path |
+| CORS errors | Ensure backend is on port 8000 and `FRONTEND_URL` matches |
+| `No such index` in Redis logs | Redis checkpoint index not initialized; the fallback handler in `api.py` covers this automatically |
