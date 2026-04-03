@@ -5,7 +5,7 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db
+from database import get_db, engine
 from auth import get_current_user
 from pydantic import BaseModel
 from typing import Optional, List
@@ -14,6 +14,40 @@ from datetime import date
 from image_service import ensure_images_for_catalog
 
 marketplace_router = APIRouter()
+
+# ── Auto-create MarketplaceProducts table ────────────────────────────────────
+with engine.begin() as _conn:
+    _conn.execute(text("""
+        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='MarketplaceProducts')
+        BEGIN
+            CREATE TABLE MarketplaceProducts (
+                ProductID          INT IDENTITY(1,1) PRIMARY KEY,
+                BusinessID         INT NOT NULL,
+                Title              VARCHAR(500) NOT NULL,
+                Description        TEXT,
+                CategoryName       VARCHAR(200),
+                UnitPrice          DECIMAL(10,2) NOT NULL DEFAULT 0,
+                WholesalePrice     DECIMAL(10,2),
+                UnitLabel          VARCHAR(50) DEFAULT 'each',
+                QuantityAvailable  DECIMAL(10,2) DEFAULT 0,
+                MinOrderQuantity   DECIMAL(10,2) DEFAULT 1,
+                ImageURL           VARCHAR(1000),
+                Tags               VARCHAR(500),
+                IsActive           BIT DEFAULT 1,
+                IsFeatured         BIT DEFAULT 0,
+                IsOrganic          BIT DEFAULT 0,
+                Weight             DECIMAL(10,2),
+                WeightUnit         VARCHAR(20),
+                Color              VARCHAR(200),
+                Size               VARCHAR(200),
+                Material           VARCHAR(200),
+                SKU                VARCHAR(100),
+                DeliveryOptions    VARCHAR(200) DEFAULT 'pickup',
+                CreatedAt          DATETIME DEFAULT GETDATE(),
+                UpdatedAt          DATETIME DEFAULT GETDATE()
+            )
+        END
+    """))
 
    
 # ─────────────────────────────────────────────
@@ -217,6 +251,48 @@ def get_catalog(
             m["IsFeatured"]  = False
             results.append(m)
 
+    # ── PRODUCTS (physical goods — SFProducts) ───────────────────────────────
+    if product_type in (None, "all", "product"):
+        where_p = [
+            "pr.Publishproduct = 1",
+            "pr.ProdForSale = 1",
+            "pr.ProdQuantityAvailable > 0",
+        ]
+        params_p = {}
+        if search_val:
+            where_p.append("(pr.prodName LIKE :search OR pr.prodShortDescription LIKE :search OR sc.CatName LIKE :search)")
+            params_p["search"] = search_val
+        rows = db.execute(text(f"""
+            SELECT pr.ProdID AS SourceID, 'product' AS ProductType, pr.BusinessID,
+                   NULL AS IngredientID, pr.prodName AS Title,
+                   pr.prodShortDescription AS Description,
+                   sc.CatName AS CategoryName,
+                   pr.prodPrice AS UnitPrice, pr.SalePrice AS WholesalePrice,
+                   'each' AS UnitLabel,
+                   CAST(pr.ProdQuantityAvailable AS DECIMAL(10,2)) AS QuantityAvailable,
+                   0 AS IsOrganic, 1 AS IsLocal, NULL AS AvailableDate, NULL AS ExpirationDate,
+                   COALESCE(pp.ProductImage1, pr.prodImageSmallPath) AS ImageURL,
+                   b.BusinessName AS SellerName,
+                   a.AddressCity AS SellerCity, a.AddressState AS SellerState,
+                   pr.prodSaleIsActive AS IsFeatured
+            FROM SFProducts pr
+            JOIN Business b ON pr.BusinessID = b.BusinessID
+            LEFT JOIN Address a ON b.AddressID = a.AddressID
+            LEFT JOIN productsphotos pp ON pp.ID = pr.ProdID
+            LEFT JOIN sfcategories sc ON sc.CatID = pr.prodCategoryId
+            WHERE {" AND ".join(where_p)}
+        """), params_p).fetchall()
+        for r in rows:
+            m = dict(r._mapping)
+            m["ListingID"]         = f"G{m['SourceID']}"
+            m["UnitPrice"]         = float(m["UnitPrice"]) if m["UnitPrice"] else 0.0
+            m["WholesalePrice"]    = float(m["WholesalePrice"]) if m["WholesalePrice"] else None
+            m["QuantityAvailable"] = float(m["QuantityAvailable"]) if m["QuantityAvailable"] else 0.0
+            m["IsOrganic"]         = False
+            m["IsLocal"]           = True
+            m["IsFeatured"]        = bool(m["IsFeatured"])
+            results.append(m)
+
     # ── Sort combined results ─────────────────────────────────────────────────
     if sort == "price_asc":
         results.sort(key=lambda x: x["UnitPrice"])
@@ -302,6 +378,23 @@ def get_listing(listing_id: str, db: Session = Depends(get_db)):
             WHERE f.ProcessedFoodID = :sid AND f.ShowProcessedFood = 1
         """), {"sid": source_id}).fetchone()
 
+    elif prefix == "G":
+        row = db.execute(text("""
+            SELECT pr.ProdID AS SourceID, 'product' AS ProductType, pr.BusinessID,
+                   pr.prodName AS Title, pr.prodDescription AS Description,
+                   pr.prodPrice AS UnitPrice, pr.SalePrice AS WholesalePrice,
+                   'each' AS UnitLabel,
+                   CAST(pr.ProdQuantityAvailable AS DECIMAL(10,2)) AS QuantityAvailable,
+                   0 AS IsOrganic, 1 AS IsLocal, NULL AS AvailableDate, NULL AS ExpirationDate,
+                   COALESCE(pp.ProductImage1, pr.prodImageSmallPath) AS ImageURL,
+                   b.BusinessName AS SellerName,
+                   a.AddressCity AS SellerCity, a.AddressState AS SellerState
+            FROM SFProducts pr
+            JOIN Business b ON pr.BusinessID = b.BusinessID
+            LEFT JOIN Address a ON b.AddressID = a.AddressID
+            LEFT JOIN productsphotos pp ON pp.ID = pr.ProdID
+            WHERE pr.ProdID = :sid AND pr.Publishproduct = 1
+        """), {"sid": source_id}).fetchone()
     else:
         raise HTTPException(400, "Invalid listing type prefix")
 
@@ -375,6 +468,17 @@ def place_order(req: PlaceOrderRequest, db: Session = Depends(get_db)):
                 JOIN Business b ON f.BusinessID = b.BusinessID
                 JOIN People pe ON b.Contact1PeopleID = pe.PeopleID
                 WHERE f.ProcessedFoodID = :sid AND f.ShowProcessedFood = 1
+            """), {"sid": source_id}).fetchone()
+        elif prefix == "G":
+            listing = db.execute(text("""
+                SELECT pr.ProdID AS ListingID, pr.BusinessID, pr.prodName AS Title,
+                       'product' AS ProductType, pr.prodPrice AS UnitPrice,
+                       CAST(pr.ProdQuantityAvailable AS DECIMAL(10,2)) AS QuantityAvailable,
+                       b.BusinessName AS SellerName, pe.PeopleEmail AS SellerEmail
+                FROM SFProducts pr
+                JOIN Business b ON pr.BusinessID = b.BusinessID
+                JOIN People pe ON b.Contact1PeopleID = pe.PeopleID
+                WHERE pr.ProdID = :sid AND pr.Publishproduct = 1 AND pr.ProdForSale = 1
             """), {"sid": source_id}).fetchone()
         else:
             raise HTTPException(400, f"Invalid listing ID: {item.ListingID}")
@@ -488,6 +592,9 @@ def place_order(req: PlaceOrderRequest, db: Session = Depends(get_db)):
         elif oi["prefix"] == "F":
             db.execute(text("UPDATE ProcessedFood SET Quantity = Quantity - :qty WHERE ProcessedFoodID = :sid"),
                        {"qty": oi["quantity"], "sid": oi["source_id"]})
+        elif oi["prefix"] == "G":
+            db.execute(text("UPDATE SFProducts SET ProdQuantityAvailable = ProdQuantityAvailable - :qty WHERE ProdID = :sid"),
+                       {"qty": oi["quantity"], "sid": oi["source_id"]})
 
     db.commit()
 
@@ -552,6 +659,13 @@ def get_order(order_id: int, db: Session = Depends(get_db)):
             elif prefix == "F":
                 img = db.execute(text("""
                     SELECT ImageURL FROM ProcessedFood WHERE ProcessedFoodID = :sid
+                """), {"sid": source_id}).fetchone()
+                image_url = img[0] if img else None
+            elif prefix == "G":
+                img = db.execute(text("""
+                    SELECT COALESCE(pp.ProductImage1, pr.prodImageSmallPath) AS ImageURL
+                    FROM SFProducts pr LEFT JOIN productsphotos pp ON pp.ID = pr.ProdID
+                    WHERE pr.ProdID = :sid
                 """), {"sid": source_id}).fetchone()
                 image_url = img[0] if img else None
         except Exception:
@@ -644,6 +758,9 @@ def seller_item_action(order_item_id: int, req: SellerActionRequest, db: Session
                        {"qty": item.Quantity, "sid": source_id})
         elif prefix == "F":
             db.execute(text("UPDATE ProcessedFood SET Quantity = Quantity + :qty WHERE ProcessedFoodID = :sid"),
+                       {"qty": item.Quantity, "sid": source_id})
+        elif prefix == "G":
+            db.execute(text("UPDATE SFProducts SET ProdQuantityAvailable = ProdQuantityAvailable + :qty WHERE ProdID = :sid"),
                        {"qty": item.Quantity, "sid": source_id})
 
     db.commit()
@@ -752,6 +869,27 @@ def get_seller_listings(business_id: int, db: Session = Depends(get_db)):
         m["IsFeatured"] = False
         results.append(m)
 
+    products = db.execute(text("""
+        SELECT pr.ProductID AS SourceID, 'product' AS ProductType,
+               pr.Title, pr.UnitPrice, pr.WholesalePrice, pr.UnitLabel,
+               pr.QuantityAvailable, pr.IsOrganic, pr.IsActive,
+               pr.CategoryName, NULL AS ExpirationDate, NULL AS AvailableDate
+        FROM MarketplaceProducts pr
+        WHERE pr.BusinessID = :bid
+        ORDER BY pr.ProductID DESC
+    """), {"bid": business_id}).fetchall()
+    for r in products:
+        m = dict(r._mapping)
+        m["ListingID"]         = f"G{m['SourceID']}"
+        m["UnitPrice"]         = float(m["UnitPrice"]) if m["UnitPrice"] else 0.0
+        m["WholesalePrice"]    = float(m["WholesalePrice"]) if m["WholesalePrice"] else None
+        m["QuantityAvailable"] = float(m["QuantityAvailable"]) if m["QuantityAvailable"] else 0.0
+        m["IsOrganic"]         = bool(m["IsOrganic"])
+        m["IsLocal"]           = True
+        m["IsActive"]          = bool(m["IsActive"])
+        m["IsFeatured"]        = False
+        results.append(m)
+
     return results
 
 
@@ -824,6 +962,11 @@ def add_to_cart(data: CartItemAdd, db: Session = Depends(get_db)):
             SELECT f.BusinessID AS SellerBusinessID, f.RetailPrice AS UnitPrice
             FROM ProcessedFood f WHERE f.ProcessedFoodID = :sid AND f.ShowProcessedFood = 1
         """), {"sid": source_id}).fetchone()
+    elif prefix == "G":
+        row = db.execute(text("""
+            SELECT pr.BusinessID AS SellerBusinessID, pr.prodPrice AS UnitPrice
+            FROM SFProducts pr WHERE pr.ProdID = :sid AND pr.Publishproduct = 1
+        """), {"sid": source_id}).fetchone()
     else:
         raise HTTPException(400, f"Invalid listing ID: {data.ListingID}")
 
@@ -868,6 +1011,164 @@ class ReviewRequest(BaseModel):
     OrderID:          int
     Rating:           int
     ReviewText:       Optional[str] = None
+
+
+# ─────────────────────────────────────────────
+# PRODUCTS  (physical goods — seller CRUD)
+# ─────────────────────────────────────────────
+
+class ProductCreate(BaseModel):
+    BusinessID:        int
+    Title:             str
+    Description:       Optional[str]  = None
+    CategoryName:      Optional[str]  = None
+    UnitPrice:         float
+    WholesalePrice:    Optional[float] = None
+    UnitLabel:         str            = 'each'
+    QuantityAvailable: float          = 0
+    MinOrderQuantity:  float          = 1
+    ImageURL:          Optional[str]  = None
+    Tags:              Optional[str]  = None
+    IsOrganic:         bool           = False
+    IsFeatured:        bool           = False
+    Weight:            Optional[float] = None
+    WeightUnit:        Optional[str]  = None
+    Color:             Optional[str]  = None
+    Size:              Optional[str]  = None
+    Material:          Optional[str]  = None
+    SKU:               Optional[str]  = None
+    DeliveryOptions:   str            = 'pickup'
+
+
+def _ser_product(r):
+    m = dict(r._mapping)
+    for f in ["UnitPrice", "WholesalePrice", "QuantityAvailable", "MinOrderQuantity", "Weight"]:
+        if m.get(f) is not None:
+            m[f] = float(m[f])
+    m["IsActive"]   = bool(m.get("IsActive", 1))
+    m["IsOrganic"]  = bool(m.get("IsOrganic", 0))
+    m["IsFeatured"] = bool(m.get("IsFeatured", 0))
+    m["ListingID"]  = f"G{m['ProductID']}"
+    return m
+
+
+@marketplace_router.get("/products")
+def list_products(
+    business_id: Optional[int]  = Query(None),
+    search:      Optional[str]  = Query(None),
+    category:    Optional[str]  = Query(None),
+    sort:        str            = Query("newest"),
+    db:          Session        = Depends(get_db),
+):
+    where = ["pr.IsActive = 1"]
+    params = {}
+    if business_id:
+        where.append("pr.BusinessID = :bid")
+        params["bid"] = business_id
+    if search and search.strip():
+        where.append("(pr.Title LIKE :search OR pr.Description LIKE :search OR pr.CategoryName LIKE :search)")
+        params["search"] = f"%{search.strip()}%"
+    if category and category != "all":
+        where.append("pr.CategoryName = :cat")
+        params["cat"] = category
+    order = {"price_asc": "pr.UnitPrice ASC", "price_desc": "pr.UnitPrice DESC",
+             "name_asc": "pr.Title ASC"}.get(sort, "pr.ProductID DESC")
+    rows = db.execute(text(f"""
+        SELECT pr.*, b.BusinessName AS SellerName, a.AddressCity AS SellerCity, a.AddressState AS SellerState
+        FROM MarketplaceProducts pr
+        JOIN Business b ON pr.BusinessID = b.BusinessID
+        LEFT JOIN Address a ON b.AddressID = a.AddressID
+        WHERE {" AND ".join(where)}
+        ORDER BY pr.IsFeatured DESC, {order}
+    """), params).fetchall()
+    return [_ser_product(r) for r in rows]
+
+
+@marketplace_router.get("/products/categories")
+def list_product_categories(db: Session = Depends(get_db)):
+    rows = db.execute(text("""
+        SELECT DISTINCT CategoryName FROM MarketplaceProducts
+        WHERE IsActive = 1 AND CategoryName IS NOT NULL AND CategoryName != ''
+        ORDER BY CategoryName
+    """)).fetchall()
+    return [r[0] for r in rows]
+
+
+@marketplace_router.get("/products/seller")
+def seller_products(business_id: int, db: Session = Depends(get_db)):
+    rows = db.execute(text("""
+        SELECT pr.*, b.BusinessName AS SellerName, NULL AS SellerCity, NULL AS SellerState
+        FROM MarketplaceProducts pr
+        JOIN Business b ON pr.BusinessID = b.BusinessID
+        WHERE pr.BusinessID = :bid
+        ORDER BY pr.ProductID DESC
+    """), {"bid": business_id}).fetchall()
+    return [_ser_product(r) for r in rows]
+
+
+@marketplace_router.get("/products/{product_id}")
+def get_product(product_id: int, db: Session = Depends(get_db)):
+    row = db.execute(text("""
+        SELECT pr.*, b.BusinessName AS SellerName, a.AddressCity AS SellerCity, a.AddressState AS SellerState
+        FROM MarketplaceProducts pr
+        JOIN Business b ON pr.BusinessID = b.BusinessID
+        LEFT JOIN Address a ON b.AddressID = a.AddressID
+        WHERE pr.ProductID = :pid
+    """), {"pid": product_id}).fetchone()
+    if not row:
+        raise HTTPException(404, "Product not found")
+    return _ser_product(row)
+
+
+@marketplace_router.post("/products")
+def create_product(data: ProductCreate, db: Session = Depends(get_db)):
+    db.execute(text("""
+        INSERT INTO MarketplaceProducts
+            (BusinessID, Title, Description, CategoryName, UnitPrice, WholesalePrice,
+             UnitLabel, QuantityAvailable, MinOrderQuantity, ImageURL, Tags,
+             IsOrganic, IsFeatured, Weight, WeightUnit, Color, Size, Material, SKU, DeliveryOptions,
+             IsActive, CreatedAt, UpdatedAt)
+        VALUES
+            (:bid, :title, :desc, :cat, :price, :wprice,
+             :unit, :qty, :minqty, :img, :tags,
+             :organic, :featured, :weight, :wunit, :color, :size, :material, :sku, :delivery,
+             1, GETDATE(), GETDATE())
+    """), {
+        "bid": data.BusinessID, "title": data.Title, "desc": data.Description,
+        "cat": data.CategoryName, "price": data.UnitPrice, "wprice": data.WholesalePrice,
+        "unit": data.UnitLabel, "qty": data.QuantityAvailable, "minqty": data.MinOrderQuantity,
+        "img": data.ImageURL, "tags": data.Tags,
+        "organic": int(data.IsOrganic), "featured": int(data.IsFeatured),
+        "weight": data.Weight, "wunit": data.WeightUnit, "color": data.Color,
+        "size": data.Size, "material": data.Material, "sku": data.SKU,
+        "delivery": data.DeliveryOptions,
+    })
+    product_id = db.execute(text("SELECT SCOPE_IDENTITY()")).scalar()
+    db.commit()
+    return get_product(int(product_id), db)
+
+
+@marketplace_router.put("/products/{product_id}")
+def update_product(product_id: int, data: dict, db: Session = Depends(get_db)):
+    allowed = {"Title", "Description", "CategoryName", "UnitPrice", "WholesalePrice",
+               "UnitLabel", "QuantityAvailable", "MinOrderQuantity", "ImageURL", "Tags",
+               "IsOrganic", "IsFeatured", "IsActive", "Weight", "WeightUnit",
+               "Color", "Size", "Material", "SKU", "DeliveryOptions"}
+    sets = [f"{k} = :{k}" for k in data if k in allowed]
+    if not sets:
+        raise HTTPException(400, "No valid fields to update")
+    sets.append("UpdatedAt = GETDATE()")
+    db.execute(text(f"UPDATE MarketplaceProducts SET {', '.join(sets)} WHERE ProductID = :pid"),
+               {**{k: v for k, v in data.items() if k in allowed}, "pid": product_id})
+    db.commit()
+    return get_product(product_id, db)
+
+
+@marketplace_router.delete("/products/{product_id}")
+def delete_product(product_id: int, db: Session = Depends(get_db)):
+    db.execute(text("DELETE FROM MarketplaceProducts WHERE ProductID = :pid"), {"pid": product_id})
+    db.commit()
+    return {"message": "Product deleted"}
 
 
 @marketplace_router.post("/reviews")

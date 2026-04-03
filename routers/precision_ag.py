@@ -105,6 +105,40 @@ def create_field(field: FieldCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.put("/fields/{field_id}")
+def update_field(field_id: int, field: FieldCreate, db: Session = Depends(get_db)):
+    try:
+        existing = db.query(models.Field).filter(models.Field.FieldID == field_id).first()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Field not found")
+        planting_date = None
+        if field.planting_date:
+            try:
+                planting_date = date.fromisoformat(field.planting_date)
+            except ValueError:
+                planting_date = None
+        existing.Name                   = field.name
+        existing.Address                = field.address
+        existing.CropType               = field.crop_type
+        existing.Latitude               = field.latitude
+        existing.Longitude              = field.longitude
+        existing.FieldSizeHectares      = field.field_size_hectares
+        existing.PlantingDate           = planting_date
+        existing.BoundaryGeoJSON        = field.boundary_geojson
+        existing.MonitoringIntervalDays = field.monitoring_interval_days
+        existing.AlertThresholdHealth   = field.alert_threshold_health
+        db.commit()
+        db.refresh(existing)
+        return {"id": existing.FieldID, "name": existing.Name}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.delete("/fields/{field_id}")
 def delete_field(field_id: int, db: Session = Depends(get_db)):
     try:

@@ -135,7 +135,7 @@ def GetMyBusinesses(PeopleID: int, Db: Session = Depends(get_db)):
         )
         .all()
     )
-    return [{"BusinessID": B.BusinessID, "BusinessName": B.BusinessName} for B in Businesses]
+    return [{"BusinessID": B.BusinessID, "BusinessName": B.BusinessName, "BusinessTypeID": B.BusinessTypeID} for B in Businesses]
 
 
 # -------------------------

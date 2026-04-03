@@ -363,6 +363,38 @@ class Field(Base):
     AddressID                = Column(Integer)
     SoilID                   = Column(Integer)
 
+# ── FIELD NOTES ──────────────────────────────────────────────────
+class FieldNote(Base):
+    __tablename__ = "FieldNote"
+    NoteID     = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    FieldID    = Column(Integer, index=True)
+    BusinessID = Column(Integer, index=True)
+    PeopleID   = Column(Integer)
+    NoteDate   = Column(Date)
+    Category   = Column(String(100))
+    Title      = Column(String(500))
+    Content    = Column(Text)
+    CreatedAt  = Column(DateTime)
+    UpdatedAt  = Column(DateTime)
+
+# ── CROP ROTATION ────────────────────────────────────────────────
+class CropRotationEntry(Base):
+    __tablename__ = "CropRotationEntry"
+    RotationID   = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    FieldID      = Column(Integer, index=True)
+    BusinessID   = Column(Integer, index=True)
+    SeasonYear   = Column(Integer)
+    CropName     = Column(String(255))
+    Variety      = Column(String(255))
+    PlantingDate = Column(Date)
+    HarvestDate  = Column(Date)
+    YieldAmount  = Column(Decimal(10, 2))
+    YieldUnit    = Column(String(50))
+    IsCoverCrop  = Column(Boolean, default=False)
+    Notes        = Column(Text)
+    CreatedAt    = Column(DateTime)
+    UpdatedAt    = Column(DateTime)
+
 # ── BUSINESS ACCESS ──────────────────────────────────────────────
 class BusinessAccess(Base):
     __tablename__ = "BusinessAccess"
@@ -405,5 +437,58 @@ class Websites(Base):
     Website     = Column(String(500))
     websitepath = Column(String(500))
     watermark   = Column(DateTime)
+
+# ── WEBSITE BUILDER ──────────────────────────────────────────────
+class BusinessWebsite(Base):
+    __tablename__ = "BusinessWebsite"
+    WebsiteID       = Column(Integer, primary_key=True, autoincrement=True)
+    BusinessID      = Column(Integer, nullable=False, index=True)
+    SiteName        = Column(String(255))
+    Slug            = Column(String(100), unique=True)
+    Tagline         = Column(String(500))
+    LogoURL         = Column(String(1000))
+    PrimaryColor    = Column(String(20), default='#3D6B34')
+    SecondaryColor  = Column(String(20), default='#819360')
+    AccentColor     = Column(String(20), default='#FFC567')
+    BgColor         = Column(String(20), default='#FFFFFF')
+    TextColor       = Column(String(20), default='#111827')
+    FontFamily      = Column(String(100), default='Inter, sans-serif')
+    Phone           = Column(String(50))
+    Email           = Column(String(255))
+    Address         = Column(String(500))
+    FacebookURL     = Column(String(500))
+    InstagramURL    = Column(String(500))
+    TwitterURL      = Column(String(500))
+    NavTextColor    = Column(String(20), default='#FFFFFF')
+    FooterBgColor   = Column(String(20))
+    CopyrightText   = Column(String(500))
+    IsPublished     = Column(Boolean, default=False)
+    CreatedAt       = Column(DateTime)
+    UpdatedAt       = Column(DateTime)
+
+class BusinessWebPage(Base):
+    __tablename__ = "BusinessWebPage"
+    PageID          = Column(Integer, primary_key=True, autoincrement=True)
+    WebsiteID       = Column(Integer, nullable=False, index=True)
+    BusinessID      = Column(Integer, nullable=False)
+    PageName        = Column(String(255))
+    Slug            = Column(String(100))
+    PageTitle       = Column(String(255))
+    MetaDescription = Column(String(500))
+    SortOrder       = Column(Integer, default=0)
+    IsPublished     = Column(Boolean, default=True)
+    IsHomePage      = Column(Boolean, default=False)
+    CreatedAt       = Column(DateTime)
+    UpdatedAt       = Column(DateTime)
+
+class BusinessWebBlock(Base):
+    __tablename__ = "BusinessWebBlock"
+    BlockID     = Column(Integer, primary_key=True, autoincrement=True)
+    PageID      = Column(Integer, nullable=False, index=True)
+    BlockType   = Column(String(50))
+    BlockData   = Column(Text)   # JSON string
+    SortOrder   = Column(Integer, default=0)
+    CreatedAt   = Column(DateTime)
+    UpdatedAt   = Column(DateTime)
 
 

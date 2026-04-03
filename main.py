@@ -18,6 +18,11 @@ from routers import services
 from routers import ranches
 from routers import meat
 from routers import forgot_password
+from routers import weather
+from routers import notes
+from routers import crop_rotation
+from routers import website_builder
+from routers import sfproducts
 
 from routers.marketplace import marketplace_router
 from marketplace_stripe import stripe_router
@@ -55,6 +60,11 @@ app.include_router(meat.router)
 app.include_router(marketplace_router, prefix="/api/marketplace")
 app.include_router(stripe_router, prefix="/api/marketplace/payments")
 app.include_router(forgot_password.router)
+app.include_router(weather.router)
+app.include_router(notes.router)
+app.include_router(crop_rotation.router)
+app.include_router(website_builder.router)
+app.include_router(sfproducts.router)
 
 
 @app.get("/health")
