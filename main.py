@@ -23,6 +23,7 @@ from routers import notes
 from routers import crop_rotation
 from routers import website_builder
 from routers import sfproducts
+from routers import events
 
 from routers.marketplace import marketplace_router
 from marketplace_stripe import stripe_router
@@ -65,6 +66,7 @@ app.include_router(notes.router)
 app.include_router(crop_rotation.router)
 app.include_router(website_builder.router)
 app.include_router(sfproducts.router)
+app.include_router(events.router)
 
 
 @app.get("/health")
