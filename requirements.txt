@@ -64,6 +64,9 @@ python-dotenv>=1.0.0
 # Database
 # =========================================================
 
+# ORM
+sqlalchemy>=2.0.0
+
 # SQL Server
 pymssql
 
@@ -86,6 +89,12 @@ langgraph-checkpoint-redis>=0.3.0 # python version for venv >3.10 or <3.14
 
 # Used for Weather API and other REST calls
 requests>=2.31.0
+
+# Email delivery
+sendgrid>=6.0.0
+
+# Payment processing
+stripe>=7.0.0
 
 
 # =========================================================
