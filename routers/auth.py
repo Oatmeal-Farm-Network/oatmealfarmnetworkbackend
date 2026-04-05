@@ -15,8 +15,55 @@ class LoginRequest(BaseModel):
     Email: str
     Password: str
 
+class SignupRequest(BaseModel):
+    PeopleFirstName: str
+    PeopleLastName: str
+    Email: str
+    Password: str
+
 class ForgotPasswordRequest(BaseModel):
     Email: str
+
+
+# -------------------------
+# Signup
+# -------------------------
+@router.post("/signup")
+def signup(request: SignupRequest, db: Session = Depends(get_db)):
+    from datetime import datetime
+
+    email = request.Email.strip().lower()
+
+    existing = db.query(models.People).filter(
+        models.People.PeopleEmail == email
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="An account with that email already exists.")
+
+    new_user = models.People(
+        PeopleFirstName=request.PeopleFirstName.strip(),
+        PeopleLastName=request.PeopleLastName.strip(),
+        PeopleEmail=email,
+        PeoplePassword=request.Password,
+        PeopleActive=1,
+        accesslevel=0,
+        Subscriptionlevel=0,
+        PeopleCreationDate=datetime.utcnow(),
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    token = create_access_token(data={"sub": new_user.PeopleID})
+
+    return {
+        "AccessToken": token,
+        "token_type": "bearer",
+        "PeopleID": new_user.PeopleID,
+        "PeopleFirstName": new_user.PeopleFirstName,
+        "PeopleLastName": new_user.PeopleLastName,
+        "AccessLevel": new_user.accesslevel or 0,
+    }
 
 
 # -------------------------

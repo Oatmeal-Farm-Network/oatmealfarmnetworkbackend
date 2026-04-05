@@ -22,6 +22,7 @@ from routers import weather
 from routers import notes
 from routers import crop_rotation
 from routers import website_builder
+from routers import website_ai
 from routers import sfproducts
 from routers import events
 
@@ -65,6 +66,7 @@ app.include_router(weather.router)
 app.include_router(notes.router)
 app.include_router(crop_rotation.router)
 app.include_router(website_builder.router)
+app.include_router(website_ai.router)
 app.include_router(sfproducts.router)
 app.include_router(events.router)
 

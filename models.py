@@ -463,6 +463,10 @@ class BusinessWebsite(Base):
     FooterBgColor   = Column(String(20))
     CopyrightText   = Column(String(500))
     IsPublished     = Column(Boolean, default=False)
+    MetaTitle       = Column(String(255))
+    CanonicalURL    = Column(String(500))
+    OgImageURL      = Column(String(1000))
+    SeoExtrasJSON   = Column(Text)
     CreatedAt       = Column(DateTime)
     UpdatedAt       = Column(DateTime)
 

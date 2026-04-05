@@ -1,11 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db, engine, Base
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional, List
 from pydantic import BaseModel
-import models, json, re
+import models, json, re, uuid
 
 router = APIRouter(prefix="/api/website", tags=["website-builder"])
 
@@ -18,6 +18,32 @@ Base.metadata.create_all(
     ],
     checkfirst=True,
 )
+
+# Auto-create supplemental tables
+with engine.connect() as _conn:
+    _conn.execute(text("""
+        IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'WebsiteHeaderImages')
+        CREATE TABLE WebsiteHeaderImages (
+            HeaderImageID INT IDENTITY(1,1) PRIMARY KEY,
+            WebsiteID     INT NOT NULL,
+            ImageURL      NVARCHAR(500) NOT NULL,
+            StartDate     DATE,
+            EndDate       DATE,
+            SortOrder     INT DEFAULT 0,
+            CreatedAt     DATETIME DEFAULT GETDATE()
+        )
+    """))
+    _conn.execute(text("""
+        IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'WebsiteVersionHistory')
+        CREATE TABLE WebsiteVersionHistory (
+            VersionID    INT IDENTITY(1,1) PRIMARY KEY,
+            WebsiteID    INT NOT NULL,
+            VersionLabel NVARCHAR(255),
+            SnapshotJSON NVARCHAR(MAX) NOT NULL,
+            CreatedAt    DATETIME DEFAULT GETDATE()
+        )
+    """))
+    _conn.commit()
 
 # ── Pydantic models ──────────────────────────────────────────────
 
@@ -43,6 +69,10 @@ class SiteCreate(BaseModel):
     footer_bg_color: Optional[str] = None
     copyright_text: Optional[str] = None
     is_published: Optional[bool] = False
+    meta_title: Optional[str] = None
+    canonical_url: Optional[str] = None
+    og_image_url: Optional[str] = None
+    seo_extras_json: Optional[str] = None
 
 class SiteUpdate(SiteCreate):
     business_id: Optional[int] = None
@@ -109,9 +139,13 @@ def _ser_site(s: models.BusinessWebsite) -> dict:
         "nav_text_color":  s.NavTextColor or '#FFFFFF',
         "footer_bg_color": s.FooterBgColor or s.PrimaryColor or '#3D6B34',
         "copyright_text":  s.CopyrightText,
-        "is_published":   bool(s.IsPublished),
-        "created_at":     str(s.CreatedAt) if s.CreatedAt else None,
-        "updated_at":     str(s.UpdatedAt) if s.UpdatedAt else None,
+        "is_published":    bool(s.IsPublished),
+        "meta_title":      s.MetaTitle,
+        "canonical_url":   s.CanonicalURL,
+        "og_image_url":    s.OgImageURL,
+        "seo_extras_json": s.SeoExtrasJSON,
+        "created_at":      str(s.CreatedAt) if s.CreatedAt else None,
+        "updated_at":      str(s.UpdatedAt) if s.UpdatedAt else None,
     }
 
 def _ser_page(p: models.BusinessWebPage) -> dict:
@@ -182,7 +216,12 @@ def create_site(body: SiteCreate, db: Session = Depends(get_db)):
         NavTextColor=body.nav_text_color or '#FFFFFF',
         FooterBgColor=body.footer_bg_color,
         CopyrightText=body.copyright_text,
-        IsPublished=body.is_published, CreatedAt=datetime.utcnow(), UpdatedAt=datetime.utcnow()
+        IsPublished=body.is_published,
+        MetaTitle=body.meta_title,
+        CanonicalURL=body.canonical_url,
+        OgImageURL=body.og_image_url,
+        SeoExtrasJSON=body.seo_extras_json,
+        CreatedAt=datetime.utcnow(), UpdatedAt=datetime.utcnow()
     )
     db.add(site); db.commit(); db.refresh(site)
     return _ser_site(site)
@@ -221,6 +260,10 @@ def update_site(website_id: int, body: SiteUpdate, db: Session = Depends(get_db)
     if body.nav_text_color is not None: site.NavTextColor = body.nav_text_color
     if body.footer_bg_color is not None: site.FooterBgColor = body.footer_bg_color
     if body.copyright_text is not None: site.CopyrightText = body.copyright_text
+    if body.meta_title is not None: site.MetaTitle = body.meta_title
+    if body.canonical_url is not None: site.CanonicalURL = body.canonical_url
+    if body.og_image_url is not None: site.OgImageURL = body.og_image_url
+    if body.seo_extras_json is not None: site.SeoExtrasJSON = body.seo_extras_json
     site.UpdatedAt = datetime.utcnow()
     db.commit(); db.refresh(site)
     return _ser_site(site)
@@ -512,3 +555,213 @@ def get_site_bundle(slug: str, db: Session = Depends(get_db)):
     site_data = _ser_site(site)
     site_data["pages"] = result_pages
     return site_data
+
+
+# ── Image upload ─────────────────────────────────────────────────
+
+GCS_BUCKET  = "oatmeal-farm-network-images"
+GCS_PREFIX  = "website-images"
+
+@router.delete("/site/{website_id}")
+def delete_site(website_id: int, db: Session = Depends(get_db)):
+    site = db.query(models.BusinessWebsite).filter(
+        models.BusinessWebsite.WebsiteID == website_id
+    ).first()
+    if not site:
+        raise HTTPException(status_code=404, detail="Site not found")
+    # Delete all child data first
+    page_ids = [p.PageID for p in db.query(models.BusinessWebPage).filter(
+        models.BusinessWebPage.WebsiteID == website_id
+    ).all()]
+    if page_ids:
+        db.query(models.BusinessWebBlock).filter(
+            models.BusinessWebBlock.PageID.in_(page_ids)
+        ).delete(synchronize_session=False)
+    db.query(models.BusinessWebPage).filter(
+        models.BusinessWebPage.WebsiteID == website_id
+    ).delete(synchronize_session=False)
+    db.execute(text("DELETE FROM WebsiteHeaderImages WHERE WebsiteID=:wid"), {"wid": website_id})
+    db.delete(site)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/upload-image")
+async def upload_website_image(file: UploadFile = File(...)):
+    """Upload an image to GCS and return its public URL."""
+    try:
+        from google.cloud import storage as gcs
+        contents = await file.read()
+        ext = (file.filename or "image.jpg").rsplit(".", 1)[-1].lower()
+        filename = f"{GCS_PREFIX}/{uuid.uuid4().hex}.{ext}"
+        client = gcs.Client()
+        bucket = client.bucket(GCS_BUCKET)
+        blob = bucket.blob(filename)
+        blob.upload_from_string(contents, content_type=file.content_type or "image/jpeg")
+        url = f"https://storage.googleapis.com/{GCS_BUCKET}/{filename}"
+        return {"url": url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+
+# ── Header images ─────────────────────────────────────────────────
+
+class HeaderImageCreate(BaseModel):
+    website_id: int
+    image_url: str
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    sort_order: Optional[int] = 0
+
+class HeaderImageUpdate(BaseModel):
+    image_url: Optional[str] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    sort_order: Optional[int] = None
+
+def _ser_header_image(row) -> dict:
+    return {
+        "header_image_id": row.HeaderImageID,
+        "website_id":      row.WebsiteID,
+        "image_url":       row.ImageURL,
+        "start_date":      str(row.StartDate) if row.StartDate else None,
+        "end_date":        str(row.EndDate) if row.EndDate else None,
+        "sort_order":      row.SortOrder or 0,
+    }
+
+@router.get("/header-images/{website_id}")
+def list_header_images(website_id: int, db: Session = Depends(get_db)):
+    rows = db.execute(
+        text("SELECT * FROM WebsiteHeaderImages WHERE WebsiteID=:wid ORDER BY StartDate, SortOrder"),
+        {"wid": website_id}
+    ).fetchall()
+    return [_ser_header_image(r) for r in rows]
+
+@router.post("/header-images")
+def create_header_image(body: HeaderImageCreate, db: Session = Depends(get_db)):
+    db.execute(text("""
+        INSERT INTO WebsiteHeaderImages (WebsiteID, ImageURL, StartDate, EndDate, SortOrder)
+        VALUES (:wid, :url, :sd, :ed, :so)
+    """), {"wid": body.website_id, "url": body.image_url,
+           "sd": body.start_date, "ed": body.end_date, "so": body.sort_order or 0})
+    db.commit()
+    row = db.execute(
+        text("SELECT TOP 1 * FROM WebsiteHeaderImages WHERE WebsiteID=:wid ORDER BY HeaderImageID DESC"),
+        {"wid": body.website_id}
+    ).fetchone()
+    return _ser_header_image(row)
+
+@router.put("/header-images/{header_image_id}")
+def update_header_image(header_image_id: int, body: HeaderImageUpdate, db: Session = Depends(get_db)):
+    sets, params = [], {"hid": header_image_id}
+    if body.image_url is not None:  sets.append("ImageURL=:url");   params["url"] = body.image_url
+    if body.start_date is not None: sets.append("StartDate=:sd");   params["sd"]  = body.start_date
+    if body.end_date is not None:   sets.append("EndDate=:ed");     params["ed"]  = body.end_date
+    if body.sort_order is not None: sets.append("SortOrder=:so");   params["so"]  = body.sort_order
+    if sets:
+        db.execute(text(f"UPDATE WebsiteHeaderImages SET {', '.join(sets)} WHERE HeaderImageID=:hid"), params)
+        db.commit()
+    row = db.execute(text("SELECT * FROM WebsiteHeaderImages WHERE HeaderImageID=:hid"), {"hid": header_image_id}).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Header image not found")
+    return _ser_header_image(row)
+
+@router.delete("/header-images/{header_image_id}")
+def delete_header_image(header_image_id: int, db: Session = Depends(get_db)):
+    db.execute(text("DELETE FROM WebsiteHeaderImages WHERE HeaderImageID=:hid"), {"hid": header_image_id})
+    db.commit()
+    return {"ok": True}
+
+
+# ── Version History ───────────────────────────────────────────────
+
+class VersionCreate(BaseModel):
+    website_id: int
+    version_label: Optional[str] = None
+
+def _build_snapshot(website_id: int, db: Session) -> str:
+    """Capture full site state: site + pages + blocks."""
+    site = db.query(models.BusinessWebsite).filter(models.BusinessWebsite.WebsiteID == website_id).first()
+    if not site:
+        return "{}"
+    pages = db.query(models.BusinessWebPage).filter(models.BusinessWebPage.WebsiteID == website_id).all()
+    result = {"site": _ser_site(site), "pages": []}
+    for page in pages:
+        blocks = db.query(models.BusinessWebBlock).filter(models.BusinessWebBlock.PageID == page.PageID).all()
+        p = _ser_page(page)
+        p["blocks"] = [_ser_block(b) for b in blocks]
+        result["pages"].append(p)
+    return json.dumps(result)
+
+@router.get("/versions/{website_id}")
+def list_versions(website_id: int, db: Session = Depends(get_db)):
+    rows = db.execute(
+        text("SELECT TOP 20 VersionID, WebsiteID, VersionLabel, CreatedAt FROM WebsiteVersionHistory WHERE WebsiteID=:wid ORDER BY CreatedAt DESC"),
+        {"wid": website_id}
+    ).fetchall()
+    return [{"version_id": r.VersionID, "website_id": r.WebsiteID, "version_label": r.VersionLabel, "created_at": str(r.CreatedAt)} for r in rows]
+
+@router.post("/versions")
+def save_version(body: VersionCreate, db: Session = Depends(get_db)):
+    snapshot = _build_snapshot(body.website_id, db)
+    label = body.version_label or f"Saved {datetime.utcnow().strftime('%b %d %Y %H:%M')}"
+    db.execute(text("""
+        INSERT INTO WebsiteVersionHistory (WebsiteID, VersionLabel, SnapshotJSON)
+        VALUES (:wid, :label, :snap)
+    """), {"wid": body.website_id, "label": label, "snap": snapshot})
+    db.commit()
+    row = db.execute(
+        text("SELECT TOP 1 * FROM WebsiteVersionHistory WHERE WebsiteID=:wid ORDER BY VersionID DESC"),
+        {"wid": body.website_id}
+    ).fetchone()
+    return {"version_id": row.VersionID, "version_label": row.VersionLabel, "created_at": str(row.CreatedAt)}
+
+@router.post("/versions/{version_id}/restore")
+def restore_version(version_id: int, db: Session = Depends(get_db)):
+    row = db.execute(text("SELECT * FROM WebsiteVersionHistory WHERE VersionID=:vid"), {"vid": version_id}).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Version not found")
+    snapshot = json.loads(row.SnapshotJSON)
+    website_id = row.WebsiteID
+
+    # Restore site fields
+    site_data = snapshot.get("site", {})
+    site = db.query(models.BusinessWebsite).filter(models.BusinessWebsite.WebsiteID == website_id).first()
+    if site and site_data:
+        for field, col in [
+            ("site_name","SiteName"),("tagline","Tagline"),("logo_url","LogoURL"),
+            ("primary_color","PrimaryColor"),("secondary_color","SecondaryColor"),
+            ("accent_color","AccentColor"),("bg_color","BgColor"),("text_color","TextColor"),
+            ("font_family","FontFamily"),("nav_text_color","NavTextColor"),
+            ("footer_bg_color","FooterBgColor"),("copyright_text","CopyrightText"),
+        ]:
+            if field in site_data:
+                setattr(site, col, site_data[field])
+        site.UpdatedAt = datetime.utcnow()
+
+    # Restore pages and blocks
+    existing_pages = db.query(models.BusinessWebPage).filter(models.BusinessWebPage.WebsiteID == website_id).all()
+    existing_page_ids = [p.PageID for p in existing_pages]
+    if existing_page_ids:
+        db.query(models.BusinessWebBlock).filter(models.BusinessWebBlock.PageID.in_(existing_page_ids)).delete(synchronize_session=False)
+    db.query(models.BusinessWebPage).filter(models.BusinessWebPage.WebsiteID == website_id).delete(synchronize_session=False)
+
+    for pg in snapshot.get("pages", []):
+        new_page = models.BusinessWebPage(
+            WebsiteID=website_id, BusinessID=site_data.get("business_id", 0),
+            PageName=pg["page_name"], Slug=pg["slug"],
+            PageTitle=pg.get("page_title"), MetaDescription=pg.get("meta_description"),
+            SortOrder=pg.get("sort_order", 0), IsPublished=pg.get("is_published", True),
+            IsHomePage=pg.get("is_home_page", False),
+            CreatedAt=datetime.utcnow(), UpdatedAt=datetime.utcnow()
+        )
+        db.add(new_page); db.flush()
+        for blk in pg.get("blocks", []):
+            db.add(models.BusinessWebBlock(
+                PageID=new_page.PageID, BlockType=blk["block_type"],
+                BlockData=json.dumps(blk["block_data"]), SortOrder=blk.get("sort_order", 0),
+                CreatedAt=datetime.utcnow(), UpdatedAt=datetime.utcnow()
+            ))
+
+    db.commit()
+    return {"ok": True, "website_id": website_id}
