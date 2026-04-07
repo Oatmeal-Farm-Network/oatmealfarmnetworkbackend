@@ -415,3 +415,12 @@ def update_registration(reg_id: int, data: dict, db: Session = Depends(get_db)):
     """), {"rid": reg_id, "status": data.get("PaymentStatus", "pending")})
     db.commit()
     return {"ok": True}
+
+
+# ── Delete registration ───────────────────────────────────────────────────────
+@router.delete("/api/events/registrations/{reg_id}")
+def delete_registration(reg_id: int, db: Session = Depends(get_db)):
+    db.execute(text("DELETE FROM OFNEventRegistrationItems WHERE RegID = :rid"), {"rid": reg_id})
+    db.execute(text("DELETE FROM OFNEventRegistrations WHERE RegID = :rid"), {"rid": reg_id})
+    db.commit()
+    return {"ok": True}

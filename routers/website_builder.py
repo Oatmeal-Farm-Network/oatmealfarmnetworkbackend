@@ -171,6 +171,7 @@ class SiteCreate(BaseModel):
     footer_bg_image_url: Optional[str] = None
     footer_html: Optional[str] = None
     footer_height: Optional[int] = 200
+    # Page background
     bg_image_url: Optional[str] = None
     bg_gradient: Optional[str] = None
 
@@ -391,6 +392,7 @@ def _ser_site(s: models.BusinessWebsite) -> dict:
         "footer_bg_image_url": s.FooterBgImageURL or '',
         "footer_html":         s.FooterHTML or '',
         "footer_height":       s.FooterHeight or 200,
+        # Page background
         "bg_image_url":        s.BgImageURL or '',
         "bg_gradient":         s.BgGradient or '',
         "created_at":      str(s.CreatedAt) if s.CreatedAt else None,
