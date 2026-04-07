@@ -104,6 +104,57 @@ class SiteCreate(BaseModel):
     body_bg_width: Optional[str] = '100%'
     footer_content_width: Optional[str] = '100%'
     footer_bg_width: Optional[str] = '100%'
+    # Typography / type scale
+    h1_size: Optional[str] = '2.5rem'
+    h1_weight: Optional[str] = '800'
+    h1_color: Optional[str] = ''
+    h1_align: Optional[str] = 'left'
+    h1_underline: Optional[bool] = False
+    h1_rule: Optional[bool] = False
+    h1_rule_color: Optional[str] = ''
+    h2_size: Optional[str] = '1.8rem'
+    h2_weight: Optional[str] = '700'
+    h2_color: Optional[str] = ''
+    h2_align: Optional[str] = 'left'
+    h2_underline: Optional[bool] = False
+    h2_rule: Optional[bool] = False
+    h2_rule_color: Optional[str] = ''
+    h3_size: Optional[str] = '1.3rem'
+    h3_weight: Optional[str] = '600'
+    h3_color: Optional[str] = ''
+    h3_align: Optional[str] = 'left'
+    h3_underline: Optional[bool] = False
+    h3_rule: Optional[bool] = False
+    h3_rule_color: Optional[str] = ''
+    h4_size: Optional[str] = '1.05rem'
+    h4_weight: Optional[str] = '600'
+    h4_color: Optional[str] = ''
+    h4_align: Optional[str] = 'left'
+    h4_underline: Optional[bool] = False
+    h4_rule: Optional[bool] = False
+    h4_rule_color: Optional[str] = ''
+    h1_margin_top: Optional[int] = 0
+    h1_margin_bottom: Optional[int] = 8
+    h1_font: Optional[str] = ''
+    h2_margin_top: Optional[int] = 0
+    h2_margin_bottom: Optional[int] = 8
+    h2_font: Optional[str] = ''
+    h3_margin_top: Optional[int] = 0
+    h3_margin_bottom: Optional[int] = 6
+    h3_font: Optional[str] = ''
+    h4_margin_top: Optional[int] = 0
+    h4_margin_bottom: Optional[int] = 4
+    h4_font: Optional[str] = ''
+    body_size: Optional[str] = '1rem'
+    body_line_height: Optional[str] = '1.75'
+    body_color: Optional[str] = ''
+    body_align: Optional[str] = 'left'
+    body_underline: Optional[bool] = False
+    body_margin_top: Optional[int] = 0
+    body_margin_bottom: Optional[int] = 12
+    body_font: Optional[str] = ''
+    link_color: Optional[str] = ''
+    link_underline: Optional[bool] = True
     # Top bar
     top_bar_enabled: Optional[bool] = False
     top_bar_html: Optional[str] = None
@@ -143,6 +194,56 @@ class SiteUpdate(SiteCreate):
     body_bg_width: Optional[str] = None
     footer_content_width: Optional[str] = None
     footer_bg_width: Optional[str] = None
+    h1_size: Optional[str] = None
+    h1_weight: Optional[str] = None
+    h1_color: Optional[str] = None
+    h1_align: Optional[str] = None
+    h1_underline: Optional[bool] = None
+    h1_rule: Optional[bool] = None
+    h1_rule_color: Optional[str] = None
+    h2_size: Optional[str] = None
+    h2_weight: Optional[str] = None
+    h2_color: Optional[str] = None
+    h2_align: Optional[str] = None
+    h2_underline: Optional[bool] = None
+    h2_rule: Optional[bool] = None
+    h2_rule_color: Optional[str] = None
+    h3_size: Optional[str] = None
+    h3_weight: Optional[str] = None
+    h3_color: Optional[str] = None
+    h3_align: Optional[str] = None
+    h3_underline: Optional[bool] = None
+    h3_rule: Optional[bool] = None
+    h3_rule_color: Optional[str] = None
+    h4_size: Optional[str] = None
+    h4_weight: Optional[str] = None
+    h4_color: Optional[str] = None
+    h4_align: Optional[str] = None
+    h4_underline: Optional[bool] = None
+    h4_rule: Optional[bool] = None
+    h4_rule_color: Optional[str] = None
+    h1_margin_top: Optional[int] = None
+    h1_margin_bottom: Optional[int] = None
+    h1_font: Optional[str] = None
+    h2_margin_top: Optional[int] = None
+    h2_margin_bottom: Optional[int] = None
+    h2_font: Optional[str] = None
+    h3_margin_top: Optional[int] = None
+    h3_margin_bottom: Optional[int] = None
+    h3_font: Optional[str] = None
+    h4_margin_top: Optional[int] = None
+    h4_margin_bottom: Optional[int] = None
+    h4_font: Optional[str] = None
+    body_size: Optional[str] = None
+    body_line_height: Optional[str] = None
+    body_color: Optional[str] = None
+    body_align: Optional[str] = None
+    body_underline: Optional[bool] = None
+    body_margin_top: Optional[int] = None
+    body_margin_bottom: Optional[int] = None
+    body_font: Optional[str] = None
+    link_color: Optional[str] = None
+    link_underline: Optional[bool] = None
     top_bar_enabled: Optional[bool] = None
     top_bar_bg_color: Optional[str] = None
     top_bar_text_color: Optional[str] = None
@@ -224,6 +325,57 @@ def _ser_site(s: models.BusinessWebsite) -> dict:
         "body_bg_width":        s.BodyBgWidth or '100%',
         "footer_content_width": s.FooterContentWidth or '100%',
         "footer_bg_width":      s.FooterBgWidth or '100%',
+        # Typography / type scale
+        "h1_size":          s.H1Size or '2.5rem',
+        "h1_weight":        s.H1Weight or '800',
+        "h1_color":         s.H1Color or '',
+        "h1_align":         s.H1Align or 'left',
+        "h1_underline":     bool(s.H1Underline) if s.H1Underline is not None else False,
+        "h1_rule":          bool(s.H1Rule) if s.H1Rule is not None else False,
+        "h1_rule_color":    s.H1RuleColor or '',
+        "h2_size":          s.H2Size or '1.8rem',
+        "h2_weight":        s.H2Weight or '700',
+        "h2_color":         s.H2Color or '',
+        "h2_align":         s.H2Align or 'left',
+        "h2_underline":     bool(s.H2Underline) if s.H2Underline is not None else False,
+        "h2_rule":          bool(s.H2Rule) if s.H2Rule is not None else False,
+        "h2_rule_color":    s.H2RuleColor or '',
+        "h3_size":          s.H3Size or '1.3rem',
+        "h3_weight":        s.H3Weight or '600',
+        "h3_color":         s.H3Color or '',
+        "h3_align":         s.H3Align or 'left',
+        "h3_underline":     bool(s.H3Underline) if s.H3Underline is not None else False,
+        "h3_rule":          bool(s.H3Rule) if s.H3Rule is not None else False,
+        "h3_rule_color":    s.H3RuleColor or '',
+        "h4_size":          s.H4Size or '1.05rem',
+        "h4_weight":        s.H4Weight or '600',
+        "h4_color":         s.H4Color or '',
+        "h4_align":         s.H4Align or 'left',
+        "h4_underline":     bool(s.H4Underline) if s.H4Underline is not None else False,
+        "h4_rule":          bool(s.H4Rule) if s.H4Rule is not None else False,
+        "h4_rule_color":    s.H4RuleColor or '',
+        "h1_margin_top":    s.H1MarginTop if s.H1MarginTop is not None else 0,
+        "h1_margin_bottom": s.H1MarginBottom if s.H1MarginBottom is not None else 8,
+        "h1_font":          s.H1Font or '',
+        "h2_margin_top":    s.H2MarginTop if s.H2MarginTop is not None else 0,
+        "h2_margin_bottom": s.H2MarginBottom if s.H2MarginBottom is not None else 8,
+        "h2_font":          s.H2Font or '',
+        "h3_margin_top":    s.H3MarginTop if s.H3MarginTop is not None else 0,
+        "h3_margin_bottom": s.H3MarginBottom if s.H3MarginBottom is not None else 6,
+        "h3_font":          s.H3Font or '',
+        "h4_margin_top":    s.H4MarginTop if s.H4MarginTop is not None else 0,
+        "h4_margin_bottom": s.H4MarginBottom if s.H4MarginBottom is not None else 4,
+        "h4_font":          s.H4Font or '',
+        "body_size":        s.BodySize or '1rem',
+        "body_line_height": s.BodyLineHeight or '1.75',
+        "body_color":       s.BodyColor or '',
+        "body_align":       s.BodyAlign or 'left',
+        "body_underline":   bool(s.BodyUnderline) if s.BodyUnderline is not None else False,
+        "body_margin_top":    s.BodyMarginTop if s.BodyMarginTop is not None else 0,
+        "body_margin_bottom": s.BodyMarginBottom if s.BodyMarginBottom is not None else 12,
+        "body_font":          s.BodyFont or '',
+        "link_color":       s.LinkColor or '',
+        "link_underline":   bool(s.LinkUnderline) if s.LinkUnderline is not None else True,
         # Top bar
         "top_bar_enabled":    bool(s.TopBarEnabled) if s.TopBarEnabled is not None else False,
         "top_bar_html":       s.TopBarHTML or '',
@@ -370,6 +522,57 @@ def update_site(website_id: int, body: SiteUpdate, db: Session = Depends(get_db)
     if body.body_bg_width is not None: site.BodyBgWidth = body.body_bg_width
     if body.footer_content_width is not None: site.FooterContentWidth = body.footer_content_width
     if body.footer_bg_width is not None: site.FooterBgWidth = body.footer_bg_width
+    # Typography / type scale
+    if body.h1_size is not None: site.H1Size = body.h1_size
+    if body.h1_weight is not None: site.H1Weight = body.h1_weight
+    if body.h1_color is not None: site.H1Color = body.h1_color
+    if body.h1_align is not None: site.H1Align = body.h1_align
+    if body.h1_underline is not None: site.H1Underline = body.h1_underline
+    if body.h1_rule is not None: site.H1Rule = body.h1_rule
+    if body.h1_rule_color is not None: site.H1RuleColor = body.h1_rule_color
+    if body.h2_size is not None: site.H2Size = body.h2_size
+    if body.h2_weight is not None: site.H2Weight = body.h2_weight
+    if body.h2_color is not None: site.H2Color = body.h2_color
+    if body.h2_align is not None: site.H2Align = body.h2_align
+    if body.h2_underline is not None: site.H2Underline = body.h2_underline
+    if body.h2_rule is not None: site.H2Rule = body.h2_rule
+    if body.h2_rule_color is not None: site.H2RuleColor = body.h2_rule_color
+    if body.h3_size is not None: site.H3Size = body.h3_size
+    if body.h3_weight is not None: site.H3Weight = body.h3_weight
+    if body.h3_color is not None: site.H3Color = body.h3_color
+    if body.h3_align is not None: site.H3Align = body.h3_align
+    if body.h3_underline is not None: site.H3Underline = body.h3_underline
+    if body.h3_rule is not None: site.H3Rule = body.h3_rule
+    if body.h3_rule_color is not None: site.H3RuleColor = body.h3_rule_color
+    if body.h4_size is not None: site.H4Size = body.h4_size
+    if body.h4_weight is not None: site.H4Weight = body.h4_weight
+    if body.h4_color is not None: site.H4Color = body.h4_color
+    if body.h4_align is not None: site.H4Align = body.h4_align
+    if body.h4_underline is not None: site.H4Underline = body.h4_underline
+    if body.h4_rule is not None: site.H4Rule = body.h4_rule
+    if body.h4_rule_color is not None: site.H4RuleColor = body.h4_rule_color
+    if body.h1_margin_top is not None: site.H1MarginTop = body.h1_margin_top
+    if body.h1_margin_bottom is not None: site.H1MarginBottom = body.h1_margin_bottom
+    if body.h1_font is not None: site.H1Font = body.h1_font
+    if body.h2_margin_top is not None: site.H2MarginTop = body.h2_margin_top
+    if body.h2_margin_bottom is not None: site.H2MarginBottom = body.h2_margin_bottom
+    if body.h2_font is not None: site.H2Font = body.h2_font
+    if body.h3_margin_top is not None: site.H3MarginTop = body.h3_margin_top
+    if body.h3_margin_bottom is not None: site.H3MarginBottom = body.h3_margin_bottom
+    if body.h3_font is not None: site.H3Font = body.h3_font
+    if body.h4_margin_top is not None: site.H4MarginTop = body.h4_margin_top
+    if body.h4_margin_bottom is not None: site.H4MarginBottom = body.h4_margin_bottom
+    if body.h4_font is not None: site.H4Font = body.h4_font
+    if body.body_size is not None: site.BodySize = body.body_size
+    if body.body_line_height is not None: site.BodyLineHeight = body.body_line_height
+    if body.body_color is not None: site.BodyColor = body.body_color
+    if body.body_align is not None: site.BodyAlign = body.body_align
+    if body.body_underline is not None: site.BodyUnderline = body.body_underline
+    if body.body_margin_top is not None: site.BodyMarginTop = body.body_margin_top
+    if body.body_margin_bottom is not None: site.BodyMarginBottom = body.body_margin_bottom
+    if body.body_font is not None: site.BodyFont = body.body_font
+    if body.link_color is not None: site.LinkColor = body.link_color
+    if body.link_underline is not None: site.LinkUnderline = body.link_underline
     # Top bar
     if body.top_bar_enabled is not None: site.TopBarEnabled = body.top_bar_enabled
     if body.top_bar_html is not None: site.TopBarHTML = body.top_bar_html
