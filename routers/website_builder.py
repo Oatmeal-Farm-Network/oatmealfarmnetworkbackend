@@ -43,6 +43,30 @@ with engine.connect() as _conn:
             CreatedAt    DATETIME DEFAULT GETDATE()
         )
     """))
+    # Add new design columns to BusinessWebsite if they don't exist yet
+    for col_ddl in [
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='HeaderContentWidth') ALTER TABLE BusinessWebsite ADD HeaderContentWidth NVARCHAR(20) DEFAULT '100%'",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='BodyContentWidth') ALTER TABLE BusinessWebsite ADD BodyContentWidth NVARCHAR(20) DEFAULT '100%'",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='BodyBgWidth') ALTER TABLE BusinessWebsite ADD BodyBgWidth NVARCHAR(20) DEFAULT '100%'",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterContentWidth') ALTER TABLE BusinessWebsite ADD FooterContentWidth NVARCHAR(20) DEFAULT '100%'",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='TopBarEnabled') ALTER TABLE BusinessWebsite ADD TopBarEnabled BIT DEFAULT 0",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='TopBarHTML') ALTER TABLE BusinessWebsite ADD TopBarHTML NVARCHAR(MAX)",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='TopBarBgColor') ALTER TABLE BusinessWebsite ADD TopBarBgColor NVARCHAR(20) DEFAULT '#f8f5ef'",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='TopBarTextColor') ALTER TABLE BusinessWebsite ADD TopBarTextColor NVARCHAR(20) DEFAULT '#333333'",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='TopBarAlign') ALTER TABLE BusinessWebsite ADD TopBarAlign NVARCHAR(10) DEFAULT 'right'",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='HeaderBannerURL') ALTER TABLE BusinessWebsite ADD HeaderBannerURL NVARCHAR(1000)",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='HeaderHeight') ALTER TABLE BusinessWebsite ADD HeaderHeight INT DEFAULT 120",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='ShowSiteName') ALTER TABLE BusinessWebsite ADD ShowSiteName BIT DEFAULT 1",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='NavBgImageURL') ALTER TABLE BusinessWebsite ADD NavBgImageURL NVARCHAR(1000)",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterBgImageURL') ALTER TABLE BusinessWebsite ADD FooterBgImageURL NVARCHAR(1000)",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterHTML') ALTER TABLE BusinessWebsite ADD FooterHTML NVARCHAR(MAX)",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterHeight') ALTER TABLE BusinessWebsite ADD FooterHeight INT DEFAULT 200",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='BgImageURL') ALTER TABLE BusinessWebsite ADD BgImageURL NVARCHAR(1000)",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='BgGradient') ALTER TABLE BusinessWebsite ADD BgGradient NVARCHAR(500)",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='HeaderBgWidth') ALTER TABLE BusinessWebsite ADD HeaderBgWidth NVARCHAR(20) DEFAULT '100%'",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterBgWidth') ALTER TABLE BusinessWebsite ADD FooterBgWidth NVARCHAR(20) DEFAULT '100%'",
+    ]:
+        _conn.execute(text(col_ddl))
     _conn.commit()
 
 # ── Pydantic models ──────────────────────────────────────────────
@@ -73,11 +97,60 @@ class SiteCreate(BaseModel):
     canonical_url: Optional[str] = None
     og_image_url: Optional[str] = None
     seo_extras_json: Optional[str] = None
+    # Width controls
+    header_bg_width: Optional[str] = '100%'
+    header_content_width: Optional[str] = '100%'
+    body_content_width: Optional[str] = '100%'
+    body_bg_width: Optional[str] = '100%'
+    footer_content_width: Optional[str] = '100%'
+    footer_bg_width: Optional[str] = '100%'
+    # Top bar
+    top_bar_enabled: Optional[bool] = False
+    top_bar_html: Optional[str] = None
+    top_bar_bg_color: Optional[str] = '#f8f5ef'
+    top_bar_text_color: Optional[str] = '#333333'
+    top_bar_align: Optional[str] = 'right'
+    # Header banner
+    header_banner_url: Optional[str] = None
+    header_height: Optional[int] = 120
+    show_site_name: Optional[bool] = True
+    # Nav bar
+    nav_bg_image_url: Optional[str] = None
+    # Footer
+    footer_bg_image_url: Optional[str] = None
+    footer_html: Optional[str] = None
+    footer_height: Optional[int] = 200
+    # Page background
+    bg_image_url: Optional[str] = None
+    bg_gradient: Optional[str] = None
 
 class SiteUpdate(SiteCreate):
     business_id: Optional[int] = None
     site_name: Optional[str] = None
     slug: Optional[str] = None
+    # All non-None defaults from SiteCreate must be None here so partial saves
+    # (e.g. togglePublish sending only {is_published}) never overwrite stored values
+    primary_color: Optional[str] = None
+    secondary_color: Optional[str] = None
+    accent_color: Optional[str] = None
+    bg_color: Optional[str] = None
+    text_color: Optional[str] = None
+    font_family: Optional[str] = None
+    nav_text_color: Optional[str] = None
+    header_bg_width: Optional[str] = None
+    header_content_width: Optional[str] = None
+    body_content_width: Optional[str] = None
+    body_bg_width: Optional[str] = None
+    footer_content_width: Optional[str] = None
+    footer_bg_width: Optional[str] = None
+    top_bar_enabled: Optional[bool] = None
+    top_bar_bg_color: Optional[str] = None
+    top_bar_text_color: Optional[str] = None
+    top_bar_align: Optional[str] = None
+    header_height: Optional[int] = None
+    footer_height: Optional[int] = None
+    show_site_name: Optional[bool] = None
+    is_published: Optional[bool] = None
 
 class PageCreate(BaseModel):
     website_id: int
@@ -144,6 +217,32 @@ def _ser_site(s: models.BusinessWebsite) -> dict:
         "canonical_url":   s.CanonicalURL,
         "og_image_url":    s.OgImageURL,
         "seo_extras_json": s.SeoExtrasJSON,
+        # Width controls
+        "header_bg_width":      s.HeaderBgWidth or '100%',
+        "header_content_width": s.HeaderContentWidth or '100%',
+        "body_content_width":   s.BodyContentWidth or '100%',
+        "body_bg_width":        s.BodyBgWidth or '100%',
+        "footer_content_width": s.FooterContentWidth or '100%',
+        "footer_bg_width":      s.FooterBgWidth or '100%',
+        # Top bar
+        "top_bar_enabled":    bool(s.TopBarEnabled) if s.TopBarEnabled is not None else False,
+        "top_bar_html":       s.TopBarHTML or '',
+        "top_bar_bg_color":   s.TopBarBgColor or '#f8f5ef',
+        "top_bar_text_color": s.TopBarTextColor or '#333333',
+        "top_bar_align":      s.TopBarAlign or 'right',
+        # Header banner
+        "header_banner_url":  s.HeaderBannerURL or '',
+        "header_height":      s.HeaderHeight or 120,
+        "show_site_name":     bool(s.ShowSiteName) if s.ShowSiteName is not None else True,
+        # Nav bar
+        "nav_bg_image_url":   s.NavBgImageURL or '',
+        # Footer
+        "footer_bg_image_url": s.FooterBgImageURL or '',
+        "footer_html":         s.FooterHTML or '',
+        "footer_height":       s.FooterHeight or 200,
+        # Page background
+        "bg_image_url":        s.BgImageURL or '',
+        "bg_gradient":         s.BgGradient or '',
         "created_at":      str(s.CreatedAt) if s.CreatedAt else None,
         "updated_at":      str(s.UpdatedAt) if s.UpdatedAt else None,
     }
@@ -264,6 +363,31 @@ def update_site(website_id: int, body: SiteUpdate, db: Session = Depends(get_db)
     if body.canonical_url is not None: site.CanonicalURL = body.canonical_url
     if body.og_image_url is not None: site.OgImageURL = body.og_image_url
     if body.seo_extras_json is not None: site.SeoExtrasJSON = body.seo_extras_json
+    # Width controls
+    if body.header_bg_width is not None: site.HeaderBgWidth = body.header_bg_width
+    if body.header_content_width is not None: site.HeaderContentWidth = body.header_content_width
+    if body.body_content_width is not None: site.BodyContentWidth = body.body_content_width
+    if body.body_bg_width is not None: site.BodyBgWidth = body.body_bg_width
+    if body.footer_content_width is not None: site.FooterContentWidth = body.footer_content_width
+    if body.footer_bg_width is not None: site.FooterBgWidth = body.footer_bg_width
+    # Top bar
+    if body.top_bar_enabled is not None: site.TopBarEnabled = body.top_bar_enabled
+    if body.top_bar_html is not None: site.TopBarHTML = body.top_bar_html
+    if body.top_bar_bg_color is not None: site.TopBarBgColor = body.top_bar_bg_color
+    if body.top_bar_text_color is not None: site.TopBarTextColor = body.top_bar_text_color
+    if body.top_bar_align is not None: site.TopBarAlign = body.top_bar_align
+    # Header banner
+    if body.header_banner_url is not None: site.HeaderBannerURL = body.header_banner_url
+    if body.header_height is not None: site.HeaderHeight = body.header_height
+    if body.show_site_name is not None: site.ShowSiteName = body.show_site_name
+    # Nav bar
+    if body.nav_bg_image_url is not None: site.NavBgImageURL = body.nav_bg_image_url
+    # Footer
+    if body.footer_bg_image_url is not None: site.FooterBgImageURL = body.footer_bg_image_url
+    if body.footer_html is not None: site.FooterHTML = body.footer_html
+    if body.footer_height is not None: site.FooterHeight = body.footer_height
+    if body.bg_image_url is not None: site.BgImageURL = body.bg_image_url
+    if body.bg_gradient is not None: site.BgGradient = body.bg_gradient
     site.UpdatedAt = datetime.utcnow()
     db.commit(); db.refresh(site)
     return _ser_site(site)

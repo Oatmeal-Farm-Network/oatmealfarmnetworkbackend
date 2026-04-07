@@ -113,6 +113,22 @@ def list_events(db: Session = Depends(get_db)):
     return [dict(r._mapping) for r in rows]
 
 
+# ── Account: list my events (as organizer) ────────────────────────────────────
+# NOTE: must be defined BEFORE /api/events/{event_id} so FastAPI doesn't match "my-events" as an int
+@router.get("/api/my-events")
+def my_events(business_id: int, db: Session = Depends(get_db)):
+    rows = db.execute(text("""
+        SELECT e.EventID, e.EventName, e.EventStartDate, e.EventEndDate,
+               e.EventType, e.EventLocationCity, e.EventLocationState,
+               e.IsPublished, e.IsFree, e.RegistrationRequired,
+               (SELECT COUNT(1) FROM OFNEventRegistrations r WHERE r.EventID = e.EventID) AS AttendeeCount
+        FROM OFNEvents e
+        WHERE e.BusinessID = :bid AND e.Deleted = 0
+        ORDER BY e.EventStartDate DESC
+    """), {"bid": business_id}).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
 # ── Public: single event detail ───────────────────────────────────────────────
 @router.get("/api/events/{event_id}")
 def get_event(event_id: int, db: Session = Depends(get_db)):
@@ -140,21 +156,6 @@ def get_event(event_id: int, db: Session = Depends(get_db)):
     d["options"] = [dict(r._mapping) for r in opts]
 
     return d
-
-
-# ── Account: list my events (as organizer) ────────────────────────────────────
-@router.get("/api/events/my-events")
-def my_events(business_id: int, db: Session = Depends(get_db)):
-    rows = db.execute(text("""
-        SELECT e.EventID, e.EventName, e.EventStartDate, e.EventEndDate,
-               e.EventType, e.EventLocationCity, e.EventLocationState,
-               e.IsPublished, e.IsFree, e.RegistrationRequired,
-               (SELECT COUNT(1) FROM OFNEventRegistrations r WHERE r.EventID = e.EventID) AS AttendeeCount
-        FROM OFNEvents e
-        WHERE e.BusinessID = :bid AND e.Deleted = 0
-        ORDER BY e.EventStartDate DESC
-    """), {"bid": business_id}).fetchall()
-    return [dict(r._mapping) for r in rows]
 
 
 # ── Create event ──────────────────────────────────────────────────────────────
@@ -370,7 +371,7 @@ def register(event_id: int, data: dict, db: Session = Depends(get_db)):
 
 
 # ── My registrations ──────────────────────────────────────────────────────────
-@router.get("/api/events/my-registrations")
+@router.get("/api/my-registrations")
 def my_registrations(people_id: int, db: Session = Depends(get_db)):
     rows = db.execute(text("""
         SELECT r.RegID, r.EventID, r.RegDate, r.TotalAmount, r.PaymentStatus,
@@ -412,5 +413,14 @@ def update_registration(reg_id: int, data: dict, db: Session = Depends(get_db)):
     db.execute(text("""
         UPDATE OFNEventRegistrations SET PaymentStatus = :status WHERE RegID = :rid
     """), {"rid": reg_id, "status": data.get("PaymentStatus", "pending")})
+    db.commit()
+    return {"ok": True}
+
+
+# ── Delete registration ───────────────────────────────────────────────────────
+@router.delete("/api/events/registrations/{reg_id}")
+def delete_registration(reg_id: int, db: Session = Depends(get_db)):
+    db.execute(text("DELETE FROM OFNEventRegistrationItems WHERE RegID = :rid"), {"rid": reg_id})
+    db.execute(text("DELETE FROM OFNEventRegistrations WHERE RegID = :rid"), {"rid": reg_id})
     db.commit()
     return {"ok": True}
