@@ -521,6 +521,7 @@ class BusinessWebsite(Base):
     FooterBgImageURL= Column(String(1000))
     FooterHTML      = Column(Text)
     FooterHeight    = Column(Integer, default=200)
+    CopyrightBarBgColor = Column(String(20))
     CopyrightText   = Column(String(500))
     IsPublished     = Column(Boolean, default=False)
     MetaTitle       = Column(String(255))
@@ -537,7 +538,8 @@ class BusinessWebsite(Base):
     TopBarTextColor = Column(String(20), default='#333333')
     TopBarAlign     = Column(String(10), default='right')
     # Header banner
-    HeaderBannerURL = Column(String(1000))
+    HeaderBannerURL    = Column(String(1000))
+    HeaderBannerBgColor = Column(String(20))
     HeaderHeight    = Column(Integer, default=120)
     ShowSiteName    = Column(Boolean, default=True)
     # Nav bar
@@ -557,6 +559,8 @@ class BusinessWebPage(Base):
     SortOrder       = Column(Integer, default=0)
     IsPublished     = Column(Boolean, default=True)
     IsHomePage      = Column(Boolean, default=False)
+    ParentPageID    = Column(Integer, nullable=True)
+    IsNavHeading    = Column(Boolean, default=False)
     CreatedAt       = Column(DateTime)
     UpdatedAt       = Column(DateTime)
 
@@ -569,5 +573,13 @@ class BusinessWebBlock(Base):
     SortOrder   = Column(Integer, default=0)
     CreatedAt   = Column(DateTime)
     UpdatedAt   = Column(DateTime)
+
+
+# ── SITE SETTINGS (single-row control table) ─────────────────────
+class SiteSettings(Base):
+    __tablename__ = "SiteSettings"
+    id              = Column(Integer, primary_key=True, default=1)
+    team_only_login = Column(Boolean, nullable=False, default=True)   # True = team members only
+    signup_open     = Column(Boolean, nullable=False, default=False)  # True = join page visible
 
 

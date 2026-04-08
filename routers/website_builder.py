@@ -65,6 +65,8 @@ with engine.connect() as _conn:
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='BgGradient') ALTER TABLE BusinessWebsite ADD BgGradient NVARCHAR(500)",
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='HeaderBgWidth') ALTER TABLE BusinessWebsite ADD HeaderBgWidth NVARCHAR(20) DEFAULT '100%'",
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterBgWidth') ALTER TABLE BusinessWebsite ADD FooterBgWidth NVARCHAR(20) DEFAULT '100%'",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebPage' AND COLUMN_NAME='ParentPageID') ALTER TABLE BusinessWebPage ADD ParentPageID INT NULL",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebPage' AND COLUMN_NAME='IsNavHeading') ALTER TABLE BusinessWebPage ADD IsNavHeading BIT NOT NULL DEFAULT 0",
     ]:
         _conn.execute(text(col_ddl))
     _conn.commit()
@@ -249,7 +251,9 @@ class SiteUpdate(SiteCreate):
     top_bar_text_color: Optional[str] = None
     top_bar_align: Optional[str] = None
     header_height: Optional[int] = None
+    header_banner_bg_color: Optional[str] = None
     footer_height: Optional[int] = None
+    copyright_bar_bg_color: Optional[str] = None
     show_site_name: Optional[bool] = None
     is_published: Optional[bool] = None
 
@@ -263,6 +267,8 @@ class PageCreate(BaseModel):
     sort_order: Optional[int] = 0
     is_published: Optional[bool] = True
     is_home_page: Optional[bool] = False
+    parent_page_id: Optional[int] = None
+    is_nav_heading: Optional[bool] = False
 
 class PageUpdate(BaseModel):
     page_name: Optional[str] = None
@@ -272,6 +278,8 @@ class PageUpdate(BaseModel):
     sort_order: Optional[int] = None
     is_published: Optional[bool] = None
     is_home_page: Optional[bool] = None
+    parent_page_id: Optional[int] = None
+    is_nav_heading: Optional[bool] = None
 
 class BlockCreate(BaseModel):
     page_id: int
@@ -383,15 +391,17 @@ def _ser_site(s: models.BusinessWebsite) -> dict:
         "top_bar_text_color": s.TopBarTextColor or '#333333',
         "top_bar_align":      s.TopBarAlign or 'right',
         # Header banner
-        "header_banner_url":  s.HeaderBannerURL or '',
-        "header_height":      s.HeaderHeight or 120,
-        "show_site_name":     bool(s.ShowSiteName) if s.ShowSiteName is not None else True,
+        "header_banner_url":     s.HeaderBannerURL or '',
+        "header_banner_bg_color": s.HeaderBannerBgColor or '',
+        "header_height":         s.HeaderHeight or 120,
+        "show_site_name":        bool(s.ShowSiteName) if s.ShowSiteName is not None else True,
         # Nav bar
         "nav_bg_image_url":   s.NavBgImageURL or '',
         # Footer
-        "footer_bg_image_url": s.FooterBgImageURL or '',
-        "footer_html":         s.FooterHTML or '',
-        "footer_height":       s.FooterHeight or 200,
+        "footer_bg_image_url":    s.FooterBgImageURL or '',
+        "footer_html":            s.FooterHTML or '',
+        "footer_height":          s.FooterHeight or 200,
+        "copyright_bar_bg_color": s.CopyrightBarBgColor or '',
         # Page background
         "bg_image_url":        s.BgImageURL or '',
         "bg_gradient":         s.BgGradient or '',
@@ -411,6 +421,8 @@ def _ser_page(p: models.BusinessWebPage) -> dict:
         "sort_order":       p.SortOrder or 0,
         "is_published":     bool(p.IsPublished),
         "is_home_page":     bool(p.IsHomePage),
+        "parent_page_id":   p.ParentPageID,
+        "is_nav_heading":   bool(p.IsNavHeading) if p.IsNavHeading is not None else False,
         "created_at":       str(p.CreatedAt) if p.CreatedAt else None,
     }
 
@@ -581,6 +593,7 @@ def update_site(website_id: int, body: SiteUpdate, db: Session = Depends(get_db)
     if body.top_bar_align is not None: site.TopBarAlign = body.top_bar_align
     # Header banner
     if body.header_banner_url is not None: site.HeaderBannerURL = body.header_banner_url
+    if body.header_banner_bg_color is not None: site.HeaderBannerBgColor = body.header_banner_bg_color
     if body.header_height is not None: site.HeaderHeight = body.header_height
     if body.show_site_name is not None: site.ShowSiteName = body.show_site_name
     # Nav bar
@@ -589,6 +602,7 @@ def update_site(website_id: int, body: SiteUpdate, db: Session = Depends(get_db)
     if body.footer_bg_image_url is not None: site.FooterBgImageURL = body.footer_bg_image_url
     if body.footer_html is not None: site.FooterHTML = body.footer_html
     if body.footer_height is not None: site.FooterHeight = body.footer_height
+    if body.copyright_bar_bg_color is not None: site.CopyrightBarBgColor = body.copyright_bar_bg_color
     if body.bg_image_url is not None: site.BgImageURL = body.bg_image_url
     if body.bg_gradient is not None: site.BgGradient = body.bg_gradient
     site.UpdatedAt = datetime.utcnow()
@@ -612,6 +626,7 @@ def create_page(body: PageCreate, db: Session = Depends(get_db)):
         PageName=body.page_name, Slug=body.slug, PageTitle=body.page_title,
         MetaDescription=body.meta_description, SortOrder=body.sort_order,
         IsPublished=body.is_published, IsHomePage=body.is_home_page,
+        ParentPageID=body.parent_page_id, IsNavHeading=body.is_nav_heading or False,
         CreatedAt=datetime.utcnow(), UpdatedAt=datetime.utcnow()
     )
     db.add(page); db.commit(); db.refresh(page)
@@ -630,7 +645,23 @@ def update_page(page_id: int, body: PageUpdate, db: Session = Depends(get_db)):
     if body.meta_description is not None: page.MetaDescription = body.meta_description
     if body.sort_order is not None: page.SortOrder = body.sort_order
     if body.is_published is not None: page.IsPublished = body.is_published
-    if body.is_home_page is not None: page.IsHomePage = body.is_home_page
+    if body.is_home_page is not None:
+        if body.is_home_page:
+            # Clear home page flag from all sibling pages first
+            db.query(models.BusinessWebPage).filter(
+                models.BusinessWebPage.WebsiteID == page.WebsiteID,
+                models.BusinessWebPage.PageID != page_id,
+            ).update({models.BusinessWebPage.IsHomePage: False})
+        page.IsHomePage = body.is_home_page
+    # parent_page_id: use exclude_unset to distinguish "not sent" from "explicitly set to null"
+    try:
+        _unset = body.model_dump(exclude_unset=True)
+    except AttributeError:
+        _unset = body.dict(exclude_unset=True)
+    if 'parent_page_id' in _unset:
+        page.ParentPageID = body.parent_page_id
+    if body.is_nav_heading is not None:
+        page.IsNavHeading = body.is_nav_heading
     page.UpdatedAt = datetime.utcnow()
     db.commit(); db.refresh(page)
     return _ser_page(page)
@@ -642,6 +673,10 @@ def delete_page(page_id: int, db: Session = Depends(get_db)):
     ).first()
     if not page:
         raise HTTPException(status_code=404, detail="Page not found")
+    # Promote any child pages to top-level before deleting the parent
+    db.query(models.BusinessWebPage).filter(
+        models.BusinessWebPage.ParentPageID == page_id
+    ).update({models.BusinessWebPage.ParentPageID: None})
     db.query(models.BusinessWebBlock).filter(
         models.BusinessWebBlock.PageID == page_id
     ).delete()
