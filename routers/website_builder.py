@@ -71,6 +71,9 @@ with engine.connect() as _conn:
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='DropdownHoverColor') ALTER TABLE BusinessWebsite ADD DropdownHoverColor NVARCHAR(50)",
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='DropdownBgColor2') ALTER TABLE BusinessWebsite ADD DropdownBgColor2 NVARCHAR(50)",
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='DropdownGradientDir') ALTER TABLE BusinessWebsite ADD DropdownGradientDir NVARCHAR(20) DEFAULT '135deg'",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='HeaderBannerBgColor') ALTER TABLE BusinessWebsite ADD HeaderBannerBgColor NVARCHAR(20)",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='CopyrightBarBgColor') ALTER TABLE BusinessWebsite ADD CopyrightBarBgColor NVARCHAR(20)",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FaviconURL') ALTER TABLE BusinessWebsite ADD FaviconURL NVARCHAR(1000)",
     ]:
         _conn.execute(text(col_ddl))
     _conn.commit()
@@ -83,6 +86,7 @@ class SiteCreate(BaseModel):
     slug: str
     tagline: Optional[str] = None
     logo_url: Optional[str] = None
+    favicon_url: Optional[str] = None
     primary_color: Optional[str] = '#3D6B34'
     secondary_color: Optional[str] = '#819360'
     accent_color: Optional[str] = '#FFC567'
@@ -318,6 +322,7 @@ def _ser_site(s: models.BusinessWebsite) -> dict:
         "slug":           s.Slug,
         "tagline":        s.Tagline,
         "logo_url":       s.LogoURL,
+        "favicon_url":    s.FaviconURL or '',
         "primary_color":  s.PrimaryColor or '#3D6B34',
         "secondary_color":s.SecondaryColor or '#819360',
         "accent_color":   s.AccentColor or '#FFC567',
@@ -523,6 +528,7 @@ def update_site(website_id: int, body: SiteUpdate, db: Session = Depends(get_db)
         site.Slug = body.slug
     if body.tagline is not None: site.Tagline = body.tagline
     if body.logo_url is not None: site.LogoURL = body.logo_url
+    if body.favicon_url is not None: site.FaviconURL = body.favicon_url
     if body.primary_color is not None: site.PrimaryColor = body.primary_color
     if body.secondary_color is not None: site.SecondaryColor = body.secondary_color
     if body.accent_color is not None: site.AccentColor = body.accent_color
@@ -851,20 +857,27 @@ def get_marketplace(business_id: int, db: Session = Depends(get_db)):
         return []
 
 @router.get("/content/blog")
-def get_blog(business_id: int, db: Session = Depends(get_db)):
+def get_blog(business_id: int, limit: int = 10, category: Optional[str] = None,
+             db: Session = Depends(get_db)):
     try:
-        # blog is linked to PeopleID, find via business
-        rows = db.execute(text("""
-            SELECT TOP 10 b.BlogID, b.BlogHeadline, b.Author,
-                   b.BlogYear, b.BlogMonth, b.BlogDay,
-                   b.BlogText1, b.BlogImage1
+        where = ["b.BusinessID = :bid", "b.IsPublished = 1"]
+        params = {"bid": business_id, "limit": limit}
+        if category:
+            where.append("bc.BlogCategoryName = :cat")
+            params["cat"] = category
+        where_sql = " AND ".join(where)
+        rows = db.execute(text(f"""
+            SELECT TOP (:limit)
+                   b.BlogID, b.Title, b.Author, b.AuthorLink,
+                   b.CoverImage, b.Content, b.IsFeatured,
+                   b.CreatedAt, bc.BlogCategoryName
             FROM blog b
-            JOIN BusinessAccess ba ON ba.PeopleID = b.PeopleID
-            WHERE ba.BusinessID = :bid AND b.BlogDisplay = 1
-            ORDER BY b.BlogYear DESC, b.BlogMonth DESC, b.BlogDay DESC
-        """), {"bid": business_id}).fetchall()
+            LEFT JOIN blogcategories bc ON bc.BlogCatID = b.BlogCatID
+            WHERE {where_sql}
+            ORDER BY b.IsFeatured DESC, b.CreatedAt DESC
+        """), params).fetchall()
         return [dict(r._mapping) for r in rows]
-    except Exception as e:
+    except Exception:
         return []
 
 @router.get("/content/gallery")
@@ -911,15 +924,8 @@ def check_content(business_id: int, db: Session = Depends(get_db)):
 
 # ── Full site bundle (for public renderer) ───────────────────────
 
-@router.get("/bundle/{slug}")
-def get_site_bundle(slug: str, db: Session = Depends(get_db)):
-    """Returns site + all pages + all blocks in a single request for the public renderer."""
-    site = db.query(models.BusinessWebsite).filter(
-        models.BusinessWebsite.Slug == slug
-    ).first()
-    if not site:
-        raise HTTPException(status_code=404, detail="Site not found")
-
+def _build_bundle(site: models.BusinessWebsite, db) -> dict:
+    """Shared helper: serialise site + published pages + blocks."""
     pages = db.query(models.BusinessWebPage).filter(
         models.BusinessWebPage.WebsiteID == site.WebsiteID,
         models.BusinessWebPage.IsPublished == True
@@ -937,6 +943,36 @@ def get_site_bundle(slug: str, db: Session = Depends(get_db)):
     site_data = _ser_site(site)
     site_data["pages"] = result_pages
     return site_data
+
+
+@router.get("/bundle/{slug}")
+def get_site_bundle(slug: str, db: Session = Depends(get_db)):
+    """Returns site + all pages + all blocks in a single request for the public renderer."""
+    site = db.query(models.BusinessWebsite).filter(
+        models.BusinessWebsite.Slug == slug
+    ).first()
+    if not site:
+        raise HTTPException(status_code=404, detail="Site not found")
+    return _build_bundle(site, db)
+
+
+@router.get("/bundle-by-domain")
+def get_site_bundle_by_domain(domain: str, db: Session = Depends(get_db)):
+    """Looks up a site by canonical URL / custom domain and returns its full bundle.
+    Strips protocol and trailing slashes before matching so 'yourfarm.com',
+    'https://yourfarm.com', and 'https://yourfarm.com/' all resolve the same site.
+    """
+    # Normalise: strip protocol and trailing slash
+    clean = domain.lower().replace("https://", "").replace("http://", "").rstrip("/")
+    if not clean:
+        raise HTTPException(status_code=400, detail="domain parameter is required")
+
+    site = db.query(models.BusinessWebsite).filter(
+        models.BusinessWebsite.CanonicalURL.ilike(f"%{clean}%")
+    ).first()
+    if not site:
+        raise HTTPException(status_code=404, detail="No site found for this domain")
+    return _build_bundle(site, db)
 
 
 # ── Image upload ─────────────────────────────────────────────────
@@ -1111,7 +1147,7 @@ def restore_version(version_id: int, db: Session = Depends(get_db)):
     site = db.query(models.BusinessWebsite).filter(models.BusinessWebsite.WebsiteID == website_id).first()
     if site and site_data:
         for field, col in [
-            ("site_name","SiteName"),("tagline","Tagline"),("logo_url","LogoURL"),
+            ("site_name","SiteName"),("tagline","Tagline"),("logo_url","LogoURL"),("favicon_url","FaviconURL"),
             ("primary_color","PrimaryColor"),("secondary_color","SecondaryColor"),
             ("accent_color","AccentColor"),("bg_color","BgColor"),("text_color","TextColor"),
             ("font_family","FontFamily"),("nav_text_color","NavTextColor"),

@@ -26,25 +26,44 @@ from routers import website_ai
 from routers import sfproducts
 from routers import events
 from routers import company_features
+from routers import blog
 
 from routers.marketplace import marketplace_router
 from marketplace_stripe import stripe_router
 
 load_dotenv()
 
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+ALLOWED_ORIGINS = [
+    "http://localhost:5173", "http://localhost:3000",
+    "https://oatmealfarmnetwork-802455386518.us-central1.run.app",
+    "https://oatmealfarmnewtorkbackend-802455386518.us-central1.run.app",
+    "https://crop-detection-dcecevhvh5ard2ah.eastus-01.azurewebsites.net",
+    "https://www.oatmealfarmnetwork.com", "https://oatmealfarmnetwork.com",
+]
+
 app = FastAPI()
+
+# Catch unhandled exceptions and return JSON so the CORS middleware
+# can still attach its headers to the response.
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    origin = request.headers.get("origin", "")
+    headers = {}
+    if origin in ALLOWED_ORIGINS:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {str(exc)}"},
+        headers=headers,
+    )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:3000",
-        "https://oatmealfarmnetwork-802455386518.us-central1.run.app",
-        "https://oatmealfarmnewtorkbackend-802455386518.us-central1.run.app",
-        "https://crop-detection-dcecevhvh5ard2ah.eastus-01.azurewebsites.net",
-        "https://www.oatmealfarmnetwork.com",
-        "https://oatmealfarmnetwork.com",
-    ],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -73,6 +92,7 @@ app.include_router(website_ai.router)
 app.include_router(sfproducts.router)
 app.include_router(events.router)
 app.include_router(company_features.router)
+app.include_router(blog.router)
 
 
 @app.get("/health")

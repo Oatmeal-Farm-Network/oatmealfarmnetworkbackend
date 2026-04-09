@@ -589,3 +589,19 @@ class SiteSettings(Base):
     signup_open     = Column(Boolean, nullable=False, default=False)  # True = join page visible
 
 
+
+
+# ── BUSINESS BLOG POSTS ──────────────────────────────────────────
+class BusinessBlogPost(Base):
+    __tablename__ = "BusinessBlogPosts"
+    PostID       = Column(Integer, primary_key=True, autoincrement=True)
+    BusinessID   = Column(Integer, nullable=False, index=True)
+    Title        = Column(String(500), nullable=False)
+    Slug         = Column(String(500))
+    Excerpt      = Column(String(1000))
+    Content      = Column(Text)
+    CoverImage   = Column(String(500))
+    Category     = Column(String(100))
+    IsPublished  = Column(Boolean, default=False)
+    CreatedAt    = Column(DateTime)
+    UpdatedAt    = Column(DateTime)
