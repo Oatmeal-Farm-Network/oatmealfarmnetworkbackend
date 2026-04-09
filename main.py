@@ -25,6 +25,7 @@ from routers import website_builder
 from routers import website_ai
 from routers import sfproducts
 from routers import events
+from routers import company_features
 
 from routers.marketplace import marketplace_router
 from marketplace_stripe import stripe_router
@@ -41,6 +42,8 @@ app.add_middleware(
         "https://oatmealfarmnetwork-802455386518.us-central1.run.app",
         "https://oatmealfarmnewtorkbackend-802455386518.us-central1.run.app",
         "https://crop-detection-dcecevhvh5ard2ah.eastus-01.azurewebsites.net",
+        "https://www.oatmealfarmnetwork.com",
+        "https://oatmealfarmnetwork.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -69,6 +72,7 @@ app.include_router(website_builder.router)
 app.include_router(website_ai.router)
 app.include_router(sfproducts.router)
 app.include_router(events.router)
+app.include_router(company_features.router)
 
 
 @app.get("/health")
