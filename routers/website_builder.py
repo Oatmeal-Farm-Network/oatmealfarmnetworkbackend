@@ -67,6 +67,10 @@ with engine.connect() as _conn:
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterBgWidth') ALTER TABLE BusinessWebsite ADD FooterBgWidth NVARCHAR(20) DEFAULT '100%'",
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebPage' AND COLUMN_NAME='ParentPageID') ALTER TABLE BusinessWebPage ADD ParentPageID INT NULL",
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebPage' AND COLUMN_NAME='IsNavHeading') ALTER TABLE BusinessWebPage ADD IsNavHeading BIT NOT NULL DEFAULT 0",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='DropdownBgColor') ALTER TABLE BusinessWebsite ADD DropdownBgColor NVARCHAR(50)",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='DropdownHoverColor') ALTER TABLE BusinessWebsite ADD DropdownHoverColor NVARCHAR(50)",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='DropdownBgColor2') ALTER TABLE BusinessWebsite ADD DropdownBgColor2 NVARCHAR(50)",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='DropdownGradientDir') ALTER TABLE BusinessWebsite ADD DropdownGradientDir NVARCHAR(20) DEFAULT '135deg'",
     ]:
         _conn.execute(text(col_ddl))
     _conn.commit()
@@ -157,6 +161,10 @@ class SiteCreate(BaseModel):
     body_font: Optional[str] = ''
     link_color: Optional[str] = ''
     link_underline: Optional[bool] = True
+    dropdown_bg_color: Optional[str] = None
+    dropdown_hover_color: Optional[str] = None
+    dropdown_bg_color2: Optional[str] = None
+    dropdown_gradient_dir: Optional[str] = '135deg'
     # Top bar
     top_bar_enabled: Optional[bool] = False
     top_bar_html: Optional[str] = None
@@ -246,6 +254,10 @@ class SiteUpdate(SiteCreate):
     body_font: Optional[str] = None
     link_color: Optional[str] = None
     link_underline: Optional[bool] = None
+    dropdown_bg_color: Optional[str] = None
+    dropdown_hover_color: Optional[str] = None
+    dropdown_bg_color2: Optional[str] = None
+    dropdown_gradient_dir: Optional[str] = None
     top_bar_enabled: Optional[bool] = None
     top_bar_bg_color: Optional[str] = None
     top_bar_text_color: Optional[str] = None
@@ -382,8 +394,12 @@ def _ser_site(s: models.BusinessWebsite) -> dict:
         "body_margin_top":    s.BodyMarginTop if s.BodyMarginTop is not None else 0,
         "body_margin_bottom": s.BodyMarginBottom if s.BodyMarginBottom is not None else 12,
         "body_font":          s.BodyFont or '',
-        "link_color":       s.LinkColor or '',
-        "link_underline":   bool(s.LinkUnderline) if s.LinkUnderline is not None else True,
+        "link_color":          s.LinkColor or '',
+        "link_underline":      bool(s.LinkUnderline) if s.LinkUnderline is not None else True,
+        "dropdown_bg_color":    s.DropdownBgColor or '',
+        "dropdown_hover_color": s.DropdownHoverColor or '',
+        "dropdown_bg_color2":   s.DropdownBgColor2 or '',
+        "dropdown_gradient_dir":s.DropdownGradientDir or '135deg',
         # Top bar
         "top_bar_enabled":    bool(s.TopBarEnabled) if s.TopBarEnabled is not None else False,
         "top_bar_html":       s.TopBarHTML or '',
@@ -585,6 +601,10 @@ def update_site(website_id: int, body: SiteUpdate, db: Session = Depends(get_db)
     if body.body_font is not None: site.BodyFont = body.body_font
     if body.link_color is not None: site.LinkColor = body.link_color
     if body.link_underline is not None: site.LinkUnderline = body.link_underline
+    if body.dropdown_bg_color is not None: site.DropdownBgColor = body.dropdown_bg_color
+    if body.dropdown_hover_color is not None: site.DropdownHoverColor = body.dropdown_hover_color
+    if body.dropdown_bg_color2 is not None: site.DropdownBgColor2 = body.dropdown_bg_color2
+    if body.dropdown_gradient_dir is not None: site.DropdownGradientDir = body.dropdown_gradient_dir
     # Top bar
     if body.top_bar_enabled is not None: site.TopBarEnabled = body.top_bar_enabled
     if body.top_bar_html is not None: site.TopBarHTML = body.top_bar_html
