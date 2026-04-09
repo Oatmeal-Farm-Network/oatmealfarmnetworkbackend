@@ -548,6 +548,8 @@ class BusinessWebsite(Base):
     ShowSiteName    = Column(Boolean, default=True)
     # Nav bar
     NavBgImageURL   = Column(String(1000))
+    # Favicon
+    FaviconURL      = Column(String(1000))
     CreatedAt       = Column(DateTime)
     UpdatedAt       = Column(DateTime)
 
