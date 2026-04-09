@@ -26,11 +26,31 @@ class ForgotPasswordRequest(BaseModel):
 
 
 # -------------------------
+# Public site settings (no auth required — login/signup pages need this)
+# -------------------------
+@router.get("/site-settings")
+def get_site_settings(db: Session = Depends(get_db)):
+    settings = db.query(models.SiteSettings).filter(models.SiteSettings.id == 1).first()
+    if not settings:
+        # Row missing — return safe defaults (open)
+        return {"team_only_login": False, "signup_open": True}
+    return {
+        "team_only_login": bool(settings.team_only_login),
+        "signup_open": bool(settings.signup_open),
+    }
+
+
+# -------------------------
 # Signup
 # -------------------------
 @router.post("/signup")
 def signup(request: SignupRequest, db: Session = Depends(get_db)):
     from datetime import datetime
+
+    # Check if signup is currently open
+    settings = db.query(models.SiteSettings).filter(models.SiteSettings.id == 1).first()
+    if settings and not settings.signup_open:
+        raise HTTPException(status_code=403, detail="Registration is currently closed.")
 
     email = request.Email.strip().lower()
 
@@ -134,6 +154,14 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email or password"
+            )
+
+        # If team-only login is active, reject accounts with accesslevel < 1
+        settings = db.query(models.SiteSettings).filter(models.SiteSettings.id == 1).first()
+        if settings and settings.team_only_login and (user.accesslevel or 0) < 1:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access is currently restricted to team members only."
             )
 
         token = create_access_token(data={"sub": user.PeopleID})

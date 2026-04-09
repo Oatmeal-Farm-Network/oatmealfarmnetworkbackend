@@ -20,6 +20,7 @@ engine = create_engine(
     pool_recycle=300,
     pool_size=5,
     max_overflow=10,
+    connect_args={"timeout": 10, "login_timeout": 10},
 )
 
 # Declarative base
@@ -44,5 +45,7 @@ def get_db_cursor():
         user=os.getenv("DB_USER"),
         password=os.getenv("DB_PASSWORD"),
         database=os.getenv("DB_NAME"),
+        timeout=10,
+        login_timeout=10,
     )
     return conn.cursor(as_dict=True)

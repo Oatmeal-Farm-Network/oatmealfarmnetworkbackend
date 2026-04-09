@@ -579,3 +579,11 @@ class BusinessWebBlock(Base):
     UpdatedAt   = Column(DateTime)
 
 
+# ── SITE SETTINGS (single-row control table) ─────────────────────
+class SiteSettings(Base):
+    __tablename__ = "SiteSettings"
+    id              = Column(Integer, primary_key=True, default=1)
+    team_only_login = Column(Boolean, nullable=False, default=True)   # True = team members only
+    signup_open     = Column(Boolean, nullable=False, default=False)  # True = join page visible
+
+
