@@ -970,6 +970,16 @@ def get_site_bundle_by_domain(domain: str, db: Session = Depends(get_db)):
     site = db.query(models.BusinessWebsite).filter(
         models.BusinessWebsite.CanonicalURL.ilike(f"%{clean}%")
     ).first()
+    # If not found and domain has www., try the bare domain (and vice versa)
+    if not site and clean.startswith("www."):
+        bare = clean[4:]
+        site = db.query(models.BusinessWebsite).filter(
+            models.BusinessWebsite.CanonicalURL.ilike(f"%{bare}%")
+        ).first()
+    elif not site and not clean.startswith("www."):
+        site = db.query(models.BusinessWebsite).filter(
+            models.BusinessWebsite.CanonicalURL.ilike(f"%www.{clean}%")
+        ).first()
     if not site:
         raise HTTPException(status_code=404, detail="No site found for this domain")
     return _build_bundle(site, db)
