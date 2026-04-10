@@ -1,0 +1,32 @@
+steps:
+  # Build Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/animated-flare-421518/cloud-run-source-deploy/oatmealfarmnetworkbackend/oatmealfarmnewtorkbackend:latest'
+      - '.'
+
+  # Push image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'us-central1-docker.pkg.dev/animated-flare-421518/cloud-run-source-deploy/oatmealfarmnetworkbackend/oatmealfarmnewtorkbackend:latest'
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'oatmealfarmnewtorkbackend'
+      - '--image'
+      - 'us-central1-docker.pkg.dev/animated-flare-421518/cloud-run-source-deploy/oatmealfarmnetworkbackend/oatmealfarmnewtorkbackend:latest'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+
+images:
+  - 'us-central1-docker.pkg.dev/animated-flare-421518/cloud-run-source-deploy/oatmealfarmnetworkbackend/oatmealfarmnewtorkbackend:latest'

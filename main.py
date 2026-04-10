@@ -52,7 +52,10 @@ def _is_allowed_origin(origin: str) -> bool:
         return False
     if origin in ALLOWED_ORIGINS:
         return True
+<<<<<<< HEAD
     # Allow any HTTPS origin that matches a site's CanonicalURL in the DB.
+=======
+>>>>>>> c0e7f02edd62b7606910c066a883a6129d6a2be2
     if origin.startswith("https://"):
         try:
             from sqlalchemy import text as sa_text
@@ -79,7 +82,10 @@ class DynamicCORSMiddleware(BaseHTTPMiddleware):
         origin = request.headers.get("origin", "")
         allowed = _is_allowed_origin(origin)
 
+<<<<<<< HEAD
         # Handle CORS preflight
+=======
+>>>>>>> c0e7f02edd62b7606910c066a883a6129d6a2be2
         if request.method == "OPTIONS":
             resp = Response(status_code=204)
             if allowed:
@@ -97,7 +103,10 @@ class DynamicCORSMiddleware(BaseHTTPMiddleware):
 
 app = FastAPI()
 
+<<<<<<< HEAD
 # Catch unhandled exceptions and return JSON so CORS headers are still attached.
+=======
+>>>>>>> c0e7f02edd62b7606910c066a883a6129d6a2be2
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     origin = request.headers.get("origin", "")
