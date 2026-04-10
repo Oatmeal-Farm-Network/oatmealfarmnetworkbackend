@@ -985,6 +985,66 @@ def get_site_bundle_by_domain(domain: str, db: Session = Depends(get_db)):
     return _build_bundle(site, db)
 
 
+# ── Contact form submission ───────────────────────────────────────
+
+class ContactFormPayload(BaseModel):
+    first_name: str
+    last_name: str
+    email: str
+    phone: str = ""
+    organization: str = ""
+    message: str
+    to_email: str
+    site_name: str = ""
+
+@router.post("/contact-form")
+def submit_contact_form(payload: ContactFormPayload):
+    import os
+    try:
+        import sendgrid
+        from sendgrid.helpers.mail import Mail, Email, To, Content
+        api_key = os.getenv("SENDGRID_API_KEY", "")
+        from_email = os.getenv("FROM_EMAIL", "john@oatmeal-ai.com")
+        from_name  = os.getenv("FROM_NAME",  "Oatmeal Farm Network")
+        if not api_key:
+            raise HTTPException(status_code=500, detail="Email service not configured")
+        subject = f"New contact form message from {payload.first_name} {payload.last_name}"
+        if payload.site_name:
+            subject += f" via {payload.site_name}"
+        rows = [
+            ("First Name", payload.first_name),
+            ("Last Name",  payload.last_name),
+            ("Email",      payload.email),
+            ("Phone",      payload.phone or "—"),
+            ("Organization", payload.organization or "—"),
+            ("Message",    payload.message.replace("\n", "<br>")),
+        ]
+        html = f"""
+        <div style="font-family:sans-serif;max-width:600px;margin:0 auto">
+          <h2 style="color:#374151">Contact Form Submission</h2>
+          <table style="width:100%;border-collapse:collapse">
+            {"".join(f'<tr><td style="padding:8px 12px;border-bottom:1px solid #e5e7eb;font-weight:600;width:140px;color:#6b7280;vertical-align:top">{k}</td><td style="padding:8px 12px;border-bottom:1px solid #e5e7eb">{v}</td></tr>' for k,v in rows)}
+          </table>
+          <p style="color:#9ca3af;font-size:12px;margin-top:24px">Sent via {payload.site_name or "your website"} contact form.</p>
+        </div>"""
+        msg = Mail(
+            from_email=Email(from_email, from_name),
+            to_emails=To(payload.to_email),
+            subject=subject,
+            html_content=Content("text/html", html),
+        )
+        # Reply-to the visitor's email
+        msg.reply_to = payload.email
+        sg = sendgrid.SendGridAPIClient(api_key=api_key)
+        sg.send(msg)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[contact-form] send failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send message")
+    return {"ok": True}
+
+
 # ── Image upload ─────────────────────────────────────────────────
 
 GCS_BUCKET  = "oatmeal-farm-network-images"
