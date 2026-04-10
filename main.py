@@ -61,6 +61,14 @@ def _is_allowed_origin(origin: str) -> bool:
                     sa_text("SELECT 1 FROM BusinessWebsite WHERE CanonicalURL LIKE :pat LIMIT 1"),
                     {"pat": f"%{clean}%"}
                 ).first()
+                if row is not None:
+                    return True
+                # Try www/non-www alternative
+                alt = clean[4:] if clean.startswith("www.") else f"www.{clean}"
+                row = db.execute(
+                    sa_text("SELECT 1 FROM BusinessWebsite WHERE CanonicalURL LIKE :pat LIMIT 1"),
+                    {"pat": f"%{alt}%"}
+                ).first()
                 return row is not None
         except Exception:
             pass
