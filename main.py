@@ -56,18 +56,11 @@ def _is_allowed_origin(origin: str) -> bool:
         try:
             from sqlalchemy import text as sa_text
             clean = origin.replace("https://", "").replace("http://", "").rstrip("/")
+            alt = clean[4:] if clean.startswith("www.") else f"www.{clean}"
             with SessionLocal() as db:
                 row = db.execute(
-                    sa_text("SELECT 1 FROM BusinessWebsite WHERE CanonicalURL LIKE :pat LIMIT 1"),
-                    {"pat": f"%{clean}%"}
-                ).first()
-                if row is not None:
-                    return True
-                # Try www/non-www alternative
-                alt = clean[4:] if clean.startswith("www.") else f"www.{clean}"
-                row = db.execute(
-                    sa_text("SELECT 1 FROM BusinessWebsite WHERE CanonicalURL LIKE :pat LIMIT 1"),
-                    {"pat": f"%{alt}%"}
+                    sa_text("SELECT TOP 1 1 FROM BusinessWebsite WHERE CanonicalURL LIKE :pat OR CanonicalURL LIKE :alt"),
+                    {"pat": f"%{clean}%", "alt": f"%{alt}%"}
                 ).first()
                 return row is not None
         except Exception:
