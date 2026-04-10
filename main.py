@@ -1,5 +1,7 @@
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy.orm import Session
 from routers import auth
 from database import get_db, SessionLocal
@@ -44,15 +46,63 @@ ALLOWED_ORIGINS = [
     "https://www.oatmealfarmnetwork.com", "https://oatmealfarmnetwork.com",
 ]
 
+def _is_allowed_origin(origin: str) -> bool:
+    """Return True if origin is in the static list or matches a registered custom domain in the DB."""
+    if not origin:
+        return False
+    if origin in ALLOWED_ORIGINS:
+        return True
+    # Allow any HTTPS origin that matches a site's CanonicalURL in the DB.
+    if origin.startswith("https://"):
+        try:
+            from sqlalchemy import text as sa_text
+            clean = origin.replace("https://", "").replace("http://", "").rstrip("/")
+            with SessionLocal() as db:
+                row = db.execute(
+                    sa_text("SELECT 1 FROM BusinessWebsite WHERE CanonicalURL LIKE :pat LIMIT 1"),
+                    {"pat": f"%{clean}%"}
+                ).first()
+                return row is not None
+        except Exception:
+            pass
+    return False
+
+class DynamicCORSMiddleware(BaseHTTPMiddleware):
+    """Replaces the static CORSMiddleware so registered custom domains are allowed automatically."""
+    CORS_HEADERS = {
+        "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+        "Access-Control-Max-Age": "86400",
+    }
+
+    async def dispatch(self, request: Request, call_next):
+        origin = request.headers.get("origin", "")
+        allowed = _is_allowed_origin(origin)
+
+        # Handle CORS preflight
+        if request.method == "OPTIONS":
+            resp = Response(status_code=204)
+            if allowed:
+                resp.headers["Access-Control-Allow-Origin"] = origin
+                resp.headers["Access-Control-Allow-Credentials"] = "true"
+                for k, v in self.CORS_HEADERS.items():
+                    resp.headers[k] = v
+            return resp
+
+        response = await call_next(request)
+        if allowed:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+        return response
+
 app = FastAPI()
 
-# Catch unhandled exceptions and return JSON so the CORS middleware
-# can still attach its headers to the response.
+# Catch unhandled exceptions and return JSON so CORS headers are still attached.
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     origin = request.headers.get("origin", "")
     headers = {}
-    if origin in ALLOWED_ORIGINS:
+    if _is_allowed_origin(origin):
         headers["Access-Control-Allow-Origin"] = origin
         headers["Access-Control-Allow-Credentials"] = "true"
     return JSONResponse(
@@ -61,13 +111,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
         headers=headers,
     )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(DynamicCORSMiddleware)
 
 app.include_router(auth.router)
 app.include_router(businesses.router)
