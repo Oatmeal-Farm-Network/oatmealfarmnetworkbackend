@@ -275,7 +275,7 @@ def list_public_posts(
         where.append("b.BlogCatID = :cid")
         params["cid"] = blog_cat_id
     if category_name:
-        where.append("bc.BlogCategoryName = :cname")
+        where.append("(bc.BlogCategoryName = :cname OR cc.BlogCategoryName = :cname)")
         params["cname"] = category_name
     if featured_only:
         where.append("b.IsFeatured = 1")
