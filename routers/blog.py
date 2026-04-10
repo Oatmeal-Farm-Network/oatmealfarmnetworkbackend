@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -6,6 +6,7 @@ from database import get_db
 from pydantic import BaseModel
 from typing import Optional
 import re
+import uuid
 from datetime import datetime
 
 router = APIRouter(prefix="/api/blog", tags=["blog"])
@@ -33,6 +34,26 @@ def _ensure_schema(db: Session):
     if _schema_migrated:
         return
 
+    # Create blogauthors table if it doesn't exist
+    try:
+        db.execute(text("""
+            IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'blogauthors')
+            CREATE TABLE blogauthors (
+                AuthorID  INT IDENTITY(1,1) PRIMARY KEY,
+                BusinessID INT NULL,
+                Name      NVARCHAR(200) NOT NULL,
+                Bio       NVARCHAR(MAX) NULL,
+                AvatarURL NVARCHAR(500) NULL,
+                AuthorLink NVARCHAR(500) NULL,
+                Slug      NVARCHAR(200) NULL,
+                CreatedAt DATETIME NULL,
+                UpdatedAt DATETIME NULL
+            )
+        """))
+        db.commit()
+    except Exception:
+        db.rollback()
+
     additions = [
         # blog
         ("blog", "BusinessID",  "INT NULL"),
@@ -42,9 +63,13 @@ def _ensure_schema(db: Session):
         ("blog", "Content",     "NVARCHAR(MAX) NULL"),
         ("blog", "IsPublished", "BIT NOT NULL DEFAULT 0"),
         ("blog", "IsFeatured",  "BIT NOT NULL DEFAULT 0"),
-        ("blog", "CreatedAt",   "DATETIME NULL"),
-        ("blog", "UpdatedAt",   "DATETIME NULL"),
-        ("blog", "CustomCatID", "INT NULL"),   # personal/business category
+        ("blog", "CreatedAt",    "DATETIME NULL"),
+        ("blog", "UpdatedAt",    "DATETIME NULL"),
+        ("blog", "PublishedAt",        "DATETIME NULL"),
+        ("blog", "CustomCatID",        "INT NULL"),
+        ("blog", "AuthorID",           "INT NULL"),       # FK to blogauthors
+        ("blog", "ShowOnDirectory",    "BIT NOT NULL DEFAULT 1"),
+        ("blog", "ShowOnWebsite",      "BIT NOT NULL DEFAULT 1"),
         # blogcategories
         ("blogcategories", "BusinessID", "INT NULL"),
         ("blogcategories", "IsGlobal",   "BIT NOT NULL DEFAULT 0"),
@@ -69,48 +94,71 @@ def _ensure_schema(db: Session):
         except Exception:
             db.rollback()
 
-    # If the old BlogCategoryDisplay NOT NULL column still exists (pre-migration),
-    # add a DEFAULT 1 so our INSERTs don't have to supply it.
-    try:
-        has_old_col = db.execute(text(
-            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
-            "WHERE TABLE_NAME='blogcategories' AND COLUMN_NAME='BlogCategoryDisplay'"
-        )).scalar()
-        if has_old_col:
-            has_default = db.execute(text(
-                "SELECT COUNT(*) FROM sys.default_constraints "
-                "WHERE parent_object_id = OBJECT_ID('blogcategories') "
-                "AND COL_NAME(parent_object_id, parent_column_id) = 'BlogCategoryDisplay'"
-            )).scalar()
-            if not has_default:
-                db.execute(text(
-                    "ALTER TABLE blogcategories "
-                    "ADD CONSTRAINT DF_blogcategories_display DEFAULT 1 FOR BlogCategoryDisplay"
-                ))
-                db.commit()
-    except Exception:
-        db.rollback()
+    # Fix any legacy NOT NULL columns that lack a DEFAULT — so our INSERTs
+    # don't have to supply them.
+    legacy_defaults = [
+        ('blogcategories', 'BlogCategoryDisplay', 'DF_blogcategories_display', '1'),
+        ('blog',           'BlogDisplay',         'DF_blog_display',           '1'),
+    ]
+    for tbl, col, constraint_name, default_val in legacy_defaults:
+        try:
+            has_col = db.execute(text(
+                "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
+                "WHERE TABLE_NAME=:t AND COLUMN_NAME=:c"
+            ), {"t": tbl, "c": col}).scalar()
+            if has_col:
+                has_default = db.execute(text(
+                    "SELECT COUNT(*) FROM sys.default_constraints "
+                    "WHERE parent_object_id = OBJECT_ID(:t) "
+                    "AND COL_NAME(parent_object_id, parent_column_id) = :c"
+                ), {"t": tbl, "c": col}).scalar()
+                if not has_default:
+                    db.execute(text(
+                        f"ALTER TABLE [{tbl}] ADD CONSTRAINT [{constraint_name}] "
+                        f"DEFAULT {default_val} FOR [{col}]"
+                    ))
+                    db.commit()
+        except Exception:
+            db.rollback()
 
-    # Seed global categories — only if IsGlobal column now exists
+    # Seed global categories — use per-row existence check to prevent duplicates
+    # on concurrent startup or repeated reloads.
+    global_seeds = [
+        ('General',        1),
+        ('Farm News',      2),
+        ('Recipes',        3),
+        ('Seasonal',       4),
+        ('Events',         5),
+        ('Education',      6),
+        ('Market Updates', 7),
+        ('Community',      8),
+    ]
     try:
-        count = db.execute(text(
-            "SELECT COUNT(*) FROM blogcategories WHERE IsGlobal = 1"
-        )).scalar()
-        if count == 0:
-            db.execute(text("""
-                INSERT INTO blogcategories
-                    (BusinessID, IsGlobal, BlogCategoryName, BlogCategoryOrder, IsActive, CreatedAt)
-                VALUES
-                  (NULL,1,'General',       1,1,GETDATE()),
-                  (NULL,1,'Farm News',     2,1,GETDATE()),
-                  (NULL,1,'Recipes',       3,1,GETDATE()),
-                  (NULL,1,'Seasonal',      4,1,GETDATE()),
-                  (NULL,1,'Events',        5,1,GETDATE()),
-                  (NULL,1,'Education',     6,1,GETDATE()),
-                  (NULL,1,'Market Updates',7,1,GETDATE()),
-                  (NULL,1,'Community',     8,1,GETDATE())
-            """))
-            db.commit()
+        # First, remove any duplicate global categories keeping the lowest ID per name
+        db.execute(text("""
+            DELETE FROM blogcategories
+            WHERE IsGlobal = 1
+              AND BlogCatID NOT IN (
+                SELECT MIN(BlogCatID)
+                FROM blogcategories
+                WHERE IsGlobal = 1
+                GROUP BY BlogCategoryName
+              )
+        """))
+        db.commit()
+        # Then insert any missing seed categories
+        for name, order in global_seeds:
+            exists = db.execute(text(
+                "SELECT COUNT(*) FROM blogcategories "
+                "WHERE IsGlobal = 1 AND BlogCategoryName = :name"
+            ), {"name": name}).scalar()
+            if not exists:
+                db.execute(text("""
+                    INSERT INTO blogcategories
+                        (BusinessID, IsGlobal, BlogCategoryName, BlogCategoryOrder, IsActive, CreatedAt)
+                    VALUES (NULL, 1, :name, :ord, 1, GETDATE())
+                """), {"name": name, "ord": order})
+        db.commit()
     except Exception:
         db.rollback()
 
@@ -123,10 +171,35 @@ class PostIn(BaseModel):
     cover_image: Optional[str] = None
     author: Optional[str] = None
     author_link: Optional[str] = None
-    blog_cat_id: Optional[int] = None     # public / global category
-    custom_cat_id: Optional[int] = None  # personal / business category
+    author_id: Optional[int] = None      # FK to blogauthors
+    blog_cat_id: Optional[int] = None
+    custom_cat_id: Optional[int] = None
     is_published: bool = False
     is_featured: bool = False
+    published_at: Optional[str] = None
+    show_on_directory: bool = True
+    show_on_website: bool = True
+
+
+class AuthorIn(BaseModel):
+    name: str
+    bio: Optional[str] = None
+    avatar_url: Optional[str] = None
+    author_link: Optional[str] = None
+
+
+def _author_row(r) -> dict:
+    return {
+        "author_id":   r.AuthorID,
+        "business_id": r.BusinessID,
+        "name":        r.Name,
+        "bio":         r.Bio,
+        "avatar_url":  r.AvatarURL or '',
+        "author_link": r.AuthorLink or '',
+        "slug":        r.Slug or '',
+        "created_at":  str(r.CreatedAt) if r.CreatedAt else None,
+        "updated_at":  str(r.UpdatedAt) if r.UpdatedAt else None,
+    }
 
 
 class CategoryIn(BaseModel):
@@ -149,6 +222,7 @@ def _post_row(r) -> dict:
         "business_id":   r.BusinessID,
         "blog_cat_id":   r.BlogCatID,
         "custom_cat_id": getattr(r, "CustomCatID", None),
+        "author_id":     getattr(r, "AuthorID", None),
         "title":         r.Title,
         "slug":          r.Slug,
         "author":        r.Author,
@@ -156,7 +230,10 @@ def _post_row(r) -> dict:
         "cover_image":   r.CoverImage,
         "content":       r.Content,
         "is_published":  bool(r.IsPublished),
-        "is_featured":   bool(r.IsFeatured),
+        "is_featured":        bool(r.IsFeatured),
+        "show_on_directory":  bool(getattr(r, "ShowOnDirectory", True)),
+        "show_on_website":    bool(getattr(r, "ShowOnWebsite",   True)),
+        "published_at":  str(getattr(r, "PublishedAt", None)) if getattr(r, "PublishedAt", None) else None,
         "created_at":    str(r.CreatedAt) if r.CreatedAt else None,
         "updated_at":    str(r.UpdatedAt) if r.UpdatedAt else None,
     }
@@ -275,7 +352,7 @@ def list_public_posts(
         where.append("b.BlogCatID = :cid")
         params["cid"] = blog_cat_id
     if category_name:
-        where.append("bc.BlogCategoryName = :cname")
+        where.append("(bc.BlogCategoryName = :cname OR cc.BlogCategoryName = :cname)")
         params["cname"] = category_name
     if featured_only:
         where.append("b.IsFeatured = 1")
@@ -283,8 +360,8 @@ def list_public_posts(
     where_sql = " AND ".join(where)
     rows = db.execute(text(f"""
         SELECT b.BlogID, b.BusinessID, b.BlogCatID, b.CustomCatID,
-               b.Title, b.Slug, b.Author, b.AuthorLink, b.CoverImage, b.Content,
-               b.IsPublished, b.IsFeatured, b.CreatedAt, b.UpdatedAt,
+               b.Title, b.Slug, b.Author, b.AuthorLink, b.AuthorID, b.CoverImage, b.Content,
+               b.IsPublished, b.IsFeatured, b.ShowOnDirectory, b.ShowOnWebsite, b.PublishedAt, b.CreatedAt, b.UpdatedAt,
                biz.BusinessName,
                bc.BlogCategoryName,
                cc.BlogCategoryName AS CustomCategoryName
@@ -314,8 +391,8 @@ def get_post(blog_id: int, db: Session = Depends(get_db)):
     _ensure_schema(db)
     row = db.execute(text("""
         SELECT b.BlogID, b.BusinessID, b.BlogCatID, b.CustomCatID,
-               b.Title, b.Slug, b.Author, b.AuthorLink, b.CoverImage, b.Content,
-               b.IsPublished, b.IsFeatured, b.CreatedAt, b.UpdatedAt,
+               b.Title, b.Slug, b.Author, b.AuthorLink, b.AuthorID, b.CoverImage, b.Content,
+               b.IsPublished, b.IsFeatured, b.ShowOnDirectory, b.ShowOnWebsite, b.PublishedAt, b.CreatedAt, b.UpdatedAt,
                biz.BusinessName,
                bc.BlogCategoryName,
                cc.BlogCategoryName AS CustomCategoryName
@@ -354,15 +431,15 @@ def manage_list(business_id: int, db: Session = Depends(get_db)):
     _ensure_schema(db)
     rows = db.execute(text("""
         SELECT b.BlogID, b.BusinessID, b.BlogCatID, b.CustomCatID,
-               b.Title, b.Slug, b.Author, b.AuthorLink, b.CoverImage, b.Content,
-               b.IsPublished, b.IsFeatured, b.CreatedAt, b.UpdatedAt,
+               b.Title, b.Slug, b.Author, b.AuthorLink, b.AuthorID, b.CoverImage, b.Content,
+               b.IsPublished, b.IsFeatured, b.ShowOnDirectory, b.ShowOnWebsite, b.PublishedAt, b.CreatedAt, b.UpdatedAt,
                bc.BlogCategoryName,
                cc.BlogCategoryName AS CustomCategoryName
         FROM blog b
         LEFT JOIN blogcategories bc ON bc.BlogCatID = b.BlogCatID
         LEFT JOIN blogcategories cc ON cc.BlogCatID = b.CustomCatID
         WHERE b.BusinessID = :bid
-        ORDER BY b.CreatedAt DESC
+        ORDER BY COALESCE(b.PublishedAt, b.CreatedAt) DESC
     """), {"bid": business_id}).fetchall()
     return [
         {**_post_row(r), "category_name": r.BlogCategoryName,
@@ -379,25 +456,30 @@ def create_post(business_id: int, body: PostIn, db: Session = Depends(get_db)):
     now = datetime.utcnow()
     result = db.execute(text("""
         INSERT INTO blog
-            (BusinessID, BlogCatID, CustomCatID, Title, Slug, Author, AuthorLink,
-             CoverImage, Content, IsPublished, IsFeatured, CreatedAt, UpdatedAt)
+            (BusinessID, BlogCatID, CustomCatID, Title, Slug, Author, AuthorLink, AuthorID,
+             CoverImage, Content, IsPublished, IsFeatured, ShowOnDirectory, ShowOnWebsite,
+             PublishedAt, CreatedAt, UpdatedAt)
         OUTPUT INSERTED.BlogID
         VALUES
-            (:bid, :cat, :ccat, :title, :slug, :author, :author_link,
-             :cover, :content, :pub, :feat, :now, :now)
+            (:bid, :cat, :ccat, :title, :slug, :author, :author_link, :author_id,
+             :cover, :content, :pub, :feat, :dir, :web, :published_at, :now, :now)
     """), {
-        "bid":         business_id,
-        "cat":         body.blog_cat_id,
-        "ccat":        body.custom_cat_id,
-        "title":       body.title,
-        "slug":        slug,
-        "author":      body.author,
-        "author_link": body.author_link,
-        "cover":       body.cover_image,
-        "content":     body.content,
-        "pub":         1 if body.is_published else 0,
-        "feat":        1 if body.is_featured else 0,
-        "now":         now,
+        "bid":          business_id,
+        "cat":          body.blog_cat_id,
+        "ccat":         body.custom_cat_id,
+        "title":        body.title,
+        "slug":         slug,
+        "author":       body.author,
+        "author_link":  body.author_link,
+        "author_id":    body.author_id,
+        "cover":        body.cover_image,
+        "content":      body.content,
+        "pub":          1 if body.is_published else 0,
+        "feat":         1 if body.is_featured else 0,
+        "dir":          1 if body.show_on_directory else 0,
+        "web":          1 if body.show_on_website else 0,
+        "published_at": body.published_at or None,
+        "now":          now,
     })
     blog_id = result.fetchone()[0]
     db.commit()
@@ -412,23 +494,29 @@ def update_post(blog_id: int, business_id: int, body: PostIn, db: Session = Depe
     result = db.execute(text("""
         UPDATE blog
         SET BlogCatID=:cat, CustomCatID=:ccat, Title=:title, Slug=:slug,
-            Author=:author, AuthorLink=:author_link, CoverImage=:cover,
-            Content=:content, IsPublished=:pub, IsFeatured=:feat, UpdatedAt=:now
+            Author=:author, AuthorLink=:author_link, AuthorID=:author_id, CoverImage=:cover,
+            Content=:content, IsPublished=:pub, IsFeatured=:feat,
+            ShowOnDirectory=:dir, ShowOnWebsite=:web,
+            PublishedAt=:published_at, UpdatedAt=:now
         WHERE BlogID=:id AND BusinessID=:bid
     """), {
-        "id":          blog_id,
-        "bid":         business_id,
-        "cat":         body.blog_cat_id,
-        "ccat":        body.custom_cat_id,
-        "title":       body.title,
-        "slug":        slug,
-        "author":      body.author,
-        "author_link": body.author_link,
-        "cover":       body.cover_image,
-        "content":     body.content,
-        "pub":         1 if body.is_published else 0,
-        "feat":        1 if body.is_featured else 0,
-        "now":         datetime.utcnow(),
+        "id":           blog_id,
+        "bid":          business_id,
+        "cat":          body.blog_cat_id,
+        "ccat":         body.custom_cat_id,
+        "title":        body.title,
+        "slug":         slug,
+        "author":       body.author,
+        "author_link":  body.author_link,
+        "author_id":    body.author_id,
+        "cover":        body.cover_image,
+        "content":      body.content,
+        "pub":          1 if body.is_published else 0,
+        "feat":         1 if body.is_featured else 0,
+        "dir":          1 if body.show_on_directory else 0,
+        "web":          1 if body.show_on_website else 0,
+        "published_at": body.published_at or None,
+        "now":          datetime.utcnow(),
     })
     db.commit()
     if result.rowcount == 0:
@@ -506,3 +594,126 @@ def delete_photo(blog_id: int, photo_id: int, business_id: int,
     ), {"pid": photo_id, "bid": blog_id})
     db.commit()
     return {"deleted": photo_id}
+
+
+# ── Author management ────────────────────────────────────────────
+
+@router.get("/authors")
+def list_authors(business_id: int, db: Session = Depends(get_db)):
+    """List all authors for a business."""
+    _ensure_schema(db)
+    rows = db.execute(text("""
+        SELECT AuthorID, BusinessID, Name, Bio, AvatarURL, AuthorLink, Slug, CreatedAt, UpdatedAt
+        FROM blogauthors WHERE BusinessID = :bid ORDER BY Name
+    """), {"bid": business_id}).fetchall()
+    return [_author_row(r) for r in rows]
+
+
+@router.get("/authors/{author_id}")
+def get_author(author_id: int, db: Session = Depends(get_db)):
+    """Get a public author profile with their published posts."""
+    _ensure_schema(db)
+    row = db.execute(text("""
+        SELECT AuthorID, BusinessID, Name, Bio, AvatarURL, AuthorLink, Slug, CreatedAt, UpdatedAt
+        FROM blogauthors WHERE AuthorID = :id
+    """), {"id": author_id}).fetchone()
+    if not row:
+        raise HTTPException(404, "Author not found")
+    posts = db.execute(text("""
+        SELECT b.BlogID, b.BusinessID, b.Title, b.Slug, b.CoverImage, b.Content,
+               b.Author, b.AuthorLink, b.AuthorID, b.BlogCatID, b.CustomCatID,
+               b.IsPublished, b.IsFeatured, b.ShowOnDirectory, b.ShowOnWebsite,
+               b.PublishedAt, b.CreatedAt, b.UpdatedAt,
+               biz.BusinessName,
+               bc.BlogCategoryName,
+               cc.BlogCategoryName AS CustomCategoryName
+        FROM blog b
+        JOIN Business biz ON biz.BusinessID = b.BusinessID
+        LEFT JOIN blogcategories bc ON bc.BlogCatID = b.BlogCatID
+        LEFT JOIN blogcategories cc ON cc.BlogCatID = b.CustomCatID
+        WHERE b.AuthorID = :id AND b.IsPublished = 1
+        ORDER BY COALESCE(b.PublishedAt, b.CreatedAt) DESC
+    """), {"id": author_id}).fetchall()
+    return {
+        **_author_row(row),
+        "posts": [
+            {**_post_row(p), "business_name": p.BusinessName,
+             "category_name": p.BlogCategoryName, "custom_category_name": p.CustomCategoryName}
+            for p in posts
+        ],
+    }
+
+
+@router.post("/authors")
+def create_author(business_id: int, body: AuthorIn, db: Session = Depends(get_db)):
+    """Create a new author profile."""
+    _ensure_schema(db)
+    slug = _slugify(body.name)
+    result = db.execute(text("""
+        INSERT INTO blogauthors (BusinessID, Name, Bio, AvatarURL, AuthorLink, Slug, CreatedAt, UpdatedAt)
+        OUTPUT INSERTED.AuthorID
+        VALUES (:bid, :name, :bio, :avatar, :link, :slug, GETDATE(), GETDATE())
+    """), {"bid": business_id, "name": body.name.strip(), "bio": body.bio,
+           "avatar": body.avatar_url, "link": body.author_link, "slug": slug})
+    author_id = result.fetchone()[0]
+    db.commit()
+    return {"author_id": author_id, "slug": slug}
+
+
+@router.put("/authors/{author_id}")
+def update_author(author_id: int, business_id: int, body: AuthorIn,
+                  db: Session = Depends(get_db)):
+    """Update an author profile."""
+    _ensure_schema(db)
+    slug = _slugify(body.name)
+    result = db.execute(text("""
+        UPDATE blogauthors
+        SET Name=:name, Bio=:bio, AvatarURL=:avatar, AuthorLink=:link,
+            Slug=:slug, UpdatedAt=GETDATE()
+        WHERE AuthorID=:id AND BusinessID=:bid
+    """), {"id": author_id, "bid": business_id, "name": body.name.strip(),
+           "bio": body.bio, "avatar": body.avatar_url, "link": body.author_link, "slug": slug})
+    db.commit()
+    if result.rowcount == 0:
+        raise HTTPException(404, "Author not found")
+    return {"author_id": author_id, "slug": slug}
+
+
+@router.delete("/authors/{author_id}")
+def delete_author(author_id: int, business_id: int, db: Session = Depends(get_db)):
+    """Delete an author profile."""
+    _ensure_schema(db)
+    # Unlink posts that referenced this author
+    db.execute(text("UPDATE blog SET AuthorID=NULL WHERE AuthorID=:id AND BusinessID=:bid"),
+               {"id": author_id, "bid": business_id})
+    result = db.execute(text(
+        "DELETE FROM blogauthors WHERE AuthorID=:id AND BusinessID=:bid"
+    ), {"id": author_id, "bid": business_id})
+    db.commit()
+    if result.rowcount == 0:
+        raise HTTPException(404, "Author not found")
+    return {"deleted": author_id}
+
+
+GCS_BUCKET = "oatmeal-farm-network-images"
+
+@router.post("/upload-image")
+async def upload_blog_image(file: UploadFile = File(...)):
+    """Upload an image file to GCS and return its public URL."""
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(400, "File must be an image")
+    content = await file.read()
+    ext = (file.filename or "img").rsplit(".", 1)[-1].lower()
+    if ext not in {"jpg", "jpeg", "png", "gif", "webp", "avif", "svg"}:
+        ext = "jpg"
+    filename = f"{uuid.uuid4().hex}.{ext}"
+    try:
+        from google.cloud import storage
+        client = storage.Client()
+        bucket = client.bucket(GCS_BUCKET)
+        blob = bucket.blob(f"blog/{filename}")
+        blob.upload_from_string(content, content_type=file.content_type)
+        url = f"https://storage.googleapis.com/{GCS_BUCKET}/blog/{filename}"
+    except Exception as e:
+        raise HTTPException(500, f"Upload failed: {e}")
+    return {"url": url}
