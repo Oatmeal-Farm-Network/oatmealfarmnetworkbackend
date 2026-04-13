@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from database import get_db
 import models
@@ -20,6 +20,8 @@ def build_logo_url(logo):
     """Build full logo URL handling /uploads/ prefix or bare filename."""
     if not logo or str(logo).strip() in ("0", ""):
         return None
+    if logo.startswith("http://") or logo.startswith("https://"):
+        return logo
     if logo.startswith("/"):
         return "https://www.oatmealfarmnetwork.com" + logo
     return "https://www.oatmealfarmnetwork.com/uploads/" + logo
@@ -164,56 +166,75 @@ def get_businesses(
     db: Session = Depends(get_db)
 ):
     try:
-        query = (
-            db.query(
-                models.Business,
-                models.Address,
-                models.BusinessTypeLookup,
-                models.Country,
-                models.Websites
-            )
-            .outerjoin(models.Address, models.Business.AddressID == models.Address.AddressID)
-            .outerjoin(models.BusinessTypeLookup, models.Business.BusinessTypeID == models.BusinessTypeLookup.BusinessTypeID)
-            .outerjoin(models.Country, models.Address.country_id == models.Country.country_id)
-            .outerjoin(models.Websites, models.Business.WebsitesID == models.Websites.WebsitesID)
-        )
+        from sqlalchemy import text
+
+        params = {}
+        conditions = ["1=1"]
 
         if BusinessTypeID:
-            query = query.filter(models.Business.BusinessTypeID == BusinessTypeID)
+            conditions.append("b.BusinessTypeID = :business_type_id")
+            params["business_type_id"] = BusinessTypeID
         if country:
-            query = query.filter(models.Country.name == country)
+            conditions.append("c.name = :country")
+            params["country"] = country
         if state:
-            query = query.filter(models.Address.AddressState == state)
+            conditions.append("sp.name = :state")
+            params["state"] = state
 
-        query = query.order_by(models.Business.BusinessName)
-        results = query.all()
+        where_clause = " AND ".join(conditions)
+
+        sql = text(f"""
+            SELECT
+                b.BusinessID, b.BusinessName, b.BusinessEmail, b.BusinessPhone,
+                b.BusinessTypeID, b.Logo,
+                b.BusinessFacebook, b.BusinessInstagram, b.BusinessLinkedIn,
+                b.BusinessX, b.BusinessPinterest, b.BusinessYouTube,
+                b.BusinessTruthSocial, b.BusinessBlog,
+                b.BusinessOtherSocial1, b.BusinessOtherSocial2,
+                a.AddressStreet, a.AddressCity, a.AddressZip,
+                sp.name AS StateName,
+                c.name AS CountryName,
+                bt.BusinessType,
+                w.Website
+            FROM Business b
+            LEFT JOIN Address a ON b.AddressID = a.AddressID
+            LEFT JOIN businesstypelookup bt ON b.BusinessTypeID = bt.BusinessTypeID
+            LEFT JOIN country c ON a.country_id = c.country_id
+            LEFT JOIN state_province sp ON a.AddressState = CAST(sp.StateIndex AS CHAR)
+                                        OR a.AddressState = sp.name
+            LEFT JOIN Websites w ON b.WebsitesID = w.WebsitesID
+            WHERE {where_clause}
+            ORDER BY b.BusinessName
+        """)
+
+        results = db.execute(sql, params).fetchall()
 
         businesses = []
-        for B, A, BT, C, W in results:
+        for r in results:
             businesses.append({
-                "BusinessID":           B.BusinessID,
-                "BusinessName":         B.BusinessName,
-                "BusinessEmail":        B.BusinessEmail,
-                "BusinessPhone":        B.BusinessPhone,
-                "BusinessTypeID":       B.BusinessTypeID,
-                "BusinessType":         BT.BusinessType if BT else None,
-                "AddressStreet":        clean(A.AddressStreet if A else None),
-                "AddressCity":          clean(A.AddressCity if A else None),
-                "AddressState":         clean(A.AddressState if A else None),
-                "AddressZip":           clean(A.AddressZip if A else None),
-                "AddressCountry":       C.name if C else None,
-                "ProfileImage":         build_logo_url(B.Logo),
-                "BusinessWebsite":      W.Website if W and W.Website else None,
-                "BusinessFacebook":     B.BusinessFacebook,
-                "BusinessInstagram":    B.BusinessInstagram,
-                "BusinessLinkedIn":     B.BusinessLinkedIn,
-                "BusinessX":            B.BusinessX,
-                "BusinessPinterest":    B.BusinessPinterest,
-                "BusinessYouTube":      B.BusinessYouTube,
-                "BusinessTruthSocial":  B.BusinessTruthSocial,
-                "BusinessBlog":         B.BusinessBlog,
-                "BusinessOtherSocial1": B.BusinessOtherSocial1,
-                "BusinessOtherSocial2": B.BusinessOtherSocial2,
+                "BusinessID":           r.BusinessID,
+                "BusinessName":         r.BusinessName,
+                "BusinessEmail":        r.BusinessEmail,
+                "BusinessPhone":        r.BusinessPhone,
+                "BusinessTypeID":       r.BusinessTypeID,
+                "BusinessType":         r.BusinessType,
+                "AddressStreet":        clean(r.AddressStreet),
+                "AddressCity":          clean(r.AddressCity),
+                "AddressState":         clean(r.StateName),
+                "AddressZip":           clean(r.AddressZip),
+                "AddressCountry":       r.CountryName,
+                "ProfileImage":         build_logo_url(r.Logo),
+                "BusinessWebsite":      r.Website if r.Website else None,
+                "BusinessFacebook":     r.BusinessFacebook,
+                "BusinessInstagram":    r.BusinessInstagram,
+                "BusinessLinkedIn":     r.BusinessLinkedIn,
+                "BusinessX":            r.BusinessX,
+                "BusinessPinterest":    r.BusinessPinterest,
+                "BusinessYouTube":      r.BusinessYouTube,
+                "BusinessTruthSocial":  r.BusinessTruthSocial,
+                "BusinessBlog":         r.BusinessBlog,
+                "BusinessOtherSocial1": r.BusinessOtherSocial1,
+                "BusinessOtherSocial2": r.BusinessOtherSocial2,
             })
 
         return businesses
@@ -237,7 +258,11 @@ def get_profile(business_id: int, db: Session = Depends(get_db)):
             SELECT
                 b.BusinessID, b.BusinessName, b.BusinessEmail,
                 b.BusinessPhone, b.AddressID, b.WebsitesID,
-                b.Contact1PeopleID,
+                b.Contact1PeopleID, b.BusinessDescription, b.Logo,
+                b.BusinessFacebook, b.BusinessInstagram, b.BusinessLinkedIn,
+                b.BusinessX, b.BusinessPinterest, b.BusinessYouTube,
+                b.BusinessTruthSocial, b.BusinessBlog,
+                b.BusinessOtherSocial1, b.BusinessOtherSocial2,
                 a.AddressStreet, a.AddressApt, a.AddressCity,
                 a.AddressState, a.AddressZip, a.StateIndex, a.country_id,
                 w.Website,
@@ -282,9 +307,21 @@ def get_profile(business_id: int, db: Session = Depends(get_db)):
             "BusinessPhone":    phone_row.Phone if phone_row else row.BusinessPhone,
             "BusinessCell":     phone_row.CellPhone if phone_row else None,
             "BusinessFax":      phone_row.Fax if phone_row else None,
-            "WebsitesID":       row.WebsitesID,
-            "AddressID":        row.AddressID,
-            "Contact1PeopleID": row.Contact1PeopleID,
+            "WebsitesID":           row.WebsitesID,
+            "AddressID":            row.AddressID,
+            "Contact1PeopleID":     row.Contact1PeopleID,
+            "BusinessDescription":  row.BusinessDescription,
+            "Logo":                 build_logo_url(row.Logo),
+            "BusinessFacebook":     row.BusinessFacebook,
+            "BusinessInstagram":    row.BusinessInstagram,
+            "BusinessLinkedIn":     row.BusinessLinkedIn,
+            "BusinessX":            row.BusinessX,
+            "BusinessPinterest":    row.BusinessPinterest,
+            "BusinessYouTube":      row.BusinessYouTube,
+            "BusinessTruthSocial":  row.BusinessTruthSocial,
+            "BusinessBlog":         row.BusinessBlog,
+            "BusinessOtherSocial1": row.BusinessOtherSocial1,
+            "BusinessOtherSocial2": row.BusinessOtherSocial2,
         }
     except HTTPException:
         raise
@@ -307,7 +344,15 @@ def update_profile(business_id: int, payload: dict, db: Session = Depends(get_db
         if not ids:
             raise HTTPException(status_code=404, detail="Business not found")
 
-        # 1. Update Address
+        # 1. Update Address — create the row if the business has no AddressID yet
+        address_params = {
+            "street":  (payload.get("AddressStreet") or "").strip(),
+            "apt":     (payload.get("AddressApt")    or "").strip(),
+            "city":    (payload.get("AddressCity")   or "").strip(),
+            "state":   payload.get("StateIndex") or None,
+            "zip":     (payload.get("AddressZip")    or "").strip(),
+            "country": (payload.get("country_name")  or "USA").strip(),
+        }
         if ids.AddressID:
             db.execute(text("""
                 UPDATE Address SET
@@ -318,40 +363,62 @@ def update_profile(business_id: int, payload: dict, db: Session = Depends(get_db
                     AddressZip    = :zip,
                     country_id    = (SELECT country_id FROM country WHERE name = :country)
                 WHERE AddressID = :aid
-            """), {
-                "street":  payload.get("AddressStreet", ""),
-                "apt":     payload.get("AddressApt", ""),
-                "city":    payload.get("AddressCity", ""),
-                "state":   payload.get("StateIndex") or None,
-                "zip":     payload.get("AddressZip", ""),
-                "country": payload.get("country_name", "USA"),
-                "aid":     ids.AddressID,
-            })
+            """), {**address_params, "aid": ids.AddressID})
+        else:
+            db.execute(text("""
+                INSERT INTO Address (AddressStreet, AddressApt, AddressCity, StateIndex, AddressZip, country_id)
+                VALUES (:street, :apt, :city, :state, :zip,
+                        (SELECT country_id FROM country WHERE name = :country))
+            """), address_params)
+            new_address = db.execute(text("SELECT SCOPE_IDENTITY() AS id")).fetchone()
+            db.execute(text("UPDATE Business SET AddressID = :aid WHERE BusinessID = :bid"),
+                       {"aid": int(new_address.id), "bid": business_id})
 
-        # 2. Update Website
-        website = payload.get("BusinessWebsite", "")
+        # 2. Update or create Website
+        website = (payload.get("BusinessWebsite") or "").strip()
         if website.lower().startswith("http://"):
             website = website[7:]
         if ids.WebsitesID:
             db.execute(text("UPDATE Websites SET Website = :w WHERE WebsitesID = :wid"),
                        {"w": website, "wid": ids.WebsitesID})
+        elif website:
+            db.execute(text("INSERT INTO Websites (Website) VALUES (:w)"), {"w": website})
+            new_ws = db.execute(text("SELECT SCOPE_IDENTITY() AS id")).fetchone()
+            db.execute(text("UPDATE Business SET WebsitesID = :wid WHERE BusinessID = :bid"),
+                       {"wid": int(new_ws.id), "bid": business_id})
 
-        # 3. Update or insert Phone
-        phone = payload.get("BusinessPhone", "")
-        cell  = payload.get("BusinessCell", "")
-        fax   = payload.get("BusinessFax", "")
+        # 3. Update or insert Phone — link new row back to Business
+        phone = (payload.get("BusinessPhone") or "").strip()
+        cell  = (payload.get("BusinessCell")  or "").strip()
+        fax   = (payload.get("BusinessFax")   or "").strip()
         if ids.PhoneID:
             db.execute(text("""
                 UPDATE Phone SET Phone = :phone, CellPhone = :cell, Fax = :fax
                 WHERE PhoneID = :pid
             """), {"phone": phone, "cell": cell, "fax": fax, "pid": ids.PhoneID})
-        else:
+        elif phone or cell or fax:
             db.execute(text("""
                 INSERT INTO Phone (Phone, CellPhone, Fax) VALUES (:phone, :cell, :fax)
             """), {"phone": phone, "cell": cell, "fax": fax})
+            new_phone = db.execute(text("SELECT SCOPE_IDENTITY() AS id")).fetchone()
+            db.execute(text("UPDATE Business SET PhoneID = :pid WHERE BusinessID = :bid"),
+                       {"pid": int(new_phone.id), "bid": business_id})
 
         # 4. Update Contact (People)
-        if ids.Contact1PeopleID:
+        contact_people_id = ids.Contact1PeopleID
+        if not contact_people_id:
+            # Fall back to the business owner from BusinessAccess
+            access_row = db.execute(text("""
+                SELECT TOP 1 PeopleID FROM BusinessAccess
+                WHERE BusinessID = :bid AND Active = 1
+                ORDER BY CreatedAt ASC
+            """), {"bid": business_id}).fetchone()
+            if access_row:
+                contact_people_id = access_row.PeopleID
+                db.execute(text("UPDATE Business SET Contact1PeopleID = :pid WHERE BusinessID = :bid"),
+                           {"pid": contact_people_id, "bid": business_id})
+
+        if contact_people_id:
             db.execute(text("""
                 UPDATE People SET
                     PeopleFirstName = :fn,
@@ -359,20 +426,45 @@ def update_profile(business_id: int, payload: dict, db: Session = Depends(get_db
                     PeopleEmail     = :email
                 WHERE PeopleID = :pid
             """), {
-                "fn":    payload.get("ContactFirstName", ""),
-                "ln":    payload.get("ContactLastName", ""),
-                "email": payload.get("ContactEmail", ""),
-                "pid":   ids.Contact1PeopleID,
+                "fn":    (payload.get("ContactFirstName") or "").strip(),
+                "ln":    (payload.get("ContactLastName")  or "").strip(),
+                "email": (payload.get("ContactEmail")     or "").strip(),
+                "pid":   contact_people_id,
             })
 
-        # 5. Update Business name
+        # 5. Update Business name, description, and social links
+        def s(key): return (payload.get(key) or "").strip() or None
         db.execute(text("""
-            UPDATE Business SET BusinessName = :name, BusinessEmail = :email
+            UPDATE Business SET
+                BusinessName        = :name,
+                BusinessEmail       = :email,
+                BusinessDescription = :desc,
+                BusinessFacebook    = :facebook,
+                BusinessInstagram   = :instagram,
+                BusinessLinkedIn    = :linkedin,
+                BusinessX           = :x,
+                BusinessPinterest   = :pinterest,
+                BusinessYouTube     = :youtube,
+                BusinessTruthSocial = :truth,
+                BusinessBlog        = :blog,
+                BusinessOtherSocial1= :other1,
+                BusinessOtherSocial2= :other2
             WHERE BusinessID = :bid
         """), {
-            "name":  payload.get("BusinessName", ""),
-            "email": payload.get("ContactEmail", ""),
-            "bid":   business_id,
+            "name":      (payload.get("BusinessName")     or "").strip(),
+            "email":     (payload.get("ContactEmail")     or "").strip(),
+            "desc":      s("BusinessDescription"),
+            "facebook":  s("BusinessFacebook"),
+            "instagram": s("BusinessInstagram"),
+            "linkedin":  s("BusinessLinkedIn"),
+            "x":         s("BusinessX"),
+            "pinterest": s("BusinessPinterest"),
+            "youtube":   s("BusinessYouTube"),
+            "truth":     s("BusinessTruthSocial"),
+            "blog":      s("BusinessBlog"),
+            "other1":    s("BusinessOtherSocial1"),
+            "other2":    s("BusinessOtherSocial2"),
+            "bid":       business_id,
         })
 
         db.commit()
@@ -384,6 +476,31 @@ def update_profile(business_id: int, payload: dict, db: Session = Depends(get_db
         db.rollback()
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/upload-logo/{business_id}")
+async def upload_logo(business_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(400, "File must be an image")
+    try:
+        import uuid
+        from google.cloud import storage as gcs
+        content  = await file.read()
+        ext      = file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else 'jpg'
+        filename = f"logos/{business_id}_{uuid.uuid4().hex[:8]}.{ext}"
+        client   = gcs.Client()
+        bucket   = client.bucket("oatmeal-farm-network-images")
+        blob     = bucket.blob(filename)
+        blob.upload_from_string(content, content_type=file.content_type)
+        url = f"https://storage.googleapis.com/oatmeal-farm-network-images/{filename}"
+        from sqlalchemy import text
+        db.execute(text("UPDATE Business SET Logo = :url WHERE BusinessID = :bid"),
+                   {"url": url, "bid": business_id})
+        db.commit()
+        return {"url": url}
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(500, f"Upload failed: {e}")
 
 
 @router.delete("/delete/{business_id}")

@@ -24,6 +24,13 @@ class SignupRequest(BaseModel):
 class ForgotPasswordRequest(BaseModel):
     Email: str
 
+class UpdateLoginRequest(BaseModel):
+    first_name: str = None
+    last_name: str = None
+    email: str = None
+    current_password: str = None
+    new_password: str = None
+
 
 # -------------------------
 # Public site settings (no auth required — login/signup pages need this)
@@ -193,6 +200,43 @@ def get_me(current_user=Depends(get_current_user)):
         "PeopleLastName": current_user.PeopleLastName,
         "PeopleEmail": current_user.PeopleEmail,
         "AccessLevel": current_user.accesslevel
+    }
+
+
+# -------------------------
+# Update login info
+# -------------------------
+@router.put("/update-login")
+def update_login(payload: UpdateLoginRequest, current_user=Depends(get_current_user), db: Session = Depends(get_db)):
+    user = db.query(models.People).filter(models.People.PeopleID == current_user.PeopleID).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if payload.new_password:
+        if not payload.current_password or user.PeoplePassword != payload.current_password:
+            raise HTTPException(status_code=400, detail="Current password is incorrect")
+        user.PeoplePassword = payload.new_password
+
+    if payload.email and payload.email.strip().lower() != user.PeopleEmail:
+        existing = db.query(models.People).filter(
+            models.People.PeopleEmail == payload.email.strip().lower(),
+            models.People.PeopleID != user.PeopleID
+        ).first()
+        if existing:
+            raise HTTPException(status_code=400, detail="That email is already in use by another account")
+        user.PeopleEmail = payload.email.strip().lower()
+
+    if payload.first_name is not None:
+        user.PeopleFirstName = payload.first_name.strip()
+    if payload.last_name is not None:
+        user.PeopleLastName = payload.last_name.strip()
+
+    db.commit()
+    return {
+        "message": "Settings updated successfully",
+        "PeopleFirstName": user.PeopleFirstName,
+        "PeopleLastName": user.PeopleLastName,
+        "PeopleEmail": user.PeopleEmail,
     }
 
 

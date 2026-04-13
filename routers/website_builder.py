@@ -1033,7 +1033,6 @@ def submit_contact_form(payload: ContactFormPayload):
             subject=subject,
             html_content=Content("text/html", html),
         )
-        # Reply-to the visitor's email
         msg.reply_to = payload.email
         sg = sendgrid.SendGridAPIClient(api_key=api_key)
         sg.send(msg)
