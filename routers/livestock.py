@@ -95,8 +95,8 @@ def get_species_letters(slug: str, db: Session = Depends(get_db)):
             text("""
                SELECT DISTINCT UPPER(LEFT(Breed, 1)) AS FirstLetter
 FROM SpeciesBreedLookupTable
-WHERE SpeciesID = :sid 
-AND Breed IS NOT NULL 
+WHERE SpeciesID = :sid
+AND Breed IS NOT NULL
 AND Breed != ''
 AND LEFT(Breed, 1) LIKE '[A-Z]'
 ORDER BY FirstLetter
@@ -106,7 +106,17 @@ ORDER BY FirstLetter
 
         letters = [r.FirstLetter for r in rows if r.FirstLetter]
 
-        result = {"species_info": species_info, "letters": letters}
+        # Total breed count so frontend can decide whether to paginate
+        total_row = db.execute(
+            text("""
+                SELECT COUNT(*) AS cnt FROM SpeciesBreedLookupTable
+                WHERE SpeciesID = :sid AND Breed IS NOT NULL AND Breed != ''
+            """),
+            {"sid": species_id}
+        ).fetchone()
+        total_breeds = total_row.cnt if total_row else 0
+
+        result = {"species_info": species_info, "letters": letters, "total_breeds": total_breeds}
         cache_set(cache_key, result)
         return result
     except HTTPException:
