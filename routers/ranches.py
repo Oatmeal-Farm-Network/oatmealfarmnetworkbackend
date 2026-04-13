@@ -211,44 +211,57 @@ def get_ranches(
 
 @router.get("/profile/{business_id}")
 def get_ranch_profile(business_id: int, db: Session = Depends(get_db)):
-    cached = cache_get(f'ranch_{business_id}')
-    if cached:
-        return cached
     try:
         row = db.execute(text("""
             SELECT
-                biz.BusinessID, biz.BusinessName, biz.BusinessLogo,
+                biz.BusinessID, biz.BusinessName,
+                COALESCE(biz.Logo, biz.BusinessLogo) AS LogoResolved,
                 biz.BusinessFacebook, biz.BusinessX, biz.BusinessInstagram,
-                biz.BusinessPinterest, biz.BusinessYouTube, biz.BusinessBlog,
-                biz.BusinessTruthSocial, biz.BusinessOtherSocial1, biz.BusinessOtherSocial2,
-                biz.BusinessEmail, biz.RanchHomeText, biz.RanchHomeHeading,
+                biz.BusinessLinkedIn, biz.BusinessPinterest, biz.BusinessYouTube,
+                biz.BusinessBlog, biz.BusinessTruthSocial,
+                biz.BusinessOtherSocial1, biz.BusinessOtherSocial2,
+                biz.BusinessEmail, biz.BusinessDescription,
+                biz.RanchHomeText, biz.RanchHomeHeading,
                 biz.RanchHomeText2, biz.BusinessProfileHeader,
-                addr.AddressStreet, addr.AddressCity, addr.AddressState,
-                addr.AddressZip, addr.AddressCountry
+                biz.BusinessPhone,
+                addr.AddressStreet, addr.AddressCity, addr.AddressZip,
+                sp.name AS StateName,
+                c.name AS CountryName,
+                w.Website,
+                p.PeopleFirstName, p.PeopleLastName
             FROM Business biz
             LEFT JOIN Address addr ON biz.AddressID = addr.AddressID
+            LEFT JOIN state_province sp ON addr.StateIndex = sp.StateIndex
+            LEFT JOIN country c ON addr.country_id = c.country_id
+            LEFT JOIN Websites w ON biz.WebsitesID = w.WebsitesID
+            LEFT JOIN People p ON biz.Contact1PeopleID = p.PeopleID
             WHERE biz.BusinessID = :bid
         """), {"bid": business_id}).fetchone()
 
         if not row:
             raise HTTPException(status_code=404, detail="Ranch not found")
 
-        result = {
+        return {
             "business_id": row.BusinessID,
             "business_name": _safe_str(row.BusinessName),
-            "logo": _fix_logo(row.BusinessLogo),
+            "logo": _fix_logo(row.LogoResolved),
             "header_image": _fix_logo(getattr(row, 'BusinessProfileHeader', None)),
             "home_heading": _safe_str(getattr(row, 'RanchHomeHeading', '')),
             "home_text": _safe_str(getattr(row, 'RanchHomeText', '')),
             "home_text2": _safe_str(getattr(row, 'RanchHomeText2', '')),
+            "description": _safe_str(row.BusinessDescription),
             "address_street": _safe_str(row.AddressStreet),
             "address_city": _safe_str(row.AddressCity),
-            "address_state": _safe_str(row.AddressState),
+            "address_state": _safe_str(row.StateName),
             "address_zip": _safe_str(row.AddressZip),
-            "address_country": _safe_str(row.AddressCountry),
-            "email": _safe_str(getattr(row, 'BusinessEmail', '')),
+            "address_country": _safe_str(row.CountryName),
+            "website": _safe_str(row.Website),
+            "phone": _safe_str(row.BusinessPhone),
+            "contact_first_name": _safe_str(row.PeopleFirstName),
+            "contact_last_name": _safe_str(row.PeopleLastName),
             "facebook": _safe_str(row.BusinessFacebook),
             "instagram": _safe_str(row.BusinessInstagram),
+            "linkedin": _safe_str(row.BusinessLinkedIn),
             "x": _safe_str(row.BusinessX),
             "pinterest": _safe_str(row.BusinessPinterest),
             "youtube": _safe_str(row.BusinessYouTube),
@@ -257,8 +270,6 @@ def get_ranch_profile(business_id: int, db: Session = Depends(get_db)):
             "other_social1": _safe_str(getattr(row, 'BusinessOtherSocial1', '')),
             "other_social2": _safe_str(getattr(row, 'BusinessOtherSocial2', '')),
         }
-        cache_set(f'ranch_{business_id}', result)
-        return result
     except HTTPException:
         raise
     except Exception as e:

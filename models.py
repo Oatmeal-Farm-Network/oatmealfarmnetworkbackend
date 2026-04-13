@@ -22,7 +22,7 @@ class People(Base):
 class Business(Base):
     __tablename__ = "Business"
     BusinessID              = Column(Integer, primary_key=True, index=True)
-    BusinessTypeID          = Column(Integer)
+    BusinessTypeID          = Column(Integer, index=True)
     BusinessName            = Column(String(1000))
     BusinessEmail           = Column(String(100))
     BusinessPhone           = Column(String(50))
@@ -42,7 +42,8 @@ class Business(Base):
     BusinessBlog            = Column(String(255))
     BusinessOtherSocial1    = Column(String(255))
     BusinessOtherSocial2    = Column(String(255))
-    WebsitesID = Column(Integer) 
+    WebsitesID              = Column(Integer)
+    BusinessDescription     = Column(Text)
 
 # ── ADDRESS ─────────────────────────────────────────────────────
 class Address(Base):
