@@ -11,7 +11,7 @@ def initialize_llm():
     service_account_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
 
     if use_vertexai or project:
-        vertex_model = os.getenv("VERTEX_AI_MODEL", "gemini-2.5-flash-lite")
+        vertex_model = os.getenv("VERTEX_AI_MODEL", "gemini-3.1-flash-lite")
         llm_kwargs = {"model": vertex_model, "temperature": 0}
         if project:
             llm_kwargs["project"] = project
@@ -36,7 +36,7 @@ def initialize_llm():
     if not api_key:
         raise ValueError("No authentication found. Set GOOGLE_API_KEY or GOOGLE_CLOUD_PROJECT")
 
-    dev_model = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    dev_model = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
     print(f"[LLM] Using Developer API ({dev_model})")
     return ChatGoogleGenerativeAI(model=dev_model, temperature=0)
 
