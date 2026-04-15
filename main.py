@@ -29,6 +29,7 @@ from routers import sfproducts
 from routers import events
 from routers import company_features
 from routers import blog
+from routers import accounting
 
 from routers.marketplace import marketplace_router
 from marketplace_stripe import stripe_router
@@ -135,6 +136,7 @@ app.include_router(sfproducts.router)
 app.include_router(events.router)
 app.include_router(company_features.router)
 app.include_router(blog.router)
+app.include_router(accounting.router)
 
 
 @app.get("/health")
