@@ -76,13 +76,14 @@ def get_species_letters(slug: str, db: Session = Depends(get_db)):
         if not species_id:
             raise HTTPException(status_code=404, detail="Species not found")
 
+        expected_plural = SLUG_TO_LABEL.get(slug)
         info_row = db.execute(
             text("SELECT SingularTerm, PluralTerm, SpeciesText1, SpeciesImage1 FROM SpeciesAvailable WHERE SpeciesID = :sid"),
             {"sid": species_id}
         ).fetchone()
 
         species_info = None
-        if info_row:
+        if info_row and (not expected_plural or (info_row.PluralTerm or "").strip().lower() == expected_plural.lower()):
             species_info = {
                 "singular": info_row.SingularTerm,
                 "plural": info_row.PluralTerm,
@@ -138,13 +139,14 @@ def get_species(slug: str, letter: str = None, db: Session = Depends(get_db)):
         if not species_id:
             raise HTTPException(status_code=404, detail="Species not found")
 
+        expected_plural = SLUG_TO_LABEL.get(slug)
         info_row = db.execute(
             text("SELECT SingularTerm, PluralTerm, SpeciesText1, SpeciesImage1 FROM SpeciesAvailable WHERE SpeciesID = :sid"),
             {"sid": species_id}
         ).fetchone()
 
         species_info = None
-        if info_row:
+        if info_row and (not expected_plural or (info_row.PluralTerm or "").strip().lower() == expected_plural.lower()):
             species_info = {
                 "singular": info_row.SingularTerm,
                 "plural": info_row.PluralTerm,
