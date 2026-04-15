@@ -430,6 +430,7 @@ def _ser_site(s: models.BusinessWebsite) -> dict:
         "body_align":       s.BodyAlign or 'left',
         "body_underline":   bool(s.BodyUnderline) if s.BodyUnderline is not None else False,
         "body_italic":      bool(getattr(s, 'BodyItalic', False)) if getattr(s, 'BodyItalic', None) is not None else False,
+        # Site-wide image styling
         "image_border_radius":   getattr(s, 'ImageBorderRadius', 0) or 0,
         "image_shadow_enabled":  bool(getattr(s, 'ImageShadowEnabled', False)) if getattr(s, 'ImageShadowEnabled', None) is not None else False,
         "image_shadow_color":    getattr(s, 'ImageShadowColor', '') or 'rgba(0,0,0,0.35)',
