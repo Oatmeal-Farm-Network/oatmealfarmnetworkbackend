@@ -1186,7 +1186,11 @@ def submit_review(req: ReviewRequest, db: Session = Depends(get_db)):
 # ── Livestock Marketplace endpoints ──────────────────────────────────────────
 # These serve LivestockForSale.jsx, LivestockMarketplace.jsx, and RanchList.jsx
 
-GCP_ANIMALS = "https://storage.googleapis.com/oatmeal-farm-network-images/Animals/Uploads"
+import time as _time
+_livestock_cache: dict = {}
+_CACHE_TTL = 300  # 5 minutes
+
+GCP_ANIMALS = "https://storage.googleapis.com/oatmeal-farm-network-images/Animals"
 
 SLUG_TO_SPECIES_ID = {
     'alpacas': 2, 'bison': 9, 'buffalo': 34, 'camels': 18, 'cattle': 8,
@@ -1211,13 +1215,29 @@ SLUG_TO_SINGULAR = {
 }
 
 
+def _unescape(s) -> str:
+    """Replace SQL-escaped double single-quotes ('' ) with a real apostrophe."""
+    if not s:
+        return s
+    return str(s).replace("''", "'")
+
+
+_GCS_PREFIX = "https://storage.googleapis.com/oatmeal-farm-network-images/"
+
 def _animal_photo(row) -> str | None:
-    for field in ('ListPageImage', 'Photo1', 'Photo2'):
+    """Return the first confirmed GCS URL for a listing card, or None.
+
+    Only values that are already GCS URLs are trusted — old-style filenames
+    or upload paths may not exist in the bucket and would cause 404s.
+    """
+    for field in ('ListPageImage', 'Photo1', 'Photo2', 'Photo3', 'Photo4',
+                  'Photo5', 'Photo6', 'Photo7', 'Photo8'):
         v = getattr(row, field, None)
-        if v:
-            fname = str(v).strip().split('/')[-1]
-            if fname and len(fname) > 4:
-                return f"{GCP_ANIMALS}/{fname}"
+        if not v:
+            continue
+        s = str(v).strip()
+        if s and s.startswith(_GCS_PREFIX):
+            return s
     return None
 
 
@@ -1235,24 +1255,29 @@ def _animal_dict(row, studs: bool = False) -> dict:
         pass
     return {
         "animal_id":  row.AnimalID,
-        "full_name":  getattr(row, 'FullName', '') or '',
+        "full_name":  _unescape(getattr(row, 'FullName', '') or ''),
         "photo":      _animal_photo(row),
         "price":      price if not studs else None,
         "stud_fee":   price if studs else None,
-        "breeds":     breeds,
+        "breeds":     [_unescape(b) for b in breeds],
         "location":   getattr(row, 'AddressState', '') or '',
-        "seller":     getattr(row, 'BusinessName', '') or '',
+        "seller":     _unescape(getattr(row, 'BusinessName', '') or ''),
+        "species_id": getattr(row, 'SpeciesID', None),
     }
 
 
 @marketplace_router.get("/homepage-listings")
 def livestock_homepage_listings(db: Session = Depends(get_db)):
-    """Return up to 12 recent for-sale animals across all species for the homepage."""
+    """Return up to 24 recent for-sale animals across all species for the homepage."""
+    cached = _livestock_cache.get("homepage")
+    if cached and _time.time() - cached["ts"] < _CACHE_TTL:
+        return cached["data"]
     try:
         rows = db.execute(text("""
-            SELECT TOP 12
-                a.AnimalID, a.FullName,
-                ph.Photo1, ph.Photo2, ph.ListPageImage,
+            SELECT TOP 60
+                a.AnimalID, a.FullName, a.SpeciesID,
+                ph.Photo1, ph.Photo2, ph.Photo3, ph.Photo4, ph.Photo5,
+                ph.Photo6, ph.Photo7, ph.Photo8, ph.ListPageImage,
                 p.Price,
                 b1.Breed AS Breed1, b2.Breed AS Breed2,
                 biz.BusinessName,
@@ -1266,9 +1291,54 @@ def livestock_homepage_listings(db: Session = Depends(get_db)):
             LEFT JOIN Business biz  ON biz.BusinessID  = ba.BusinessID
             LEFT JOIN Address addr  ON addr.AddressID   = biz.AddressID
             WHERE a.PublishForSale = 1
-            ORDER BY a.LastUpdated DESC
+            ORDER BY
+                CASE WHEN (
+                    (ph.ListPageImage IS NOT NULL AND ph.ListPageImage != '' AND ph.ListPageImage != '0')
+                    OR (ph.Photo1 IS NOT NULL AND ph.Photo1 != '' AND ph.Photo1 != '0')
+                    OR (ph.Photo2 IS NOT NULL AND ph.Photo2 != '' AND ph.Photo2 != '0')
+                    OR (ph.Photo3 IS NOT NULL AND ph.Photo3 != '' AND ph.Photo3 != '0')
+                    OR (ph.Photo4 IS NOT NULL AND ph.Photo4 != '' AND ph.Photo4 != '0')
+                    OR (ph.Photo5 IS NOT NULL AND ph.Photo5 != '' AND ph.Photo5 != '0')
+                    OR (ph.Photo6 IS NOT NULL AND ph.Photo6 != '' AND ph.Photo6 != '0')
+                    OR (ph.Photo7 IS NOT NULL AND ph.Photo7 != '' AND ph.Photo7 != '0')
+                    OR (ph.Photo8 IS NOT NULL AND ph.Photo8 != '' AND ph.Photo8 != '0')
+                ) THEN 0 ELSE 1 END ASC,
+                a.LastUpdated DESC
         """)).fetchall()
-        return [_animal_dict(r) for r in rows]
+        animals = [_animal_dict(r) for r in rows]
+
+        with_photo = [a for a in animals if a.get("photo")]
+        no_photo   = [a for a in animals if not a.get("photo")]
+
+        # Diversity sort: round-robin through species so no species dominates
+        # any section of the page.  Within each species the SQL ORDER BY already
+        # put the most-recently-updated animal first.
+        #
+        # Cap each species first so a dominant species (e.g. alpacas) can't
+        # flood the tail after smaller species are exhausted.
+        # Formula: ceil(30 / n_species), minimum 3 per species.
+        from collections import defaultdict
+        sp_groups: dict = defaultdict(list)
+        for a in with_photo:
+            sp_groups[a.get("species_id")].append(a)
+
+        n_species = max(len(sp_groups), 1)
+        per_cap   = max(3, -(-30 // n_species))   # ceiling division
+        sp_groups = {k: v[:per_cap] for k, v in sp_groups.items()}
+
+        diverse: list = []
+        while sp_groups:
+            for sp in list(sp_groups.keys()):
+                if sp_groups[sp]:
+                    diverse.append(sp_groups[sp].pop(0))
+            sp_groups = {k: v for k, v in sp_groups.items() if v}
+
+        # Homepage only shows animals with confirmed GCS photos.
+        # Return 30 so the frontend can trim to full rows at any breakpoint.
+        result = diverse[:30]
+
+        _livestock_cache["homepage"] = {"data": result, "ts": _time.time()}
+        return result
     except Exception as e:
         import traceback; traceback.print_exc()
         return []
@@ -1289,7 +1359,7 @@ def livestock_filters(slug: str, db: Session = Depends(get_db)):
     """Return available breeds and states for the given species slug."""
     species_id = SLUG_TO_SPECIES_ID.get(slug)
     if not species_id:
-        return {"breeds": [], "states": []}
+        return {"breeds": [], "states": [], "ranches": []}
     try:
         breed_rows = db.execute(text("""
             SELECT DISTINCT sbl.BreedLookupID AS id, sbl.Breed AS name
@@ -1304,8 +1374,8 @@ def livestock_filters(slug: str, db: Session = Depends(get_db)):
         state_rows = db.execute(text("""
             SELECT DISTINCT addr.AddressState AS state, addr.StateIndex AS state_index
             FROM Animals a
-            JOIN BusinessAccess ba ON ba.PeopleID = a.PeopleID AND ba.Active = 1
-            JOIN Business biz      ON biz.BusinessID = ba.BusinessID
+            LEFT JOIN BusinessAccess ba ON ba.PeopleID = a.PeopleID AND ba.Active = 1
+            JOIN Business biz      ON biz.BusinessID = COALESCE(a.BusinessID, ba.BusinessID)
             JOIN Address addr      ON addr.AddressID = biz.AddressID
             WHERE a.SpeciesID = :sid
               AND (a.PublishForSale = 1 OR a.PublishStud = 1)
@@ -1313,13 +1383,26 @@ def livestock_filters(slug: str, db: Session = Depends(get_db)):
             ORDER BY addr.AddressState
         """), {"sid": species_id}).fetchall()
 
+        ranch_rows = db.execute(text("""
+            SELECT DISTINCT biz.BusinessID AS id, biz.BusinessName AS name
+            FROM Animals a
+            LEFT JOIN BusinessAccess ba ON ba.PeopleID = a.PeopleID AND ba.Active = 1
+            JOIN Business biz      ON biz.BusinessID = COALESCE(a.BusinessID, ba.BusinessID)
+            WHERE a.SpeciesID = :sid
+              AND (a.PublishForSale = 1 OR a.PublishStud = 1)
+              AND biz.BusinessName IS NOT NULL
+              AND LTRIM(RTRIM(biz.BusinessName)) <> ''
+            ORDER BY biz.BusinessName
+        """), {"sid": species_id}).fetchall()
+
         return {
-            "breeds": [{"id": r.id, "name": r.name} for r in breed_rows],
-            "states": [{"state": r.state, "state_index": r.state_index} for r in state_rows],
+            "breeds":  [{"id": r.id, "name": r.name} for r in breed_rows],
+            "states":  [{"state": r.state, "state_index": r.state_index} for r in state_rows],
+            "ranches": [{"id": r.id, "name": r.name} for r in ranch_rows],
         }
     except Exception:
         import traceback; traceback.print_exc()
-        return {"breeds": [], "states": []}
+        return {"breeds": [], "states": [], "ranches": []}
 
 
 def _livestock_listing(
@@ -1328,6 +1411,7 @@ def _livestock_listing(
     min_price: float, max_price: float,
     ancestry: str, sort_by: str, order_by: str,
     db: Session,
+    business_id: int = 0,
 ) -> dict:
     PER_PAGE = 10
     species_id = SLUG_TO_SPECIES_ID.get(slug)
@@ -1358,6 +1442,10 @@ def _livestock_listing(
         filters.append("addr.StateIndex = :state_index")
         params["state_index"] = state_index
 
+    if business_id and business_id != 0:
+        filters.append("biz.BusinessID = :business_id")
+        params["business_id"] = business_id
+
     where = " AND ".join(filters)
 
     join_block = """
@@ -1366,7 +1454,7 @@ def _livestock_listing(
         LEFT JOIN SpeciesBreedLookupTable b1 ON b1.BreedLookupID = a.BreedID
         LEFT JOIN SpeciesBreedLookupTable b2 ON b2.BreedLookupID = a.BreedID2
         LEFT JOIN BusinessAccess ba ON ba.PeopleID = a.PeopleID AND ba.Active = 1
-        LEFT JOIN Business biz  ON biz.BusinessID  = ba.BusinessID
+        LEFT JOIN Business biz  ON biz.BusinessID  = COALESCE(a.BusinessID, ba.BusinessID)
         LEFT JOIN Address addr  ON addr.AddressID  = biz.AddressID
     """
 
@@ -1403,6 +1491,7 @@ def livestock_for_sale(
     page:        int   = Query(1,          ge=1),
     breed_id:    int   = Query(0),
     state_index: int   = Query(0),
+    business_id: int   = Query(0),
     min_price:   float = Query(0),
     max_price:   float = Query(100_000_000),
     ancestry:    str   = Query("Any"),
@@ -1412,7 +1501,8 @@ def livestock_for_sale(
 ):
     try:
         return _livestock_listing(slug, False, page, breed_id, state_index,
-                                  min_price, max_price, ancestry, sort_by, order_by, db)
+                                  min_price, max_price, ancestry, sort_by, order_by, db,
+                                  business_id=business_id)
     except Exception:
         import traceback; traceback.print_exc()
         return {"total": 0, "page": page, "per_page": 10, "total_pages": 0, "animals": [], "label": slug}
@@ -1424,6 +1514,7 @@ def livestock_studs(
     page:        int   = Query(1,          ge=1),
     breed_id:    int   = Query(0),
     state_index: int   = Query(0),
+    business_id: int   = Query(0),
     min_stud_fee:  float = Query(0),
     max_stud_fee:  float = Query(100_000_000),
     ancestry:    str   = Query("Any"),
@@ -1433,7 +1524,8 @@ def livestock_studs(
 ):
     try:
         return _livestock_listing(slug, True, page, breed_id, state_index,
-                                  min_stud_fee, max_stud_fee, ancestry, sort_by, order_by, db)
+                                  min_stud_fee, max_stud_fee, ancestry, sort_by, order_by, db,
+                                  business_id=business_id)
     except Exception:
         import traceback; traceback.print_exc()
         return {"total": 0, "page": page, "per_page": 10, "total_pages": 0, "animals": [], "label": slug}
@@ -1444,20 +1536,85 @@ def livestock_studs(
 SPECIES_ID_TO_SLUG = {v: k for k, v in SLUG_TO_SPECIES_ID.items()}
 
 def _photo_url(filename) -> str | None:
-    """Build a GCS URL from a raw filename or return None."""
+    """Return a GCS URL for the given filename value, or None.
+
+    If the value is already a GCS URL it is returned as-is.
+    Otherwise we construct one from the bare filename so the browser can
+    attempt to load it — onError handlers on the frontend hide any that 404.
+    """
     if not filename:
         return None
     s = str(filename).strip()
     if not s or s == "0" or len(s) < 3:
         return None
-    if s.startswith("http"):
-        # normalise old domain references
-        s = s.replace("livestockofamerica.com", "livestockoftheworld.com")
-        s = s.replace("http://", "https://")
+    if s.startswith(_GCS_PREFIX):
         return s
-    # bare filename — serve from GCS
-    fname = s.split("/")[-1]
-    return f"{GCP_ANIMALS}/{fname}" if fname else None
+    from urllib.parse import quote
+    fname = s.split("/")[-1].strip()
+    if not fname or len(fname) < 3:
+        return None
+    return f"{GCP_ANIMALS}/{quote(fname, safe='')}"
+
+
+@marketplace_router.get("/animal/{animal_id}/progeny")
+def get_animal_progeny(animal_id: int, db: Session = Depends(get_db)):
+    """Return all animals for which this animal is a direct parent (Sire or Dam).
+
+    Matches Ancestors.SireLink/DamLink on this animal's ID, and falls back to
+    matching Ancestors.Sire/Ancestors.Dam on the animal's FullName for legacy
+    data that was entered as free text."""
+    parent = db.execute(text(
+        "SELECT AnimalID, FullName, Category FROM Animals WHERE AnimalID = :aid"
+    ), {"aid": animal_id}).fetchone()
+    if not parent:
+        raise HTTPException(status_code=404, detail="Animal not found")
+    parent_d = dict(parent._mapping)
+    parent_name = (parent_d.get("FullName") or "").strip()
+    parent_cat  = (parent_d.get("Category") or "").lower()
+
+    link_like = f"%/animal/{animal_id}"
+    sql = (
+        "SELECT DISTINCT a.AnimalID, a.FullName, a.SpeciesID, a.Category, "
+        "       a.DOBMonth, a.DOBDay, a.DOBYear, "
+        "       p.Photo1, "
+        "       c.Color1, c.Color2, c.Color3, c.Color4, c.Color5 "
+        "FROM Animals a "
+        "JOIN Ancestors anc ON anc.AnimalID = a.AnimalID "
+        "LEFT JOIN Photos p ON p.AnimalID = a.AnimalID "
+        "LEFT JOIN Colors c ON c.AnimalID = a.AnimalID "
+        "WHERE anc.SireLink LIKE :link_like "
+        "   OR anc.DamLink  LIKE :link_like "
+    )
+    params = {"link_like": link_like}
+    if parent_name:
+        sql += "   OR RTRIM(LTRIM(anc.Sire)) = :pname OR RTRIM(LTRIM(anc.Dam)) = :pname "
+        params["pname"] = parent_name
+    sql += "ORDER BY a.DOBYear DESC, a.DOBMonth DESC, a.DOBDay DESC, a.FullName"
+    rows = db.execute(text(sql), params).fetchall()
+
+    out = []
+    for r in rows:
+        d = dict(r._mapping)
+        colors = [d.get(f"Color{i}") for i in range(1, 6)]
+        colors = [c for c in colors if c and str(c).strip()]
+        out.append({
+            "animal_id":  d["AnimalID"],
+            "full_name":  d.get("FullName") or "",
+            "species_id": d.get("SpeciesID"),
+            "category":   d.get("Category") or "",
+            "dob_year":   d.get("DOBYear"),
+            "dob_month":  d.get("DOBMonth"),
+            "dob_day":    d.get("DOBDay"),
+            "photo":      _photo_url(d.get("Photo1")),
+            "colors":     ", ".join(colors),
+        })
+    return {
+        "parent_id":   animal_id,
+        "parent_name": parent_name,
+        "parent_gender": "female" if any(w in parent_cat for w in ("female", "dam", "maiden"))
+                         else ("male" if any(w in parent_cat for w in ("male", "herdsire", "stud")) else None),
+        "progeny":     out,
+    }
 
 
 @marketplace_router.get("/animal/{animal_id}")
@@ -1472,7 +1629,7 @@ def get_animal_detail(animal_id: int, db: Session = Depends(get_db)):
             a.Category, a.BreedID, a.BreedID2, a.BreedID3, a.BreedID4,
             a.Weight, a.Height, a.Horns, a.Gaited, a.Warmblooded, a.Temperment,
             a.Vaccinations, a.PublishStud, a.PublishForSale,
-            a.LastUpdated, a.PeopleID,
+            a.LastUpdated, a.PeopleID, a.BusinessID,
             a.CoOwnerName1, a.CoOwnerLink1, a.CoOwnerBusiness1,
             a.CoOwnerName2, a.CoOwnerLink2, a.CoOwnerBusiness2,
             a.CoOwnerName3, a.CoOwnerLink3, a.CoOwnerBusiness3
@@ -1500,19 +1657,47 @@ def get_animal_detail(animal_id: int, db: Session = Depends(get_db)):
     cr = dict(cr._mapping) if cr else {}
 
     # ── ancestry ─────────────────────────────────────────────────────────────
-    anc = db.execute(text("SELECT * FROM Ancestors WHERE AnimalID = :aid"), {"aid": animal_id}).fetchone()
-    anc = dict(anc._mapping) if anc else {}
+    anc_row = db.execute(text("SELECT * FROM Ancestors WHERE AnimalID = :aid"), {"aid": animal_id}).fetchone()
+    # DB column casing is inconsistent (e.g. Siredam, Damsire, DamAri). Build a
+    # case-insensitive accessor so downstream .get("SireDam") works regardless.
+    _anc_raw = dict(anc_row._mapping) if anc_row else {}
+    _anc_ci = {k.lower(): v for k, v in _anc_raw.items()}
+    class _AncCI:
+        def get(self, key, default=None):
+            return _anc_ci.get(key.lower(), default)
+    anc = _AncCI()
+
+    # ── alpaca bloodline percentages (optional; columns may not exist) ───────
+    bloodline = {}
+    try:
+        pct_row = db.execute(text(
+            "SELECT PercentPeruvian, PercentChilean, PercentBolivian, "
+            "PercentUnknownOther, PercentAccoyo FROM Animals WHERE AnimalID = :aid"
+        ), {"aid": animal_id}).fetchone()
+        if pct_row:
+            for key, label in (
+                ("PercentPeruvian",     "Peruvian"),
+                ("PercentChilean",      "Chilean"),
+                ("PercentBolivian",     "Bolivian"),
+                ("PercentUnknownOther", "Unknown / Other"),
+                ("PercentAccoyo",       "Accoyo"),
+            ):
+                val = getattr(pct_row, key, None)
+                if val and str(val).strip():
+                    bloodline[label] = str(val).strip()
+    except Exception:
+        db.rollback()
 
     # ── photos (up to 16) ─────────────────────────────────────────────────────
     photos_row = db.execute(text(
         "SELECT Photo1,Photo2,Photo3,Photo4,Photo5,Photo6,Photo7,Photo8,"
         "Photo9,Photo10,Photo11,Photo12,Photo13,Photo14,Photo15,Photo16,"
-        "AnimalVideo,Histogram,FiberAnalysis "
+        "AnimalVideo,Histogram,FiberAnalysis,ARI "
         "FROM Photos WHERE AnimalID = :aid"
     ), {"aid": animal_id}).fetchone()
 
     photos = []
-    video_url = histogram_url = fiber_analysis_url = None
+    video_url = histogram_url = fiber_analysis_url = registration_url = None
     if photos_row:
         for i in range(1, 17):
             url = _photo_url(getattr(photos_row, f"Photo{i}", None))
@@ -1521,11 +1706,21 @@ def get_animal_detail(animal_id: int, db: Session = Depends(get_db)):
         video_url          = _photo_url(getattr(photos_row, "AnimalVideo", None))
         histogram_url      = _photo_url(getattr(photos_row, "Histogram", None))
         fiber_analysis_url = _photo_url(getattr(photos_row, "FiberAnalysis", None))
+        registration_url   = _photo_url(getattr(photos_row, "ARI", None))
 
-    # ── owner: People → BusinessAccess → Business → Address ──────────────────
+    # ── owner: prefer Animals.BusinessID direct link, fall back to People → BusinessAccess ──
     owner_info = {"business_name": None, "business_id": None, "city": None,
                   "state": None, "logo": None, "people_id": people_id}
-    if people_id:
+    direct_biz_id = d.get("BusinessID")
+    biz_row = None
+    if direct_biz_id:
+        biz_row = db.execute(text("""
+            SELECT b.BusinessName, b.BusinessID, b.Logo, addr.AddressCity, addr.AddressState
+            FROM Business b
+            LEFT JOIN Address addr ON addr.AddressID = b.AddressID
+            WHERE b.BusinessID = :bid
+        """), {"bid": direct_biz_id}).fetchone()
+    if not biz_row and people_id:
         biz_row = db.execute(text("""
             SELECT b.BusinessName, b.BusinessID, b.Logo, addr.AddressCity, addr.AddressState
             FROM BusinessAccess ba
@@ -1533,15 +1728,28 @@ def get_animal_detail(animal_id: int, db: Session = Depends(get_db)):
             LEFT JOIN Address addr ON addr.AddressID = b.AddressID
             WHERE ba.PeopleID = :pid AND ba.Active = 1
         """), {"pid": people_id}).fetchone()
-        if biz_row:
-            owner_info["business_name"] = biz_row.BusinessName
-            owner_info["business_id"]   = biz_row.BusinessID
-            owner_info["city"]          = biz_row.AddressCity
-            owner_info["state"]         = biz_row.AddressState
-            owner_info["logo"]          = _photo_url(biz_row.Logo)
+    if biz_row:
+        owner_info["business_name"] = biz_row.BusinessName
+        owner_info["business_id"]   = biz_row.BusinessID
+        owner_info["city"]          = biz_row.AddressCity
+        owner_info["state"]         = biz_row.AddressState
+        owner_info["logo"]          = _photo_url(biz_row.Logo)
 
     # ── species singular/plural terms ─────────────────────────────────────────
     species_id = d.get("SpeciesID")
+
+    # ── resolve Category (stored as SpeciesCategoryID) to a readable name ─────
+    category_display = d.get("Category")
+    if category_display is not None:
+        raw_cat = str(category_display).strip()
+        if raw_cat.isdigit():
+            cat_row = db.execute(text(
+                "SELECT SpeciesCategory FROM speciescategory WHERE SpeciesCategoryID = :cid"
+            ), {"cid": int(raw_cat)}).fetchone()
+            if cat_row:
+                category_display = cat_row[0]
+            elif raw_cat == "0":
+                category_display = None
 
     # ── breed names ───────────────────────────────────────────────────────────
     breed_names = []
@@ -1556,7 +1764,7 @@ def get_animal_detail(animal_id: int, db: Session = Depends(get_db)):
 
     # ── registration numbers ──────────────────────────────────────────────────
     reg_rows = db.execute(text("""
-        SELECT RegType, RegNumber FROM AnimalRegistration
+        SELECT DISTINCT RegType, RegNumber FROM AnimalRegistration
         WHERE AnimalID = :aid AND RegNumber IS NOT NULL AND RegNumber != ''
         ORDER BY RegType
     """), {"aid": animal_id}).fetchall()
@@ -1598,15 +1806,15 @@ def get_animal_detail(animal_id: int, db: Session = Depends(get_db)):
 
     return {
         "animal_id":        d["AnimalID"],
-        "full_name":        d.get("FullName") or "",
+        "full_name":        _unescape(d.get("FullName") or ""),
         "species_id":       species_id,
         "species_slug":     species_slug,
         "species_singular": species_singular,
-        "description":      d.get("Description") or "",
-        "stud_description": d.get("StudDescription") or "",
+        "description":      _unescape(d.get("Description") or ""),
+        "stud_description": _unescape(d.get("StudDescription") or ""),
         "dob": {"month": d.get("DOBMonth"), "day": d.get("DOBDay"), "year": d.get("DOBYear")},
-        "category":     d.get("Category"),
-        "breeds":       breed_names,
+        "category":     category_display,
+        "breeds":       [_unescape(b) for b in breed_names],
         "colors":       [x.strip() for x in [cr.get("Color1"), cr.get("Color2"), cr.get("Color3"), cr.get("Color4"), cr.get("Color5")] if x and str(x).strip()],
         "weight":       d.get("Weight"),
         "height":       d.get("Height"),
@@ -1637,25 +1845,27 @@ def get_animal_detail(animal_id: int, db: Session = Depends(get_db)):
         "ancestry": {
             "sire_term": "Sire",
             "dam_term":  "Dam",
-            "sire":          {"name": anc.get("Sire"),         "color": anc.get("SireColor"),         "link": anc.get("SireLink")},
-            "sire_sire":     {"name": anc.get("SireSire"),     "color": anc.get("SireSireColor"),     "link": anc.get("SireSireLink")},
-            "sire_dam":      {"name": anc.get("SireDam"),      "color": anc.get("SireDamColor"),      "link": anc.get("SireDamLink")},
-            "sire_sire_sire":{"name": anc.get("SireSireSire"), "color": anc.get("SireSireSireColor"), "link": anc.get("SireSireSireLink")},
-            "sire_sire_dam": {"name": anc.get("SireSireDam"),  "color": anc.get("SireSireDamColor"),  "link": anc.get("SireSireDamLink")},
-            "sire_dam_sire": {"name": anc.get("SireDamSire"),  "color": anc.get("SireDamSireColor"),  "link": anc.get("SireDamSireLink")},
-            "sire_dam_dam":  {"name": anc.get("SireDamDam"),   "color": anc.get("SireDamDamColor"),   "link": anc.get("SireDamDamLink")},
-            "dam":           {"name": anc.get("Dam"),          "color": anc.get("DamColor"),          "link": anc.get("DamLink")},
-            "dam_sire":      {"name": anc.get("DamSire"),      "color": anc.get("DamSireColor"),      "link": anc.get("DamSireLink")},
-            "dam_dam":       {"name": anc.get("DamDam"),       "color": anc.get("DamDamColor"),       "link": anc.get("DamDamLink")},
-            "dam_sire_sire": {"name": anc.get("DamSireSire"),  "color": anc.get("DamSireSireColor"),  "link": anc.get("DamSireSireLink")},
-            "dam_sire_dam":  {"name": anc.get("DamSireDam"),   "color": anc.get("DamSireDamColor"),   "link": anc.get("DamSireDamLink")},
-            "dam_dam_sire":  {"name": anc.get("DamDamSire"),   "color": anc.get("DamDamSireColor"),   "link": anc.get("DamDamSireLink")},
-            "dam_dam_dam":   {"name": anc.get("DamDamDam"),    "color": anc.get("DamDamDamColor"),    "link": anc.get("DamDamDamLink")},
+            "sire":          {"name": _unescape(anc.get("Sire")),         "color": anc.get("SireColor"),         "link": anc.get("SireLink"),         "reg": anc.get("SireARI")},
+            "sire_sire":     {"name": _unescape(anc.get("SireSire")),     "color": anc.get("SireSireColor"),     "link": anc.get("SireSireLink"),     "reg": anc.get("SireSireARI")},
+            "sire_dam":      {"name": _unescape(anc.get("SireDam")),      "color": anc.get("SireDamColor"),      "link": anc.get("SireDamLink"),      "reg": anc.get("SireDamARI")},
+            "sire_sire_sire":{"name": _unescape(anc.get("SireSireSire")), "color": anc.get("SireSireSireColor"), "link": anc.get("SireSireSireLink"), "reg": anc.get("SireSireSireARI")},
+            "sire_sire_dam": {"name": _unescape(anc.get("SireSireDam")),  "color": anc.get("SireSireDamColor"),  "link": anc.get("SireSireDamLink"),  "reg": anc.get("SireSireDamARI")},
+            "sire_dam_sire": {"name": _unescape(anc.get("SireDamSire")),  "color": anc.get("SireDamSireColor"),  "link": anc.get("SireDamSireLink"),  "reg": anc.get("SireDamSireARI")},
+            "sire_dam_dam":  {"name": _unescape(anc.get("SireDamDam")),   "color": anc.get("SireDamDamColor"),   "link": anc.get("SireDamDamLink"),   "reg": anc.get("SireDamDamARI")},
+            "dam":           {"name": _unescape(anc.get("Dam")),          "color": anc.get("DamColor"),          "link": anc.get("DamLink"),          "reg": anc.get("DamARI") or anc.get("DamAri")},
+            "dam_sire":      {"name": _unescape(anc.get("DamSire")),      "color": anc.get("DamSireColor"),      "link": anc.get("DamSireLink"),      "reg": anc.get("DamSireARI")},
+            "dam_dam":       {"name": _unescape(anc.get("DamDam")),       "color": anc.get("DamDamColor"),       "link": anc.get("DamDamLink"),       "reg": anc.get("DamDamARI")},
+            "dam_sire_sire": {"name": _unescape(anc.get("DamSireSire")),  "color": anc.get("DamSireSireColor"),  "link": anc.get("DamSireSireLink"),  "reg": anc.get("DamSireSireARI")},
+            "dam_sire_dam":  {"name": _unescape(anc.get("DamSireDam")),   "color": anc.get("DamSireDamColor"),   "link": anc.get("DamSireDamLink"),   "reg": anc.get("DamSireDamARI")},
+            "dam_dam_sire":  {"name": _unescape(anc.get("DamDamSire")),   "color": anc.get("DamDamSireColor"),   "link": anc.get("DamDamSireLink"),   "reg": anc.get("DamDamSireARI")},
+            "dam_dam_dam":   {"name": _unescape(anc.get("DamDamDam")),    "color": anc.get("DamDamDamColor"),    "link": anc.get("DamDamDamLink"),    "reg": anc.get("DamDamDamARI")},
+            "bloodline":     bloodline,
         },
         "photos":             photos,
         "video_url":          video_url,
         "histogram_url":      histogram_url,
         "fiber_analysis_url": fiber_analysis_url,
+        "registration_url":   registration_url,
         "registrations":      registrations,
         "awards":             awards,
         "fiber_stats":        fiber_stats,
