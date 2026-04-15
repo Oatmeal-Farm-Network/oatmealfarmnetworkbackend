@@ -1181,4 +1181,482 @@ def submit_review(req: ReviewRequest, db: Session = Depends(get_db)):
     """), {"lid": req.ListingID, "pid": req.ReviewerPeopleID,
            "oid": req.OrderID, "rating": req.Rating, "text": req.ReviewText})
     db.commit()
-    return {"message": "Review submitted"}
+
+
+# ── Livestock Marketplace endpoints ──────────────────────────────────────────
+# These serve LivestockForSale.jsx, LivestockMarketplace.jsx, and RanchList.jsx
+
+GCP_ANIMALS = "https://storage.googleapis.com/oatmeal-farm-network-images/Animals/Uploads"
+
+SLUG_TO_SPECIES_ID = {
+    'alpacas': 2, 'bison': 9, 'buffalo': 34, 'camels': 18, 'cattle': 8,
+    'chickens': 13, 'crocodiles': 25, 'dogs': 3, 'deer': 21, 'donkeys': 7,
+    'ducks': 15, 'emus': 19, 'geese': 22, 'goats': 6, 'guinea-fowl': 26,
+    'honey-bees': 23, 'horses': 5, 'llamas': 4, 'musk-ox': 27,
+    'ostriches': 28, 'pheasants': 29, 'pigs': 12, 'pigeons': 30,
+    'quails': 31, 'rabbits': 11, 'sheep': 10, 'snails': 33,
+    'turkeys': 14, 'yaks': 17,
+}
+
+SLUG_TO_SINGULAR = {
+    'alpacas': 'Alpaca', 'bison': 'Bison', 'buffalo': 'Buffalo',
+    'camels': 'Camel', 'cattle': 'Cattle', 'chickens': 'Chicken',
+    'crocodiles': 'Crocodile', 'deer': 'Deer', 'dogs': 'Working Dog',
+    'donkeys': 'Donkey', 'ducks': 'Duck', 'emus': 'Emu', 'geese': 'Goose',
+    'goats': 'Goat', 'guinea-fowl': 'Guinea Fowl', 'honey-bees': 'Honey Bee',
+    'horses': 'Horse', 'llamas': 'Llama', 'musk-ox': 'Musk Ox',
+    'ostriches': 'Ostrich', 'pheasants': 'Pheasant', 'pigs': 'Pig',
+    'pigeons': 'Pigeon', 'quails': 'Quail', 'rabbits': 'Rabbit',
+    'sheep': 'Sheep', 'snails': 'Snail', 'turkeys': 'Turkey', 'yaks': 'Yak',
+}
+
+
+def _animal_photo(row) -> str | None:
+    for field in ('ListPageImage', 'Photo1', 'Photo2'):
+        v = getattr(row, field, None)
+        if v:
+            fname = str(v).strip().split('/')[-1]
+            if fname and len(fname) > 4:
+                return f"{GCP_ANIMALS}/{fname}"
+    return None
+
+
+def _animal_dict(row, studs: bool = False) -> dict:
+    breeds = [b for b in [
+        getattr(row, 'Breed1', None) or '',
+        getattr(row, 'Breed2', None) or '',
+    ] if b]
+    price = None
+    try:
+        raw = float(row.StudFee if studs else row.Price)
+        if raw > 0:
+            price = raw
+    except Exception:
+        pass
+    return {
+        "animal_id":  row.AnimalID,
+        "full_name":  getattr(row, 'FullName', '') or '',
+        "photo":      _animal_photo(row),
+        "price":      price if not studs else None,
+        "stud_fee":   price if studs else None,
+        "breeds":     breeds,
+        "location":   getattr(row, 'AddressState', '') or '',
+        "seller":     getattr(row, 'BusinessName', '') or '',
+    }
+
+
+@marketplace_router.get("/homepage-listings")
+def livestock_homepage_listings(db: Session = Depends(get_db)):
+    """Return up to 12 recent for-sale animals across all species for the homepage."""
+    try:
+        rows = db.execute(text("""
+            SELECT TOP 12
+                a.AnimalID, a.FullName,
+                ph.Photo1, ph.Photo2, ph.ListPageImage,
+                p.Price,
+                b1.Breed AS Breed1, b2.Breed AS Breed2,
+                biz.BusinessName,
+                addr.AddressState
+            FROM Animals a
+            JOIN Pricing p          ON p.AnimalID       = a.AnimalID
+            LEFT JOIN Photos ph     ON ph.AnimalID      = a.AnimalID
+            LEFT JOIN SpeciesBreedLookupTable b1  ON b1.BreedLookupID = a.BreedID
+            LEFT JOIN SpeciesBreedLookupTable b2  ON b2.BreedLookupID = a.BreedID2
+            LEFT JOIN BusinessAccess ba ON ba.PeopleID  = a.PeopleID AND ba.Active = 1
+            LEFT JOIN Business biz  ON biz.BusinessID  = ba.BusinessID
+            LEFT JOIN Address addr  ON addr.AddressID   = biz.AddressID
+            WHERE a.PublishForSale = 1
+            ORDER BY a.LastUpdated DESC
+        """)).fetchall()
+        return [_animal_dict(r) for r in rows]
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return []
+
+
+@marketplace_router.get("/species/{slug}")
+def livestock_species_info(slug: str):
+    """Return singular term and label for a species slug."""
+    return {
+        "slug":          slug,
+        "singular_term": SLUG_TO_SINGULAR.get(slug, ''),
+        "label":         slug.replace('-', ' ').title(),
+    }
+
+
+@marketplace_router.get("/filters/{slug}")
+def livestock_filters(slug: str, db: Session = Depends(get_db)):
+    """Return available breeds and states for the given species slug."""
+    species_id = SLUG_TO_SPECIES_ID.get(slug)
+    if not species_id:
+        return {"breeds": [], "states": []}
+    try:
+        breed_rows = db.execute(text("""
+            SELECT DISTINCT sbl.BreedLookupID AS id, sbl.Breed AS name
+            FROM SpeciesBreedLookupTable sbl
+            JOIN Animals a ON a.BreedID = sbl.BreedLookupID
+            JOIN Pricing p ON p.AnimalID = a.AnimalID
+            WHERE sbl.SpeciesID = :sid
+              AND (a.PublishForSale = 1 OR a.PublishStud = 1)
+            ORDER BY sbl.Breed
+        """), {"sid": species_id}).fetchall()
+
+        state_rows = db.execute(text("""
+            SELECT DISTINCT addr.AddressState AS state, addr.StateIndex AS state_index
+            FROM Animals a
+            JOIN BusinessAccess ba ON ba.PeopleID = a.PeopleID AND ba.Active = 1
+            JOIN Business biz      ON biz.BusinessID = ba.BusinessID
+            JOIN Address addr      ON addr.AddressID = biz.AddressID
+            WHERE a.SpeciesID = :sid
+              AND (a.PublishForSale = 1 OR a.PublishStud = 1)
+              AND addr.AddressState IS NOT NULL
+            ORDER BY addr.AddressState
+        """), {"sid": species_id}).fetchall()
+
+        return {
+            "breeds": [{"id": r.id, "name": r.name} for r in breed_rows],
+            "states": [{"state": r.state, "state_index": r.state_index} for r in state_rows],
+        }
+    except Exception:
+        import traceback; traceback.print_exc()
+        return {"breeds": [], "states": []}
+
+
+def _livestock_listing(
+    slug: str, studs: bool, page: int,
+    breed_id: int, state_index: int,
+    min_price: float, max_price: float,
+    ancestry: str, sort_by: str, order_by: str,
+    db: Session,
+) -> dict:
+    PER_PAGE = 10
+    species_id = SLUG_TO_SPECIES_ID.get(slug)
+    if not species_id:
+        return {"total": 0, "page": page, "per_page": PER_PAGE, "total_pages": 0, "animals": [], "label": slug}
+
+    publish_flag = "a.PublishStud = 1" if studs else "a.PublishForSale = 1"
+    price_col    = "p.StudFee"         if studs else "p.Price"
+
+    sort_map = {
+        "lastupdated": "a.LastUpdated",
+        "price":       price_col,
+        "name":        "a.FullName",
+        "breed":       "b1.Breed",
+    }
+    order_sql  = sort_map.get(sort_by, "a.LastUpdated")
+    dir_sql    = "ASC" if order_by == "asc" else "DESC"
+
+    filters = [f"a.SpeciesID = :sid", publish_flag,
+               f"{price_col} >= :min_price", f"{price_col} <= :max_price"]
+    params: dict = {"sid": species_id, "min_price": min_price, "max_price": max_price}
+
+    if breed_id and breed_id != 0:
+        filters.append("(a.BreedID = :breed_id OR a.BreedID2 = :breed_id)")
+        params["breed_id"] = breed_id
+
+    if state_index and state_index != 0:
+        filters.append("addr.StateIndex = :state_index")
+        params["state_index"] = state_index
+
+    where = " AND ".join(filters)
+
+    join_block = """
+        JOIN Pricing p          ON p.AnimalID      = a.AnimalID
+        LEFT JOIN Photos ph     ON ph.AnimalID     = a.AnimalID
+        LEFT JOIN SpeciesBreedLookupTable b1 ON b1.BreedLookupID = a.BreedID
+        LEFT JOIN SpeciesBreedLookupTable b2 ON b2.BreedLookupID = a.BreedID2
+        LEFT JOIN BusinessAccess ba ON ba.PeopleID = a.PeopleID AND ba.Active = 1
+        LEFT JOIN Business biz  ON biz.BusinessID  = ba.BusinessID
+        LEFT JOIN Address addr  ON addr.AddressID  = biz.AddressID
+    """
+
+    total = db.execute(text(f"""
+        SELECT COUNT(*) FROM Animals a {join_block} WHERE {where}
+    """), params).scalar() or 0
+
+    offset = (page - 1) * PER_PAGE
+    rows = db.execute(text(f"""
+        SELECT a.AnimalID, a.FullName, a.LastUpdated,
+               ph.Photo1, ph.Photo2, ph.ListPageImage,
+               p.Price, p.StudFee,
+               b1.Breed AS Breed1, b2.Breed AS Breed2,
+               biz.BusinessName, addr.AddressState
+        FROM Animals a {join_block}
+        WHERE {where}
+        ORDER BY {order_sql} {dir_sql}
+        OFFSET :offset ROWS FETCH NEXT :per_page ROWS ONLY
+    """), {**params, "offset": offset, "per_page": PER_PAGE}).fetchall()
+
+    return {
+        "total":       total,
+        "page":        page,
+        "per_page":    PER_PAGE,
+        "total_pages": max(1, -(-total // PER_PAGE)),
+        "label":       slug.replace('-', ' ').title(),
+        "animals":     [_animal_dict(r, studs) for r in rows],
+    }
+
+
+@marketplace_router.get("/for-sale/{slug}")
+def livestock_for_sale(
+    slug: str,
+    page:        int   = Query(1,          ge=1),
+    breed_id:    int   = Query(0),
+    state_index: int   = Query(0),
+    min_price:   float = Query(0),
+    max_price:   float = Query(100_000_000),
+    ancestry:    str   = Query("Any"),
+    sort_by:     str   = Query("lastupdated"),
+    order_by:    str   = Query("desc"),
+    db: Session = Depends(get_db),
+):
+    try:
+        return _livestock_listing(slug, False, page, breed_id, state_index,
+                                  min_price, max_price, ancestry, sort_by, order_by, db)
+    except Exception:
+        import traceback; traceback.print_exc()
+        return {"total": 0, "page": page, "per_page": 10, "total_pages": 0, "animals": [], "label": slug}
+
+
+@marketplace_router.get("/studs/{slug}")
+def livestock_studs(
+    slug: str,
+    page:        int   = Query(1,          ge=1),
+    breed_id:    int   = Query(0),
+    state_index: int   = Query(0),
+    min_stud_fee:  float = Query(0),
+    max_stud_fee:  float = Query(100_000_000),
+    ancestry:    str   = Query("Any"),
+    sort_by:     str   = Query("lastupdated"),
+    order_by:    str   = Query("desc"),
+    db: Session = Depends(get_db),
+):
+    try:
+        return _livestock_listing(slug, True, page, breed_id, state_index,
+                                  min_stud_fee, max_stud_fee, ancestry, sort_by, order_by, db)
+    except Exception:
+        import traceback; traceback.print_exc()
+        return {"total": 0, "page": page, "per_page": 10, "total_pages": 0, "animals": [], "label": slug}
+
+
+# ── Animal detail page ────────────────────────────────────────────────────────
+
+SPECIES_ID_TO_SLUG = {v: k for k, v in SLUG_TO_SPECIES_ID.items()}
+
+def _photo_url(filename) -> str | None:
+    """Build a GCS URL from a raw filename or return None."""
+    if not filename:
+        return None
+    s = str(filename).strip()
+    if not s or s == "0" or len(s) < 3:
+        return None
+    if s.startswith("http"):
+        # normalise old domain references
+        s = s.replace("livestockofamerica.com", "livestockoftheworld.com")
+        s = s.replace("http://", "https://")
+        return s
+    # bare filename — serve from GCS
+    fname = s.split("/")[-1]
+    return f"{GCP_ANIMALS}/{fname}" if fname else None
+
+
+@marketplace_router.get("/animal/{animal_id}")
+def get_animal_detail(animal_id: int, db: Session = Depends(get_db)):
+    """Public endpoint — returns everything needed for the animal detail page."""
+
+    # ── core animal fields (no fragile outer joins) ───────────────────────────
+    row = db.execute(text("""
+        SELECT
+            a.AnimalID, a.FullName, a.SpeciesID, a.Description, a.StudDescription,
+            a.DOBMonth, a.DOBDay, a.DOBYear,
+            a.Category, a.BreedID, a.BreedID2, a.BreedID3, a.BreedID4,
+            a.Weight, a.Height, a.Horns, a.Gaited, a.Warmblooded, a.Temperment,
+            a.Vaccinations, a.PublishStud, a.PublishForSale,
+            a.LastUpdated, a.PeopleID,
+            a.CoOwnerName1, a.CoOwnerLink1, a.CoOwnerBusiness1,
+            a.CoOwnerName2, a.CoOwnerLink2, a.CoOwnerBusiness2,
+            a.CoOwnerName3, a.CoOwnerLink3, a.CoOwnerBusiness3
+        FROM Animals a
+        WHERE a.AnimalID = :aid
+    """), {"aid": animal_id}).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Animal not found")
+
+    d = dict(row._mapping)
+    people_id = d.get("PeopleID")
+
+    # ── pricing ───────────────────────────────────────────────────────────────
+    pr = db.execute(text(
+        "SELECT Price, StudFee, Free, Sold, PriceComments, Financeterms "
+        "FROM Pricing WHERE AnimalID = :aid"
+    ), {"aid": animal_id}).fetchone()
+    pr = dict(pr._mapping) if pr else {}
+
+    # ── colors ────────────────────────────────────────────────────────────────
+    cr = db.execute(text(
+        "SELECT Color1, Color2, Color3, Color4, Color5 FROM Colors WHERE AnimalID = :aid"
+    ), {"aid": animal_id}).fetchone()
+    cr = dict(cr._mapping) if cr else {}
+
+    # ── ancestry ─────────────────────────────────────────────────────────────
+    anc = db.execute(text("SELECT * FROM Ancestors WHERE AnimalID = :aid"), {"aid": animal_id}).fetchone()
+    anc = dict(anc._mapping) if anc else {}
+
+    # ── photos (up to 16) ─────────────────────────────────────────────────────
+    photos_row = db.execute(text(
+        "SELECT Photo1,Photo2,Photo3,Photo4,Photo5,Photo6,Photo7,Photo8,"
+        "Photo9,Photo10,Photo11,Photo12,Photo13,Photo14,Photo15,Photo16,"
+        "AnimalVideo,Histogram,FiberAnalysis "
+        "FROM Photos WHERE AnimalID = :aid"
+    ), {"aid": animal_id}).fetchone()
+
+    photos = []
+    video_url = histogram_url = fiber_analysis_url = None
+    if photos_row:
+        for i in range(1, 17):
+            url = _photo_url(getattr(photos_row, f"Photo{i}", None))
+            if url:
+                photos.append(url)
+        video_url          = _photo_url(getattr(photos_row, "AnimalVideo", None))
+        histogram_url      = _photo_url(getattr(photos_row, "Histogram", None))
+        fiber_analysis_url = _photo_url(getattr(photos_row, "FiberAnalysis", None))
+
+    # ── owner: People → BusinessAccess → Business → Address ──────────────────
+    owner_info = {"business_name": None, "business_id": None, "city": None,
+                  "state": None, "logo": None, "people_id": people_id}
+    if people_id:
+        biz_row = db.execute(text("""
+            SELECT b.BusinessName, b.BusinessID, b.Logo, addr.AddressCity, addr.AddressState
+            FROM BusinessAccess ba
+            JOIN Business b   ON b.BusinessID  = ba.BusinessID
+            LEFT JOIN Address addr ON addr.AddressID = b.AddressID
+            WHERE ba.PeopleID = :pid AND ba.Active = 1
+        """), {"pid": people_id}).fetchone()
+        if biz_row:
+            owner_info["business_name"] = biz_row.BusinessName
+            owner_info["business_id"]   = biz_row.BusinessID
+            owner_info["city"]          = biz_row.AddressCity
+            owner_info["state"]         = biz_row.AddressState
+            owner_info["logo"]          = _photo_url(biz_row.Logo)
+
+    # ── species singular/plural terms ─────────────────────────────────────────
+    species_id = d.get("SpeciesID")
+
+    # ── breed names ───────────────────────────────────────────────────────────
+    breed_names = []
+    for bid_col in ("BreedID", "BreedID2", "BreedID3", "BreedID4"):
+        bid = d.get(bid_col)
+        if bid:
+            br = db.execute(text(
+                "SELECT Breed FROM SpeciesBreedLookupTable WHERE BreedLookupID = :bid"
+            ), {"bid": bid}).fetchone()
+            if br:
+                breed_names.append(br[0])
+
+    # ── registration numbers ──────────────────────────────────────────────────
+    reg_rows = db.execute(text("""
+        SELECT RegType, RegNumber FROM AnimalRegistration
+        WHERE AnimalID = :aid AND RegNumber IS NOT NULL AND RegNumber != ''
+        ORDER BY RegType
+    """), {"aid": animal_id}).fetchall()
+    registrations = [{"type": r.RegType, "number": r.RegNumber} for r in reg_rows]
+
+    # ── awards ────────────────────────────────────────────────────────────────
+    award_rows = db.execute(text("""
+        SELECT AwardYear, ShowName, Placing, Type, Awardcomments
+        FROM Awards WHERE AnimalID = :aid ORDER BY Placing ASC
+    """), {"aid": animal_id}).fetchall()
+    awards = [
+        {
+            "AwardYear":     r.AwardYear,
+            "ShowName":      r.ShowName,
+            "Placing":       r.Placing,
+            "AwardClass":    r.Type,
+            "AwardComments": r.Awardcomments,
+        }
+        for r in award_rows
+        if any([r.AwardYear and str(r.AwardYear) != "0",
+                r.ShowName and str(r.ShowName).strip(),
+                r.Placing and str(r.Placing).strip(),
+                r.Type and str(r.Type).strip()])
+    ]
+
+    # ── fiber stats (correct casing from actual table) ────────────────────────
+    fiber_rows = db.execute(text("""
+        SELECT SampleDateMonth, SampleDateDay, SampleDateYear,
+               Average, StandardDev, COV, GreaterThan30,
+               BlanketWeight, ShearWeight, CF, Length, Curve, CrimpPerInch
+        FROM Fiber WHERE AnimalID = :aid
+        ORDER BY SampleDateYear DESC, Average DESC
+    """), {"aid": animal_id}).fetchall()
+    fiber_stats = [dict(r._mapping) for r in fiber_rows]
+
+    # ── species slug ──────────────────────────────────────────────────────────
+    species_slug     = SPECIES_ID_TO_SLUG.get(species_id)
+    species_singular = SLUG_TO_SINGULAR.get(species_slug, "Animal")
+
+    return {
+        "animal_id":        d["AnimalID"],
+        "full_name":        d.get("FullName") or "",
+        "species_id":       species_id,
+        "species_slug":     species_slug,
+        "species_singular": species_singular,
+        "description":      d.get("Description") or "",
+        "stud_description": d.get("StudDescription") or "",
+        "dob": {"month": d.get("DOBMonth"), "day": d.get("DOBDay"), "year": d.get("DOBYear")},
+        "category":     d.get("Category"),
+        "breeds":       breed_names,
+        "colors":       [x.strip() for x in [cr.get("Color1"), cr.get("Color2"), cr.get("Color3"), cr.get("Color4"), cr.get("Color5")] if x and str(x).strip()],
+        "weight":       d.get("Weight"),
+        "height":       d.get("Height"),
+        "horns":        d.get("Horns"),
+        "gaited":       d.get("Gaited"),
+        "warmblooded":  d.get("Warmblooded"),
+        "temperament":  d.get("Temperment"),
+        "vaccinations": d.get("Vaccinations"),
+        "pricing": {
+            "price":          float(pr["Price"])   if pr.get("Price")   else None,
+            "stud_fee":       float(pr["StudFee"]) if pr.get("StudFee") else None,
+            "free":           bool(pr.get("Free")),
+            "sold":           bool(pr.get("Sold")),
+            "price_comments": pr.get("PriceComments"),
+        },
+        "sold":             bool(pr.get("Sold")),
+        "sale_pending":     False,
+        "publish_stud":     bool(d.get("PublishStud")),
+        "publish_for_sale": bool(d.get("PublishForSale")),
+        "finance_terms":    pr.get("Financeterms"),
+        "last_updated":     str(d["LastUpdated"]) if d.get("LastUpdated") else None,
+        "co_owners": [x for x in [
+            {"name": d.get("CoOwnerName1"), "business": d.get("CoOwnerBusiness1"), "link": d.get("CoOwnerLink1")} if d.get("CoOwnerName1") or d.get("CoOwnerBusiness1") else None,
+            {"name": d.get("CoOwnerName2"), "business": d.get("CoOwnerBusiness2"), "link": d.get("CoOwnerLink2")} if d.get("CoOwnerName2") or d.get("CoOwnerBusiness2") else None,
+            {"name": d.get("CoOwnerName3"), "business": d.get("CoOwnerBusiness3"), "link": d.get("CoOwnerLink3")} if d.get("CoOwnerName3") or d.get("CoOwnerBusiness3") else None,
+        ] if x],
+        "owner": owner_info,
+        "ancestry": {
+            "sire_term": "Sire",
+            "dam_term":  "Dam",
+            "sire":          {"name": anc.get("Sire"),         "color": anc.get("SireColor"),         "link": anc.get("SireLink")},
+            "sire_sire":     {"name": anc.get("SireSire"),     "color": anc.get("SireSireColor"),     "link": anc.get("SireSireLink")},
+            "sire_dam":      {"name": anc.get("SireDam"),      "color": anc.get("SireDamColor"),      "link": anc.get("SireDamLink")},
+            "sire_sire_sire":{"name": anc.get("SireSireSire"), "color": anc.get("SireSireSireColor"), "link": anc.get("SireSireSireLink")},
+            "sire_sire_dam": {"name": anc.get("SireSireDam"),  "color": anc.get("SireSireDamColor"),  "link": anc.get("SireSireDamLink")},
+            "sire_dam_sire": {"name": anc.get("SireDamSire"),  "color": anc.get("SireDamSireColor"),  "link": anc.get("SireDamSireLink")},
+            "sire_dam_dam":  {"name": anc.get("SireDamDam"),   "color": anc.get("SireDamDamColor"),   "link": anc.get("SireDamDamLink")},
+            "dam":           {"name": anc.get("Dam"),          "color": anc.get("DamColor"),          "link": anc.get("DamLink")},
+            "dam_sire":      {"name": anc.get("DamSire"),      "color": anc.get("DamSireColor"),      "link": anc.get("DamSireLink")},
+            "dam_dam":       {"name": anc.get("DamDam"),       "color": anc.get("DamDamColor"),       "link": anc.get("DamDamLink")},
+            "dam_sire_sire": {"name": anc.get("DamSireSire"),  "color": anc.get("DamSireSireColor"),  "link": anc.get("DamSireSireLink")},
+            "dam_sire_dam":  {"name": anc.get("DamSireDam"),   "color": anc.get("DamSireDamColor"),   "link": anc.get("DamSireDamLink")},
+            "dam_dam_sire":  {"name": anc.get("DamDamSire"),   "color": anc.get("DamDamSireColor"),   "link": anc.get("DamDamSireLink")},
+            "dam_dam_dam":   {"name": anc.get("DamDamDam"),    "color": anc.get("DamDamDamColor"),    "link": anc.get("DamDamDamLink")},
+        },
+        "photos":             photos,
+        "video_url":          video_url,
+        "histogram_url":      histogram_url,
+        "fiber_analysis_url": fiber_analysis_url,
+        "registrations":      registrations,
+        "awards":             awards,
+        "fiber_stats":        fiber_stats,
+    }
