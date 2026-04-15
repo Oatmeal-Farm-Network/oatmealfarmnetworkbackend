@@ -30,6 +30,7 @@ from routers import events
 from routers import company_features
 from routers import blog
 from routers import accounting
+from routers import animals
 
 from routers.marketplace import marketplace_router
 from marketplace_stripe import stripe_router
@@ -97,6 +98,25 @@ class DynamicCORSMiddleware(BaseHTTPMiddleware):
 
 app = FastAPI()
 
+@app.on_event("startup")
+async def _startup_migrations():
+    """Idempotent one-time data fixups — run in a thread so they never block startup."""
+    import asyncio
+    from sqlalchemy import text as _t
+
+    def _run():
+        try:
+            with SessionLocal() as _db:
+                _db.execute(_t(
+                    "UPDATE speciescategory SET SpeciesCategory = 'Herdsire' "
+                    "WHERE SpeciesCategory = 'Stud' AND SpeciesID = 2"
+                ))
+                _db.commit()
+        except Exception:
+            pass
+
+    asyncio.get_event_loop().run_in_executor(None, _run)
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     origin = request.headers.get("origin", "")
@@ -137,6 +157,7 @@ app.include_router(events.router)
 app.include_router(company_features.router)
 app.include_router(blog.router)
 app.include_router(accounting.router)
+app.include_router(animals.router)
 
 
 @app.get("/health")

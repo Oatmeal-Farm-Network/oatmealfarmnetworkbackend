@@ -344,7 +344,8 @@ def update_profile(business_id: int, payload: dict, db: Session = Depends(get_db
         if not ids:
             raise HTTPException(status_code=404, detail="Business not found")
 
-        # 1. Update Address — create the row if the business has no AddressID yet
+        # 1. Update Address — create the row if the business has no AddressID yet,
+        # or if the AddressID is dangling (points to a row that no longer exists)
         address_params = {
             "street":  (payload.get("AddressStreet") or "").strip(),
             "apt":     (payload.get("AddressApt")    or "").strip(),
@@ -353,7 +354,14 @@ def update_profile(business_id: int, payload: dict, db: Session = Depends(get_db
             "zip":     (payload.get("AddressZip")    or "").strip(),
             "country": (payload.get("country_name")  or "USA").strip(),
         }
+        address_exists = False
         if ids.AddressID:
+            address_exists = db.execute(
+                text("SELECT 1 FROM Address WHERE AddressID = :aid"),
+                {"aid": ids.AddressID}
+            ).fetchone() is not None
+
+        if address_exists:
             db.execute(text("""
                 UPDATE Address SET
                     AddressStreet = :street,

@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api/ranches", tags=["ranches"])
 _cache: dict = {}
 CACHE_TTL = 300
 
-GCP_BUCKET_URL = "https://storage.googleapis.com/oatmeal-farm-network-images/Animals/Uploads"
+GCP_BUCKET_URL = "https://storage.googleapis.com/oatmeal-farm-network-images/Animals"
 
 SLUG_TO_SPECIES_ID = {
     'alpacas': 2, 'bison': 9, 'buffalo': 34, 'camels': 18, 'cattle': 8,

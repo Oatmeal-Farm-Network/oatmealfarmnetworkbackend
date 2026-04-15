@@ -6,10 +6,14 @@ from datetime import datetime, timedelta, timezone
 from database import get_db
 import models
 import os
+from dotenv import load_dotenv
+
+# Load .env before reading env vars so SECRET_KEY is always the real key
+load_dotenv()
 
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 8
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30  # 30 days
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
@@ -30,10 +34,11 @@ def get_current_user(
     )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        people_id: int = payload.get("sub")
-        if people_id is None:
+        sub = payload.get("sub")
+        if sub is None:
             raise credentials_exception
-    except JWTError:
+        people_id = int(sub)
+    except (JWTError, ValueError):
         raise credentials_exception
 
     user = db.query(models.People).filter(

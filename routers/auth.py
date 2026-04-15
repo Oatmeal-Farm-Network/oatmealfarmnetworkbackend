@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from database import get_db
 from auth import create_access_token, get_current_user
 import models
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -81,7 +81,7 @@ def signup(request: SignupRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_user)
 
-    token = create_access_token(data={"sub": new_user.PeopleID})
+    token = create_access_token(data={"sub": str(new_user.PeopleID)})
 
     return {
         "AccessToken": token,
@@ -171,7 +171,7 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
                 detail="Access is currently restricted to team members only."
             )
 
-        token = create_access_token(data={"sub": user.PeopleID})
+        token = create_access_token(data={"sub": str(user.PeopleID)})
 
         return {
             "AccessToken": token,
@@ -269,7 +269,7 @@ def GetAccountHome(BusinessID: int, Db: Session = Depends(get_db)):
             models.Address,
         )
         .join(models.BusinessTypeLookup, models.Business.BusinessTypeID == models.BusinessTypeLookup.BusinessTypeID)
-        .join(models.Address, models.Business.AddressID == models.Address.AddressID)
+        .outerjoin(models.Address, models.Business.AddressID == models.Address.AddressID)
         .filter(models.Business.BusinessID == BusinessID)
         .first()
     )
@@ -287,10 +287,10 @@ def GetAccountHome(BusinessID: int, Db: Session = Depends(get_db)):
         "BusinessType": BT.BusinessType,
         "SubscriptionLevel": B.SubscriptionLevel,
         "SubscriptionEndDate": str(B.SubscriptionEndDate) if hasattr(B, 'SubscriptionEndDate') else None,
-        "AddressCity": A.AddressCity,
-        "AddressState": A.AddressState,
-        "AddressStreet": A.AddressStreet,
-        "AddressZip": A.AddressZip,
+        "AddressCity": A.AddressCity if A else None,
+        "AddressState": A.AddressState if A else None,
+        "AddressStreet": A.AddressStreet if A else None,
+        "AddressZip": A.AddressZip if A else None,
     }
 
 
@@ -318,49 +318,49 @@ def ChangeBusinessType(BusinessID: int, BusinessTypeID: int, Db: Session = Depen
 # -------------------------
 @router.get("/animals")
 def GetAnimals(BusinessID: int, Db: Session = Depends(get_db)):
-    stmt = (
-        select(
-            models.Animal.AnimalID,
-            models.Animal.FullName,
-            models.Animal.SpeciesID,
-            models.Animal.PublishForSale,
-            models.Pricing.Price,
-            models.Pricing.StudFee,
-            models.Pricing.SalePrice,
-            models.SpeciesAvailable.SpeciesPriority
-        )
-        .join(models.SpeciesAvailable, models.Animal.SpeciesID == models.SpeciesAvailable.SpeciesID)
-        .outerjoin(models.Pricing, models.Animal.AnimalID == models.Pricing.AnimalID)
-        .where(models.Animal.BusinessID == BusinessID)
-        .order_by(models.SpeciesAvailable.SpeciesPriority, models.Animal.FullName)
-    )
+    rows = Db.execute(text("""
+        SELECT
+            a.AnimalID,
+            a.FullName,
+            a.SpeciesID,
+            a.PublishForSale,
+            p.Price,
+            p.StudFee,
+            p.SalePrice,
+            sa.PluralTerm AS SpeciesName
+        FROM Animals a
+        LEFT JOIN SpeciesAvailable sa ON sa.SpeciesID = a.SpeciesID
+        LEFT JOIN Pricing p ON p.AnimalID = a.AnimalID
+        WHERE a.BusinessID = :bid
+        ORDER BY a.FullName
+    """), {"bid": BusinessID}).fetchall()
 
-    Results = Db.execute(stmt).all()
+    return [
+        {
+            "AnimalID": r.AnimalID,
+            "FullName": r.FullName,
+            "SpeciesID": r.SpeciesID,
+            "SpeciesName": r.SpeciesName or "Unknown",
+            "Price": float(r.Price) if r.Price else 0,
+            "StudFee": float(r.StudFee) if r.StudFee else 0,
+            "SalePrice": float(r.SalePrice) if r.SalePrice else 0,
+            "PublishForSale": r.PublishForSale,
+        }
+        for r in rows
+    ]
 
-    SpeciesMap = {
-        2: "Alpaca", 3: "Dog", 4: "Llama", 5: "Horse", 6: "Goat",
-        7: "Donkey", 8: "Cattle", 9: "Bison", 10: "Sheep", 11: "Rabbit",
-        12: "Pig", 13: "Chicken", 14: "Turkey", 15: "Duck", 17: "Yak",
-        18: "Camels", 19: "Emus", 21: "Deer", 22: "Geese", 23: "Bees",
-        25: "Alligators", 26: "Guinea Fowl", 27: "Musk Ox", 28: "Ostriches",
-        29: "Pheasants", 30: "Pigeons", 31: "Quails", 33: "Snails", 34: "Buffalo"
-    }
 
-    Animals = []
-    for row in Results:
-        A_ID, A_Name, A_SpeciesID, A_Publish, P_Price, P_StudFee, P_SalePrice, _ = row
-        Animals.append({
-            "AnimalID": A_ID,
-            "FullName": A_Name,
-            "SpeciesID": A_SpeciesID,
-            "SpeciesName": SpeciesMap.get(A_SpeciesID, "Unknown"),
-            "Price": float(P_Price) if P_Price else 0,
-            "StudFee": float(P_StudFee) if P_StudFee else 0,
-            "SalePrice": float(P_SalePrice) if P_SalePrice else 0,
-            "PublishForSale": A_Publish,
-        })
-
-    return Animals
+# -------------------------
+# Species list
+# -------------------------
+@router.get("/species")
+def get_species_list(db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    rows = db.execute(text(
+        "SELECT MIN(SpeciesID) AS SpeciesID, MIN(SingularTerm) AS SingularTerm, PluralTerm "
+        "FROM SpeciesAvailable GROUP BY PluralTerm ORDER BY PluralTerm"
+    )).fetchall()
+    return [{"id": r.SpeciesID, "singular": r.SingularTerm, "plural": r.PluralTerm} for r in rows]
 
 
 # -------------------------
@@ -387,10 +387,11 @@ def get_registration_types(species_id: int, db: Session = Depends(get_db)):
     from sqlalchemy import text
     try:
         rows = db.execute(
-            text("SELECT RegistrationType FROM SpeciesRegistrationLookup WHERE SpeciesID = :sid ORDER BY RegistrationType"),
+            text("SELECT SpeciesRegistrationType FROM SpeciesRegistrationTypeLookupTable "
+                 "WHERE SpeciesID = :sid ORDER BY SpeciesRegistrationType"),
             {"sid": species_id}
         ).fetchall()
-        return [{"type": r.RegistrationType} for r in rows]
+        return [{"type": r.SpeciesRegistrationType} for r in rows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -398,6 +399,35 @@ def get_registration_types(species_id: int, db: Session = Depends(get_db)):
 # -------------------------
 # Add animal
 # -------------------------
+def _upload_animal_photo(file_bytes: bytes, original_filename: str) -> str:
+    """Upload a single animal photo to GCS Animals/ and return its public URL."""
+    import uuid, os
+    from urllib.parse import quote
+    from google.cloud import storage as _gcs
+    ext  = os.path.splitext(original_filename)[1].lower() or ".webp"
+    fname = f"{uuid.uuid4().hex}{ext}"
+    bucket = _gcs.Client().bucket("oatmeal-farm-network-images")
+    blob   = bucket.blob(f"Animals/{fname}")
+    ct_map = {".webp": "image/webp", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
+    blob.upload_from_string(file_bytes, content_type=ct_map.get(ext, "image/webp"))
+    return f"https://storage.googleapis.com/oatmeal-farm-network-images/Animals/{quote(fname, safe='')}"
+
+
+def _upload_animal_doc(file_bytes: bytes, original_filename: str) -> str:
+    """Upload a single animal document (PDF or image) to GCS AnimalDocs/."""
+    import uuid, os
+    from urllib.parse import quote
+    from google.cloud import storage as _gcs
+    ext  = os.path.splitext(original_filename)[1].lower() or ".pdf"
+    fname = f"{uuid.uuid4().hex}{ext}"
+    bucket = _gcs.Client().bucket("oatmeal-farm-network-images")
+    blob   = bucket.blob(f"AnimalDocs/{fname}")
+    ct_map = {".pdf": "application/pdf", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+              ".png": "image/png", ".webp": "image/webp"}
+    blob.upload_from_string(file_bytes, content_type=ct_map.get(ext, "application/octet-stream"))
+    return f"https://storage.googleapis.com/oatmeal-farm-network-images/AnimalDocs/{quote(fname, safe='')}"
+
+
 @router.post("/animals/add")
 async def add_animal(
     request: Request,
@@ -410,42 +440,261 @@ async def add_animal(
         def n(key): v = form.get(key); return float(v) if v else None
         def i(key): v = form.get(key); return int(v) if v else None
 
+        business_id = i("BusinessID")
+
+        # Look up PeopleID from BusinessAccess
+        ba_row = db.execute(text(
+            "SELECT TOP 1 PeopleID FROM BusinessAccess WHERE BusinessID = :bid AND Active = 1"
+        ), {"bid": business_id}).fetchone()
+        people_id = ba_row.PeopleID if ba_row else None
+
         db.execute(text("""
             INSERT INTO Animals (
-                BusinessID, FullName, SpeciesID, NumberofAnimals, Category,
+                BusinessID, PeopleID, FullName, SpeciesID, NumberofAnimals, Category,
                 DOBDay, DOBMonth, DOBYear,
                 BreedID, BreedID2, BreedID3, BreedID4,
                 Height, Weight, Gaited, Warmblooded, Horns, Temperment,
                 Description, AncestryDescription,
                 PublishForSale, CoOwnerName1, CoOwnerLink1, CoOwnerBusiness1,
                 CoOwnerName2, CoOwnerLink2, CoOwnerBusiness2,
-                CoOwnerName3, CoOwnerLink3, CoOwnerBusiness3
+                CoOwnerName3, CoOwnerLink3, CoOwnerBusiness3,
+                PercentPeruvian, PercentChilean, PercentBolivian,
+                PercentUnknownOther, PercentAccoyo
             ) VALUES (
-                :business_id, :name, :species_id, :num_animals, :category,
+                :business_id, :people_id, :name, :species_id, :num_animals, :category,
                 :dob_day, :dob_month, :dob_year,
                 :breed1, :breed2, :breed3, :breed4,
-                :height, :weight, :gaited, :Warmblooded, :horns, :temperament,
+                :height, :weight, :gaited, :warmblood, :horns, :temperament,
                 :description, :ancestry_desc,
                 :for_sale, :co_name1, :co_link1, :co_biz1,
                 :co_name2, :co_link2, :co_biz2,
-                :co_name3, :co_link3, :co_biz3
+                :co_name3, :co_link3, :co_biz3,
+                :pct_peruvian, :pct_chilean, :pct_bolivian,
+                :pct_unknown, :pct_accoyo
             )
         """), {
-            "business_id": i("BusinessID"), "name": f("Name"), "species_id": i("SpeciesID"),
+            "business_id": business_id, "people_id": people_id,
+            "name": f("Name"), "species_id": i("SpeciesID"),
             "num_animals": i("NumberOfAnimals"), "category": f("Category"),
             "dob_day": i("DOBDay"), "dob_month": i("DOBMonth"), "dob_year": i("DOBYear"),
             "breed1": i("BreedID"), "breed2": i("BreedID2"), "breed3": i("BreedID3"), "breed4": i("BreedID4"),
             "height": n("Height"), "weight": n("Weight"), "gaited": f("Gaited"),
-            "Warmblooded": f("Warmblooded"), "horns": f("Horns"), "temperament": i("Temperament"),
+            "warmblood": f("Warmblood"), "horns": f("Horns"), "temperament": i("Temperament"),
             "description": f("Description"), "ancestry_desc": f("AncestryDescription"),
             "for_sale": 1 if f("ForSale") == "Yes" else 0,
             "co_name1": f("CoOwnerName1"), "co_link1": f("CoOwnerLink1"), "co_biz1": f("CoOwnerBusiness1"),
             "co_name2": f("CoOwnerName2"), "co_link2": f("CoOwnerLink2"), "co_biz2": f("CoOwnerBusiness2"),
             "co_name3": f("CoOwnerName3"), "co_link3": f("CoOwnerLink3"), "co_biz3": f("CoOwnerBusiness3"),
+            "pct_peruvian": f("PercentPeruvian"), "pct_chilean": f("PercentChilean"),
+            "pct_bolivian": f("PercentBolivian"), "pct_unknown": f("PercentUnknownOther"),
+            "pct_accoyo": f("PercentAccoyo"),
         })
         new_id = db.execute(text("SELECT SCOPE_IDENTITY() AS id")).fetchone()
+        animal_id = int(new_id.id)
+
+        # Create Pricing row
+        # ForSale is stored as PublishForSale on the Animals table (set above),
+        # NOT in the Pricing table.
+        db.execute(text("""
+            INSERT INTO Pricing (
+                AnimalID, Price, StudFee, EmbryoPrice, SemenPrice,
+                Free, Sold, PriceComments, Financeterms
+            ) VALUES (
+                :aid, :price, :stud, :embryo, :semen,
+                :free, 0, :comments, :terms
+            )
+        """), {
+            "aid":      animal_id,
+            "price":    n("Price"),
+            "stud":     n("StudFee"),
+            "embryo":   n("EmbryoPrice"),
+            "semen":    n("SemenPrice"),
+            "free":     1 if f("Free") == "Yes" else 0,
+            "comments": f("PriceComments"),
+            "terms":    f("Financeterms"),
+        })
+
+        # Upload photos to GCS and create Photos row
+        photo_urls = {}
+        photo_captions = {}
+        for idx in range(1, 9):
+            file_field = form.get(f"Photo{idx}")
+            if file_field and hasattr(file_field, "read"):
+                try:
+                    data = await file_field.read()
+                    if data:
+                        url = _upload_animal_photo(data, file_field.filename)
+                        photo_urls[f"Photo{idx}"] = url
+                except Exception:
+                    pass
+            cap = form.get(f"Caption{idx}")
+            if cap:
+                photo_captions[f"PhotoCaption{idx}"] = cap
+
+        # Resolve cover slot → ListPageImage url (if slot was uploaded this request)
+        cover_slot_raw = form.get("CoverPhotoSlot")
+        list_page_image = None
+        try:
+            cover_slot = int(cover_slot_raw) if cover_slot_raw else 0
+        except (TypeError, ValueError):
+            cover_slot = 0
+        if 1 <= cover_slot <= 8:
+            list_page_image = photo_urls.get(f"Photo{cover_slot}")
+        # Fallback: if cover slot had no new upload, use first uploaded photo
+        if not list_page_image and photo_urls:
+            first_key = sorted(photo_urls.keys())[0]
+            list_page_image = photo_urls[first_key]
+
+        insert_cols = {}
+        insert_cols.update(photo_urls)
+        insert_cols.update(photo_captions)
+        if list_page_image:
+            insert_cols["ListPageImage"] = list_page_image
+
+        # Document uploads: registration certificate → ARI column, histogram → Histogram column
+        for form_field, db_col in (("AriDoc", "ARI"), ("HistogramDoc", "Histogram")):
+            f_doc = form.get(form_field)
+            if f_doc and hasattr(f_doc, "read"):
+                try:
+                    data = await f_doc.read()
+                    if data:
+                        insert_cols[db_col] = _upload_animal_doc(data, f_doc.filename or f"{db_col}.pdf")
+                except Exception:
+                    pass
+
+        if insert_cols:
+            cols   = ", ".join(insert_cols.keys())
+            params = {k.lower(): v for k, v in insert_cols.items()}
+            vals   = ", ".join(f":{k.lower()}" for k in insert_cols)
+            db.execute(text(
+                f"INSERT INTO Photos (AnimalID, {cols}) VALUES (:aid, {vals})"
+            ), {"aid": animal_id, **params})
+        else:
+            # Always create an empty Photos row so the edit page can update it
+            db.execute(text("INSERT INTO Photos (AnimalID) VALUES (:aid)"), {"aid": animal_id})
+
+        import json as _json
+
+        # Insert fiber samples if provided
+        fiber_json = form.get("FiberSamples")
+        if fiber_json:
+            def _nf(v): return float(v) if v else None
+            def _ni(v): return int(v) if v else None
+            for s in _json.loads(fiber_json):
+                year = _ni(s.get("sampleYear"))
+                avg  = _nf(s.get("afd"))
+                if year or avg:
+                    db.execute(text("""
+                        INSERT INTO Fiber (
+                            AnimalID, SampleDateYear, Average, CF, StandardDev,
+                            CrimpPerInch, COV, Length, GreaterThan30,
+                            ShearWeight, Curve, BlanketWeight
+                        ) VALUES (
+                            :aid, :year, :avg, :cf, :sd, :cpi, :cov,
+                            :length, :gt30, :sw, :curve, :bw
+                        )
+                    """), {
+                        "aid":    animal_id,
+                        "year":   year,
+                        "avg":    avg,
+                        "cf":     _nf(s.get("cf")),
+                        "sd":     _nf(s.get("sd")),
+                        "cpi":    _nf(s.get("crimpsPerInch")),
+                        "cov":    _nf(s.get("cov")),
+                        "length": _nf(s.get("stapleLength")),
+                        "gt30":   _nf(s.get("gt30")),
+                        "sw":     _nf(s.get("shearWeight")),
+                        "curve":  _nf(s.get("curve")),
+                        "bw":     _nf(s.get("blanketWeight")),
+                    })
+
+        # Insert colors if provided
+        color1, color2 = f("Color1"), f("Color2")
+        color3, color4 = f("Color3"), f("Color4")
+        if any([color1, color2, color3, color4]):
+            db.execute(text("""
+                INSERT INTO Colors (AnimalID, Color1, Color2, Color3, Color4)
+                VALUES (:aid, :c1, :c2, :c3, :c4)
+            """), {"aid": animal_id, "c1": color1, "c2": color2, "c3": color3, "c4": color4})
+
+        # Insert ancestry if provided
+        anc_json = form.get("AncestryJSON")
+        if anc_json:
+            anc = _json.loads(anc_json)
+            ANC_MAP = {
+                "sire":        "Sire",
+                "dam":         "Dam",
+                "sireSire":    "SireSire",
+                "sireDam":     "SireDam",
+                "damSire":     "DamSire",
+                "damDam":      "DamDam",
+                "sireSireSire":"SireSireSire",
+                "sireSireDam": "SireSireDam",
+                "sireDamSire": "SireDamSire",
+                "sireDamDam":  "SireDamDam",
+                "damSireSire": "DamSireSire",
+                "damSireDam":  "DamSireDam",
+                "damDamSire":  "DamDamSire",
+                "damDamDam":   "DamDamDam",
+            }
+            # Only proceed if any ancestor has data
+            has_anc = any(
+                (anc.get(k) or {}).get("name") or (anc.get(k) or {}).get("color")
+                for k in ANC_MAP
+            )
+            if has_anc:
+                all_fields = []
+                params = {"aid": animal_id}
+                for js_key, db_prefix in ANC_MAP.items():
+                    val = anc.get(js_key) or {}
+                    all_fields += [db_prefix, f"{db_prefix}Color", f"{db_prefix}Link", f"{db_prefix}ARI"]
+                    params[db_prefix]           = val.get("name")  or None
+                    params[f"{db_prefix}Color"] = val.get("color") or None
+                    params[f"{db_prefix}Link"]  = val.get("link")  or None
+                    params[f"{db_prefix}ARI"]   = val.get("ari")   or None
+                existing = db.execute(text("SELECT COUNT(*) FROM Ancestors WHERE AnimalID = :aid"),
+                                      {"aid": animal_id}).scalar()
+                if existing:
+                    set_clause = ", ".join(f"{fld} = :{fld}" for fld in all_fields)
+                    db.execute(text(f"UPDATE Ancestors SET {set_clause} WHERE AnimalID = :aid"), params)
+                else:
+                    cols = ", ".join(["AnimalID"] + all_fields)
+                    vals = ", ".join([":aid"] + [f":{fld}" for fld in all_fields])
+                    db.execute(text(f"INSERT INTO Ancestors ({cols}) VALUES ({vals})"), params)
+
+        # Insert awards if provided
+        awards_json = form.get("AwardsJSON")
+        if awards_json:
+            for aw in _json.loads(awards_json):
+                if aw.get("year") or aw.get("show") or aw.get("placing"):
+                    db.execute(text("""
+                        INSERT INTO awards (AnimalID, AwardYear, ShowName, Type, Placing, Awardcomments)
+                        VALUES (:aid, :year, :show, :aclass, :placing, :comments)
+                    """), {
+                        "aid":      animal_id,
+                        "year":     aw.get("year")        or None,
+                        "show":     aw.get("show")        or None,
+                        "aclass":   aw.get("class")       or None,
+                        "placing":  aw.get("placing")     or None,
+                        "comments": aw.get("description") or None,
+                    })
+
+        # Insert registrations if provided
+        regs_json = form.get("RegistrationsJSON")
+        if regs_json:
+            for reg in _json.loads(regs_json):
+                if (reg.get("number") or "").strip():
+                    db.execute(text("""
+                        INSERT INTO animalregistration (AnimalID, RegType, RegNumber)
+                        VALUES (:aid, :reg_type, :reg_num)
+                    """), {
+                        "aid":      animal_id,
+                        "reg_type": reg.get("type")   or None,
+                        "reg_num":  reg.get("number") or None,
+                    })
+
         db.commit()
-        return {"message": "Animal added successfully", "AnimalID": int(new_id.id)}
+        return {"message": "Animal added successfully", "AnimalID": animal_id}
     except Exception as e:
         db.rollback()
         import traceback; traceback.print_exc()
