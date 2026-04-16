@@ -790,6 +790,20 @@ async def toggle_publish(animal_id: int, request: Request,
     return {"published": bool(val)}
 
 
+# ─── POST publish-stud toggle ─────────────────────────────────────────────────
+
+@router.post("/{animal_id}/publish-stud")
+async def toggle_publish_stud(animal_id: int, request: Request,
+                               db: Session = Depends(get_db),
+                               current_user=Depends(get_current_user)):
+    body = await request.json()
+    val = 1 if body.get("publish") else 0
+    db.execute(text("UPDATE Animals SET PublishStud = :v, LastUpdated = SYSUTCDATETIME() WHERE AnimalID = :aid"),
+               {"v": val, "aid": animal_id})
+    db.commit()
+    return {"published": bool(val)}
+
+
 # ─── DELETE animal ────────────────────────────────────────────────────────────
 
 @router.delete("/{animal_id}")
