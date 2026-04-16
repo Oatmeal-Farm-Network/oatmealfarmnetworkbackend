@@ -752,3 +752,212 @@ async def add_animal(
         db.rollback()
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Testimonials ──────────────────────────────────────────────────────────────
+
+@router.get("/testimonials")
+def get_testimonials(BusinessID: int, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    rows = db.execute(text("""
+        SELECT TestimonialsID, CustomerName AS AuthorName,
+               Testimonial AS Content, Rating,
+               City, State, Organization, URL AS Website,
+               TestimonialDate, PeopleID, Name,
+               AnimalID, AnimalName, TestimonialsType
+        FROM Testimonials
+        WHERE CustID = :bid
+        ORDER BY testimonialsOrder, TestimonialsID DESC
+    """), {"bid": BusinessID}).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+@router.post("/testimonials/add")
+async def add_testimonial(request: Request, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    body = await request.json()
+    # Get next sort order
+    max_order = db.execute(text(
+        "SELECT ISNULL(MAX(testimonialsOrder), 0) FROM Testimonials WHERE CustID = :bid"
+    ), {"bid": body.get("BusinessID")}).scalar()
+    db.execute(text("""
+        INSERT INTO Testimonials (
+            CustID, CustomerName, Testimonial, Rating,
+            City, State, Organization, URL,
+            TestimonialDate, PeopleID, testimonialsOrder
+        ) VALUES (
+            :cust_id, :customer_name, :testimonial, :rating,
+            :city, :state, :organization, :url,
+            :testimonial_date, :people_id, :sort_order
+        )
+    """), {
+        "cust_id": body.get("BusinessID"),
+        "customer_name": body.get("AuthorName"),
+        "testimonial": body.get("Content"),
+        "rating": body.get("Rating"),
+        "city": body.get("City") or None,
+        "state": body.get("State") or None,
+        "organization": body.get("Organization") or None,
+        "url": body.get("Website") or None,
+        "testimonial_date": body.get("TestimonialDate") or None,
+        "people_id": body.get("PeopleID") or None,
+        "sort_order": (max_order or 0) + 1,
+    })
+    db.commit()
+    return {"message": "Testimonial added"}
+
+
+@router.post("/testimonials/update")
+async def update_testimonial(request: Request, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    body = await request.json()
+    tid = body.get("TestimonialsID")
+    if not tid:
+        return {"error": "TestimonialsID required"}
+    db.execute(text("""
+        UPDATE Testimonials SET
+            CustomerName = :customer_name,
+            Testimonial = :testimonial,
+            Rating = :rating,
+            City = :city,
+            State = :state,
+            Organization = :organization,
+            URL = :url,
+            TestimonialDate = :testimonial_date,
+            PeopleID = :people_id
+        WHERE TestimonialsID = :tid
+    """), {
+        "customer_name": body.get("AuthorName"),
+        "testimonial": body.get("Content"),
+        "rating": body.get("Rating"),
+        "city": body.get("City") or None,
+        "state": body.get("State") or None,
+        "organization": body.get("Organization") or None,
+        "url": body.get("Website") or None,
+        "testimonial_date": body.get("TestimonialDate") or None,
+        "people_id": body.get("PeopleID") or None,
+        "tid": tid,
+    })
+    db.commit()
+    return {"message": "Testimonial updated"}
+
+
+# ── Animal Packages ─────────────────────────────────────────────
+@router.get("/packages")
+def get_packages(BusinessID: int, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    # Ensure tables exist
+    db.execute(text("""
+        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'AnimalPackage')
+        BEGIN
+            CREATE TABLE AnimalPackage (
+                PackageID INT IDENTITY(1,1) PRIMARY KEY,
+                BusinessID INT NOT NULL,
+                Title NVARCHAR(200) NOT NULL,
+                Description NVARCHAR(MAX),
+                PackagePrice DECIMAL(10,2),
+                CreatedAt DATETIME DEFAULT GETDATE()
+            )
+        END
+    """))
+    db.execute(text("""
+        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'AnimalPackageItem')
+        BEGIN
+            CREATE TABLE AnimalPackageItem (
+                PackageItemID INT IDENTITY(1,1) PRIMARY KEY,
+                PackageID INT NOT NULL,
+                AnimalID INT NOT NULL,
+                IncludeType VARCHAR(20) NOT NULL DEFAULT 'sale',
+                FOREIGN KEY (PackageID) REFERENCES AnimalPackage(PackageID)
+            )
+        END
+    """))
+    db.commit()
+
+    rows = db.execute(text("""
+        SELECT p.PackageID, p.Title, p.Description, p.PackagePrice, p.CreatedAt
+        FROM AnimalPackage p
+        WHERE p.BusinessID = :bid
+        ORDER BY p.CreatedAt DESC
+    """), {"bid": BusinessID}).fetchall()
+
+    packages = []
+    for r in rows:
+        items = db.execute(text("""
+            SELECT pi.PackageItemID, pi.AnimalID, pi.IncludeType,
+                   a.FullName,
+                   pr.Price, pr.SalePrice, pr.StudFee
+            FROM AnimalPackageItem pi
+            JOIN Animals a ON a.AnimalID = pi.AnimalID
+            LEFT JOIN Pricing pr ON pr.AnimalID = pi.AnimalID
+            WHERE pi.PackageID = :pid
+        """), {"pid": r.PackageID}).fetchall()
+
+        pkg_items = []
+        for it in items:
+            price = float(it.SalePrice) if it.SalePrice else (float(it.Price) if it.Price else 0)
+            stud_fee = float(it.StudFee) if it.StudFee else 0
+            pkg_items.append({
+                "PackageItemID": it.PackageItemID,
+                "AnimalID": it.AnimalID,
+                "FullName": it.FullName,
+                "IncludeType": it.IncludeType,
+                "Price": price,
+                "StudFee": stud_fee,
+            })
+
+        packages.append({
+            "PackageID": r.PackageID,
+            "Title": r.Title,
+            "Description": r.Description,
+            "PackagePrice": float(r.PackagePrice) if r.PackagePrice else 0,
+            "CreatedAt": str(r.CreatedAt) if r.CreatedAt else None,
+            "Items": pkg_items,
+        })
+    return packages
+
+
+@router.post("/packages/save")
+async def save_package(request: Request, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    body = await request.json()
+    pkg_id = body.get("PackageID")
+    biz_id = body.get("BusinessID")
+    title = body.get("Title")
+    desc = body.get("Description") or None
+    price = body.get("PackagePrice")
+    items = body.get("Items", [])
+
+    if pkg_id:
+        db.execute(text("""
+            UPDATE AnimalPackage SET Title = :title, Description = :desc, PackagePrice = :price
+            WHERE PackageID = :pid
+        """), {"title": title, "desc": desc, "price": price, "pid": pkg_id})
+        db.execute(text("DELETE FROM AnimalPackageItem WHERE PackageID = :pid"), {"pid": pkg_id})
+    else:
+        result = db.execute(text("""
+            INSERT INTO AnimalPackage (BusinessID, Title, Description, PackagePrice)
+            OUTPUT INSERTED.PackageID
+            VALUES (:bid, :title, :desc, :price)
+        """), {"bid": biz_id, "title": title, "desc": desc, "price": price})
+        pkg_id = result.fetchone()[0]
+
+    for it in items:
+        db.execute(text("""
+            INSERT INTO AnimalPackageItem (PackageID, AnimalID, IncludeType)
+            VALUES (:pid, :aid, :itype)
+        """), {"pid": pkg_id, "aid": it["AnimalID"], "itype": it.get("IncludeType", "sale")})
+
+    db.commit()
+    return {"message": "Package saved", "PackageID": pkg_id}
+
+
+@router.post("/packages/delete")
+async def delete_package(request: Request, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    body = await request.json()
+    pid = body.get("PackageID")
+    db.execute(text("DELETE FROM AnimalPackageItem WHERE PackageID = :pid"), {"pid": pid})
+    db.execute(text("DELETE FROM AnimalPackage WHERE PackageID = :pid"), {"pid": pid})
+    db.commit()
+    return {"message": "Package deleted"}
