@@ -334,7 +334,7 @@ def GetAnimals(BusinessID: int, Db: Session = Depends(get_db)):
         FROM Animals a
         LEFT JOIN SpeciesAvailable sa ON sa.SpeciesID = a.SpeciesID
         LEFT JOIN Pricing p ON p.AnimalID = a.AnimalID
-        LEFT JOIN SpeciesCategory sc ON sc.SpeciesCategoryID = TRY_CAST(a.Category AS INT)
+        LEFT JOIN SpeciesCategory sc ON sc.SpeciesCategoryID = a.SpeciesCategoryID
         WHERE a.BusinessID = :bid
         ORDER BY sa.PluralTerm, sc.SpeciesCategoryOrder, a.FullName
     """), {"bid": BusinessID}).fetchall()
@@ -434,6 +434,53 @@ def _upload_animal_doc(file_bytes: bytes, original_filename: str) -> str:
     return f"https://storage.googleapis.com/oatmeal-farm-network-images/AnimalDocs/{quote(fname, safe='')}"
 
 
+# ── People search (for testimonials etc.) ─────────────────────────────────────
+
+@router.get("/people/search")
+def search_people(q: str, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    if not q or len(q.strip()) < 2:
+        return []
+    term = f"%{q.strip()}%"
+    rows = db.execute(text("""
+        SELECT TOP 20
+            p.PeopleID,
+            p.PeopleFirstName,
+            p.PeopleLastName,
+            a.AddressCity  AS City,
+            a.AddressState AS State,
+            b.BusinessID,
+            b.BusinessName,
+            b.BusinessBlog AS ExternalWebsite,
+            bw.Slug        AS OFNSlug
+        FROM People p
+        LEFT JOIN Address a ON a.AddressID = p.AddressID
+        LEFT JOIN BusinessAccess ba ON ba.PeopleID = p.PeopleID AND ba.Active = 1
+        LEFT JOIN Business b ON b.BusinessID = ba.BusinessID
+        LEFT JOIN BusinessWebsite bw ON bw.BusinessID = b.BusinessID
+        WHERE p.PeopleActive = 1
+          AND (p.PeopleFirstName LIKE :q OR p.PeopleLastName LIKE :q
+               OR (p.PeopleFirstName + ' ' + p.PeopleLastName) LIKE :q)
+        ORDER BY p.PeopleFirstName, p.PeopleLastName
+    """), {"q": term}).fetchall()
+    results = []
+    for r in rows:
+        d = dict(r._mapping)
+        # Build Website URL: prefer OFN site, then external website, then ranch profile
+        if d.get("OFNSlug"):
+            d["Website"] = f"https://www.OatmealFarmNetwork.com/sites/{d['OFNSlug']}"
+        elif d.get("ExternalWebsite"):
+            d["Website"] = d["ExternalWebsite"]
+        elif d.get("BusinessID"):
+            d["Website"] = f"https://www.OatmealFarmNetwork.com/marketplaces/livestock/ranch/{d['BusinessID']}"
+        else:
+            d["Website"] = ""
+        del d["OFNSlug"]
+        del d["ExternalWebsite"]
+        results.append(d)
+    return results
+
+
 @router.post("/animals/add")
 async def add_animal(
     request: Request,
@@ -456,7 +503,7 @@ async def add_animal(
 
         db.execute(text("""
             INSERT INTO Animals (
-                BusinessID, PeopleID, FullName, SpeciesID, NumberofAnimals, Category,
+                BusinessID, PeopleID, FullName, SpeciesID, NumberofAnimals, SpeciesCategoryID,
                 DOBDay, DOBMonth, DOBYear,
                 BreedID, BreedID2, BreedID3, BreedID4,
                 Height, Weight, Gaited, Warmblooded, Horns, Temperment,
@@ -467,7 +514,7 @@ async def add_animal(
                 PercentPeruvian, PercentChilean, PercentBolivian,
                 PercentUnknownOther, PercentAccoyo
             ) VALUES (
-                :business_id, :people_id, :name, :species_id, :num_animals, :category,
+                :business_id, :people_id, :name, :species_id, :num_animals, :species_category_id,
                 :dob_day, :dob_month, :dob_year,
                 :breed1, :breed2, :breed3, :breed4,
                 :height, :weight, :gaited, :warmblood, :horns, :temperament,
@@ -481,7 +528,7 @@ async def add_animal(
         """), {
             "business_id": business_id, "people_id": people_id,
             "name": f("Name"), "species_id": i("SpeciesID"),
-            "num_animals": i("NumberOfAnimals"), "category": f("Category"),
+            "num_animals": i("NumberOfAnimals"), "species_category_id": i("SpeciesCategoryID"),
             "dob_day": i("DOBDay"), "dob_month": i("DOBMonth"), "dob_year": i("DOBYear"),
             "breed1": i("BreedID"), "breed2": i("BreedID2"), "breed3": i("BreedID3"), "breed4": i("BreedID4"),
             "height": n("Height"), "weight": n("Weight"), "gaited": f("Gaited"),
