@@ -324,15 +324,19 @@ def GetAnimals(BusinessID: int, Db: Session = Depends(get_db)):
             a.FullName,
             a.SpeciesID,
             a.PublishForSale,
+            a.PublishStud,
             p.Price,
             p.StudFee,
             p.SalePrice,
-            sa.PluralTerm AS SpeciesName
+            sa.PluralTerm AS SpeciesName,
+            sc.SpeciesCategory AS CategoryName,
+            sc.SpeciesCategoryOrder
         FROM Animals a
         LEFT JOIN SpeciesAvailable sa ON sa.SpeciesID = a.SpeciesID
         LEFT JOIN Pricing p ON p.AnimalID = a.AnimalID
+        LEFT JOIN SpeciesCategory sc ON sc.SpeciesCategoryID = TRY_CAST(a.Category AS INT)
         WHERE a.BusinessID = :bid
-        ORDER BY a.FullName
+        ORDER BY sa.PluralTerm, sc.SpeciesCategoryOrder, a.FullName
     """), {"bid": BusinessID}).fetchall()
 
     return [
@@ -341,10 +345,12 @@ def GetAnimals(BusinessID: int, Db: Session = Depends(get_db)):
             "FullName": r.FullName,
             "SpeciesID": r.SpeciesID,
             "SpeciesName": r.SpeciesName or "Unknown",
+            "Category": r.CategoryName or "",
             "Price": float(r.Price) if r.Price else 0,
             "StudFee": float(r.StudFee) if r.StudFee else 0,
             "SalePrice": float(r.SalePrice) if r.SalePrice else 0,
             "PublishForSale": r.PublishForSale,
+            "PublishStud": r.PublishStud,
         }
         for r in rows
     ]
