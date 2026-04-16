@@ -160,6 +160,23 @@ app.include_router(accounting.router)
 app.include_router(animals.router)
 
 
+# ── Public testimonials endpoint (used by website blocks) ─────────
+@app.get("/api/testimonials")
+def get_public_testimonials(BusinessID: int, db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    rows = db.execute(text("""
+        SELECT TestimonialsID, CustomerName AS AuthorName,
+               Testimonial AS Content, Rating,
+               City, State, Organization, URL AS Website,
+               TestimonialDate, PeopleID, Name,
+               AnimalID, AnimalName, TestimonialsType
+        FROM Testimonials
+        WHERE CustID = :bid
+        ORDER BY testimonialsOrder, TestimonialsID DESC
+    """), {"bid": BusinessID}).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
