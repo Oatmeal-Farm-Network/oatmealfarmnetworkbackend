@@ -540,6 +540,7 @@ class BusinessWebsite(Base):
     FooterBgImageURL= Column(String(1000))
     FooterHTML      = Column(Text)
     FooterHeight    = Column(Integer, default=200)
+    FooterBottomRadius = Column(Integer, default=0)
     CopyrightBarBgColor = Column(String(20))
     CopyrightText   = Column(String(500))
     IsPublished     = Column(Boolean, default=False)

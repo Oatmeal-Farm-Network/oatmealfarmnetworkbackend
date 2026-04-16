@@ -74,6 +74,7 @@ with engine.connect() as _conn:
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='HeaderBannerBgColor') ALTER TABLE BusinessWebsite ADD HeaderBannerBgColor NVARCHAR(20)",
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='CopyrightBarBgColor') ALTER TABLE BusinessWebsite ADD CopyrightBarBgColor NVARCHAR(20)",
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FaviconURL') ALTER TABLE BusinessWebsite ADD FaviconURL NVARCHAR(1000)",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterBottomRadius') ALTER TABLE BusinessWebsite ADD FooterBottomRadius INT DEFAULT 0",
     ]:
         _conn.execute(text(col_ddl))
     _conn.commit()
@@ -199,6 +200,7 @@ class SiteCreate(BaseModel):
     footer_bg_image_url: Optional[str] = None
     footer_html: Optional[str] = None
     footer_height: Optional[int] = 200
+    footer_bottom_radius: Optional[int] = 0
     # Page background
     bg_image_url: Optional[str] = None
     bg_gradient: Optional[str] = None
@@ -296,6 +298,7 @@ class SiteUpdate(SiteCreate):
     header_height: Optional[int] = None
     header_banner_bg_color: Optional[str] = None
     footer_height: Optional[int] = None
+    footer_bottom_radius: Optional[int] = None
     copyright_bar_bg_color: Optional[str] = None
     show_site_name: Optional[bool] = None
     is_published: Optional[bool] = None
@@ -463,6 +466,7 @@ def _ser_site(s: models.BusinessWebsite) -> dict:
         "footer_bg_image_url":    s.FooterBgImageURL or '',
         "footer_html":            s.FooterHTML or '',
         "footer_height":          s.FooterHeight or 200,
+        "footer_bottom_radius":   s.FooterBottomRadius or 0,
         "copyright_bar_bg_color": s.CopyrightBarBgColor or '',
         # Page background
         "bg_image_url":        s.BgImageURL or '',
@@ -686,6 +690,7 @@ def update_site(website_id: int, body: SiteUpdate, db: Session = Depends(get_db)
     if body.footer_bg_image_url is not None: site.FooterBgImageURL = body.footer_bg_image_url
     if body.footer_html is not None: site.FooterHTML = body.footer_html
     if body.footer_height is not None: site.FooterHeight = body.footer_height
+    if body.footer_bottom_radius is not None: site.FooterBottomRadius = body.footer_bottom_radius
     if body.copyright_bar_bg_color is not None: site.CopyrightBarBgColor = body.copyright_bar_bg_color
     if body.bg_image_url is not None: site.BgImageURL = body.bg_image_url
     if body.bg_gradient is not None: site.BgGradient = body.bg_gradient

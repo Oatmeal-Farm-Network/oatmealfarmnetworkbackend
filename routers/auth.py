@@ -334,7 +334,7 @@ def GetAnimals(BusinessID: int, Db: Session = Depends(get_db)):
         FROM Animals a
         LEFT JOIN SpeciesAvailable sa ON sa.SpeciesID = a.SpeciesID
         LEFT JOIN Pricing p ON p.AnimalID = a.AnimalID
-        LEFT JOIN SpeciesCategory sc ON sc.SpeciesCategoryID = a.SpeciesCategoryID
+        LEFT JOIN SpeciesCategory sc ON sc.SpeciesCategoryID = TRY_CAST(a.Category AS INT)
         WHERE a.BusinessID = :bid
         ORDER BY sa.PluralTerm, sc.SpeciesCategoryOrder, a.FullName
     """), {"bid": BusinessID}).fetchall()
