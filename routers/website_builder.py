@@ -867,6 +867,66 @@ def get_livestock(business_id: int, include_unpublished: int = 0, db: Session = 
         traceback.print_exc()
         return []
 
+@router.get("/content/packages")
+def get_packages(business_id: int, db: Session = Depends(get_db)):
+    """Return all packages for a business with nested animal items including photos."""
+    try:
+        pkgs = db.execute(text("""
+            SELECT p.PackageID, p.Title, p.Description, p.PackagePrice, p.CreatedAt
+            FROM AnimalPackage p
+            WHERE p.BusinessID = :bid
+            ORDER BY p.CreatedAt DESC
+        """), {"bid": business_id}).fetchall()
+        result = []
+        for pkg in pkgs:
+            p = dict(pkg._mapping)
+            items = db.execute(text("""
+                SELECT pi.PackageItemID, pi.AnimalID, pi.IncludeType,
+                       a.FullName, a.Description,
+                       b.Breed,
+                       ph.Photo1,
+                       pr.Price, pr.SalePrice, pr.StudFee
+                FROM AnimalPackageItem pi
+                JOIN Animals a ON a.AnimalID = pi.AnimalID
+                LEFT JOIN SpeciesBreedLookupTable b ON b.BreedLookupID = a.BreedID
+                LEFT JOIN Photos ph ON ph.AnimalID = pi.AnimalID
+                LEFT JOIN Pricing pr ON pr.AnimalID = pi.AnimalID
+                WHERE pi.PackageID = :pid
+            """), {"pid": p["PackageID"]}).fetchall()
+            p["items"] = [dict(it._mapping) for it in items]
+            # Calculate total value from individual animal prices
+            total = 0
+            for it in p["items"]:
+                if it.get("IncludeType") == "stud":
+                    total += float(it.get("StudFee") or 0)
+                else:
+                    sale = float(it.get("SalePrice") or 0)
+                    total += sale if sale > 0 else float(it.get("Price") or 0)
+            p["total_value"] = total
+            result.append(p)
+        return result
+    except Exception as e:
+        import traceback
+        print(f"[content/packages] ERROR for business_id={business_id}: {e}")
+        traceback.print_exc()
+        return []
+
+@router.get("/content/animal-packages")
+def get_animal_packages(animal_id: int, db: Session = Depends(get_db)):
+    """Return all packages that contain a specific animal."""
+    try:
+        rows = db.execute(text("""
+            SELECT p.PackageID, p.Title, p.Description, p.PackagePrice
+            FROM AnimalPackageItem pi
+            JOIN AnimalPackage p ON p.PackageID = pi.PackageID
+            WHERE pi.AnimalID = :aid
+            ORDER BY p.CreatedAt DESC
+        """), {"aid": animal_id}).fetchall()
+        return [dict(r._mapping) for r in rows]
+    except Exception as e:
+        print(f"[content/animal-packages] ERROR for animal_id={animal_id}: {e}")
+        return []
+
 @router.get("/content/produce")
 def get_produce(business_id: int, db: Session = Depends(get_db)):
     try:
