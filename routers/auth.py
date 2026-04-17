@@ -973,3 +973,175 @@ async def delete_package(request: Request, db: Session = Depends(get_db)):
     db.execute(text("DELETE FROM AnimalPackage WHERE PackageID = :pid"), {"pid": pid})
     db.commit()
     return {"message": "Package deleted"}
+
+
+# -------------------------
+# Business team management (BusinessAccess CRUD)
+# -------------------------
+class BusinessMemberAddRequest(BaseModel):
+    BusinessID: int
+    Email: str
+    PeopleFirstName: str = ""
+    PeopleLastName: str = ""
+    AccessLevelID: int = 1
+    Role: str = "Staff"
+
+
+class BusinessMemberUpdateRequest(BaseModel):
+    AccessLevelID: int = None
+    Role: str = None
+    Active: int = None
+
+
+def _require_business_owner(db: Session, people_id: int, business_id: int):
+    access = db.query(models.BusinessAccess).filter(
+        models.BusinessAccess.BusinessID == business_id,
+        models.BusinessAccess.PeopleID == people_id,
+        models.BusinessAccess.Active == 1,
+    ).first()
+    if not access or (access.AccessLevelID or 0) < 3:
+        raise HTTPException(status_code=403, detail="Team management requires AccessLevelID >= 3 on this business.")
+    return access
+
+
+@router.get("/business-members")
+def list_business_members(BusinessID: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _require_business_owner(db, current_user.PeopleID, BusinessID)
+    rows = db.execute(text("""
+        SELECT
+            ba.BusinessAccessID,
+            ba.BusinessID,
+            ba.PeopleID,
+            ba.AccessLevelID,
+            ba.Active,
+            ba.CreatedAt,
+            ba.RevokedAt,
+            ba.Role,
+            p.PeopleFirstName,
+            p.PeopleLastName,
+            p.PeopleEmail,
+            p.PeoplePhone
+        FROM BusinessAccess ba
+        LEFT JOIN People p ON p.PeopleID = ba.PeopleID
+        WHERE ba.BusinessID = :bid
+        ORDER BY ba.Active DESC, ba.CreatedAt DESC
+    """), {"bid": BusinessID}).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+@router.post("/business-members")
+def add_business_member(payload: BusinessMemberAddRequest, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    import datetime
+    _require_business_owner(db, current_user.PeopleID, payload.BusinessID)
+
+    email = (payload.Email or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required.")
+
+    person = db.query(models.People).filter(models.People.PeopleEmail == email).first()
+    if not person:
+        if not payload.PeopleFirstName.strip() or not payload.PeopleLastName.strip():
+            raise HTTPException(status_code=400, detail="No account found with that email. Provide first and last name to create one.")
+        person = models.People(
+            PeopleFirstName=payload.PeopleFirstName.strip(),
+            PeopleLastName=payload.PeopleLastName.strip(),
+            PeopleEmail=email,
+            PeoplePassword="",
+            PeopleActive=1,
+            accesslevel=0,
+            Subscriptionlevel=0,
+            PeopleCreationDate=datetime.datetime.utcnow(),
+        )
+        db.add(person)
+        db.flush()
+
+    existing = db.query(models.BusinessAccess).filter(
+        models.BusinessAccess.BusinessID == payload.BusinessID,
+        models.BusinessAccess.PeopleID == person.PeopleID,
+    ).first()
+
+    if existing:
+        existing.AccessLevelID = payload.AccessLevelID
+        existing.Role = payload.Role
+        existing.Active = 1
+        existing.RevokedAt = None
+        if not existing.CreatedAt:
+            existing.CreatedAt = datetime.datetime.utcnow()
+        db.commit()
+        db.refresh(existing)
+        access = existing
+    else:
+        access = models.BusinessAccess(
+            BusinessID=payload.BusinessID,
+            PeopleID=person.PeopleID,
+            AccessLevelID=payload.AccessLevelID,
+            Active=1,
+            CreatedAt=datetime.datetime.utcnow(),
+            Role=payload.Role,
+        )
+        db.add(access)
+        db.commit()
+        db.refresh(access)
+
+    return {
+        "BusinessAccessID": access.BusinessAccessID,
+        "BusinessID": access.BusinessID,
+        "PeopleID": person.PeopleID,
+        "PeopleFirstName": person.PeopleFirstName,
+        "PeopleLastName": person.PeopleLastName,
+        "PeopleEmail": person.PeopleEmail,
+        "AccessLevelID": access.AccessLevelID,
+        "Role": access.Role,
+        "Active": access.Active,
+        "CreatedAt": str(access.CreatedAt) if access.CreatedAt else None,
+    }
+
+
+@router.put("/business-members/{business_access_id}")
+def update_business_member(business_access_id: int, payload: BusinessMemberUpdateRequest, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    import datetime
+    access = db.query(models.BusinessAccess).filter(
+        models.BusinessAccess.BusinessAccessID == business_access_id
+    ).first()
+    if not access:
+        raise HTTPException(status_code=404, detail="Team member not found.")
+    _require_business_owner(db, current_user.PeopleID, access.BusinessID)
+
+    if payload.AccessLevelID is not None:
+        access.AccessLevelID = payload.AccessLevelID
+    if payload.Role is not None:
+        access.Role = payload.Role
+    if payload.Active is not None:
+        access.Active = payload.Active
+        if payload.Active == 0 and not access.RevokedAt:
+            access.RevokedAt = datetime.datetime.utcnow()
+        elif payload.Active == 1:
+            access.RevokedAt = None
+
+    db.commit()
+    db.refresh(access)
+    return {
+        "BusinessAccessID": access.BusinessAccessID,
+        "AccessLevelID": access.AccessLevelID,
+        "Role": access.Role,
+        "Active": access.Active,
+    }
+
+
+@router.delete("/business-members/{business_access_id}")
+def remove_business_member(business_access_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    import datetime
+    access = db.query(models.BusinessAccess).filter(
+        models.BusinessAccess.BusinessAccessID == business_access_id
+    ).first()
+    if not access:
+        raise HTTPException(status_code=404, detail="Team member not found.")
+    _require_business_owner(db, current_user.PeopleID, access.BusinessID)
+
+    if access.PeopleID == current_user.PeopleID:
+        raise HTTPException(status_code=400, detail="You can't remove yourself. Ask another owner to do it.")
+
+    access.Active = 0
+    access.RevokedAt = datetime.datetime.utcnow()
+    db.commit()
+    return {"message": "Team member removed", "BusinessAccessID": business_access_id}
