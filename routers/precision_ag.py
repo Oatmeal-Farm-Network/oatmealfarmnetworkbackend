@@ -1,13 +1,24 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, desc
 from database import get_db
 from datetime import date, datetime
+import json
+import os
+import uuid
 import models
+import requests
 from pydantic import BaseModel, validator
 from typing import Optional
 
 router = APIRouter(prefix="/api", tags=["precision-ag"])
+
+BIOMASS_ESTIMATOR_URL = os.getenv(
+    "BIOMASS_ESTIMATOR_URL",
+    "https://biomass-estimator-802455386518.us-central1.run.app",
+)
+BIOMASS_GCS_BUCKET = os.getenv("BIOMASS_GCS_BUCKET", "oatmeal-farm-network-images")
+BIOMASS_GCS_PREFIX = os.getenv("BIOMASS_GCS_PREFIX", "biomass-uploads")
 
 
 class FieldCreate(BaseModel):
@@ -175,3 +186,186 @@ def get_dashboard_summary(business_id: int, db: Session = Depends(get_db)):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+# ── BIOMASS ANALYSIS ─────────────────────────────────────────────
+
+def _serialize_biomass_row(row: "models.FieldBiomassAnalysis") -> dict:
+    return {
+        "analysis_id":        row.AnalysisID,
+        "field_id":           row.FieldID,
+        "source":             row.Source,
+        "biomass_kg_per_ha":  float(row.BiomassKgHa) if row.BiomassKgHa is not None else None,
+        "confidence":         float(row.Confidence) if row.Confidence is not None else None,
+        "image_url":          row.ImageUrl,
+        "captured_at":        row.CapturedAt.isoformat() + "Z" if row.CapturedAt else None,
+        "model_version":      row.ModelVersion,
+        "features":           json.loads(row.FeaturesJSON) if row.FeaturesJSON else None,
+        "created_at":         row.CreatedAt.isoformat() + "Z" if row.CreatedAt else None,
+    }
+
+
+def _call_estimator_url(image_url: str, source: str, field_id: int) -> dict:
+    try:
+        r = requests.post(
+            f"{BIOMASS_ESTIMATOR_URL}/predict/url",
+            json={"image_url": image_url, "source": source, "field_id": field_id},
+            timeout=60,
+        )
+        r.raise_for_status()
+        return r.json()
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Biomass estimator unreachable: {e}")
+
+
+def _call_estimator_upload(image_bytes: bytes, filename: str, content_type: str, source: str, field_id: int) -> dict:
+    try:
+        r = requests.post(
+            f"{BIOMASS_ESTIMATOR_URL}/predict/upload",
+            files={"file": (filename, image_bytes, content_type)},
+            data={"source": source, "field_id": str(field_id)},
+            timeout=90,
+        )
+        r.raise_for_status()
+        return r.json()
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Biomass estimator unreachable: {e}")
+
+
+@router.get("/fields/{field_id}/biomass")
+def get_biomass(field_id: int, db: Session = Depends(get_db)):
+    """Latest satellite + latest upload analysis for a field."""
+    try:
+        field = db.query(models.Field).filter(models.Field.FieldID == field_id).first()
+        if not field:
+            raise HTTPException(status_code=404, detail="Field not found")
+
+        def latest(source: str):
+            row = (
+                db.query(models.FieldBiomassAnalysis)
+                .filter(
+                    models.FieldBiomassAnalysis.FieldID == field_id,
+                    models.FieldBiomassAnalysis.Source == source,
+                )
+                .order_by(desc(models.FieldBiomassAnalysis.CapturedAt))
+                .first()
+            )
+            return _serialize_biomass_row(row) if row else None
+
+        history = (
+            db.query(models.FieldBiomassAnalysis)
+            .filter(models.FieldBiomassAnalysis.FieldID == field_id)
+            .order_by(desc(models.FieldBiomassAnalysis.CreatedAt))
+            .limit(20)
+            .all()
+        )
+        return {
+            "field_id":  field_id,
+            "satellite": latest("satellite"),
+            "upload":    latest("upload"),
+            "history":   [_serialize_biomass_row(r) for r in history],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/fields/{field_id}/biomass/satellite")
+def analyze_satellite(field_id: int, db: Session = Depends(get_db)):
+    """Fetch recent Sentinel-2 imagery via GEE and run biomass estimator."""
+    field = db.query(models.Field).filter(models.Field.FieldID == field_id).first()
+    if not field:
+        raise HTTPException(status_code=404, detail="Field not found")
+
+    try:
+        from gee_helper import get_sentinel2_thumbnail_url
+    except ImportError:
+        raise HTTPException(status_code=503, detail="GEE helper unavailable")
+
+    sat = get_sentinel2_thumbnail_url(
+        latitude=float(field.Latitude) if field.Latitude is not None else None,
+        longitude=float(field.Longitude) if field.Longitude is not None else None,
+        boundary_geojson=field.BoundaryGeoJSON,
+    )
+    if not sat:
+        raise HTTPException(
+            status_code=503,
+            detail="No recent cloud-free satellite imagery available for this field",
+        )
+
+    prediction = _call_estimator_url(sat["url"], source="satellite", field_id=field_id)
+
+    try:
+        captured = datetime.fromisoformat(sat["captured_at"].replace("Z", ""))
+    except Exception:
+        captured = datetime.utcnow()
+
+    row = models.FieldBiomassAnalysis(
+        FieldID=      field_id,
+        BusinessID=   field.BusinessID,
+        Source=       "satellite",
+        BiomassKgHa=  prediction.get("biomass_kg_per_ha"),
+        Confidence=   prediction.get("confidence"),
+        ImageUrl=     sat["url"],
+        CapturedAt=   captured,
+        ModelVersion= prediction.get("model_version"),
+        FeaturesJSON= json.dumps(prediction.get("features") or {}),
+        CreatedAt=    datetime.utcnow(),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _serialize_biomass_row(row)
+
+
+@router.post("/fields/{field_id}/biomass/upload")
+async def analyze_upload(
+    field_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """User-uploaded ground-level image → estimator → stored analysis."""
+    field = db.query(models.Field).filter(models.Field.FieldID == field_id).first()
+    if not field:
+        raise HTTPException(status_code=404, detail="Field not found")
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    ext = os.path.splitext(file.filename or "upload.jpg")[1].lower() or ".jpg"
+    filename = f"field{field_id}_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}{ext}"
+
+    image_url = None
+    try:
+        from google.cloud import storage
+        client = storage.Client()
+        blob = client.bucket(BIOMASS_GCS_BUCKET).blob(f"{BIOMASS_GCS_PREFIX}/{filename}")
+        blob.upload_from_string(raw, content_type=file.content_type or "image/jpeg")
+        image_url = f"https://storage.googleapis.com/{BIOMASS_GCS_BUCKET}/{BIOMASS_GCS_PREFIX}/{filename}"
+    except Exception as e:
+        print(f"[biomass] GCS upload failed (continuing without persistent URL): {e}")
+
+    prediction = _call_estimator_upload(
+        raw, filename, file.content_type or "image/jpeg",
+        source="upload", field_id=field_id,
+    )
+
+    row = models.FieldBiomassAnalysis(
+        FieldID=      field_id,
+        BusinessID=   field.BusinessID,
+        Source=       "upload",
+        BiomassKgHa=  prediction.get("biomass_kg_per_ha"),
+        Confidence=   prediction.get("confidence"),
+        ImageUrl=     image_url,
+        CapturedAt=   datetime.utcnow(),
+        ModelVersion= prediction.get("model_version"),
+        FeaturesJSON= json.dumps(prediction.get("features") or {}),
+        CreatedAt=    datetime.utcnow(),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _serialize_biomass_row(row)

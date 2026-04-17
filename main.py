@@ -41,7 +41,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 ALLOWED_ORIGINS = [
-    "http://localhost:5173", "http://localhost:3000",
+    "http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:3000",
     "https://oatmealfarmnetwork-802455386518.us-central1.run.app",
     "https://oatmealfarmnewtorkbackend-802455386518.us-central1.run.app",
     "https://crop-detection-dcecevhvh5ard2ah.eastus-01.azurewebsites.net",

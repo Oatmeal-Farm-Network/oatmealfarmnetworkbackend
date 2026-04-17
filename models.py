@@ -378,6 +378,22 @@ class FieldNote(Base):
     CreatedAt  = Column(DateTime)
     UpdatedAt  = Column(DateTime)
 
+# ── BIOMASS ANALYSIS ─────────────────────────────────────────────
+class FieldBiomassAnalysis(Base):
+    __tablename__ = "FieldBiomassAnalysis"
+    AnalysisID        = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    FieldID           = Column(Integer, index=True)
+    BusinessID        = Column(Integer, index=True)
+    Source            = Column(String(20))          # 'satellite' | 'upload'
+    BiomassKgHa       = Column(Decimal(10, 2))
+    Confidence        = Column(Decimal(5, 3))
+    ImageUrl          = Column(String(1000))        # GCS or source imagery URL
+    CapturedAt        = Column(DateTime)            # imagery capture date (satellite) or upload time
+    ModelVersion      = Column(String(50))
+    FeaturesJSON      = Column(Text)                # raw feature payload from estimator
+    CreatedByPeopleID = Column(Integer)
+    CreatedAt         = Column(DateTime)
+
 # ── CROP ROTATION ────────────────────────────────────────────────
 class CropRotationEntry(Base):
     __tablename__ = "CropRotationEntry"
@@ -548,6 +564,7 @@ class BusinessWebsite(Base):
     CanonicalURL    = Column(String(500))
     OgImageURL      = Column(String(1000))
     SeoExtrasJSON   = Column(Text)
+    MenuStyleJSON   = Column(Text)
     # Width controls
     HeaderContentWidth = Column(String(20), default='100%')
     FooterContentWidth = Column(String(20), default='100%')
@@ -583,6 +600,7 @@ class BusinessWebPage(Base):
     IsHomePage      = Column(Boolean, default=False)
     ParentPageID    = Column(Integer, nullable=True)
     IsNavHeading    = Column(Boolean, default=False)
+    LinkURL         = Column(String(500), nullable=True)
     CreatedAt       = Column(DateTime)
     UpdatedAt       = Column(DateTime)
 

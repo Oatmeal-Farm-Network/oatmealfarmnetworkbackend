@@ -245,16 +245,28 @@ def update_login(payload: UpdateLoginRequest, current_user=Depends(get_current_u
 # -------------------------
 @router.get("/my-businesses")
 def GetMyBusinesses(PeopleID: int, Db: Session = Depends(get_db)):
-    Businesses = (
-        Db.query(models.Business)
+    rows = (
+        Db.query(models.Business, models.Address)
         .join(models.BusinessAccess, models.Business.BusinessID == models.BusinessAccess.BusinessID)
+        .outerjoin(models.Address, models.Business.AddressID == models.Address.AddressID)
         .filter(
             models.BusinessAccess.PeopleID == PeopleID,
             models.BusinessAccess.Active == 1
         )
         .all()
     )
-    return [{"BusinessID": B.BusinessID, "BusinessName": B.BusinessName, "BusinessTypeID": B.BusinessTypeID} for B in Businesses]
+    return [
+        {
+            "BusinessID": B.BusinessID,
+            "BusinessName": B.BusinessName,
+            "BusinessTypeID": B.BusinessTypeID,
+            "AddressCity":    A.AddressCity    if A else None,
+            "AddressState":   A.AddressState   if A else None,
+            "AddressZip":     A.AddressZip     if A else None,
+            "AddressCountry": A.AddressCountry if A else None,
+        }
+        for B, A in rows
+    ]
 
 
 # -------------------------

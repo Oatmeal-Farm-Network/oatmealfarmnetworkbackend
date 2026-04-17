@@ -67,6 +67,7 @@ with engine.connect() as _conn:
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterBgWidth') ALTER TABLE BusinessWebsite ADD FooterBgWidth NVARCHAR(20) DEFAULT '100%'",
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebPage' AND COLUMN_NAME='ParentPageID') ALTER TABLE BusinessWebPage ADD ParentPageID INT NULL",
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebPage' AND COLUMN_NAME='IsNavHeading') ALTER TABLE BusinessWebPage ADD IsNavHeading BIT NOT NULL DEFAULT 0",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebPage' AND COLUMN_NAME='LinkURL') ALTER TABLE BusinessWebPage ADD LinkURL NVARCHAR(500) NULL",
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='DropdownBgColor') ALTER TABLE BusinessWebsite ADD DropdownBgColor NVARCHAR(50)",
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='DropdownHoverColor') ALTER TABLE BusinessWebsite ADD DropdownHoverColor NVARCHAR(50)",
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='DropdownBgColor2') ALTER TABLE BusinessWebsite ADD DropdownBgColor2 NVARCHAR(50)",
@@ -110,6 +111,7 @@ class SiteCreate(BaseModel):
     canonical_url: Optional[str] = None
     og_image_url: Optional[str] = None
     seo_extras_json: Optional[str] = None
+    menu_style_json: Optional[str] = None
     # Width controls
     header_bg_width: Optional[str] = '100%'
     header_content_width: Optional[str] = '100%'
@@ -315,6 +317,7 @@ class PageCreate(BaseModel):
     is_home_page: Optional[bool] = False
     parent_page_id: Optional[int] = None
     is_nav_heading: Optional[bool] = False
+    link_url: Optional[str] = None
 
 class PageUpdate(BaseModel):
     page_name: Optional[str] = None
@@ -326,6 +329,7 @@ class PageUpdate(BaseModel):
     is_home_page: Optional[bool] = None
     parent_page_id: Optional[int] = None
     is_nav_heading: Optional[bool] = None
+    link_url: Optional[str] = None
 
 class BlockCreate(BaseModel):
     page_id: int
@@ -375,6 +379,7 @@ def _ser_site(s: models.BusinessWebsite) -> dict:
         "canonical_url":   s.CanonicalURL,
         "og_image_url":    s.OgImageURL,
         "seo_extras_json": s.SeoExtrasJSON,
+        "menu_style_json": s.MenuStyleJSON,
         # Width controls
         "header_bg_width":      s.HeaderBgWidth or '100%',
         "header_content_width": s.HeaderContentWidth or '100%',
@@ -489,6 +494,7 @@ def _ser_page(p: models.BusinessWebPage) -> dict:
         "is_home_page":     bool(p.IsHomePage),
         "parent_page_id":   p.ParentPageID,
         "is_nav_heading":   bool(p.IsNavHeading) if p.IsNavHeading is not None else False,
+        "link_url":         p.LinkURL,
         "created_at":       str(p.CreatedAt) if p.CreatedAt else None,
     }
 
@@ -553,6 +559,7 @@ def create_site(body: SiteCreate, db: Session = Depends(get_db)):
         CanonicalURL=body.canonical_url,
         OgImageURL=body.og_image_url,
         SeoExtrasJSON=body.seo_extras_json,
+        MenuStyleJSON=body.menu_style_json,
         CreatedAt=datetime.utcnow(), UpdatedAt=datetime.utcnow()
     )
     db.add(site); db.commit(); db.refresh(site)
@@ -599,6 +606,7 @@ def update_site(website_id: int, body: SiteUpdate, db: Session = Depends(get_db)
     if body.canonical_url is not None: site.CanonicalURL = body.canonical_url
     if body.og_image_url is not None: site.OgImageURL = body.og_image_url
     if body.seo_extras_json is not None: site.SeoExtrasJSON = body.seo_extras_json
+    if body.menu_style_json is not None: site.MenuStyleJSON = body.menu_style_json
     # Width controls
     if body.header_bg_width is not None: site.HeaderBgWidth = body.header_bg_width
     if body.header_content_width is not None: site.HeaderContentWidth = body.header_content_width
@@ -716,6 +724,7 @@ def create_page(body: PageCreate, db: Session = Depends(get_db)):
         MetaDescription=body.meta_description, SortOrder=body.sort_order,
         IsPublished=body.is_published, IsHomePage=body.is_home_page,
         ParentPageID=body.parent_page_id, IsNavHeading=body.is_nav_heading or False,
+        LinkURL=body.link_url,
         CreatedAt=datetime.utcnow(), UpdatedAt=datetime.utcnow()
     )
     db.add(page); db.commit(); db.refresh(page)
@@ -751,6 +760,8 @@ def update_page(page_id: int, body: PageUpdate, db: Session = Depends(get_db)):
         page.ParentPageID = body.parent_page_id
     if body.is_nav_heading is not None:
         page.IsNavHeading = body.is_nav_heading
+    if 'link_url' in _unset:
+        page.LinkURL = body.link_url or None
     page.UpdatedAt = datetime.utcnow()
     db.commit(); db.refresh(page)
     return _ser_page(page)
@@ -1232,6 +1243,25 @@ async def upload_website_image(file: UploadFile = File(...)):
         blob.upload_from_string(contents, content_type=file.content_type or "image/jpeg")
         url = f"https://storage.googleapis.com/{GCS_BUCKET}/{filename}"
         return {"url": url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+
+@router.post("/upload-file")
+async def upload_website_file(file: UploadFile = File(...)):
+    """Upload a PDF (or any document) to GCS and return its public URL + original filename."""
+    try:
+        from google.cloud import storage as gcs
+        contents = await file.read()
+        original = file.filename or "document.pdf"
+        ext = original.rsplit(".", 1)[-1].lower() if "." in original else "pdf"
+        filename = f"{GCS_PREFIX}/files/{uuid.uuid4().hex}.{ext}"
+        client = gcs.Client()
+        bucket = client.bucket(GCS_BUCKET)
+        blob = bucket.blob(filename)
+        blob.upload_from_string(contents, content_type=file.content_type or "application/pdf")
+        url = f"https://storage.googleapis.com/{GCS_BUCKET}/{filename}"
+        return {"url": url, "filename": original}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 

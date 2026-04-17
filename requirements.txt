@@ -29,6 +29,12 @@ google-cloud-aiplatform==1.138.0
 # Firestore database for RAG document storage
 google-cloud-firestore>=2.0.0
 
+# GCS for biomass-upload image storage
+google-cloud-storage>=2.10.0
+
+# Google Earth Engine — Sentinel-2 imagery fetch for biomass estimator
+earthengine-api>=0.1.400
+
 
 
 # =========================================================
