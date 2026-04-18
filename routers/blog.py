@@ -336,13 +336,17 @@ def list_public_posts(
     blog_cat_id: Optional[int] = None,
     category_name: Optional[str] = None,
     featured_only: bool = False,
+    show_on_website: bool = False,
     limit: int = 20,
     offset: int = 0,
     db: Session = Depends(get_db)
 ):
-    """List published posts, optionally filtered by business, category, or featured."""
+    """List posts, optionally filtered by business, category, or featured.
+    By default filters to IsPublished=1 (public directory/listing).
+    Pass show_on_website=true to instead filter by ShowOnWebsite=1 (the
+    per-business custom website toggle used by WebsiteBuilder)."""
     _ensure_schema(db)
-    where = ["b.IsPublished = 1"]
+    where = ["b.ShowOnWebsite = 1"] if show_on_website else ["b.IsPublished = 1"]
     params: dict = {"limit": limit, "offset": offset}
 
     if business_id is not None:

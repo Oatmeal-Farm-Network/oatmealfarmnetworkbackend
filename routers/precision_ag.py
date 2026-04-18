@@ -233,12 +233,14 @@ def _call_estimator_upload(image_bytes: bytes, filename: str, content_type: str,
 
 @router.get("/fields/{field_id}/biomass")
 def get_biomass(field_id: int, db: Session = Depends(get_db)):
-    """Latest satellite + latest upload analysis for a field."""
-    try:
-        field = db.query(models.Field).filter(models.Field.FieldID == field_id).first()
-        if not field:
-            raise HTTPException(status_code=404, detail="Field not found")
+    """Latest satellite + latest upload analysis for a field. Returns empty
+    payload (not 500) when the FieldBiomassAnalysis table hasn't been migrated yet."""
+    field = db.query(models.Field).filter(models.Field.FieldID == field_id).first()
+    if not field:
+        raise HTTPException(status_code=404, detail="Field not found")
 
+    empty = {"field_id": field_id, "satellite": None, "upload": None, "history": []}
+    try:
         def latest(source: str):
             row = (
                 db.query(models.FieldBiomassAnalysis)
@@ -264,31 +266,40 @@ def get_biomass(field_id: int, db: Session = Depends(get_db)):
             "upload":    latest("upload"),
             "history":   [_serialize_biomass_row(r) for r in history],
         }
-    except HTTPException:
-        raise
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        # Most common cause: FieldBiomassAnalysis table hasn't been created yet.
+        # Log and return empty so the UI shows "no analysis yet" instead of an error.
+        print(f"[biomass] GET failed, returning empty (table missing?): {e}")
+        db.rollback()
+        return empty
 
 
 @router.post("/fields/{field_id}/biomass/satellite")
 def analyze_satellite(field_id: int, db: Session = Depends(get_db)):
     """Fetch recent Sentinel-2 imagery via GEE and run biomass estimator."""
+    import sys
+    print(f"\n===== [biomass/satellite] field_id={field_id} =====", flush=True)
+    sys.stdout.flush()
+
     field = db.query(models.Field).filter(models.Field.FieldID == field_id).first()
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
 
+    print(f"[biomass/satellite] field lat={field.Latitude} lon={field.Longitude} has_boundary={bool(field.BoundaryGeoJSON)}", flush=True)
+
     try:
         from gee_helper import get_sentinel2_thumbnail_url
-    except ImportError:
-        raise HTTPException(status_code=503, detail="GEE helper unavailable")
+        print("[biomass/satellite] gee_helper imported OK", flush=True)
+    except ImportError as e:
+        print(f"[biomass/satellite] gee_helper IMPORT FAILED: {e}", flush=True)
+        raise HTTPException(status_code=503, detail=f"GEE helper unavailable: {e}")
 
     sat = get_sentinel2_thumbnail_url(
         latitude=float(field.Latitude) if field.Latitude is not None else None,
         longitude=float(field.Longitude) if field.Longitude is not None else None,
         boundary_geojson=field.BoundaryGeoJSON,
     )
+    print(f"[biomass/satellite] gee returned: {sat}", flush=True)
     if not sat:
         raise HTTPException(
             status_code=503,
