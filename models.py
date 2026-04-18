@@ -12,6 +12,7 @@ class People(Base):
     PeoplePhone       = Column(String(50))
     PeopleActive      = Column(SmallInteger)
     accesslevel       = Column(Integer)
+    LKMAccessLevel    = Column(Integer)
     Subscriptionlevel = Column(Integer)
     AddressID         = Column(Integer)
     BusinessId        = Column(Integer)
