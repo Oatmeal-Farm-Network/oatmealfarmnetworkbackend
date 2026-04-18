@@ -102,6 +102,7 @@ def list_event_types(db: Session = Depends(get_db)):
     rows = db.execute(text("""
         SELECT EventTypeID, EventType, FullPrice, DiscountPrice, DiscountEndDate
         FROM EventTypesLookup
+        WHERE IsActive = 1
         ORDER BY EventType
     """)).fetchall()
     return [dict(r._mapping) for r in rows]

@@ -299,7 +299,9 @@ def types_features_matrix(db: Session = Depends(get_db)):
     """Returns [{EventTypeID, EventType, features: ["key1", ...]}]"""
     types = db.execute(text("""
         SELECT EventTypeID, EventType, FullPrice, DiscountPrice, DiscountEndDate
-          FROM EventTypesLookup ORDER BY EventType
+          FROM EventTypesLookup
+         WHERE IsActive = 1
+         ORDER BY EventType
     """)).mappings().all()
     maps = db.execute(text("""
         SELECT m.EventTypeID, f.FeatureKey
