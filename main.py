@@ -46,6 +46,11 @@ ALLOWED_ORIGINS = [
     "https://oatmealfarmnewtorkbackend-802455386518.us-central1.run.app",
     "https://crop-detection-dcecevhvh5ard2ah.eastus-01.azurewebsites.net",
     "https://www.oatmealfarmnetwork.com", "https://oatmealfarmnetwork.com",
+    "https://lkm-802455386518.us-central1.run.app",
+    "https://lkm-mt7mh6zhoa-uc.a.run.app",
+    "https://lkm-frontend-802455386518.us-central1.run.app",
+    "https://lkm-frontend-mt7mh6zhoa-uc.a.run.app",
+    "https://www.lkmcpa.com", "https://lkmcpa.com",
 ]
 
 def _is_allowed_origin(origin: str) -> bool:

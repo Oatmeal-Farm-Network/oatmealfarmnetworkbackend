@@ -49,57 +49,68 @@ def get_sentinel2_thumbnail_url(
     latitude: Optional[float],
     longitude: Optional[float],
     boundary_geojson: Optional[str] = None,
-    days_back: int = 30,
+    days_back: int = 60,
     buffer_meters: int = 250,
+    max_cloud_pct: int = 40,
 ) -> Optional[dict]:
     """
-    Returns {"url": str, "captured_at": iso} for the most recent cloud-free
-    Sentinel-2 L2A RGB composite within `days_back` days, or None if unavailable.
+    Returns {"url": str, "captured_at": iso} for the most recent Sentinel-2 L2A
+    RGB composite. Tries progressively looser cloud / time filters until hits
+    are found, so sites with consistently cloudy weather still get imagery.
     """
     if not _ensure_initialized():
+        print("[gee_helper] initialization failed")
         return None
     try:
         import ee  # type: ignore
 
+        geom = None
         if boundary_geojson:
             try:
                 geom = ee.Geometry(json.loads(boundary_geojson))
-            except Exception:
-                geom = None
-        else:
-            geom = None
+            except Exception as e:
+                print(f"[gee_helper] boundary_geojson unparseable ({e}) — falling back to point")
 
         if geom is None:
             if latitude is None or longitude is None:
+                print("[gee_helper] no lat/lon and no usable boundary — aborting")
                 return None
             geom = ee.Geometry.Point([float(longitude), float(latitude)]).buffer(buffer_meters)
 
+        # Progressive loosening: (days, cloud_pct)
+        attempts = [
+            (days_back, max_cloud_pct),
+            (days_back * 2, max_cloud_pct + 20),
+            (days_back * 3, 90),
+        ]
         end = datetime.utcnow()
-        start = end - timedelta(days=days_back)
+        image = None
+        used = None
+        for days, clouds in attempts:
+            start = end - timedelta(days=days)
+            coll = (
+                ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+                .filterBounds(geom)
+                .filterDate(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+                .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", clouds))
+                .sort("system:time_start", False)
+            )
+            size = coll.size().getInfo()
+            print(f"[gee_helper] lat={latitude} lon={longitude} window={days}d clouds<{clouds}% → {size} image(s)")
+            if size:
+                image = ee.Image(coll.first())
+                used = {"days": days, "clouds": clouds, "count": size}
+                break
 
-        collection = (
-            ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-            .filterBounds(geom)
-            .filterDate(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-            .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 20))
-            .sort("system:time_start", False)
-        )
-
-        size = collection.size().getInfo()
-        if not size:
+        if image is None:
             return None
 
-        image = ee.Image(collection.first())
         captured_ms = image.get("system:time_start").getInfo()
         captured_at = datetime.utcfromtimestamp(captured_ms / 1000).isoformat() + "Z"
 
-        vis = {
-            "bands": ["B4", "B3", "B2"],
-            "min": 0,
-            "max": 3000,
-            "gamma": 1.1,
-        }
+        vis = {"bands": ["B4", "B3", "B2"], "min": 0, "max": 3000, "gamma": 1.1}
         url = image.clip(geom).getThumbURL({**vis, "region": geom, "dimensions": 512, "format": "png"})
+        print(f"[gee_helper] selected image captured_at={captured_at} via {used}")
         return {"url": url, "captured_at": captured_at}
     except Exception as e:
         print(f"[gee_helper] fetch failed: {e}")
