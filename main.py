@@ -27,6 +27,20 @@ from routers import website_builder
 from routers import website_ai
 from routers import sfproducts
 from routers import events
+from routers import event_fiber_arts
+from routers import event_halter
+from routers import event_auction
+from routers import event_vendor_fair
+from routers import event_dining
+from routers import event_farm_tour
+from routers import event_simple
+from routers import event_conference
+from routers import event_competition
+from routers import event_checkin
+from routers import event_broadcast
+from routers import my_registrations
+from routers import event_analytics
+from routers import event_features
 from routers import company_features
 from routers import blog
 from routers import accounting
@@ -178,7 +192,21 @@ app.include_router(crop_rotation.router)
 app.include_router(website_builder.router)
 app.include_router(website_ai.router)
 app.include_router(sfproducts.router)
+app.include_router(event_features.router)
 app.include_router(events.router)
+app.include_router(event_fiber_arts.router)
+app.include_router(event_halter.router)
+app.include_router(event_auction.router)
+app.include_router(event_vendor_fair.router)
+app.include_router(event_dining.router)
+app.include_router(event_farm_tour.router)
+app.include_router(event_simple.router)
+app.include_router(event_conference.router)
+app.include_router(event_competition.router)
+app.include_router(event_checkin.router)
+app.include_router(event_broadcast.router)
+app.include_router(my_registrations.router)
+app.include_router(event_analytics.router)
 app.include_router(company_features.router)
 app.include_router(blog.router)
 app.include_router(accounting.router)

@@ -4,7 +4,7 @@ import json
 import logging
 import time
 import re
-from typing import Optional
+from typing import Optional, List
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Query, Request, Depends
 from fastapi.responses import JSONResponse
@@ -711,6 +711,543 @@ async def get_analytics(people_id: str = Depends(get_current_user)):
     if not data:
         return {"status": "no_data", "message": "No analytics data available."}
     return data
+
+
+# ============================================================================
+# COMPANION PLANTING ENDPOINTS
+# ============================================================================
+
+try:
+    from companion_planting import (
+        list_known_crops as _cp_list_known_crops,
+        full_record as _cp_full_record,
+        check_pair as _cp_check_pair,
+        resolve_crop as _cp_resolve_crop,
+    )
+    _CP_AVAILABLE = True
+except Exception as _cp_err:
+    print(f"[API] companion_planting import failed: {_cp_err}")
+    _CP_AVAILABLE = False
+
+
+@app.get("/companion/crops")
+async def companion_list_crops():
+    """List every crop currently covered by the companion-planting database."""
+    if not _CP_AVAILABLE:
+        return {"status": "unavailable", "crops": []}
+    return {"status": "ok", "crops": _cp_list_known_crops()}
+
+
+@app.get("/companion/{crop}")
+async def companion_get_crop(crop: str):
+    """Get the full companion-planting record for a single crop (friends, foes, notes)."""
+    if not _CP_AVAILABLE:
+        return {"status": "unavailable"}
+    rec = _cp_full_record(crop)
+    if not rec:
+        return {"status": "not_found", "crop": crop}
+    return {"status": "ok", "crop": _cp_resolve_crop(crop), "record": rec}
+
+
+@app.get("/companion/check/pair")
+async def companion_check_pair(a: str, b: str):
+    """Check whether two crops are good or bad companions."""
+    if not _CP_AVAILABLE:
+        return {"status": "unavailable"}
+    result = _cp_check_pair(a, b)
+    return {"status": "ok", "a": a, "b": b, "result": result}
+
+
+# ============================================================================
+# CROP NAMES (traditional / local)
+# ============================================================================
+
+try:
+    from crop_names import lookup as _cn_lookup, list_all as _cn_list_all, resolve as _cn_resolve
+    _CN_AVAILABLE = True
+except Exception as _cn_err:
+    print(f"[API] crop_names import failed: {_cn_err}")
+    _CN_AVAILABLE = False
+
+
+@app.get("/crop-names")
+async def crop_names_list():
+    if not _CN_AVAILABLE:
+        return {"status": "unavailable", "crops": []}
+    return {"status": "ok", "crops": _cn_list_all()}
+
+
+@app.get("/crop-names/{name}")
+async def crop_names_lookup(name: str):
+    if not _CN_AVAILABLE:
+        return {"status": "unavailable"}
+    rec = _cn_lookup(name)
+    if not rec:
+        return {"status": "not_found", "name": name}
+    return {"status": "ok", "query": name, "record": rec}
+
+
+# ============================================================================
+# WEATHER MITIGATION
+# ============================================================================
+
+try:
+    from weather_mitigation import get_plan as _wm_get_plan, list_hazards as _wm_list_hazards
+    _WM_AVAILABLE = True
+except Exception as _wm_err:
+    print(f"[API] weather_mitigation import failed: {_wm_err}")
+    _WM_AVAILABLE = False
+
+
+@app.get("/mitigation/hazards")
+async def mitigation_list():
+    if not _WM_AVAILABLE:
+        return {"status": "unavailable", "hazards": []}
+    return {"status": "ok", "hazards": _wm_list_hazards()}
+
+
+@app.get("/mitigation/{hazard}")
+async def mitigation_plan(hazard: str, phase: str = "imminent"):
+    if not _WM_AVAILABLE:
+        return {"status": "unavailable"}
+    plan = _wm_get_plan(hazard, phase)
+    if not plan:
+        return {"status": "not_found", "hazard": hazard}
+    return {"status": "ok", "plan": plan}
+
+
+# ============================================================================
+# REGION-SPECIFIC CROPS
+# ============================================================================
+
+try:
+    from region_crops import recommend as _rc_recommend, list_climates as _rc_list_climates
+    _RC_AVAILABLE = True
+except Exception as _rc_err:
+    print(f"[API] region_crops import failed: {_rc_err}")
+    _RC_AVAILABLE = False
+
+
+@app.get("/region/climates")
+async def region_list_climates():
+    if not _RC_AVAILABLE:
+        return {"status": "unavailable", "climates": []}
+    return {"status": "ok", "climates": _rc_list_climates()}
+
+
+@app.get("/region/recommend")
+async def region_recommend(
+    climate: Optional[str] = None,
+    zone: Optional[str] = None,
+    lat: Optional[float] = None,
+    lon: Optional[float] = None,
+    limit: int = 20,
+):
+    if not _RC_AVAILABLE:
+        return {"status": "unavailable"}
+    return _rc_recommend(climate=climate, zone=zone, lat=lat, lon=lon, limit=limit)
+
+
+# ============================================================================
+# SOIL CHALLENGES
+# ============================================================================
+
+try:
+    from soil_challenges import assess as _sc_assess
+    _SC_AVAILABLE = True
+except Exception as _sc_err:
+    print(f"[API] soil_challenges import failed: {_sc_err}")
+    _SC_AVAILABLE = False
+
+
+class SoilTestPayload(BaseModel):
+    ph: Optional[float] = None
+    organic_matter_pct: Optional[float] = None
+    nitrogen_ppm: Optional[float] = None
+    phosphorus_ppm: Optional[float] = None
+    potassium_ppm: Optional[float] = None
+    cec_meq: Optional[float] = None
+    salinity_dsm: Optional[float] = None
+    moisture_pct: Optional[float] = None
+    bulk_density_gcc: Optional[float] = None
+    sodium_pct_cec: Optional[float] = None
+    crop: Optional[str] = None
+    user_id: Optional[str] = None
+
+
+@app.post("/soil/assess")
+async def soil_assess(payload: SoilTestPayload):
+    if not _SC_AVAILABLE:
+        return {"status": "unavailable"}
+    body = payload.model_dump(exclude_none=True)
+    user_id = body.pop("user_id", None)
+    result = _sc_assess(**body)
+    try:
+        from cross_links import subsidies_for_soil
+        result["related_suggestions"] = subsidies_for_soil(result.get("challenges", []))
+    except Exception:
+        pass
+    if user_id and result.get("status") == "ok":
+        try:
+            from history_store import record as _hist_record
+            entry = _hist_record(user_id, "soil", {
+                "inputs":    body,
+                "headline":  result.get("headline"),
+                "challenges": [
+                    {"measure": c.get("measure"), "direction": c.get("direction"),
+                     "severity": c.get("severity"), "value": c.get("value")}
+                    for c in result.get("challenges", [])
+                ],
+            })
+            result["history_id"] = entry["id"]
+        except Exception as _e:
+            print(f"[API] soil history record failed: {_e}")
+    return result
+
+
+# ============================================================================
+# PEST DETECTION (vision LLM)
+# ============================================================================
+
+try:
+    from pest_detection import detect_from_base64 as _pd_detect
+    _PD_AVAILABLE = True
+except Exception as _pd_err:
+    print(f"[API] pest_detection import failed: {_pd_err}")
+    _PD_AVAILABLE = False
+
+
+class PestDetectPayload(BaseModel):
+    image_base64: str
+    notes: Optional[str] = ""
+    user_id: Optional[str] = None
+
+
+@app.post("/pest/detect")
+async def pest_detect(payload: PestDetectPayload):
+    if not _PD_AVAILABLE:
+        return {"status": "unavailable"}
+    result = _pd_detect(payload.image_base64, payload.notes or "")
+    try:
+        from cross_links import companions_for_pest
+        if result.get("status") == "ok":
+            result["related_suggestions"] = companions_for_pest(
+                result.get("diagnosis", ""), result.get("category", "")
+            )
+    except Exception:
+        pass
+    if payload.user_id and result.get("status") == "ok":
+        try:
+            from history_store import record as _hist_record
+            entry = _hist_record(payload.user_id, "pest", {
+                "diagnosis":  result.get("diagnosis"),
+                "confidence": result.get("confidence"),
+                "category":   result.get("category"),
+                "crop_identified": result.get("crop_identified"),
+                "notes":      payload.notes or "",
+            })
+            result["history_id"] = entry["id"]
+        except Exception as _e:
+            print(f"[API] pest history record failed: {_e}")
+    return result
+
+
+# ============================================================================
+# PRICE FORECAST
+# ============================================================================
+
+try:
+    from price_forecast import forecast as _pf_forecast, list_commodities as _pf_list
+    _PF_AVAILABLE = True
+except Exception as _pf_err:
+    print(f"[API] price_forecast import failed: {_pf_err}")
+    _PF_AVAILABLE = False
+
+
+@app.get("/price/commodities")
+async def price_list():
+    if not _PF_AVAILABLE:
+        return {"status": "unavailable", "commodities": []}
+    return {"status": "ok", "commodities": _pf_list()}
+
+
+@app.get("/price/forecast/{commodity}")
+async def price_forecast_endpoint(commodity: str, months_ahead: int = 6,
+                                  user_id: Optional[str] = None):
+    if not _PF_AVAILABLE:
+        return {"status": "unavailable"}
+    result = _pf_forecast(commodity, max(1, min(int(months_ahead or 6), 12)))
+    try:
+        from cross_links import insurance_for_commodity
+        if result.get("status") == "ok":
+            forecast = result.get("forecast", []) or []
+            trend = None
+            if forecast and result.get("recent_average") is not None:
+                end = forecast[-1].get("expected")
+                if isinstance(end, (int, float)):
+                    ra = result["recent_average"]
+                    if ra and end < ra * 0.95: trend = "down"
+                    elif ra and end > ra * 1.05: trend = "up"
+                    else: trend = "flat"
+            result["related_suggestions"] = insurance_for_commodity(
+                result.get("commodity", commodity), result.get("confidence"), trend
+            )
+    except Exception:
+        pass
+    if user_id and result.get("status") == "ok":
+        try:
+            from history_store import record as _hist_record
+            entry = _hist_record(user_id, "price", {
+                "commodity":      result.get("commodity"),
+                "recent_average": result.get("recent_average"),
+                "unit":           result.get("unit"),
+                "confidence":     result.get("confidence"),
+                "months_ahead":   months_ahead,
+                "end_expected":   (result.get("forecast") or [{}])[-1].get("expected"),
+            })
+            result["history_id"] = entry["id"]
+        except Exception as _e:
+            print(f"[API] price history record failed: {_e}")
+    return result
+
+
+# ============================================================================
+# SUBSIDIES
+# ============================================================================
+
+try:
+    from subsidies import (
+        search as _sb_search, get as _sb_get,
+        list_categories as _sb_list_categories,
+        list_countries as _sb_list_countries,
+        ALL_PROGRAMS as _sb_programs,
+    )
+    _SB_AVAILABLE = True
+except Exception as _sb_err:
+    print(f"[API] subsidies import failed: {_sb_err}")
+    _SB_AVAILABLE = False
+
+
+@app.get("/subsidies/categories")
+async def subsidies_categories(country: Optional[str] = None):
+    if not _SB_AVAILABLE:
+        return {"status": "unavailable", "categories": []}
+    return {"status": "ok", "categories": _sb_list_categories(country=country)}
+
+
+@app.get("/subsidies/countries")
+async def subsidies_countries():
+    if not _SB_AVAILABLE:
+        return {"status": "unavailable", "countries": []}
+    return {"status": "ok", "countries": _sb_list_countries()}
+
+
+@app.get("/subsidies")
+async def subsidies_search(
+    category: Optional[str] = None,
+    keyword: Optional[str] = None,
+    country: Optional[str] = None,
+    limit: int = 20,
+):
+    if not _SB_AVAILABLE:
+        return {"status": "unavailable", "programs": []}
+    return {"status": "ok", "programs": _sb_search(
+        category=category, keyword=keyword, country=country, limit=limit,
+    )}
+
+
+@app.get("/subsidies/{program_id}")
+async def subsidies_detail(program_id: str):
+    if not _SB_AVAILABLE:
+        return {"status": "unavailable"}
+    p = _sb_get(program_id)
+    if not p:
+        return {"status": "not_found"}
+    return {"status": "ok", "program": p}
+
+
+# ============================================================================
+# INSURANCE
+# ============================================================================
+
+try:
+    from insurance import for_crop as _in_for_crop, list_crops as _in_list_crops, PRODUCTS as _in_products
+    _IN_AVAILABLE = True
+except Exception as _in_err:
+    print(f"[API] insurance import failed: {_in_err}")
+    _IN_AVAILABLE = False
+
+
+@app.get("/insurance/crops")
+async def insurance_list_crops():
+    if not _IN_AVAILABLE:
+        return {"status": "unavailable", "crops": []}
+    return {"status": "ok", "crops": _in_list_crops()}
+
+
+@app.get("/insurance/products")
+async def insurance_list_products():
+    if not _IN_AVAILABLE:
+        return {"status": "unavailable", "products": []}
+    return {"status": "ok", "products": _in_products}
+
+
+@app.get("/insurance/for/{crop}")
+async def insurance_for_crop(crop: str):
+    if not _IN_AVAILABLE:
+        return {"status": "unavailable"}
+    return _in_for_crop(crop)
+
+
+# ============================================================================
+# PUSH NOTIFICATIONS
+# ============================================================================
+
+try:
+    from push_notifications import (
+        subscribe as _pn_subscribe, unsubscribe as _pn_unsubscribe,
+        list_subscriptions as _pn_list, send_to as _pn_send_to,
+        broadcast as _pn_broadcast, public_key as _pn_public_key,
+        is_configured as _pn_is_configured,
+    )
+    _PN_AVAILABLE = True
+except Exception as _pn_err:
+    print(f"[API] push_notifications import failed: {_pn_err}")
+    _PN_AVAILABLE = False
+
+
+class PushSubscribePayload(BaseModel):
+    user_id: str
+    subscription: dict
+    tags: Optional[List[str]] = None
+    location: Optional[dict] = None  # {label, lat, lon}
+
+
+class PushUnsubscribePayload(BaseModel):
+    endpoint: str
+
+
+class PushSendPayload(BaseModel):
+    user_id: Optional[str] = None
+    tag: Optional[str] = None
+    title: str
+    body: str
+    url: Optional[str] = None
+
+
+class PushTestPayload(BaseModel):
+    user_id: str
+
+
+@app.get("/push/public-key")
+async def push_public_key():
+    if not _PN_AVAILABLE:
+        return {"configured": False, "public_key": ""}
+    return {"configured": _pn_is_configured(), "public_key": _pn_public_key()}
+
+
+@app.post("/push/subscribe")
+async def push_subscribe(payload: PushSubscribePayload):
+    if not _PN_AVAILABLE:
+        return {"status": "unavailable"}
+    return _pn_subscribe(payload.user_id, payload.subscription, payload.tags,
+                         location=payload.location)
+
+
+@app.post("/push/unsubscribe")
+async def push_unsubscribe(payload: PushUnsubscribePayload):
+    if not _PN_AVAILABLE:
+        return {"status": "unavailable"}
+    return _pn_unsubscribe(payload.endpoint)
+
+
+@app.post("/push/send")
+async def push_send(payload: PushSendPayload):
+    if not _PN_AVAILABLE:
+        return {"status": "unavailable"}
+    if payload.user_id:
+        return _pn_send_to(payload.user_id, payload.title, payload.body, payload.url, payload.tag)
+    return _pn_broadcast(payload.title, payload.body, payload.url, payload.tag)
+
+
+@app.post("/push/test")
+async def push_test(payload: PushTestPayload):
+    if not _PN_AVAILABLE:
+        return {"status": "unavailable"}
+    return _pn_send_to(
+        payload.user_id,
+        "OFN test notification",
+        "If you see this, push notifications are working on this device.",
+        "/saige/push",
+    )
+
+
+# ============================================================================
+# SAIGE HISTORY (per-user trend cards)
+# ============================================================================
+
+try:
+    import history_store as _hist
+    _HIST_AVAILABLE = True
+except Exception as _hist_err:
+    print(f"[API] history_store import failed: {_hist_err}")
+    _HIST_AVAILABLE = False
+
+
+@app.get("/history/{user_id}")
+async def history_list(user_id: str, type: Optional[str] = None, limit: int = 20):
+    if not _HIST_AVAILABLE:
+        return {"status": "unavailable", "entries": []}
+    entries = _hist.list_for_user(user_id, entry_type=type,
+                                  limit=max(1, min(int(limit or 20), 100)))
+    return {"status": "ok", "entries": entries}
+
+
+@app.delete("/history/{user_id}/{entry_id}")
+async def history_delete(user_id: str, entry_id: str):
+    if not _HIST_AVAILABLE:
+        return {"status": "unavailable"}
+    removed = _hist.delete_entry(user_id, entry_id)
+    return {"status": "ok" if removed else "not_found"}
+
+
+# ============================================================================
+# WEATHER ALERTS (signal engine that drives push)
+# ============================================================================
+
+try:
+    import weather_alerts as _wx_alerts
+    _WXA_AVAILABLE = True
+except Exception as _wxa_err:
+    print(f"[API] weather_alerts import failed: {_wxa_err}")
+    _WXA_AVAILABLE = False
+
+
+class WeatherAlertPayload(BaseModel):
+    dry_run: bool = False
+    days_ahead: int = 2
+    user_id: Optional[str] = None
+
+
+@app.post("/alerts/weather/run")
+async def alerts_weather_run(payload: WeatherAlertPayload):
+    """Cron entry point. Scans push subscriptions with attached locations,
+    evaluates forecast against hazard thresholds, sends push notifications."""
+    if not _WXA_AVAILABLE:
+        return {"status": "unavailable"}
+    return _wx_alerts.run(
+        dry_run=payload.dry_run,
+        days_ahead=payload.days_ahead,
+        user_id=payload.user_id,
+    )
+
+
+@app.get("/alerts/weather/check/{user_id}")
+async def alerts_weather_check(user_id: str, days_ahead: int = 2):
+    """Dry-run preview of what alerts *would* fire for one user right now."""
+    if not _WXA_AVAILABLE:
+        return {"status": "unavailable"}
+    return _wx_alerts.run(dry_run=True, days_ahead=days_ahead, user_id=user_id)
 
 
 # ============================================================================
