@@ -47,6 +47,37 @@ def _collect_recipients(db: Session, event_id: int):
         except Exception:
             db.rollback()
             continue
+
+    # Cart attendees (unified registration wizard)
+    try:
+        rows = db.execute(text("""
+            SELECT DISTINCT (ISNULL(AttendeeFirstName,'') + ' ' + ISNULL(AttendeeLastName,'')) AS N,
+                            AttendeeEmail AS E
+              FROM OFNEventRegistrationCart
+             WHERE EventID = :e AND AttendeeEmail IS NOT NULL AND AttendeeEmail <> ''
+        """), {"e": event_id}).mappings().all()
+        for r in rows:
+            em = (r['E'] or '').strip().lower()
+            if em and em not in rx:
+                rx[em] = (r['N'] or '').strip()
+    except Exception:
+        db.rollback()
+
+    # Opt-in mailing list (newsletter subscribers)
+    try:
+        rows = db.execute(text("""
+            SELECT DISTINCT Name AS N, Email AS E
+              FROM OFNEventMailingList
+             WHERE EventID = :e AND OptedOutDate IS NULL
+               AND Email IS NOT NULL AND Email <> ''
+        """), {"e": event_id}).mappings().all()
+        for r in rows:
+            em = (r['E'] or '').strip().lower()
+            if em and em not in rx:
+                rx[em] = r['N'] or ''
+    except Exception:
+        db.rollback()
+
     return rx
 
 

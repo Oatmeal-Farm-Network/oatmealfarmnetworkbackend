@@ -129,6 +129,68 @@ def list_events(db: Session = Depends(get_db)):
 
 # ── Account: list my events (as organizer) ────────────────────────────────────
 # NOTE: must be defined BEFORE /api/events/{event_id} so FastAPI doesn't match "my-events" as an int
+@router.get("/api/my-upcoming-events")
+def my_upcoming_events(people_id: int, db: Session = Depends(get_db)):
+    """User-centric dashboard card. Returns three buckets:
+      - hosting:    events any of my businesses host (published, not past)
+      - registered: events I'm a paid attendee of (upcoming)
+      - pending:    my active carts (open/abandoned) with resume info
+    """
+    businesses = db.execute(text("""
+        SELECT BusinessID FROM BusinessAccess
+         WHERE PeopleID = :pid AND Active = 1
+    """), {"pid": people_id}).scalars().all()
+    biz_ids = list(businesses) or []
+
+    hosting = []
+    if biz_ids:
+        ph = ",".join(f":b{i}" for i, _ in enumerate(biz_ids))
+        params = {f"b{i}": v for i, v in enumerate(biz_ids)}
+        rows = db.execute(text(f"""
+            SELECT e.EventID, e.EventName, e.EventStartDate, e.EventEndDate,
+                   e.EventType, e.EventLocationCity, e.EventLocationState,
+                   e.BusinessID, b.BusinessName, e.IsPublished,
+                   (SELECT COUNT(1) FROM OFNEventRegistrationCart c
+                     WHERE c.EventID = e.EventID AND c.Status = 'paid') AS PaidCartCount,
+                   (SELECT ISNULL(SUM(Total),0) FROM OFNEventRegistrationCart c
+                     WHERE c.EventID = e.EventID AND c.Status = 'paid') AS Revenue
+              FROM OFNEvents e
+              JOIN Business b ON b.BusinessID = e.BusinessID
+             WHERE e.BusinessID IN ({ph}) AND e.Deleted = 0
+               AND (e.EventEndDate IS NULL OR e.EventEndDate >= CAST(GETDATE() AS DATE))
+             ORDER BY e.EventStartDate ASC
+        """), params).mappings().all()
+        hosting = [dict(r) for r in rows]
+
+    registered = db.execute(text("""
+        SELECT DISTINCT e.EventID, e.EventName, e.EventStartDate, e.EventEndDate,
+               e.EventLocationCity, e.EventLocationState, e.EventImage,
+               c.CartID
+          FROM OFNEventRegistrationCart c
+          JOIN OFNEvents e ON e.EventID = c.EventID
+         WHERE c.PeopleID = :pid AND c.Status = 'paid' AND e.Deleted = 0
+           AND (e.EventEndDate IS NULL OR e.EventEndDate >= CAST(GETDATE() AS DATE))
+         ORDER BY e.EventStartDate ASC
+    """), {"pid": people_id}).mappings().all()
+
+    pending = db.execute(text("""
+        SELECT c.CartID, c.EventID, c.Total, c.CreatedDate, c.Status,
+               e.EventName, e.EventStartDate
+          FROM OFNEventRegistrationCart c
+          JOIN OFNEvents e ON e.EventID = c.EventID
+         WHERE c.PeopleID = :pid AND c.Status IN ('open','abandoned')
+           AND e.Deleted = 0
+           AND (e.EventEndDate IS NULL OR e.EventEndDate >= CAST(GETDATE() AS DATE))
+         ORDER BY c.CreatedDate DESC
+    """), {"pid": people_id}).mappings().all()
+
+    return {
+        "hosting": hosting,
+        "registered": [dict(r) for r in registered],
+        "pending": [dict(r) for r in pending],
+    }
+
+
 @router.get("/api/my-events")
 def my_events(business_id: int, db: Session = Depends(get_db)):
     rows = db.execute(text("""

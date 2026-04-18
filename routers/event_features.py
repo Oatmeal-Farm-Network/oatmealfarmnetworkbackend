@@ -67,6 +67,10 @@ SEED_FEATURES = [
         '🦙', '/events/{eventId}/admin/halter',      '/events/{eventId}/register/halter', 1, 250),
     ('fiber_arts_module',  'Fiber Arts Show',        'Cottage-industry entries with categories + judging.',
         '🧶', '/events/{eventId}/admin/fiber-arts',  '/events/{eventId}/register/fiber-arts', 1, 260),
+    ('fleece_module',      'Fleece Show',            'Per-fleece entries with breed/color/micron, fee window, judging.',
+        '🐑', '/events/{eventId}/admin/fleece',      '/events/{eventId}/register/fleece', 1, 262),
+    ('spinoff_module',     'Spin-Off',               'Per-entry spinning competition with fee window and judging.',
+        '🧵', '/events/{eventId}/admin/spinoff',     '/events/{eventId}/register/spinoff', 1, 264),
     ('auction_module',     'Auction',                'Lots, starting bids, reserve prices, bid history.',
         '💰', '/events/{eventId}/admin/auction',     '/events/{eventId}/auction', 1, 270),
     ('vendor_fair_module', 'Vendor Fair',            'Booth applications with fees and approval workflow.',
@@ -93,8 +97,8 @@ DEFAULT_TYPE_FEATURES = {
     'Farm Tour/Open House':                ['tour_module',        'qr_checkin', 'mass_email', 'analytics', 'attendees_csv', 'calendar_ics', 'clone_event', 'cancel_refund'],
     'Competition/Judging':                 ['competition_module', 'qr_checkin', 'mass_email', 'analytics', 'attendees_csv', 'calendar_ics', 'certificates', 'clone_event', 'leaderboard'],
     'Halter Show':                         ['halter_module',      'qr_checkin', 'mass_email', 'analytics', 'attendees_csv', 'calendar_ics', 'certificates', 'clone_event'],
-    'Basic Animal or Fleece Show':         ['halter_module',      'qr_checkin', 'mass_email', 'analytics', 'attendees_csv', 'calendar_ics', 'certificates', 'clone_event'],
-    'Spin-Off':                            ['halter_module',      'mass_email', 'analytics', 'attendees_csv', 'calendar_ics', 'certificates', 'clone_event'],
+    'Basic Animal or Fleece Show':         ['fleece_module',      'qr_checkin', 'mass_email', 'analytics', 'attendees_csv', 'calendar_ics', 'certificates', 'clone_event'],
+    'Spin-Off':                            ['spinoff_module',     'mass_email', 'analytics', 'attendees_csv', 'calendar_ics', 'certificates', 'clone_event'],
     'Alpaca Cottage Industry Fleece Show': ['fiber_arts_module',  'mass_email', 'analytics', 'attendees_csv', 'calendar_ics', 'certificates', 'clone_event', 'leaderboard'],
     'Auction':                             ['auction_module',     'mass_email', 'analytics', 'attendees_csv', 'calendar_ics', 'clone_event'],
     'Market/Vendor Fair':                  ['vendor_fair_module', 'mass_email', 'analytics', 'attendees_csv', 'calendar_ics', 'clone_event'],
@@ -181,11 +185,55 @@ def _seed_default_type_mappings(db: Session):
     db.commit()
 
 
+def _migrate_core_module_mappings(db: Session):
+    """One-time migration: types that used to share halter_module now own their own
+    core module. For existing deployments where 'Spin-Off' and 'Basic Animal or
+    Fleece Show' are currently mapped to halter_module, swap to the dedicated
+    spinoff_module / fleece_module and drop the halter_module row.
+    Idempotent: safe to run on every boot — only acts when the old mapping is
+    still present AND the new one isn't.
+    """
+    migrations = [
+        ('Spin-Off', 'halter_module', 'spinoff_module'),
+        ('Basic Animal or Fleece Show', 'halter_module', 'fleece_module'),
+    ]
+    for type_name, old_key, new_key in migrations:
+        type_row = db.execute(text(
+            "SELECT EventTypeID FROM EventTypesLookup WHERE EventType = :t"
+        ), {"t": type_name}).fetchone()
+        if not type_row:
+            continue
+        type_id = int(type_row[0])
+        old_id = db.execute(text(
+            "SELECT FeatureID FROM OFNEventFeatures WHERE FeatureKey = :k AND Deleted = 0"
+        ), {"k": old_key}).fetchone()
+        new_id = db.execute(text(
+            "SELECT FeatureID FROM OFNEventFeatures WHERE FeatureKey = :k AND Deleted = 0"
+        ), {"k": new_key}).fetchone()
+        if not (old_id and new_id):
+            continue
+        has_old = db.execute(text(
+            "SELECT 1 FROM OFNEventTypeFeatures WHERE EventTypeID = :t AND FeatureID = :f"
+        ), {"t": type_id, "f": int(old_id[0])}).fetchone()
+        has_new = db.execute(text(
+            "SELECT 1 FROM OFNEventTypeFeatures WHERE EventTypeID = :t AND FeatureID = :f"
+        ), {"t": type_id, "f": int(new_id[0])}).fetchone()
+        if has_old and not has_new:
+            db.execute(text(
+                "INSERT INTO OFNEventTypeFeatures (EventTypeID, FeatureID) VALUES (:t, :f)"
+            ), {"t": type_id, "f": int(new_id[0])})
+            db.execute(text(
+                "DELETE FROM OFNEventTypeFeatures WHERE EventTypeID = :t AND FeatureID = :f"
+            ), {"t": type_id, "f": int(old_id[0])})
+    db.commit()
+
+
 with SessionLocal() as _db:
     try:
         ensure_tables(_db)
         _upsert_seed_features(_db)
         _seed_default_type_mappings(_db)
+        _migrate_core_module_mappings(_db)
     except Exception as e:
         print(f"Event features table setup error: {e}")
 

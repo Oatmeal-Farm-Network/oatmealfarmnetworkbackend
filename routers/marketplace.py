@@ -4,7 +4,7 @@
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
 from database import get_db, engine
 from auth import get_current_user
 from pydantic import BaseModel
@@ -604,10 +604,24 @@ def place_order(req: PlaceOrderRequest, db: Session = Depends(get_db)):
     except Exception as e:
         print(f"[marketplace] Email send failed: {e}")
 
+    thank_you_codes = []
+    try:
+        from routers.event_promo_codes import issue_marketplace_thank_you_codes
+        thank_you_codes = issue_marketplace_thank_you_codes(db, order_id)
+        if thank_you_codes:
+            try:
+                from event_emails import send_marketplace_thank_you_promo
+                send_marketplace_thank_you_promo(buyer[1], buyer[0], thank_you_codes)
+            except Exception as e:
+                print(f"[marketplace] Thank-you promo email failed: {e}")
+    except Exception as e:
+        print(f"[marketplace] Thank-you promo code issuance failed: {e}")
+
     return {
         "OrderID":     order_id,
         "OrderNumber": order_number,
         "TotalAmount": total_amount,
+        "ThankYouCodes": thank_you_codes,
         "message":     "Order placed successfully",
     }
 
@@ -1468,12 +1482,46 @@ def _livestock_listing(
                ph.Photo1, ph.Photo2, ph.ListPageImage,
                p.Price, p.StudFee,
                b1.Breed AS Breed1, b2.Breed AS Breed2,
-               biz.BusinessName, addr.AddressState
+               biz.BusinessID, biz.BusinessName, addr.AddressState
         FROM Animals a {join_block}
         WHERE {where}
         ORDER BY {order_sql} {dir_sql}
         OFFSET :offset ROWS FETCH NEXT :per_page ROWS ONLY
     """), {**params, "offset": offset, "per_page": PER_PAGE}).fetchall()
+
+    # Batch-lookup upcoming events for the businesses on this page
+    biz_ids = {r.BusinessID for r in rows if getattr(r, 'BusinessID', None)}
+    events_by_biz: dict[int, dict] = {}
+    if biz_ids:
+        try:
+            ev_rows = db.execute(text("""
+                SELECT EventID, BusinessID, EventName, EventStartDate, EventEndDate
+                FROM OFNEvents
+                WHERE BusinessID IN :bids
+                  AND (Deleted IS NULL OR Deleted = 0)
+                  AND IsPublished = 1
+                  AND (EventEndDate IS NULL OR EventEndDate >= GETDATE())
+                ORDER BY EventStartDate ASC
+            """).bindparams(bindparam("bids", expanding=True)),
+                {"bids": list(biz_ids)}).fetchall()
+            for ev in ev_rows:
+                bid = ev.BusinessID
+                if bid not in events_by_biz:
+                    events_by_biz[bid] = {
+                        "EventID": ev.EventID,
+                        "EventName": ev.EventName,
+                        "EventStartDate": ev.EventStartDate.isoformat() if ev.EventStartDate else None,
+                    }
+        except Exception:
+            pass
+
+    animals = []
+    for r in rows:
+        a = _animal_dict(r, studs)
+        bid = getattr(r, 'BusinessID', None)
+        if bid and bid in events_by_biz:
+            a["upcoming_event"] = events_by_biz[bid]
+        animals.append(a)
 
     return {
         "total":       total,
@@ -1481,7 +1529,7 @@ def _livestock_listing(
         "per_page":    PER_PAGE,
         "total_pages": max(1, -(-total // PER_PAGE)),
         "label":       slug.replace('-', ' ').title(),
-        "animals":     [_animal_dict(r, studs) for r in rows],
+        "animals":     animals,
     }
 
 

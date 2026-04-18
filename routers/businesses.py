@@ -1,10 +1,39 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from database import get_db
 import models
 import datetime
 
 router = APIRouter(prefix="/api/businesses", tags=["businesses"])
+
+
+@router.get("/{business_id}/team")
+def get_business_team(business_id: int, db: Session = Depends(get_db)):
+    """
+    All People with active BusinessAccess for this business. Used by:
+      - event wizard attendees step (Import from my team)
+      - event mailing list admin (Import contacts)
+    """
+    rows = db.execute(text("""
+        SELECT p.PeopleID, p.PeopleFirstName, p.PeopleLastName, p.PeopleEmail,
+               p.PeoplePhone, ba.AccessLevel
+        FROM BusinessAccess ba
+        JOIN People p ON p.PeopleID = ba.PeopleID
+        WHERE ba.BusinessID = :bid AND ba.Active = 1
+        ORDER BY p.PeopleLastName, p.PeopleFirstName
+    """), {"bid": business_id}).mappings().all()
+    return [
+        {
+            "PeopleID":    r["PeopleID"],
+            "FirstName":   r["PeopleFirstName"],
+            "LastName":    r["PeopleLastName"],
+            "Email":       r["PeopleEmail"],
+            "Phone":       r["PeoplePhone"],
+            "AccessLevel": r["AccessLevel"],
+        }
+        for r in rows
+    ]
 
 
 def clean(val):
