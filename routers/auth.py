@@ -1160,6 +1160,8 @@ class LKMMemberAddRequest(BaseModel):
 
 class LKMMemberUpdateRequest(BaseModel):
     LKMAccessLevel: int = None
+    PeopleFirstName: str = None
+    PeopleLastName: str = None
 
 
 def _require_lkm_admin(current_user):
@@ -1229,10 +1231,16 @@ def update_lkm_member(people_id: int, payload: LKMMemberUpdateRequest, db: Sessi
         raise HTTPException(status_code=404, detail="Person not found.")
     if payload.LKMAccessLevel is not None:
         person.LKMAccessLevel = payload.LKMAccessLevel
+    if payload.PeopleFirstName is not None:
+        person.PeopleFirstName = payload.PeopleFirstName.strip()
+    if payload.PeopleLastName is not None:
+        person.PeopleLastName = payload.PeopleLastName.strip()
     db.commit()
     db.refresh(person)
     return {
         "PeopleID": person.PeopleID,
+        "PeopleFirstName": person.PeopleFirstName,
+        "PeopleLastName": person.PeopleLastName,
         "LKMAccessLevel": person.LKMAccessLevel or 0,
     }
 
