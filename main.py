@@ -119,6 +119,16 @@ async def _startup_migrations():
                 _db.commit()
         except Exception:
             pass
+        try:
+            with SessionLocal() as _db:
+                _db.execute(_t(
+                    "IF NOT EXISTS (SELECT 1 FROM sys.columns "
+                    "WHERE object_id = OBJECT_ID('BusinessWebsite') AND name = 'FooterJSON') "
+                    "ALTER TABLE BusinessWebsite ADD FooterJSON NVARCHAR(MAX) NULL"
+                ))
+                _db.commit()
+        except Exception:
+            pass
 
     asyncio.get_event_loop().run_in_executor(None, _run)
 

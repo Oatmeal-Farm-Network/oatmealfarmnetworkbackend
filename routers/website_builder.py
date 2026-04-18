@@ -112,6 +112,7 @@ class SiteCreate(BaseModel):
     og_image_url: Optional[str] = None
     seo_extras_json: Optional[str] = None
     menu_style_json: Optional[str] = None
+    footer_json: Optional[str] = None
     # Width controls
     header_bg_width: Optional[str] = '100%'
     header_content_width: Optional[str] = '100%'
@@ -380,6 +381,7 @@ def _ser_site(s: models.BusinessWebsite) -> dict:
         "og_image_url":    s.OgImageURL,
         "seo_extras_json": s.SeoExtrasJSON,
         "menu_style_json": s.MenuStyleJSON,
+        "footer_json":     getattr(s, 'FooterJSON', None),
         # Width controls
         "header_bg_width":      s.HeaderBgWidth or '100%',
         "header_content_width": s.HeaderContentWidth or '100%',
@@ -607,6 +609,7 @@ def update_site(website_id: int, body: SiteUpdate, db: Session = Depends(get_db)
     if body.og_image_url is not None: site.OgImageURL = body.og_image_url
     if body.seo_extras_json is not None: site.SeoExtrasJSON = body.seo_extras_json
     if body.menu_style_json is not None: site.MenuStyleJSON = body.menu_style_json
+    if body.footer_json is not None: site.FooterJSON = body.footer_json
     # Width controls
     if body.header_bg_width is not None: site.HeaderBgWidth = body.header_bg_width
     if body.header_content_width is not None: site.HeaderContentWidth = body.header_content_width

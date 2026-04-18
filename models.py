@@ -565,6 +565,7 @@ class BusinessWebsite(Base):
     OgImageURL      = Column(String(1000))
     SeoExtrasJSON   = Column(Text)
     MenuStyleJSON   = Column(Text)
+    FooterJSON      = Column(Text)
     # Width controls
     HeaderContentWidth = Column(String(20), default='100%')
     FooterContentWidth = Column(String(20), default='100%')
