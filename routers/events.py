@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db
+from datetime import datetime, timedelta
 
 router = APIRouter()
 
@@ -92,6 +94,17 @@ with __import__('database').SessionLocal() as _db:
         ensure_tables(_db)
     except Exception as e:
         print(f"Events table setup error: {e}")
+
+
+# ── Event types lookup ────────────────────────────────────────────────────────
+@router.get("/api/events/types")
+def list_event_types(db: Session = Depends(get_db)):
+    rows = db.execute(text("""
+        SELECT EventTypeID, EventType, FullPrice, DiscountPrice, DiscountEndDate
+        FROM EventTypesLookup
+        ORDER BY EventType
+    """)).fetchall()
+    return [dict(r._mapping) for r in rows]
 
 
 # ── Public: list upcoming events ──────────────────────────────────────────────
@@ -424,3 +437,217 @@ def delete_registration(reg_id: int, db: Session = Depends(get_db)):
     db.execute(text("DELETE FROM OFNEventRegistrations WHERE RegID = :rid"), {"rid": reg_id})
     db.commit()
     return {"ok": True}
+
+
+# ── ICS calendar export ───────────────────────────────────────────────────────
+def _ics_escape(s):
+    if s is None: return ''
+    return str(s).replace('\\', '\\\\').replace(',', '\\,').replace(';', '\\;').replace('\n', '\\n')
+
+
+@router.get("/api/events/{event_id}/calendar.ics")
+def event_ics(event_id: int, db: Session = Depends(get_db)):
+    row = db.execute(text("""
+        SELECT e.EventID, e.EventName, e.EventDescription, e.EventType,
+               e.EventStartDate, e.EventEndDate,
+               e.EventLocationName, e.EventLocationStreet, e.EventLocationCity,
+               e.EventLocationState, e.EventLocationZip,
+               b.BusinessName
+          FROM OFNEvents e
+          LEFT JOIN Businesses b ON b.BusinessID = e.BusinessID
+         WHERE e.EventID = :e
+    """), {"e": event_id}).mappings().first()
+    if not row:
+        raise HTTPException(404, "Event not found")
+
+    start = row['EventStartDate'] or datetime.utcnow().date()
+    end = row['EventEndDate'] or start
+    if hasattr(end, 'toordinal'):
+        end_excl = end + timedelta(days=1)
+    else:
+        end_excl = end
+
+    def ics_date(d):
+        if hasattr(d, 'strftime'): return d.strftime('%Y%m%d')
+        return str(d).replace('-', '')[:8]
+
+    loc_parts = [row['EventLocationName'], row['EventLocationStreet'], row['EventLocationCity'],
+                 row['EventLocationState'], row['EventLocationZip']]
+    location = ', '.join([p for p in loc_parts if p])
+
+    uid = f"event-{event_id}@oatmealfarmnetwork.com"
+    dtstamp = datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')
+
+    lines = [
+        'BEGIN:VCALENDAR',
+        'VERSION:2.0',
+        'PRODID:-//Oatmeal Farm Network//Events//EN',
+        'CALSCALE:GREGORIAN',
+        'METHOD:PUBLISH',
+        'BEGIN:VEVENT',
+        f'UID:{uid}',
+        f'DTSTAMP:{dtstamp}',
+        f'DTSTART;VALUE=DATE:{ics_date(start)}',
+        f'DTEND;VALUE=DATE:{ics_date(end_excl)}',
+        f'SUMMARY:{_ics_escape(row["EventName"])}',
+        f'DESCRIPTION:{_ics_escape(row["EventDescription"] or "")}',
+        f'LOCATION:{_ics_escape(location)}',
+        f'ORGANIZER;CN={_ics_escape(row["BusinessName"] or "")}:MAILTO:noreply@oatmealfarmnetwork.com',
+        'END:VEVENT',
+        'END:VCALENDAR',
+    ]
+    body = '\r\n'.join(lines) + '\r\n'
+    return Response(
+        content=body,
+        media_type='text/calendar',
+        headers={'Content-Disposition': f'attachment; filename="event-{event_id}.ics"'},
+    )
+
+
+# ── Clone event ───────────────────────────────────────────────────────────────
+EVENT_CONFIG_TABLES = [
+    ("OFNEventSimpleConfig",      "EventID"),
+    ("OFNEventConferenceConfig",  "EventID"),
+    ("OFNEventCompetitionConfig", "EventID"),
+    ("OFNEventDiningConfig",      "EventID"),
+    ("OFNEventTourConfig",        "EventID"),
+    ("OFNEventAuctionConfig",     "EventID"),
+    ("OFNEventFiberArtsConfig",   "EventID"),
+    ("OFNEventHalterConfig",      "EventID"),
+    ("OFNEventVendorFairConfig",  "EventID"),
+]
+
+
+def _clone_config(db: Session, src_id: int, new_id: int, table: str):
+    try:
+        cols = db.execute(text("""
+            SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME = :t ORDER BY ORDINAL_POSITION
+        """), {"t": table}).fetchall()
+        col_names = [c[0] for c in cols if c[0].lower() not in ('configid', 'createddate', 'updateddate')]
+        if not col_names: return
+        col_list = ', '.join(col_names)
+        sel_list = ', '.join(['CAST(:new AS INT) AS EventID' if c == 'EventID' else c for c in col_names])
+        db.execute(text(f"""
+            INSERT INTO {table} ({col_list})
+            SELECT {sel_list} FROM {table} WHERE EventID = :src
+        """), {"new": new_id, "src": src_id})
+    except Exception:
+        db.rollback()
+
+
+@router.post("/api/events/{event_id}/clone")
+def clone_event(event_id: int, body: dict = None, db: Session = Depends(get_db)):
+    body = body or {}
+    src = db.execute(text("SELECT * FROM OFNEvents WHERE EventID=:e"),
+                     {"e": event_id}).mappings().first()
+    if not src:
+        raise HTTPException(404, "Event not found")
+    new_name = body.get('EventName') or f"{src['EventName']} (Copy)"
+    db.execute(text("""
+        INSERT INTO OFNEvents (BusinessID, PeopleID, EventName, EventDescription, EventType,
+            EventStartDate, EventEndDate, EventImage, EventLocationName, EventLocationStreet,
+            EventLocationCity, EventLocationState, EventLocationZip,
+            EventContactEmail, EventPhone, EventWebsite,
+            IsPublished, IsFree, RegistrationRequired, MaxAttendees)
+        VALUES (:bid, :pid, :name, :desc, :type,
+            :start, :end, :img, :locname, :street, :city, :state, :zip,
+            :email, :phone, :web, 0, :free, :reqreg, :max)
+    """), {
+        "bid": src['BusinessID'], "pid": src.get('PeopleID'),
+        "name": new_name, "desc": src.get('EventDescription'),
+        "type": src.get('EventType'),
+        "start": body.get('EventStartDate') or src.get('EventStartDate'),
+        "end":   body.get('EventEndDate')   or src.get('EventEndDate'),
+        "img": src.get('EventImage'),
+        "locname": src.get('EventLocationName'), "street": src.get('EventLocationStreet'),
+        "city": src.get('EventLocationCity'), "state": src.get('EventLocationState'),
+        "zip": src.get('EventLocationZip'),
+        "email": src.get('EventContactEmail'), "phone": src.get('EventPhone'),
+        "web": src.get('EventWebsite'),
+        "free": src.get('IsFree', 1), "reqreg": src.get('RegistrationRequired', 0),
+        "max": src.get('MaxAttendees'),
+    })
+    new_id = int(db.execute(text("SELECT SCOPE_IDENTITY() AS id")).fetchone()[0])
+    for table, _ in EVENT_CONFIG_TABLES:
+        _clone_config(db, event_id, new_id, table)
+    db.commit()
+    return {"EventID": new_id, "EventName": new_name}
+
+
+# ── Waitlist promotion ────────────────────────────────────────────────────────
+@router.post("/api/events/{event_id}/waitlist/promote")
+def promote_waitlist(event_id: int, body: dict = None, db: Session = Depends(get_db)):
+    body = body or {}
+    count = int(body.get('count') or 1)
+    reg_id = body.get('reg_id')
+
+    tables = [
+        ("OFNEventSimpleRegistrations", "RegID"),
+        ("OFNEventConferenceRegistrations", "RegID"),
+        ("OFNEventDiningRegistrations", "RegID"),
+        ("OFNEventTourRegistrations", "RegID"),
+    ]
+    promoted = 0
+    for table, id_col in tables:
+        try:
+            if reg_id:
+                res = db.execute(text(f"""
+                    UPDATE {table} SET Status='confirmed'
+                    WHERE {id_col} = :r AND EventID = :e AND Status = 'waitlist'
+                """), {"r": reg_id, "e": event_id})
+                promoted += res.rowcount or 0
+            else:
+                ids = db.execute(text(f"""
+                    SELECT TOP {count} {id_col} FROM {table}
+                    WHERE EventID = :e AND Status = 'waitlist'
+                    ORDER BY CreatedAt ASC
+                """), {"e": event_id}).fetchall()
+                for row in ids:
+                    db.execute(text(f"UPDATE {table} SET Status='confirmed' WHERE {id_col}=:r"),
+                               {"r": row[0]})
+                    promoted += 1
+        except Exception:
+            db.rollback()
+            continue
+    db.commit()
+    return {"promoted": promoted}
+
+
+# ── Cancel / refund registration ──────────────────────────────────────────────
+@router.post("/api/events/registrations/cancel")
+def cancel_registration(body: dict, db: Session = Depends(get_db)):
+    kind = body.get('kind')
+    reg_id = body.get('reg_id')
+    refund = body.get('refund', False)
+    if not kind or not reg_id:
+        raise HTTPException(400, "kind and reg_id required")
+
+    table_map = {
+        'Simple': ("OFNEventSimpleRegistrations", "RegID"),
+        'Conference': ("OFNEventConferenceRegistrations", "RegID"),
+        'Competition': ("OFNEventCompetitionEntries", "EntryID"),
+        'Dining': ("OFNEventDiningRegistrations", "RegID"),
+        'Tour': ("OFNEventTourRegistrations", "RegID"),
+        'Event': ("OFNEventRegistrations", "RegID"),
+    }
+    if kind not in table_map:
+        raise HTTPException(400, "Unknown kind")
+    table, id_col = table_map[kind]
+
+    try:
+        paid_exists = db.execute(text("""
+            SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME=:t AND COLUMN_NAME='PaidStatus'
+        """), {"t": table}).fetchone()
+        if refund and paid_exists:
+            db.execute(text(f"UPDATE {table} SET Status='cancelled', PaidStatus='refunded' WHERE {id_col}=:r"),
+                       {"r": reg_id})
+        else:
+            db.execute(text(f"UPDATE {table} SET Status='cancelled' WHERE {id_col}=:r"),
+                       {"r": reg_id})
+        db.commit()
+        return {"ok": True, "refunded": bool(refund)}
+    except Exception as ex:
+        db.rollback()
+        raise HTTPException(500, f"Cancel failed: {ex}")

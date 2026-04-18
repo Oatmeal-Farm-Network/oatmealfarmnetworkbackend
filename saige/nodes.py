@@ -8,6 +8,78 @@ from models import FarmState, AssessmentDecision, QueryClassification, QueryType
 from llm import llm
 from rag import rag_livestock, rag_plant, rag_bakasura, rag_news
 from weather import weather_service, get_weather_tool, weather_tools
+try:
+    from companion_planting import companion_tools, companion_planting_tool, check_companion_pair_tool
+    COMPANION_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] companion_planting unavailable: {_e}")
+    companion_tools = []
+    companion_planting_tool = None
+    check_companion_pair_tool = None
+    COMPANION_AVAILABLE = False
+
+try:
+    from crop_names import crop_name_tools, crop_name_tool
+    CROP_NAMES_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] crop_names unavailable: {_e}")
+    crop_name_tools = []
+    crop_name_tool = None
+    CROP_NAMES_AVAILABLE = False
+
+try:
+    from weather_mitigation import weather_mitigation_tools, weather_mitigation_tool
+    WEATHER_MITIGATION_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] weather_mitigation unavailable: {_e}")
+    weather_mitigation_tools = []
+    weather_mitigation_tool = None
+    WEATHER_MITIGATION_AVAILABLE = False
+
+try:
+    from region_crops import region_crops_tools, region_crops_tool
+    REGION_CROPS_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] region_crops unavailable: {_e}")
+    region_crops_tools = []
+    region_crops_tool = None
+    REGION_CROPS_AVAILABLE = False
+
+try:
+    from soil_challenges import soil_challenge_tools, soil_challenge_tool
+    SOIL_CHALLENGE_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] soil_challenges unavailable: {_e}")
+    soil_challenge_tools = []
+    soil_challenge_tool = None
+    SOIL_CHALLENGE_AVAILABLE = False
+
+try:
+    from price_forecast import price_forecast_tools, price_forecast_tool
+    PRICE_FORECAST_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] price_forecast unavailable: {_e}")
+    price_forecast_tools = []
+    price_forecast_tool = None
+    PRICE_FORECAST_AVAILABLE = False
+
+try:
+    from subsidies import subsidies_tools, subsidies_tool
+    SUBSIDIES_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] subsidies unavailable: {_e}")
+    subsidies_tools = []
+    subsidies_tool = None
+    SUBSIDIES_AVAILABLE = False
+
+try:
+    from insurance import insurance_tools, insurance_tool
+    INSURANCE_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] insurance unavailable: {_e}")
+    insurance_tools = []
+    insurance_tool = None
+    INSURANCE_AVAILABLE = False
 
 VALID_ADVISORY_TYPES = {"weather", "livestock", "crops", "mixed"}
 ADVISORY_TYPE_ALIASES = {
@@ -587,6 +659,20 @@ Recent conversation turns:
 You have access to a weather tool. Use it if weather conditions are critical for the advice
 (e.g., sowing time, heat stress in animals, pest humidity thresholds).
 
+You also have companion-planting tools: companion_planting_tool(crop) returns friends/foes for
+one crop; check_companion_pair_tool(crop_a, crop_b) tells you if two crops get along. Use them
+whenever the user asks about planting layouts, polycultures, Three Sisters, "can I plant X with Y",
+bed planning, or rotation companions.
+
+Additional tools available:
+- crop_name_tool(name): translate a crop name across languages/regions (e.g., 'brinjal', 'melongene', 'courgette', 'Solanum lycopersicum'). Use when a farmer uses an unfamiliar crop name.
+- weather_mitigation_tool(hazard, phase): concrete step-by-step plan for weather extremes (frost/drought/heat/flood/hail/wind/wildfire_smoke/cold_snap) at a given phase (planning/imminent/active/recovery). Use for "what do I do about [weather event]".
+- region_crops_tool(climate, zone, lat, lon): what to grow in a region. Pass ONE of climate (tropical/subtropical/temperate/continental/mediterranean/arid/highland/boreal), USDA zone number, or lat/lon. Use for "what should I grow here".
+- soil_challenge_tool(ph, organic_matter_pct, nitrogen_ppm, phosphorus_ppm, potassium_ppm, cec_meq, salinity_dsm, moisture_pct, bulk_density_gcc, sodium_pct_cec, crop): analyze a soil test and recommend remediation. Use when the user shares soil numbers or asks "what's wrong with my soil".
+- price_forecast_tool(commodity, months_ahead): short-horizon US commodity price forecast (corn/soy/wheat/cotton/rice/cattle/hog/milk/egg/hay/etc.). Use for marketing, selling-timing, or revenue planning questions.
+- subsidies_tool(category, keyword): US federal farm subsidy / cost-share / grant / loan programs (EQIP, CSP, CRP, ARC/PLC, WFRP, BFRDP, VAPG, REAP, SARE). Use when user asks about government funding or assistance.
+- insurance_tool(crop): US federal crop-insurance products (RP/YP/APH/WFRP/MP/PRF/LRP/LGM/DRP/NAP) for a specific crop or livestock class. Use when user asks about insurance or risk management.
+
 Prioritize the latest user message and any newly provided measurements over older generic context.
 If soil-test values are present, reference them explicitly and avoid repeating unchanged advice.
 
@@ -598,25 +684,72 @@ Use simple, conversational language. NO markdown formatting, NO asterisks, NO he
 Write like you're talking to a friend."""
 
     # 4. Bind Tools
-    llm_with_tools = llm.bind_tools(weather_tools) if WEATHER_AVAILABLE else llm
+    bound_tools = []
+    if WEATHER_AVAILABLE:
+        bound_tools.extend(weather_tools)
+    if COMPANION_AVAILABLE:
+        bound_tools.extend(companion_tools)
+    if CROP_NAMES_AVAILABLE:
+        bound_tools.extend(crop_name_tools)
+    if WEATHER_MITIGATION_AVAILABLE:
+        bound_tools.extend(weather_mitigation_tools)
+    if REGION_CROPS_AVAILABLE:
+        bound_tools.extend(region_crops_tools)
+    if SOIL_CHALLENGE_AVAILABLE:
+        bound_tools.extend(soil_challenge_tools)
+    if PRICE_FORECAST_AVAILABLE:
+        bound_tools.extend(price_forecast_tools)
+    if SUBSIDIES_AVAILABLE:
+        bound_tools.extend(subsidies_tools)
+    if INSURANCE_AVAILABLE:
+        bound_tools.extend(insurance_tools)
+    llm_with_tools = llm.bind_tools(bound_tools) if bound_tools else llm
 
     # 5. Tool Execution Loop (ReAct Pattern)
     weather_data = None
     weather_context = ""
+    companion_context = ""
+    crop_name_context = ""
+    mitigation_context = ""
+    region_context = ""
+    soil_context = ""
+    price_context = ""
+    subsidies_context = ""
+    insurance_context = ""
     max_iterations = 3
     final_response = ""
 
     try:
         for iteration in range(max_iterations):
-            current_input = full_prompt + (f"\n\n[Weather Update]: {weather_context}" if weather_context else "")
+            current_input = full_prompt
+            if weather_context:
+                current_input += f"\n\n[Weather Update]: {weather_context}"
+            if companion_context:
+                current_input += f"\n\n[Companion Planting Data]: {companion_context}"
+            if crop_name_context:
+                current_input += f"\n\n[Crop Name Translation]: {crop_name_context}"
+            if mitigation_context:
+                current_input += f"\n\n[Weather Mitigation Plan]: {mitigation_context}"
+            if region_context:
+                current_input += f"\n\n[Region-Specific Crops]: {region_context}"
+            if soil_context:
+                current_input += f"\n\n[Soil Assessment]: {soil_context}"
+            if price_context:
+                current_input += f"\n\n[Price Forecast]: {price_context}"
+            if subsidies_context:
+                current_input += f"\n\n[Subsidies / Grants]: {subsidies_context}"
+            if insurance_context:
+                current_input += f"\n\n[Crop Insurance]: {insurance_context}"
             response = llm_with_tools.invoke(current_input)
 
             # Check for tool calls
             if hasattr(response, 'tool_calls') and response.tool_calls and iteration < max_iterations - 1:
                 print(f"[Advisory Agent] Tool call detected: {len(response.tool_calls)}")
                 for tool_call in response.tool_calls:
-                    if tool_call.get('name') == 'get_weather_tool':
-                        loc = tool_call.get('args', {}).get('location', location)
+                    tc_name = tool_call.get('name')
+                    tc_args = tool_call.get('args', {}) or {}
+                    if tc_name == 'get_weather_tool':
+                        loc = tc_args.get('location', location)
                         print(f"[Advisory Agent] Executing Weather Tool for: {loc}")
 
                         tool_result = get_weather_tool.invoke({"location": loc})
@@ -626,6 +759,67 @@ Write like you're talking to a friend."""
                             weather_data = weather_service.get_weather(loc)
                         except:
                             pass
+                    elif tc_name == 'companion_planting_tool' and COMPANION_AVAILABLE:
+                        crop = tc_args.get('crop', '')
+                        print(f"[Advisory Agent] Executing Companion Planting Tool for: {crop}")
+                        tool_result = companion_planting_tool.invoke({"crop": crop})
+                        companion_context = (companion_context + "\n\n" if companion_context else "") + tool_result
+                    elif tc_name == 'check_companion_pair_tool' and COMPANION_AVAILABLE:
+                        a = tc_args.get('crop_a', '')
+                        b = tc_args.get('crop_b', '')
+                        print(f"[Advisory Agent] Executing Companion Pair Check: {a} + {b}")
+                        tool_result = check_companion_pair_tool.invoke({"crop_a": a, "crop_b": b})
+                        companion_context = (companion_context + "\n\n" if companion_context else "") + tool_result
+                    elif tc_name == 'crop_name_tool' and CROP_NAMES_AVAILABLE:
+                        name = tc_args.get('name', '')
+                        print(f"[Advisory Agent] Executing Crop Name Tool for: {name}")
+                        tool_result = crop_name_tool.invoke({"name": name})
+                        crop_name_context = (crop_name_context + "\n\n" if crop_name_context else "") + tool_result
+                    elif tc_name == 'weather_mitigation_tool' and WEATHER_MITIGATION_AVAILABLE:
+                        hazard = tc_args.get('hazard', '')
+                        phase = tc_args.get('phase', 'imminent')
+                        print(f"[Advisory Agent] Executing Weather Mitigation Tool: {hazard}/{phase}")
+                        tool_result = weather_mitigation_tool.invoke({"hazard": hazard, "phase": phase})
+                        mitigation_context = (mitigation_context + "\n\n" if mitigation_context else "") + tool_result
+                    elif tc_name == 'region_crops_tool' and REGION_CROPS_AVAILABLE:
+                        args = {
+                            "climate": tc_args.get('climate', ''),
+                            "zone": tc_args.get('zone', ''),
+                            "lat": float(tc_args.get('lat', 0) or 0),
+                            "lon": float(tc_args.get('lon', 0) or 0),
+                        }
+                        print(f"[Advisory Agent] Executing Region Crops Tool: {args}")
+                        tool_result = region_crops_tool.invoke(args)
+                        region_context = (region_context + "\n\n" if region_context else "") + tool_result
+                    elif tc_name == 'soil_challenge_tool' and SOIL_CHALLENGE_AVAILABLE:
+                        soil_args = {k: tc_args.get(k, -1.0) for k in [
+                            "ph", "organic_matter_pct", "nitrogen_ppm", "phosphorus_ppm",
+                            "potassium_ppm", "cec_meq", "salinity_dsm", "moisture_pct",
+                            "bulk_density_gcc", "sodium_pct_cec"
+                        ]}
+                        soil_args["crop"] = tc_args.get("crop", "")
+                        print(f"[Advisory Agent] Executing Soil Challenge Tool: {soil_args}")
+                        tool_result = soil_challenge_tool.invoke(soil_args)
+                        soil_context = (soil_context + "\n\n" if soil_context else "") + tool_result
+                    elif tc_name == 'price_forecast_tool' and PRICE_FORECAST_AVAILABLE:
+                        commodity = tc_args.get('commodity', '')
+                        months_ahead = int(tc_args.get('months_ahead', 6) or 6)
+                        print(f"[Advisory Agent] Executing Price Forecast Tool: {commodity}/{months_ahead}mo")
+                        tool_result = price_forecast_tool.invoke({"commodity": commodity, "months_ahead": months_ahead})
+                        price_context = (price_context + "\n\n" if price_context else "") + tool_result
+                    elif tc_name == 'subsidies_tool' and SUBSIDIES_AVAILABLE:
+                        args = {
+                            "category": tc_args.get('category', ''),
+                            "keyword": tc_args.get('keyword', ''),
+                        }
+                        print(f"[Advisory Agent] Executing Subsidies Tool: {args}")
+                        tool_result = subsidies_tool.invoke(args)
+                        subsidies_context = (subsidies_context + "\n\n" if subsidies_context else "") + tool_result
+                    elif tc_name == 'insurance_tool' and INSURANCE_AVAILABLE:
+                        crop = tc_args.get('crop', '')
+                        print(f"[Advisory Agent] Executing Insurance Tool: {crop}")
+                        tool_result = insurance_tool.invoke({"crop": crop})
+                        insurance_context = (insurance_context + "\n\n" if insurance_context else "") + tool_result
                 continue  # Loop back to LLM with new context
 
             # No tool calls - we have our answer
