@@ -249,39 +249,138 @@ def delete_class(class_id: int, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
-@router.post("/api/events/{event_id}/halter/classes/bulk-seed")
-def bulk_seed_classes(event_id: int, body: dict, db: Session = Depends(get_db)):
-    """Seed a standard alpaca halter class set for a breed."""
-    breed = body.get("Breed") or "Huacaya"
-    template = body.get("Template") or "alpaca-standard"
-    if template != "alpaca-standard":
-        raise HTTPException(400, "unknown template")
-    existing = db.execute(text("""
-        SELECT COUNT(*) FROM OFNEventHalterClasses WHERE EventID=:eid AND Breed=:b AND IsActive=1
-    """), {"eid": event_id, "b": breed}).fetchone()[0]
-    if existing:
-        raise HTTPException(400, f"{breed} classes already exist for this event")
+def _seed_alpaca(breed: str):
+    """Return (class_rows) for the 17×4×2 alpaca halter standard."""
     colors = ["White", "Beige", "Light Fawn", "Medium Fawn", "Dark Fawn",
               "Light Brown", "Medium Brown", "Dark Brown", "Bay Black", "True Black",
               "Light Silver Grey", "Medium Silver Grey", "Dark Silver Grey",
               "Light Rose Grey", "Medium Rose Grey", "Dark Rose Grey", "Multi"]
     ages = [("Juvenile", "6-12 months"), ("Yearling", "12-24 months"),
             ("Two Year Old", "24-36 months"), ("Adult", "36+ months")]
-    order = 0
+    rows, order = [], 0
     for color in colors:
         for age_name, age_desc in ages:
             for gender in ("Female", "Male"):
                 order += 1
-                name = f"{color} {age_name} {gender}"
-                code = f"{breed[:1]}-{color[:2].upper()}-{age_name[:1]}{gender[:1]}"
-                db.execute(text("""
-                    INSERT INTO OFNEventHalterClasses
-                      (EventID, ClassName, ClassCode, Breed, Gender, AgeGroup, ClassType, DisplayOrder)
-                    VALUES (:eid, :n, :c, :b, :g, :a, 'Halter', :o)
-                """), {"eid": event_id, "n": name, "c": code, "b": breed,
-                       "g": gender, "a": age_desc, "o": order})
+                rows.append({
+                    "name": f"{color} {age_name} {gender}",
+                    "code": f"{breed[:1]}-{color[:2].upper()}-{age_name[:1]}{gender[:1]}",
+                    "breed": breed, "gender": gender, "age": age_desc,
+                    "class_type": "Halter", "order": order,
+                })
+    return rows
+
+
+def _seed_horse(breed: str):
+    """Standard horse class set: halter-by-age + common performance disciplines."""
+    halter_age_gender = [
+        ("Weanling", "0-1 yr"),
+        ("Yearling", "1-2 yr"),
+        ("Two Year Old", "2-3 yr"),
+        ("Three Year Old", "3-4 yr"),
+        ("Aged", "4+ yr"),
+    ]
+    rows, order = [], 0
+    for age_name, age_desc in halter_age_gender:
+        for gender in ("Mare", "Stallion", "Gelding"):
+            order += 1
+            rows.append({
+                "name": f"{age_name} {gender}",
+                "code": f"H-{age_name[:2].upper()}-{gender[:1]}",
+                "breed": breed, "gender": gender, "age": age_desc,
+                "class_type": "Halter", "order": order,
+            })
+    disciplines = [
+        ("Western Pleasure", "Western Pleasure"),
+        ("Reining", "Reining"),
+        ("Trail", "Trail"),
+        ("Dressage", "Dressage"),
+        ("Show Jumping", "Show Jumping"),
+        ("Hunters", "Hunters"),
+        ("Barrel Racing", "Barrel Racing"),
+        ("Pole Bending", "Pole Bending"),
+        ("Showmanship", "Showmanship"),
+        ("Horsemanship", "Horsemanship"),
+    ]
+    for name, ctype in disciplines:
+        order += 1
+        rows.append({
+            "name": name, "code": f"D-{name[:3].upper()}",
+            "breed": breed, "gender": "Open", "age": "",
+            "class_type": ctype, "order": order,
+        })
+    return rows
+
+
+def _seed_by_age_gender(breed: str, age_genders):
+    """Generic 'Halter by age/gender' seeder for sheep, goats, etc."""
+    rows, order = [], 0
+    for age_name, age_desc, genders in age_genders:
+        for gender in genders:
+            order += 1
+            rows.append({
+                "name": f"{age_name} {gender}",
+                "code": f"{breed[:1]}-{age_name[:2].upper()}-{gender[:1]}",
+                "breed": breed, "gender": gender, "age": age_desc,
+                "class_type": "Halter", "order": order,
+            })
+    return rows
+
+
+def _seed_sheep(breed: str):
+    return _seed_by_age_gender(breed, [
+        ("Ram Lamb",     "under 1 yr",  ["Ram"]),
+        ("Yearling Ram", "1-2 yr",      ["Ram"]),
+        ("Aged Ram",     "2+ yr",       ["Ram"]),
+        ("Ewe Lamb",     "under 1 yr",  ["Ewe"]),
+        ("Yearling Ewe", "1-2 yr",      ["Ewe"]),
+        ("Aged Ewe",     "2+ yr",       ["Ewe"]),
+    ])
+
+
+def _seed_goat(breed: str):
+    return _seed_by_age_gender(breed, [
+        ("Buck Kid",      "under 1 yr", ["Buck"]),
+        ("Yearling Buck", "1-2 yr",     ["Buck"]),
+        ("Aged Buck",     "2+ yr",      ["Buck"]),
+        ("Doe Kid",       "under 1 yr", ["Doe"]),
+        ("Yearling Doe",  "1-2 yr",     ["Doe"]),
+        ("Aged Doe",      "2+ yr",      ["Doe"]),
+        ("Wether",        "any age",    ["Wether"]),
+    ])
+
+
+_TEMPLATE_BUILDERS = {
+    "alpaca-standard": _seed_alpaca,
+    "horse-standard":  _seed_horse,
+    "sheep-standard":  _seed_sheep,
+    "goat-standard":   _seed_goat,
+}
+
+
+@router.post("/api/events/{event_id}/halter/classes/bulk-seed")
+def bulk_seed_classes(event_id: int, body: dict, db: Session = Depends(get_db)):
+    """Seed a standard halter class set for a breed. Supports multiple templates."""
+    breed = body.get("Breed") or "Huacaya"
+    template = body.get("Template") or "alpaca-standard"
+    builder = _TEMPLATE_BUILDERS.get(template)
+    if not builder:
+        raise HTTPException(400, f"unknown template: {template}")
+    existing = db.execute(text("""
+        SELECT COUNT(*) FROM OFNEventHalterClasses WHERE EventID=:eid AND Breed=:b AND IsActive=1
+    """), {"eid": event_id, "b": breed}).fetchone()[0]
+    if existing:
+        raise HTTPException(400, f"{breed} classes already exist for this event")
+    rows = builder(breed)
+    for r in rows:
+        db.execute(text("""
+            INSERT INTO OFNEventHalterClasses
+              (EventID, ClassName, ClassCode, Breed, Gender, AgeGroup, ClassType, DisplayOrder)
+            VALUES (:eid, :n, :c, :b, :g, :a, :t, :o)
+        """), {"eid": event_id, "n": r["name"], "c": r["code"], "b": r["breed"],
+               "g": r["gender"], "a": r["age"], "t": r["class_type"], "o": r["order"]})
     db.commit()
-    return {"ok": True, "count": order}
+    return {"ok": True, "count": len(rows)}
 
 
 # ---------- REGISTRATIONS ----------
@@ -418,18 +517,93 @@ def class_entries(event_id: int, class_id: int, db: Session = Depends(get_db)):
 
 @router.put("/api/events/halter/entries/{entry_id}/judge")
 def judge_entry(entry_id: int, body: dict, db: Session = Depends(get_db)):
+    placement = body.get("Placement")
+    notes = body.get("JudgeNotes")
     db.execute(text("""
         UPDATE OFNEventHalterClassEntries SET
           Placement=:p, JudgeNotes=:n, ScoresheetJSON=:s
         WHERE EntryID=:eid
     """), {
         "eid": entry_id,
-        "p": body.get("Placement"),
-        "n": body.get("JudgeNotes"),
+        "p": placement,
+        "n": notes,
         "s": body.get("ScoresheetJSON"),
     })
+    _sync_award_from_entry(db, entry_id)
     db.commit()
     return {"ok": True}
+
+
+def _sync_award_from_entry(db: Session, entry_id: int) -> None:
+    """
+    Mirror a halter entry's Placement into the legacy `awards` table so it
+    shows up on LivestockAnimalDetail's "Awards & Shows" block and on the
+    marketplace sale card. Idempotent: matches on (AnimalID, EventID, ClassID)
+    via the AwardsComments marker and updates in place.
+    """
+    row = db.execute(text("""
+        SELECT e.EntryID, e.ClassID, e.Placement, e.JudgeNotes,
+               r.AnimalID, r.EventID,
+               c.ClassName, c.ClassCode,
+               ev.EventName, ev.StartDate
+        FROM OFNEventHalterClassEntries e
+        JOIN OFNEventHalterRegistrations r ON r.RegID = e.RegID
+        LEFT JOIN OFNEventHalterClasses c ON c.ClassID = e.ClassID
+        LEFT JOIN OFNEvents ev ON ev.EventID = r.EventID
+        WHERE e.EntryID = :eid
+    """), {"eid": entry_id}).fetchone()
+    if not row:
+        return
+    r = dict(row._mapping)
+    if not r.get("AnimalID"):
+        return
+    marker = f"[ofn-halter:{r['EventID']}:{r['ClassID']}:{entry_id}]"
+    placing = r.get("Placement")
+    # If placement was cleared, remove any matching award row (keeps awards tidy)
+    if placing in (None, "", 0):
+        db.execute(text("""
+            DELETE FROM awards
+            WHERE AnimalID=:aid AND Awardcomments LIKE :marker
+        """), {"aid": r["AnimalID"], "marker": f"%{marker}%"})
+        return
+    year = None
+    if r.get("StartDate"):
+        try:
+            year = r["StartDate"].year
+        except Exception:
+            try:
+                year = int(str(r["StartDate"])[:4])
+            except Exception:
+                year = None
+    show_name = r.get("EventName") or ""
+    class_label = " — ".join(filter(None, [r.get("ClassCode"), r.get("ClassName")]))
+    comment_body = r.get("JudgeNotes") or ""
+    comments = f"{comment_body}\n{marker}".strip()
+    existing = db.execute(text("""
+        SELECT AwardsID FROM awards
+        WHERE AnimalID=:aid AND Awardcomments LIKE :marker
+    """), {"aid": r["AnimalID"], "marker": f"%{marker}%"}).fetchone()
+    params = {
+        "aid": r["AnimalID"],
+        "year": year,
+        "show": show_name,
+        "aclass": class_label,
+        "placing": str(placing),
+        "comments": comments,
+    }
+    if existing:
+        params["awid"] = existing[0]
+        db.execute(text("""
+            UPDATE awards SET
+              AwardYear=:year, ShowName=:show, Type=:aclass,
+              Placing=:placing, Awardcomments=:comments
+            WHERE AwardsID=:awid
+        """), params)
+    else:
+        db.execute(text("""
+            INSERT INTO awards (AnimalID, AwardYear, ShowName, Type, Placing, Awardcomments)
+            VALUES (:aid, :year, :show, :aclass, :placing, :comments)
+        """), params)
 
 
 # ---------- PENS ----------

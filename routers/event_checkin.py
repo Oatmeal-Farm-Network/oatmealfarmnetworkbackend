@@ -13,13 +13,18 @@ from database import get_db
 
 router = APIRouter()
 
-# Each tuple: (kind, table, id_col, name_col, email_col, extra_cols_select, has_checkedin)
+# Each tuple: (kind, table, id_col, name_col, email_col, extra_cols_select, has_checkedin, join_people)
+# When join_people=True, email_col is ignored and the query LEFT JOINs People (by PeopleID)
+# to search by person name/email; name_col still points at the entry's own title/name column.
 SEARCH_SOURCES = [
-    ('Simple',     'OFNEventSimpleRegistrations',      'RegID',   'GuestName',          'GuestEmail',          'PartySize, Status, PaidStatus', True),
-    ('Conference', 'OFNEventConferenceRegistrations',  'RegID',   'GuestName',          'GuestEmail',          'BadgeCode, Status, PaidStatus', True),
-    ('Competition','OFNEventCompetitionEntries',       'EntryID', 'EntrantName',        'EntrantEmail',        'EntryNumber, EntryTitle', True),
-    ('Dining',     'OFNEventDiningRegistrations',      'RegID',   'GuestName',          'GuestEmail',          'PartySize, Status, PaidStatus', False),
-    ('Tour',       'OFNEventTourRegistrations',        'RegID',   'GuestName',          'GuestEmail',          'SlotID, PartySize, Status, PaidStatus', True),
+    ('Simple',     'OFNEventSimpleRegistrations',      'RegID',   'GuestName',          'GuestEmail',          'PartySize, Status, PaidStatus', True, False),
+    ('Conference', 'OFNEventConferenceRegistrations',  'RegID',   'GuestName',          'GuestEmail',          'BadgeCode, Status, PaidStatus', True, False),
+    ('Competition','OFNEventCompetitionEntries',       'EntryID', 'EntrantName',        'EntrantEmail',        'EntryNumber, EntryTitle', True, False),
+    ('Dining',     'OFNEventDiningRegistrations',      'RegID',   'GuestName',          'GuestEmail',          'PartySize, Status, PaidStatus', False, False),
+    ('Tour',       'OFNEventTourRegistrations',        'RegID',   'GuestName',          'GuestEmail',          'SlotID, PartySize, Status, PaidStatus', True, False),
+    ('Fiber Arts', 'OFNEventFiberArtsEntries',         'EntryID', 'EntryTitle',         None,                  'FiberType, Placement, PaidStatus', False, True),
+    ('Fleece',     'OFNEventFleeceEntries',            'EntryID', 'FleeceName',         None,                  'Breed, Color, Placement, PaidStatus', False, True),
+    ('Spin-Off',   'OFNEventSpinOffEntries',           'EntryID', 'EntryTitle',         None,                  'SpinnerName, FiberType, Placement, PaidStatus', False, True),
 ]
 
 
@@ -38,21 +43,37 @@ def _col_exists(db: Session, table: str, col: str) -> bool:
 def search(event_id: int, q: str = '', db: Session = Depends(get_db)):
     term = f"%{(q or '').strip()}%"
     results = []
-    for kind, table, id_col, name_col, email_col, extra, has_chk in SEARCH_SOURCES:
+    for kind, table, id_col, name_col, email_col, extra, has_chk, join_people in SEARCH_SOURCES:
         try:
             if not _col_exists(db, table, name_col):
                 continue
             chk_select = "CheckedIn" if has_chk else "CAST(0 AS BIT) AS CheckedIn"
-            sql = f"""
-                SELECT TOP 20
-                  {id_col} AS RegID, {name_col} AS Name, {email_col} AS Email,
-                  {extra}, {chk_select}
-                FROM {table}
-                WHERE EventID = :e AND (
-                    {name_col} LIKE :q OR {email_col} LIKE :q OR CAST({id_col} AS NVARCHAR(50)) = :exact
-                )
-                ORDER BY {id_col} DESC
-            """
+            if join_people:
+                person_name = "ISNULL(p.PeopleFirstName,'') + ' ' + ISNULL(p.PeopleLastName,'')"
+                sql = f"""
+                    SELECT TOP 20
+                      t.{id_col} AS RegID, t.{name_col} AS Name, p.Peopleemail AS Email,
+                      {extra}, {chk_select}
+                    FROM {table} t
+                    LEFT JOIN People p ON p.PeopleID = t.PeopleID
+                    WHERE t.EventID = :e AND (
+                        t.{name_col} LIKE :q OR p.Peopleemail LIKE :q
+                        OR {person_name} LIKE :q
+                        OR CAST(t.{id_col} AS NVARCHAR(50)) = :exact
+                    )
+                    ORDER BY t.{id_col} DESC
+                """
+            else:
+                sql = f"""
+                    SELECT TOP 20
+                      {id_col} AS RegID, {name_col} AS Name, {email_col} AS Email,
+                      {extra}, {chk_select}
+                    FROM {table}
+                    WHERE EventID = :e AND (
+                        {name_col} LIKE :q OR {email_col} LIKE :q OR CAST({id_col} AS NVARCHAR(50)) = :exact
+                    )
+                    ORDER BY {id_col} DESC
+                """
             rows = db.execute(text(sql), {"e": event_id, "q": term, "exact": (q or '').strip()}).mappings().all()
             for r in rows:
                 d = dict(r)
@@ -70,6 +91,9 @@ CHECKIN_MAP = {
     'Competition': ("OFNEventCompetitionEntries", "EntryID"),
     'Tour': ("OFNEventTourRegistrations", "RegID"),
     'Dining': ("OFNEventDiningRegistrations", "RegID"),
+    'Fiber Arts': ("OFNEventFiberArtsEntries", "EntryID"),
+    'Fleece': ("OFNEventFleeceEntries", "EntryID"),
+    'Spin-Off': ("OFNEventSpinOffEntries", "EntryID"),
 }
 
 

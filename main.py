@@ -28,6 +28,8 @@ from routers import website_ai
 from routers import sfproducts
 from routers import events
 from routers import event_fiber_arts
+from routers import event_fleece
+from routers import event_spinoff
 from routers import event_halter
 from routers import event_auction
 from routers import event_vendor_fair
@@ -45,6 +47,15 @@ from routers import company_features
 from routers import blog
 from routers import accounting
 from routers import animals
+from routers import platform_settings
+from routers import event_registration_cart
+from routers import event_meals
+from routers import event_exports
+from routers import event_mailing_list
+from routers import event_promo_codes
+from routers import event_waitlist
+from routers import event_testimonials
+from routers import stripe_payments
 
 from routers.marketplace import marketplace_router
 from marketplace_stripe import stripe_router
@@ -195,6 +206,8 @@ app.include_router(sfproducts.router)
 app.include_router(event_features.router)
 app.include_router(events.router)
 app.include_router(event_fiber_arts.router)
+app.include_router(event_fleece.router)
+app.include_router(event_spinoff.router)
 app.include_router(event_halter.router)
 app.include_router(event_auction.router)
 app.include_router(event_vendor_fair.router)
@@ -211,6 +224,15 @@ app.include_router(company_features.router)
 app.include_router(blog.router)
 app.include_router(accounting.router)
 app.include_router(animals.router)
+app.include_router(platform_settings.router)
+app.include_router(event_registration_cart.router)
+app.include_router(event_meals.router)
+app.include_router(event_exports.router)
+app.include_router(event_mailing_list.router)
+app.include_router(event_promo_codes.router)
+app.include_router(event_waitlist.router)
+app.include_router(event_testimonials.router)
+app.include_router(stripe_payments.router)
 
 
 # ── Public testimonials endpoint (used by website blocks) ─────────

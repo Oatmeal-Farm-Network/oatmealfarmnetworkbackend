@@ -76,14 +76,13 @@ def get_species_letters(slug: str, db: Session = Depends(get_db)):
         if not species_id:
             raise HTTPException(status_code=404, detail="Species not found")
 
-        expected_plural = SLUG_TO_LABEL.get(slug)
         info_row = db.execute(
             text("SELECT SingularTerm, PluralTerm, SpeciesText1, SpeciesImage1 FROM SpeciesAvailable WHERE SpeciesID = :sid"),
             {"sid": species_id}
         ).fetchone()
 
         species_info = None
-        if info_row and (not expected_plural or (info_row.PluralTerm or "").strip().lower() == expected_plural.lower()):
+        if info_row:
             species_info = {
                 "singular": info_row.SingularTerm,
                 "plural": info_row.PluralTerm,
@@ -130,6 +129,8 @@ ORDER BY FirstLetter
 @router.get("/species/{slug}")
 def get_species(slug: str, letter: str = None, db: Session = Depends(get_db)):
     """Returns breeds for a species, optionally filtered by first letter."""
+    if letter and letter.lower() == "all":
+        letter = None
     cache_key = f'species_{slug}_{letter or "all"}'
     cached = cache_get(cache_key)
     if cached:
@@ -139,14 +140,13 @@ def get_species(slug: str, letter: str = None, db: Session = Depends(get_db)):
         if not species_id:
             raise HTTPException(status_code=404, detail="Species not found")
 
-        expected_plural = SLUG_TO_LABEL.get(slug)
         info_row = db.execute(
             text("SELECT SingularTerm, PluralTerm, SpeciesText1, SpeciesImage1 FROM SpeciesAvailable WHERE SpeciesID = :sid"),
             {"sid": species_id}
         ).fetchone()
 
         species_info = None
-        if info_row and (not expected_plural or (info_row.PluralTerm or "").strip().lower() == expected_plural.lower()):
+        if info_row:
             species_info = {
                 "singular": info_row.SingularTerm,
                 "plural": info_row.PluralTerm,
