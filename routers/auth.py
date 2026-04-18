@@ -1248,3 +1248,21 @@ def remove_lkm_member(people_id: int, db: Session = Depends(get_db), current_use
     person.LKMAccessLevel = 0
     db.commit()
     return {"message": "LKM access removed", "PeopleID": people_id}
+
+
+class LKMPasswordResetRequest(BaseModel):
+    NewPassword: str
+
+
+@router.put("/lkm-members/{people_id}/password")
+def reset_lkm_member_password(people_id: int, payload: LKMPasswordResetRequest, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _require_lkm_admin(current_user)
+    new_pw = (payload.NewPassword or "").strip()
+    if len(new_pw) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
+    person = db.query(models.People).filter(models.People.PeopleID == people_id).first()
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found.")
+    person.PeoplePassword = new_pw
+    db.commit()
+    return {"message": "Password reset", "PeopleID": people_id}
