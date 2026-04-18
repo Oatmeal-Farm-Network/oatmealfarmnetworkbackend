@@ -179,7 +179,8 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
             "PeopleID": user.PeopleID,
             "PeopleFirstName": user.PeopleFirstName,
             "PeopleLastName": user.PeopleLastName,
-            "AccessLevel": user.accesslevel or 0
+            "AccessLevel": user.accesslevel or 0,
+            "LKMAccessLevel": getattr(user, 'LKMAccessLevel', 0) or 0
         }
     except HTTPException:
         raise
@@ -1145,3 +1146,131 @@ def remove_business_member(business_access_id: int, db: Session = Depends(get_db
     access.RevokedAt = datetime.datetime.utcnow()
     db.commit()
     return {"message": "Team member removed", "BusinessAccessID": business_access_id}
+
+
+# -------------------------
+# LKM team management (People.LKMAccessLevel) — separate from Oatmeal AI access
+# -------------------------
+class LKMMemberAddRequest(BaseModel):
+    Email: str
+    PeopleFirstName: str = ""
+    PeopleLastName: str = ""
+    LKMAccessLevel: int = 1
+
+
+class LKMMemberUpdateRequest(BaseModel):
+    LKMAccessLevel: int = None
+    PeopleFirstName: str = None
+    PeopleLastName: str = None
+
+
+def _require_lkm_admin(current_user):
+    level = getattr(current_user, 'LKMAccessLevel', 0) or 0
+    if level < 3:
+        raise HTTPException(status_code=403, detail="LKM team management requires LKMAccessLevel >= 3.")
+
+
+@router.get("/lkm-members")
+def list_lkm_members(db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _require_lkm_admin(current_user)
+    rows = db.execute(text("""
+        SELECT PeopleID, PeopleFirstName, PeopleLastName, PeopleEmail, PeoplePhone,
+               LKMAccessLevel, PeopleActive, PeopleCreationDate
+        FROM People
+        WHERE LKMAccessLevel IS NOT NULL AND LKMAccessLevel > 0
+        ORDER BY LKMAccessLevel DESC, PeopleLastName, PeopleFirstName
+    """)).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+@router.post("/lkm-members")
+def add_lkm_member(payload: LKMMemberAddRequest, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    import datetime
+    _require_lkm_admin(current_user)
+
+    email = (payload.Email or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required.")
+
+    person = db.query(models.People).filter(models.People.PeopleEmail == email).first()
+    if not person:
+        if not payload.PeopleFirstName.strip() or not payload.PeopleLastName.strip():
+            raise HTTPException(status_code=400, detail="No account found with that email. Provide first and last name to create one.")
+        person = models.People(
+            PeopleFirstName=payload.PeopleFirstName.strip(),
+            PeopleLastName=payload.PeopleLastName.strip(),
+            PeopleEmail=email,
+            PeoplePassword="",
+            PeopleActive=1,
+            accesslevel=0,
+            Subscriptionlevel=0,
+            LKMAccessLevel=payload.LKMAccessLevel,
+            PeopleCreationDate=datetime.datetime.utcnow(),
+        )
+        db.add(person)
+        db.flush()
+    else:
+        person.LKMAccessLevel = payload.LKMAccessLevel
+
+    db.commit()
+    db.refresh(person)
+    return {
+        "PeopleID": person.PeopleID,
+        "PeopleFirstName": person.PeopleFirstName,
+        "PeopleLastName": person.PeopleLastName,
+        "PeopleEmail": person.PeopleEmail,
+        "LKMAccessLevel": person.LKMAccessLevel or 0,
+    }
+
+
+@router.put("/lkm-members/{people_id}")
+def update_lkm_member(people_id: int, payload: LKMMemberUpdateRequest, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _require_lkm_admin(current_user)
+    person = db.query(models.People).filter(models.People.PeopleID == people_id).first()
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found.")
+    if payload.LKMAccessLevel is not None:
+        person.LKMAccessLevel = payload.LKMAccessLevel
+    if payload.PeopleFirstName is not None:
+        person.PeopleFirstName = payload.PeopleFirstName.strip()
+    if payload.PeopleLastName is not None:
+        person.PeopleLastName = payload.PeopleLastName.strip()
+    db.commit()
+    db.refresh(person)
+    return {
+        "PeopleID": person.PeopleID,
+        "PeopleFirstName": person.PeopleFirstName,
+        "PeopleLastName": person.PeopleLastName,
+        "LKMAccessLevel": person.LKMAccessLevel or 0,
+    }
+
+
+@router.delete("/lkm-members/{people_id}")
+def remove_lkm_member(people_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _require_lkm_admin(current_user)
+    if people_id == current_user.PeopleID:
+        raise HTTPException(status_code=400, detail="You can't remove your own access. Ask another LKM admin to do it.")
+    person = db.query(models.People).filter(models.People.PeopleID == people_id).first()
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found.")
+    person.LKMAccessLevel = 0
+    db.commit()
+    return {"message": "LKM access removed", "PeopleID": people_id}
+
+
+class LKMPasswordResetRequest(BaseModel):
+    NewPassword: str
+
+
+@router.put("/lkm-members/{people_id}/password")
+def reset_lkm_member_password(people_id: int, payload: LKMPasswordResetRequest, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _require_lkm_admin(current_user)
+    new_pw = (payload.NewPassword or "").strip()
+    if len(new_pw) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
+    person = db.query(models.People).filter(models.People.PeopleID == people_id).first()
+    if not person:
+        raise HTTPException(status_code=404, detail="Person not found.")
+    person.PeoplePassword = new_pw
+    db.commit()
+    return {"message": "Password reset", "PeopleID": people_id}
