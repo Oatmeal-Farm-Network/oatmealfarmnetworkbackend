@@ -1,0 +1,27 @@
+LOADING JWT_AUTH: F:\Oatmeal AI\OatmealFarmNetwork Repo\Backend\jwt_auth.py
+LOADING JWT_AUTH FROM BACKEND FOLDER
+INFO:     127.0.0.1:56139 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56141 - "GET /api/marketplace/payments/connect-account/15633 HTTP/1.1" 401 Unauthorized
+INFO:     127.0.0.1:56142 - "POST /api/marketplace/payments/webhook HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56143 - "POST /api/marketplace/payments/create-intent HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:56148 - "GET /api/marketplace/cart/5715 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56149 - "GET /api/people/5715/event-carts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56150 - "GET /api/notifications/unread-count HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56159 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56161 - "POST /api/marketplace/payments/create-intent/1 HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:56162 - "POST /api/marketplace/payments/confirm-payment/1 HTTP/1.1" 503 Service Unavailable
+INFO:     127.0.0.1:56157 - "GET /api/marketplace/cart/5715 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56157 - "GET /api/people/5715/event-carts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56168 - "GET /api/notifications/unread-count HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56169 - "GET /api/marketplace/cart/5715 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56169 - "GET /api/people/5715/event-carts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56183 - "GET /api/notifications/unread-count HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56184 - "GET /api/marketplace/cart/5715 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56184 - "GET /api/people/5715/event-carts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56214 - "GET /api/notifications/unread-count HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56215 - "GET /api/marketplace/cart/5715 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56215 - "GET /api/people/5715/event-carts HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56232 - "GET /api/notifications/unread-count HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56233 - "GET /api/marketplace/cart/5715 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56244 - "GET /api/notifications/unread-count HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56233 - "GET /api/people/5715/event-carts HTTP/1.1" 200 OK
