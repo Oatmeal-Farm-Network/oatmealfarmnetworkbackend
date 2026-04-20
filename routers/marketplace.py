@@ -10,10 +10,39 @@ from auth import get_current_user
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date
+import os
 
 from image_service import ensure_images_for_catalog
+from routers.notifications import notify_business
 
 marketplace_router = APIRouter()
+
+
+def _notify_standing_order_event(
+    db: Session,
+    standing_order_id: int,
+    recipient_side: str,  # 'farm' or 'buyer'
+    notification_type: str,
+    title: str,
+    body: str | None = None,
+):
+    """Fan a notification out to one side of a standing order.
+    Recipient side is the BUSINESS being notified, not the initiator."""
+    row = db.execute(text("""
+        SELECT BuyerBusinessID, FarmBusinessID FROM RestaurantStandingOrders
+        WHERE StandingOrderID = :id
+    """), {"id": standing_order_id}).fetchone()
+    if not row:
+        return
+    recipient_bid = row.FarmBusinessID if recipient_side == 'farm' else row.BuyerBusinessID
+    if not recipient_bid:
+        return
+    link_path = '/farm/standing-orders' if recipient_side == 'farm' else '/restaurant/standing-orders'
+    notify_business(
+        db, business_id=recipient_bid,
+        type=notification_type, title=title, body=body, link_path=link_path,
+        entity_type='standing_order', entity_id=standing_order_id,
+    )
 
 # ── Auto-create MarketplaceProducts table ────────────────────────────────────
 with engine.begin() as _conn:
@@ -49,7 +78,142 @@ with engine.begin() as _conn:
         END
     """))
 
-   
+# ── Auto-create RestaurantSavedFarms table ───────────────────────────────────
+with engine.begin() as _conn:
+    _conn.execute(text("""
+        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='RestaurantSavedFarms')
+        BEGIN
+            CREATE TABLE RestaurantSavedFarms (
+                SavedID          INT IDENTITY(1,1) PRIMARY KEY,
+                BuyerBusinessID  INT NOT NULL,
+                FarmBusinessID   INT NOT NULL,
+                AddedByPeopleID  INT NULL,
+                Notes            NVARCHAR(500) NULL,
+                CreatedAt        DATETIME NOT NULL DEFAULT GETDATE(),
+                CONSTRAINT UQ_RestaurantSavedFarm UNIQUE (BuyerBusinessID, FarmBusinessID)
+            )
+        END
+    """))
+
+# ── Auto-create RestaurantStandingOrders table ───────────────────────────────
+# Recurring orders. ListingType + ListingSourceID identify a row in Produce/MeatInventory/ProcessedFood/SFProducts.
+with engine.begin() as _conn:
+    _conn.execute(text("""
+        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='RestaurantStandingOrders')
+        BEGIN
+            CREATE TABLE RestaurantStandingOrders (
+                StandingOrderID   INT IDENTITY(1,1) PRIMARY KEY,
+                BuyerBusinessID   INT NOT NULL,
+                FarmBusinessID    INT NOT NULL,
+                ListingType       VARCHAR(20) NOT NULL,   -- 'produce' | 'meat' | 'processed_food' | 'sf'
+                ListingSourceID   INT NOT NULL,
+                ProductTitle      NVARCHAR(500) NULL,     -- snapshot for display when source row is gone
+                Quantity          DECIMAL(10,2) NOT NULL DEFAULT 1,
+                UnitLabel         NVARCHAR(50) NULL,
+                Frequency         VARCHAR(20) NOT NULL DEFAULT 'weekly', -- weekly | biweekly | monthly
+                DayOfWeek         INT NULL,               -- 0=Sun..6=Sat
+                NextDeliveryDate  DATE NULL,
+                Status            VARCHAR(20) NOT NULL DEFAULT 'active', -- active | paused | cancelled
+                Notes             NVARCHAR(500) NULL,
+                CreatedByPeopleID INT NULL,
+                CreatedAt         DATETIME NOT NULL DEFAULT GETDATE(),
+                UpdatedAt         DATETIME NOT NULL DEFAULT GETDATE()
+            )
+        END
+    """))
+
+# ── Add LastReminderSentFor column to RestaurantStandingOrders (idempotent) ──
+# Tracks which NextDeliveryDate we've already sent a pre-delivery reminder for,
+# so an hourly cron can run freely without sending duplicate reminders.
+with engine.begin() as _conn:
+    _conn.execute(text("""
+        IF NOT EXISTS (
+            SELECT 1 FROM sys.columns
+            WHERE Name = 'LastReminderSentFor' AND Object_ID = Object_ID('RestaurantStandingOrders')
+        )
+        BEGIN
+            ALTER TABLE RestaurantStandingOrders ADD LastReminderSentFor DATE NULL
+        END
+    """))
+
+# ── Auto-create RestaurantDigestSubscriptions table ──────────────────────────
+# "Available this week" weekly email digest opt-in (per restaurant business).
+with engine.begin() as _conn:
+    _conn.execute(text("""
+        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='RestaurantDigestSubscriptions')
+        BEGIN
+            CREATE TABLE RestaurantDigestSubscriptions (
+                SubscriptionID    INT IDENTITY(1,1) PRIMARY KEY,
+                BuyerBusinessID   INT NOT NULL UNIQUE,
+                Email             NVARCHAR(320) NOT NULL,
+                Frequency         VARCHAR(20) NOT NULL DEFAULT 'weekly',
+                SavedFarmsOnly    BIT NOT NULL DEFAULT 0,  -- if 1, digest only includes saved farms
+                Status            VARCHAR(20) NOT NULL DEFAULT 'active',
+                LastSentAt        DATETIME NULL,
+                CreatedAt         DATETIME NOT NULL DEFAULT GETDATE(),
+                UpdatedAt         DATETIME NOT NULL DEFAULT GETDATE()
+            )
+        END
+    """))
+
+# ── Auto-create StandingOrderFulfillments table ──────────────────────────────
+# One row per confirmed delivery of a recurring standing order.
+with engine.begin() as _conn:
+    _conn.execute(text("""
+        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='StandingOrderFulfillments')
+        BEGIN
+            CREATE TABLE StandingOrderFulfillments (
+                FulfillmentID      INT IDENTITY(1,1) PRIMARY KEY,
+                StandingOrderID    INT NOT NULL,
+                DeliveredAt        DATETIME NOT NULL DEFAULT GETDATE(),
+                DeliveredQuantity  FLOAT NULL,  -- may differ from the standing order's usual quantity
+                RecordedByPeopleID INT NULL,
+                Notes              NVARCHAR(1000) NULL
+            )
+        END
+    """))
+
+# ── Auto-create CronJobRuns table ────────────────────────────────────────────
+# One row per scheduled-job invocation (digest runner, etc.) — feeds the admin tracking page.
+with engine.begin() as _conn:
+    _conn.execute(text("""
+        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='CronJobRuns')
+        BEGIN
+            CREATE TABLE CronJobRuns (
+                CronRunID         INT IDENTITY(1,1) PRIMARY KEY,
+                JobName           VARCHAR(100) NOT NULL,
+                StartedAt         DATETIME NOT NULL DEFAULT GETDATE(),
+                CompletedAt       DATETIME NULL,
+                Status            VARCHAR(20) NOT NULL DEFAULT 'running',  -- running | success | partial | error
+                ItemsProcessed    INT NOT NULL DEFAULT 0,
+                ItemsSucceeded    INT NOT NULL DEFAULT 0,
+                ItemsFailed       INT NOT NULL DEFAULT 0,
+                Notes             NVARCHAR(MAX) NULL
+            )
+        END
+    """))
+
+# ── Add restaurant-profile columns to Business table (nullable, idempotent) ──
+with engine.begin() as _conn:
+    for col, ddl in [
+        ('Cuisine',          "NVARCHAR(200) NULL"),
+        ('HeadChef',         "NVARCHAR(200) NULL"),
+        ('SeatingCapacity',  "INT NULL"),
+        ('RestaurantHours',  "NVARCHAR(500) NULL"),
+        ('YearOpened',       "INT NULL"),
+        ('SourcingPhilosophy', "NVARCHAR(MAX) NULL"),
+    ]:
+        _conn.execute(text(f"""
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.columns
+                WHERE Name = '{col}' AND Object_ID = Object_ID('Business')
+            )
+            BEGIN
+                ALTER TABLE Business ADD {col} {ddl}
+            END
+        """))
+
+
 # ─────────────────────────────────────────────
 # PYDANTIC MODELS
 # ─────────────────────────────────────────────
@@ -86,12 +250,15 @@ class ShipItemRequest(BaseModel):
 
 @marketplace_router.get("/catalog")
 def get_catalog(
-    background_tasks:   BackgroundTasks,
-    product_type:       Optional[str]  = Query(None),
-    organic:            Optional[bool] = Query(None),
-    search:             Optional[str]  = Query(None),
-    sort:               str            = Query("newest"),
-    db:                 Session         = Depends(get_db),
+    background_tasks:        BackgroundTasks,
+    product_type:            Optional[str]   = Query(None),
+    organic:                 Optional[bool]  = Query(None),
+    search:                  Optional[str]   = Query(None),
+    sort:                    str             = Query("newest"),
+    available_within_days:   Optional[int]   = Query(None),
+    min_quantity:            Optional[float] = Query(None),
+    state:                   Optional[str]   = Query(None),
+    db:                      Session         = Depends(get_db),
 ):
     """
     Browse all active listings from Produce, MeatInventory, and ProcessedFood tables.
@@ -100,6 +267,7 @@ def get_catalog(
     results = []
 
     search_val = f"%{search.strip()}%" if search and search.strip() else None
+    state_val  = state.strip().upper() if state and state.strip() else None
 
     # ── PRODUCE ──────────────────────────────────────────────────────────────
     if product_type in (None, "all", "produce"):
@@ -112,6 +280,15 @@ def get_catalog(
             where.append("(i.IngredientName LIKE :search OR p.Notes LIKE :search)")
             params["search"] = search_val
         where.append("(p.ExpirationDate IS NULL OR p.ExpirationDate >= CAST(GETDATE() AS DATE))")
+        if available_within_days is not None:
+            where.append("(p.AvailableDate IS NULL OR p.AvailableDate <= DATEADD(DAY, :avail_days, GETDATE()))")
+            params["avail_days"] = available_within_days
+        if min_quantity is not None:
+            where.append("p.Quantity >= :min_quantity")
+            params["min_quantity"] = min_quantity
+        if state_val:
+            where.append("a.AddressState = :state_val")
+            params["state_val"] = state_val
 
         rows = db.execute(text(f"""
             SELECT
@@ -132,6 +309,9 @@ def get_catalog(
                 p.ExpirationDate,
                 i.IngredientImage   AS ImageURL,
                 b.BusinessName      AS SellerName,
+                b.PickupAvailable,
+                b.ShippingAvailable,
+                b.DeliveryRadius,
                 a.AddressCity       AS SellerCity,
                 a.AddressState      AS SellerState
             FROM Produce p
@@ -162,6 +342,15 @@ def get_catalog(
             params["search"] = search_val
         # Meat has no IsOrganic — skip that filter
         # Meat has no ExpirationDate — skip that filter
+        if available_within_days is not None:
+            where.append("(m.AvailableDate IS NULL OR m.AvailableDate <= DATEADD(DAY, :avail_days, GETDATE()))")
+            params["avail_days"] = available_within_days
+        if min_quantity is not None:
+            where.append("m.Quantity >= :min_quantity")
+            params["min_quantity"] = min_quantity
+        if state_val:
+            where.append("a.AddressState = :state_val")
+            params["state_val"] = state_val
 
         rows = db.execute(text(f"""
             SELECT
@@ -182,6 +371,9 @@ def get_catalog(
                 NULL                AS ExpirationDate,
                 i.IngredientImage   AS ImageURL,
                 b.BusinessName      AS SellerName,
+                b.PickupAvailable,
+                b.ShippingAvailable,
+                b.DeliveryRadius,
                 a.AddressCity       AS SellerCity,
                 a.AddressState      AS SellerState
             FROM MeatInventory m
@@ -212,6 +404,15 @@ def get_catalog(
             where.append("(f.Name LIKE :search OR f.Description LIKE :search)")
             params["search"] = search_val
         # ProcessedFood has no IsOrganic or ExpirationDate
+        if available_within_days is not None:
+            where.append("(f.AvailableDate IS NULL OR f.AvailableDate <= DATEADD(DAY, :avail_days, GETDATE()))")
+            params["avail_days"] = available_within_days
+        if min_quantity is not None:
+            where.append("f.Quantity >= :min_quantity")
+            params["min_quantity"] = min_quantity
+        if state_val:
+            where.append("a.AddressState = :state_val")
+            params["state_val"] = state_val
 
         rows = db.execute(text(f"""
             SELECT
@@ -232,6 +433,9 @@ def get_catalog(
                 NULL                AS ExpirationDate,
                 f.ImageURL,
                 b.BusinessName      AS SellerName,
+                b.PickupAvailable,
+                b.ShippingAvailable,
+                b.DeliveryRadius,
                 a.AddressCity       AS SellerCity,
                 a.AddressState      AS SellerState
             FROM ProcessedFood f
@@ -262,6 +466,13 @@ def get_catalog(
         if search_val:
             where_p.append("(pr.prodName LIKE :search OR pr.prodShortDescription LIKE :search OR sc.CatName LIKE :search)")
             params_p["search"] = search_val
+        # SFProducts has no AvailableDate column — NULL treated as "always available", so no avail filter
+        if min_quantity is not None:
+            where_p.append("pr.ProdQuantityAvailable >= :min_quantity")
+            params_p["min_quantity"] = min_quantity
+        if state_val:
+            where_p.append("a.AddressState = :state_val")
+            params_p["state_val"] = state_val
         rows = db.execute(text(f"""
             SELECT pr.ProdID AS SourceID, 'product' AS ProductType, pr.BusinessID,
                    NULL AS IngredientID, pr.prodName AS Title,
@@ -273,6 +484,9 @@ def get_catalog(
                    0 AS IsOrganic, 1 AS IsLocal, NULL AS AvailableDate, NULL AS ExpirationDate,
                    COALESCE(pp.ProductImage1, pr.prodImageSmallPath) AS ImageURL,
                    b.BusinessName AS SellerName,
+                   b.PickupAvailable,
+                   b.ShippingAvailable,
+                   b.DeliveryRadius,
                    a.AddressCity AS SellerCity, a.AddressState AS SellerState,
                    pr.prodSaleIsActive AS IsFeatured
             FROM SFProducts pr
@@ -291,6 +505,55 @@ def get_catalog(
             m["IsOrganic"]         = False
             m["IsLocal"]           = True
             m["IsFeatured"]        = bool(m["IsFeatured"])
+            results.append(m)
+
+    # ── SERVICES (cart-eligible only — Price2 decimal set, BusinessID present,
+    #    not contact-for-price) ────────────────────────────────────────────────
+    if product_type in (None, "all", "service"):
+        where_s = [
+            "s.ServiceAvailable = 1",
+            "s.BusinessID IS NOT NULL",
+            "s.Price2 IS NOT NULL",
+            "s.Price2 > 0",
+            "(s.ServiceContactForPrice IS NULL OR s.ServiceContactForPrice = 0)",
+        ]
+        params_s = {}
+        if search_val:
+            where_s.append("(s.ServiceTitle LIKE :search OR s.ServicesDescription LIKE :search)")
+            params_s["search"] = search_val
+        if state_val:
+            where_s.append("a.AddressState = :state_val")
+            params_s["state_val"] = state_val
+        rows = db.execute(text(f"""
+            SELECT s.ServicesID AS SourceID, 'service' AS ProductType, s.BusinessID,
+                   NULL AS IngredientID, s.ServiceTitle AS Title,
+                   s.ServicesDescription AS Description,
+                   NULL AS CategoryName,
+                   s.Price2 AS UnitPrice, NULL AS WholesalePrice,
+                   'booking' AS UnitLabel,
+                   CAST(9999 AS DECIMAL(10,2)) AS QuantityAvailable,
+                   0 AS IsOrganic, 1 AS IsLocal, s.ServiceStartDate AS AvailableDate,
+                   s.ServiceEndDate AS ExpirationDate,
+                   s.Photo1 AS ImageURL,
+                   b.BusinessName AS SellerName,
+                   b.PickupAvailable,
+                   b.ShippingAvailable,
+                   b.DeliveryRadius,
+                   a.AddressCity AS SellerCity, a.AddressState AS SellerState
+            FROM Services s
+            JOIN Business b ON s.BusinessID = b.BusinessID
+            LEFT JOIN Address a ON b.AddressID = a.AddressID
+            WHERE {" AND ".join(where_s)}
+        """), params_s).fetchall()
+        for r in rows:
+            m = dict(r._mapping)
+            m["ListingID"]         = f"S{m['SourceID']}"
+            m["UnitPrice"]         = float(m["UnitPrice"]) if m["UnitPrice"] else 0.0
+            m["WholesalePrice"]    = None
+            m["QuantityAvailable"] = float(m["QuantityAvailable"]) if m["QuantityAvailable"] else 9999.0
+            m["IsOrganic"]         = False
+            m["IsLocal"]           = True
+            m["IsFeatured"]        = False
             results.append(m)
 
     # ── Sort combined results ─────────────────────────────────────────────────
@@ -395,6 +658,24 @@ def get_listing(listing_id: str, db: Session = Depends(get_db)):
             LEFT JOIN productsphotos pp ON pp.ID = pr.ProdID
             WHERE pr.ProdID = :sid AND pr.Publishproduct = 1
         """), {"sid": source_id}).fetchone()
+
+    elif prefix == "S":
+        row = db.execute(text("""
+            SELECT s.ServicesID AS SourceID, 'service' AS ProductType, s.BusinessID,
+                   s.ServiceTitle AS Title, s.ServicesDescription AS Description,
+                   s.Price2 AS UnitPrice, NULL AS WholesalePrice,
+                   'booking' AS UnitLabel,
+                   CAST(9999 AS DECIMAL(10,2)) AS QuantityAvailable,
+                   0 AS IsOrganic, 1 AS IsLocal, s.ServiceStartDate AS AvailableDate,
+                   s.ServiceEndDate AS ExpirationDate,
+                   s.Photo1 AS ImageURL,
+                   b.BusinessName AS SellerName,
+                   a.AddressCity AS SellerCity, a.AddressState AS SellerState
+            FROM Services s
+            JOIN Business b ON s.BusinessID = b.BusinessID
+            LEFT JOIN Address a ON b.AddressID = a.AddressID
+            WHERE s.ServicesID = :sid AND s.ServiceAvailable = 1
+        """), {"sid": source_id}).fetchone()
     else:
         raise HTTPException(400, "Invalid listing type prefix")
 
@@ -480,6 +761,20 @@ def place_order(req: PlaceOrderRequest, db: Session = Depends(get_db)):
                 JOIN People pe ON b.Contact1PeopleID = pe.PeopleID
                 WHERE pr.ProdID = :sid AND pr.Publishproduct = 1 AND pr.ProdForSale = 1
             """), {"sid": source_id}).fetchone()
+        elif prefix == "S":
+            listing = db.execute(text("""
+                SELECT s.ServicesID AS ListingID, s.BusinessID, s.ServiceTitle AS Title,
+                       'service' AS ProductType, s.Price2 AS UnitPrice,
+                       CAST(9999 AS DECIMAL(10,2)) AS QuantityAvailable,
+                       b.BusinessName AS SellerName, pe.PeopleEmail AS SellerEmail
+                FROM Services s
+                JOIN Business b ON s.BusinessID = b.BusinessID
+                JOIN People pe ON b.Contact1PeopleID = pe.PeopleID
+                WHERE s.ServicesID = :sid
+                  AND s.ServiceAvailable = 1
+                  AND s.Price2 IS NOT NULL AND s.Price2 > 0
+                  AND (s.ServiceContactForPrice IS NULL OR s.ServiceContactForPrice = 0)
+            """), {"sid": source_id}).fetchone()
         else:
             raise HTTPException(400, f"Invalid listing ID: {item.ListingID}")
 
@@ -489,7 +784,8 @@ def place_order(req: PlaceOrderRequest, db: Session = Depends(get_db)):
         l = dict(listing._mapping)
         qty = float(item.Quantity)
 
-        if qty > float(l["QuantityAvailable"]):
+        # Services are bookings, not inventory — skip the quantity-available check.
+        if prefix != "S" and qty > float(l["QuantityAvailable"]):
             raise HTTPException(400, f"Only {l['QuantityAvailable']} available for '{l['Title']}'")
 
         unit_price   = float(l["UnitPrice"])
@@ -681,6 +977,11 @@ def get_order(order_id: int, db: Session = Depends(get_db)):
                     FROM SFProducts pr LEFT JOIN productsphotos pp ON pp.ID = pr.ProdID
                     WHERE pr.ProdID = :sid
                 """), {"sid": source_id}).fetchone()
+                image_url = img[0] if img else None
+            elif prefix == "S":
+                img = db.execute(text(
+                    "SELECT Photo1 FROM Services WHERE ServicesID = :sid"
+                ), {"sid": source_id}).fetchone()
                 image_url = img[0] if img else None
         except Exception:
             image_url = None
@@ -985,6 +1286,16 @@ def add_to_cart(data: CartItemAdd, db: Session = Depends(get_db)):
             SELECT pr.BusinessID AS SellerBusinessID, pr.prodPrice AS UnitPrice
             FROM SFProducts pr WHERE pr.ProdID = :sid AND pr.Publishproduct = 1
         """), {"sid": source_id}).fetchone()
+    elif prefix == "S":
+        row = db.execute(text("""
+            SELECT s.BusinessID AS SellerBusinessID, s.Price2 AS UnitPrice
+            FROM Services s
+            WHERE s.ServicesID = :sid
+              AND s.ServiceAvailable = 1
+              AND s.BusinessID IS NOT NULL
+              AND s.Price2 IS NOT NULL AND s.Price2 > 0
+              AND (s.ServiceContactForPrice IS NULL OR s.ServiceContactForPrice = 0)
+        """), {"sid": source_id}).fetchone()
     else:
         raise HTTPException(400, f"Invalid listing ID: {data.ListingID}")
 
@@ -1017,6 +1328,144 @@ def add_to_cart(data: CartItemAdd, db: Session = Depends(get_db)):
         })
     db.commit()
     return {"message": "Added to cart"}
+
+
+def _resolve_cart_listing_meta(db: Session, listing_id: str):
+    """Look up Title / ProductType / UnitLabel / ImageURL / QuantityAvailable
+    for a single ListingID by reading the right source table for the prefix."""
+    try:
+        prefix = str(listing_id)[0].upper()
+        source_id = int(str(listing_id)[1:])
+    except (ValueError, IndexError):
+        return None
+
+    if prefix == "P":
+        sql = """
+            SELECT i.IngredientName AS Title, 'produce' AS ProductType, 'unit' AS UnitLabel,
+                   i.IngredientImage AS ImageURL, p.Quantity AS QuantityAvailable
+            FROM Produce p JOIN Ingredients i ON p.IngredientID = i.IngredientID
+            WHERE p.ProduceID = :sid
+        """
+    elif prefix == "M":
+        sql = """
+            SELECT i.IngredientName + ' - ' + ISNULL(ic.IngredientCut,'') AS Title,
+                   'meat' AS ProductType, m.WeightUnit AS UnitLabel,
+                   i.IngredientImage AS ImageURL, m.Quantity AS QuantityAvailable
+            FROM MeatInventory m JOIN Ingredients i ON m.IngredientID = i.IngredientID
+            LEFT JOIN Cut ic ON m.IngredientCutID = ic.IngredientCutID
+            WHERE m.MeatInventoryID = :sid
+        """
+    elif prefix == "F":
+        sql = """
+            SELECT f.Name AS Title, 'processed_food' AS ProductType, 'each' AS UnitLabel,
+                   f.ImageURL, f.Quantity AS QuantityAvailable
+            FROM ProcessedFood f WHERE f.ProcessedFoodID = :sid
+        """
+    elif prefix == "G":
+        sql = """
+            SELECT pr.prodName AS Title, 'product' AS ProductType, 'each' AS UnitLabel,
+                   COALESCE(pp.ProductImage1, pr.prodImageSmallPath) AS ImageURL,
+                   CAST(pr.ProdQuantityAvailable AS DECIMAL(10,2)) AS QuantityAvailable
+            FROM SFProducts pr LEFT JOIN productsphotos pp ON pp.ID = pr.ProdID
+            WHERE pr.ProdID = :sid
+        """
+    elif prefix == "S":
+        sql = """
+            SELECT s.ServiceTitle AS Title, 'service' AS ProductType, 'booking' AS UnitLabel,
+                   s.Photo1 AS ImageURL, CAST(9999 AS DECIMAL(10,2)) AS QuantityAvailable
+            FROM Services s WHERE s.ServicesID = :sid
+        """
+    else:
+        return None
+
+    row = db.execute(text(sql), {"sid": source_id}).mappings().fetchone()
+    return dict(row) if row else None
+
+
+@marketplace_router.get("/cart/{people_id}")
+def get_cart(people_id: int, db: Session = Depends(get_db)):
+    """Buyer's cart, grouped by seller. Resolves Title + image per item by
+    reading the source table for the listing's prefix."""
+    rows = db.execute(text("""
+        SELECT ci.CartItemID, ci.ListingID, ci.Quantity, ci.UnitPrice, ci.Notes,
+               ci.SellerBusinessID, b.BusinessName AS SellerName
+        FROM CartItems ci
+        LEFT JOIN Business b ON ci.SellerBusinessID = b.BusinessID
+        WHERE ci.BuyerPeopleID = :pid
+        ORDER BY b.BusinessName, ci.AddedAt
+    """), {"pid": people_id}).mappings().fetchall()
+
+    sellers = {}
+    item_count = 0
+    subtotal = 0.0
+    for r in rows:
+        item = dict(r)
+        item["Quantity"]  = float(item["Quantity"] or 0)
+        item["UnitPrice"] = float(item["UnitPrice"] or 0)
+        meta = _resolve_cart_listing_meta(db, item["ListingID"]) or {}
+        item["Title"]            = meta.get("Title") or item["ListingID"]
+        item["ProductType"]      = meta.get("ProductType")
+        item["UnitLabel"]        = meta.get("UnitLabel") or "each"
+        item["ImageURL"]         = meta.get("ImageURL")
+        item["QuantityAvailable"] = float(meta["QuantityAvailable"]) if meta.get("QuantityAvailable") is not None else None
+        item["lineTotal"]        = round(item["Quantity"] * item["UnitPrice"], 2)
+
+        sid = item["SellerBusinessID"]
+        if sid not in sellers:
+            sellers[sid] = {
+                "SellerBusinessID": sid,
+                "SellerName": item["SellerName"] or "Seller",
+                "items": [],
+                "subtotal": 0.0,
+            }
+        sellers[sid]["items"].append(item)
+        sellers[sid]["subtotal"] += item["lineTotal"]
+        item_count += 1
+        subtotal += item["lineTotal"]
+
+    for s in sellers.values():
+        s["subtotal"] = round(s["subtotal"], 2)
+
+    fee = round(subtotal * 0.025, 2)
+    return {
+        "sellers": list(sellers.values()),
+        "itemCount": item_count,
+        "subtotal": round(subtotal, 2),
+        "platformFee": fee,
+        "total": round(subtotal + fee, 2),
+    }
+
+
+class CartItemUpdate(BaseModel):
+    Quantity: float
+    Notes: Optional[str] = None
+
+
+@marketplace_router.put("/cart/{cart_item_id}")
+def update_cart_item(cart_item_id: int, data: CartItemUpdate, db: Session = Depends(get_db)):
+    if data.Quantity <= 0:
+        db.execute(text("DELETE FROM CartItems WHERE CartItemID = :cid"), {"cid": cart_item_id})
+    else:
+        db.execute(
+            text("UPDATE CartItems SET Quantity = :qty, Notes = :notes, UpdatedAt = GETDATE() WHERE CartItemID = :cid"),
+            {"qty": data.Quantity, "notes": data.Notes, "cid": cart_item_id},
+        )
+    db.commit()
+    return {"message": "Cart updated"}
+
+
+@marketplace_router.delete("/cart/clear/{people_id}")
+def clear_cart(people_id: int, db: Session = Depends(get_db)):
+    db.execute(text("DELETE FROM CartItems WHERE BuyerPeopleID = :pid"), {"pid": people_id})
+    db.commit()
+    return {"message": "Cart cleared"}
+
+
+@marketplace_router.delete("/cart/{cart_item_id}")
+def remove_cart_item(cart_item_id: int, db: Session = Depends(get_db)):
+    db.execute(text("DELETE FROM CartItems WHERE CartItemID = :cid"), {"cid": cart_item_id})
+    db.commit()
+    return {"message": "Removed from cart"}
 
 
 # ─────────────────────────────────────────────
@@ -1922,3 +2371,1136 @@ def get_animal_detail(animal_id: int, db: Session = Depends(get_db)):
         "awards":             awards,
         "fiber_stats":        fiber_stats,
     }
+
+
+# ─────────────────────────────────────────────
+# RESTAURANT — SAVED FARMS  ("My Farms" bookmarks)
+# ─────────────────────────────────────────────
+
+class SavedFarmAdd(BaseModel):
+    BuyerBusinessID: int
+    FarmBusinessID:  int
+    AddedByPeopleID: Optional[int] = None
+    Notes:           Optional[str] = None
+
+
+@marketplace_router.get("/saved-farms")
+def list_saved_farms(buyer_business_id: int, db: Session = Depends(get_db)):
+    rows = db.execute(text("""
+        SELECT sf.SavedID, sf.FarmBusinessID, sf.Notes, sf.CreatedAt,
+               b.BusinessName,
+               b.PickupAvailable, b.ShippingAvailable, b.DeliveryRadius,
+               a.AddressCity, a.AddressState
+        FROM RestaurantSavedFarms sf
+        JOIN Business b ON sf.FarmBusinessID = b.BusinessID
+        LEFT JOIN Address a ON b.AddressID = a.AddressID
+        WHERE sf.BuyerBusinessID = :bid
+        ORDER BY sf.CreatedAt DESC
+    """), {"bid": buyer_business_id}).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+@marketplace_router.post("/saved-farms")
+def add_saved_farm(data: SavedFarmAdd, db: Session = Depends(get_db)):
+    if data.BuyerBusinessID == data.FarmBusinessID:
+        raise HTTPException(400, "A business cannot save itself.")
+    try:
+        db.execute(text("""
+            INSERT INTO RestaurantSavedFarms (BuyerBusinessID, FarmBusinessID, AddedByPeopleID, Notes)
+            VALUES (:b, :f, :p, :n)
+        """), {"b": data.BuyerBusinessID, "f": data.FarmBusinessID,
+               "p": data.AddedByPeopleID, "n": data.Notes})
+        db.commit()
+        return {"message": "Farm saved."}
+    except Exception:
+        db.rollback()
+        # Likely cause: unique-constraint violation = farm already saved
+        return {"message": "Farm was already saved."}
+
+
+@marketplace_router.delete("/saved-farms")
+def remove_saved_farm(buyer_business_id: int, farm_business_id: int, db: Session = Depends(get_db)):
+    db.execute(text("""
+        DELETE FROM RestaurantSavedFarms
+        WHERE BuyerBusinessID = :b AND FarmBusinessID = :f
+    """), {"b": buyer_business_id, "f": farm_business_id})
+    db.commit()
+    return {"message": "Farm removed."}
+
+
+# ─────────────────────────────────────────────
+# RESTAURANT — STANDING ORDERS  (recurring purchases)
+# ─────────────────────────────────────────────
+
+def _compute_next_delivery_date(frequency: str, day_of_week, from_date=None):
+    """DayOfWeek convention: 0=Sun..6=Sat (matches JS Date.getDay)."""
+    from datetime import date, timedelta
+    base = from_date or date.today()
+    interval_days = {'weekly': 7, 'biweekly': 14, 'monthly': 30}.get(frequency, 7)
+    if day_of_week is None:
+        return base + timedelta(days=interval_days)
+    js_today = (base.weekday() + 1) % 7  # Python Mon=0..Sun=6 → JS Sun=0..Sat=6
+    delta = (int(day_of_week) - js_today) % 7
+    if delta == 0:
+        delta = interval_days
+    return base + timedelta(days=delta)
+
+
+class StandingOrderCreate(BaseModel):
+    BuyerBusinessID:   int
+    FarmBusinessID:    int
+    ListingType:       str           # 'produce' | 'meat' | 'processed_food' | 'sf'
+    ListingSourceID:   int
+    ProductTitle:      Optional[str] = None
+    Quantity:          float = 1
+    UnitLabel:         Optional[str] = None
+    Frequency:         str = 'weekly'  # weekly | biweekly | monthly
+    DayOfWeek:         Optional[int] = None
+    NextDeliveryDate:  Optional[str] = None  # YYYY-MM-DD; auto-computed if omitted
+    Notes:             Optional[str] = None
+    CreatedByPeopleID: Optional[int] = None
+
+
+class StandingOrderUpdate(BaseModel):
+    Quantity:         Optional[float] = None
+    Frequency:        Optional[str]   = None
+    DayOfWeek:        Optional[int]   = None
+    NextDeliveryDate: Optional[str]   = None
+    Status:           Optional[str]   = None
+    Notes:            Optional[str]   = None
+
+
+@marketplace_router.get("/standing-orders")
+def list_standing_orders(
+    buyer_business_id: Optional[int] = None,
+    farm_business_id:  Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """List standing orders from either side. Supply EITHER buyer_business_id
+    (restaurant's view of its outgoing orders) OR farm_business_id (farm's view
+    of its incoming orders). The returned rows include both sides' business names."""
+    if buyer_business_id is None and farm_business_id is None:
+        raise HTTPException(400, "Provide buyer_business_id or farm_business_id.")
+
+    where = "so.BuyerBusinessID = :bid" if buyer_business_id is not None else "so.FarmBusinessID = :fid"
+    params = {"bid": buyer_business_id} if buyer_business_id is not None else {"fid": farm_business_id}
+
+    rows = db.execute(text(f"""
+        SELECT so.StandingOrderID, so.BuyerBusinessID, so.FarmBusinessID,
+               so.ListingType, so.ListingSourceID, so.ProductTitle,
+               so.Quantity, so.UnitLabel,
+               so.Frequency, so.DayOfWeek, so.NextDeliveryDate,
+               so.Status, so.Notes, so.CreatedAt, so.UpdatedAt,
+               fb.BusinessName AS FarmName,
+               bb.BusinessName AS BuyerName,
+               a.AddressCity AS FarmCity, a.AddressState AS FarmState
+        FROM RestaurantStandingOrders so
+        LEFT JOIN Business fb ON so.FarmBusinessID  = fb.BusinessID
+        LEFT JOIN Business bb ON so.BuyerBusinessID = bb.BusinessID
+        LEFT JOIN Address  a  ON fb.AddressID       = a.AddressID
+        WHERE {where}
+        ORDER BY CASE so.Status
+                    WHEN 'overdue'   THEN 0
+                    WHEN 'active'    THEN 1
+                    WHEN 'paused'    THEN 2
+                    WHEN 'cancelled' THEN 3
+                    ELSE 4 END,
+                 so.NextDeliveryDate ASC, so.CreatedAt DESC
+    """), params).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+@marketplace_router.get("/standing-orders/activity")
+def standing_order_activity(
+    business_id: int,
+    role: str = "farm",
+    db: Session = Depends(get_db),
+):
+    """Dashboard widget data: counts + next/recent deliveries for one business.
+    role='farm' -> filter by FarmBusinessID; role='buyer' -> filter by BuyerBusinessID.
+    Names returned describe the OTHER party (so a farm sees BuyerName, etc.)."""
+    if role not in ('farm', 'buyer'):
+        raise HTTPException(400, "role must be 'farm' or 'buyer'.")
+    side_col = "FarmBusinessID" if role == 'farm' else "BuyerBusinessID"
+    other_alias = "bb" if role == 'farm' else "fb"
+
+    stats = db.execute(text(f"""
+        SELECT
+            SUM(CASE WHEN Status IN ('active','overdue') THEN 1 ELSE 0 END) AS active_count,
+            SUM(CASE WHEN Status = 'overdue' THEN 1 ELSE 0 END)              AS overdue_count,
+            SUM(CASE WHEN Status IN ('active','overdue')
+                      AND NextDeliveryDate IS NOT NULL
+                      AND NextDeliveryDate <= DATEADD(day, 7, CAST(GETDATE() AS DATE))
+                     THEN 1 ELSE 0 END)                                      AS upcoming_7d_count
+        FROM RestaurantStandingOrders
+        WHERE {side_col} = :bid
+    """), {"bid": business_id}).fetchone()
+
+    fulfilled_30d = db.execute(text(f"""
+        SELECT COUNT(*) AS c
+        FROM StandingOrderFulfillments f
+        JOIN RestaurantStandingOrders so ON f.StandingOrderID = so.StandingOrderID
+        WHERE so.{side_col} = :bid
+          AND f.DeliveredAt >= DATEADD(day, -30, GETDATE())
+    """), {"bid": business_id}).scalar() or 0
+
+    upcoming = db.execute(text(f"""
+        SELECT TOP 10
+               so.StandingOrderID, so.ProductTitle, so.Quantity, so.UnitLabel,
+               so.NextDeliveryDate, so.Status,
+               {other_alias}.BusinessName AS OtherPartyName,
+               DATEDIFF(day, CAST(GETDATE() AS DATE), so.NextDeliveryDate) AS DaysUntil
+        FROM RestaurantStandingOrders so
+        LEFT JOIN Business bb ON so.BuyerBusinessID = bb.BusinessID
+        LEFT JOIN Business fb ON so.FarmBusinessID  = fb.BusinessID
+        WHERE so.{side_col} = :bid
+          AND so.Status IN ('active','overdue')
+          AND so.NextDeliveryDate IS NOT NULL
+        ORDER BY CASE so.Status WHEN 'overdue' THEN 0 ELSE 1 END,
+                 so.NextDeliveryDate ASC
+    """), {"bid": business_id}).fetchall()
+
+    recent = db.execute(text(f"""
+        SELECT TOP 10
+               f.FulfillmentID, f.StandingOrderID, f.DeliveredAt, f.DeliveredQuantity,
+               so.ProductTitle, so.UnitLabel,
+               {other_alias}.BusinessName AS OtherPartyName
+        FROM StandingOrderFulfillments f
+        JOIN RestaurantStandingOrders so ON f.StandingOrderID = so.StandingOrderID
+        LEFT JOIN Business bb ON so.BuyerBusinessID = bb.BusinessID
+        LEFT JOIN Business fb ON so.FarmBusinessID  = fb.BusinessID
+        WHERE so.{side_col} = :bid
+          AND f.DeliveredAt >= DATEADD(day, -30, GETDATE())
+        ORDER BY f.DeliveredAt DESC
+    """), {"bid": business_id}).fetchall()
+
+    return {
+        "stats": {
+            "active":        int(stats.active_count or 0)   if stats else 0,
+            "overdue":       int(stats.overdue_count or 0)  if stats else 0,
+            "upcoming_7d":   int(stats.upcoming_7d_count or 0) if stats else 0,
+            "fulfilled_30d": int(fulfilled_30d),
+        },
+        "upcoming": [dict(r._mapping) for r in upcoming],
+        "recent":   [dict(r._mapping) for r in recent],
+    }
+
+
+@marketplace_router.post("/standing-orders")
+def create_standing_order(data: StandingOrderCreate, db: Session = Depends(get_db)):
+    if data.ListingType not in ('produce', 'meat', 'processed_food', 'sf'):
+        raise HTTPException(400, "Invalid ListingType.")
+    if data.Frequency not in ('weekly', 'biweekly', 'monthly'):
+        raise HTTPException(400, "Invalid Frequency.")
+    next_date = data.NextDeliveryDate or _compute_next_delivery_date(data.Frequency, data.DayOfWeek).isoformat()
+    db.execute(text("""
+        INSERT INTO RestaurantStandingOrders
+            (BuyerBusinessID, FarmBusinessID, ListingType, ListingSourceID,
+             ProductTitle, Quantity, UnitLabel,
+             Frequency, DayOfWeek, NextDeliveryDate, Notes, CreatedByPeopleID)
+        VALUES
+            (:bb, :fb, :lt, :ls, :pt, :q, :ul, :fr, :dow, :nd, :n, :p)
+    """), {
+        "bb": data.BuyerBusinessID, "fb": data.FarmBusinessID,
+        "lt": data.ListingType, "ls": data.ListingSourceID,
+        "pt": data.ProductTitle, "q": data.Quantity, "ul": data.UnitLabel,
+        "fr": data.Frequency, "dow": data.DayOfWeek,
+        "nd": next_date, "n": data.Notes,
+        "p":  data.CreatedByPeopleID,
+    })
+    new_id = db.execute(text("SELECT CAST(SCOPE_IDENTITY() AS INT) AS id")).scalar()
+    # Notify farm's BusinessAccess people about the new recurring order.
+    buyer_name_row = db.execute(text(
+        "SELECT BusinessName FROM Business WHERE BusinessID = :b"
+    ), {"b": data.BuyerBusinessID}).fetchone()
+    buyer_name = (buyer_name_row.BusinessName if buyer_name_row else 'A restaurant')
+    notify_business(
+        db, business_id=data.FarmBusinessID,
+        type='standing_order.created',
+        title=f"🔁 New standing order from {buyer_name}",
+        body=f"{data.Quantity} {data.UnitLabel or 'unit'} of {data.ProductTitle or 'your product'}, {data.Frequency}. First delivery: {next_date}.",
+        link_path='/farm/standing-orders',
+        entity_type='standing_order', entity_id=new_id,
+    )
+    db.commit()
+
+    notify_info = _notify_farm_new_standing_order(db, data, next_date)
+    return {
+        "message": "Standing order created.",
+        "NextDeliveryDate": next_date,
+        "farm_notified": notify_info,
+    }
+
+
+@marketplace_router.put("/standing-orders/{standing_order_id}")
+def update_standing_order(standing_order_id: int, data: StandingOrderUpdate, db: Session = Depends(get_db)):
+    supplied = data.dict(exclude_unset=True)
+    fields = []
+    params = {"id": standing_order_id}
+    for k, v in supplied.items():
+        if v is None:
+            continue
+        if k == 'Frequency' and v not in ('weekly', 'biweekly', 'monthly'):
+            raise HTTPException(400, "Invalid Frequency.")
+        if k == 'Status' and v not in ('active', 'paused', 'cancelled', 'overdue'):
+            raise HTTPException(400, "Invalid Status.")
+        fields.append(f"{k} = :{k}")
+        params[k] = v
+
+    # Recompute NextDeliveryDate if cadence changed and caller didn't set it explicitly.
+    cadence_changed = ('Frequency' in supplied or 'DayOfWeek' in supplied)
+    if cadence_changed and 'NextDeliveryDate' not in supplied:
+        current = db.execute(text(
+            "SELECT Frequency, DayOfWeek FROM RestaurantStandingOrders WHERE StandingOrderID = :id"
+        ), {"id": standing_order_id}).fetchone()
+        if current:
+            freq = supplied.get('Frequency') or current.Frequency
+            dow  = supplied.get('DayOfWeek') if 'DayOfWeek' in supplied else current.DayOfWeek
+            next_date = _compute_next_delivery_date(freq, dow).isoformat()
+            fields.append("NextDeliveryDate = :NextDeliveryDate")
+            params["NextDeliveryDate"] = next_date
+
+    if not fields:
+        return {"message": "No changes."}
+    fields.append("UpdatedAt = GETDATE()")
+    db.execute(text(f"""
+        UPDATE RestaurantStandingOrders
+        SET {', '.join(fields)}
+        WHERE StandingOrderID = :id
+    """), params)
+    db.commit()
+    return {"message": "Standing order updated.", "NextDeliveryDate": params.get("NextDeliveryDate")}
+
+
+_FREQUENCY_HUMAN = {'weekly': 'weekly', 'biweekly': 'every 2 weeks', 'monthly': 'monthly'}
+
+
+def _notify_farm_new_standing_order(db: Session, data: 'StandingOrderCreate', next_date: str):
+    """Email the farm when a restaurant creates a recurring order. Best-effort — never fails the request."""
+    try:
+        row = db.execute(text("""
+            SELECT b.BusinessEmail AS farm_email, b.BusinessName AS farm_name,
+                   rb.BusinessName AS buyer_name
+            FROM Business b
+            LEFT JOIN Business rb ON rb.BusinessID = :bb
+            WHERE b.BusinessID = :fb
+        """), {"fb": data.FarmBusinessID, "bb": data.BuyerBusinessID}).fetchone()
+        if not row or not row._mapping.get('farm_email'):
+            return {"sent": False, "note": "farm has no BusinessEmail on file"}
+        farm_email = row._mapping['farm_email']
+        farm_name  = row._mapping.get('farm_name') or 'Farm'
+        buyer_name = row._mapping.get('buyer_name') or 'A restaurant'
+        base_url   = os.getenv("OFN_BASE_URL", "https://oatmealfarmnetwork.com")
+        freq_label = _FREQUENCY_HUMAN.get(data.Frequency, data.Frequency)
+        qty_label  = f"{data.Quantity}{(' ' + data.UnitLabel) if data.UnitLabel else ''}"
+        subject    = f"New standing order from {buyer_name} — {data.ProductTitle or 'Marketplace item'}"
+        html = f"""
+        <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;background:#f7f2e8;">
+          <div style="background:#fff;border-radius:14px;border:1px solid #e5e7eb;overflow:hidden;">
+            <div style="padding:20px 24px;background:#3D6B34;color:#fff;">
+              <h1 style="margin:0;font-size:20px;">🔁 New Standing Order</h1>
+              <p style="margin:4px 0 0;font-size:13px;opacity:0.9;">A restaurant signed up for a recurring delivery.</p>
+            </div>
+            <div style="padding:20px 24px;color:#111827;font-size:14px;line-height:1.55;">
+              <p>Hi {farm_name},</p>
+              <p><strong>{buyer_name}</strong> just created a standing order for:</p>
+              <table style="width:100%;border-collapse:collapse;margin:12px 0;">
+                <tr><td style="padding:6px 0;color:#6b7280;width:140px;">Product</td><td><strong>{data.ProductTitle or '(unnamed)'}</strong></td></tr>
+                <tr><td style="padding:6px 0;color:#6b7280;">Quantity</td><td>{qty_label}</td></tr>
+                <tr><td style="padding:6px 0;color:#6b7280;">Frequency</td><td>{freq_label}</td></tr>
+                <tr><td style="padding:6px 0;color:#6b7280;">First delivery</td><td>{next_date}</td></tr>
+              </table>
+              {'<p style="background:#f9fafb;border-left:3px solid #3D6B34;padding:10px 14px;border-radius:4px;color:#374151;"><em>"' + data.Notes + '"</em></p>' if data.Notes else ''}
+              <p style="margin-top:18px;">
+                <a href="{base_url}/account" style="display:inline-block;padding:10px 20px;background:#3D6B34;color:#fff;text-decoration:none;border-radius:8px;font-weight:bold;font-size:14px;">View in your account →</a>
+              </p>
+              <p style="color:#6b7280;font-size:12px;margin-top:18px;">
+                You'll get reminders ahead of each delivery. Update your availability any time from your farm profile.
+              </p>
+            </div>
+          </div>
+        </div>
+        """
+        sent, note = _send_email(farm_email, subject, html)
+        return {"sent": sent, "to": farm_email, "note": note}
+    except Exception as e:
+        return {"sent": False, "note": f"notify exception: {e}"}
+
+
+def _notify_fulfillment(db: Session, standing_order_id: int, fulfillment):
+    """Email restaurant + farm confirming a standing-order delivery. Best-effort."""
+    try:
+        row = db.execute(text("""
+            SELECT so.StandingOrderID, so.ProductTitle, so.Quantity, so.UnitLabel,
+                   so.Frequency, so.NextDeliveryDate,
+                   fb.BusinessName AS farm_name, fb.BusinessEmail AS farm_email,
+                   bb.BusinessName AS buyer_name, bb.BusinessEmail AS buyer_email
+            FROM RestaurantStandingOrders so
+            LEFT JOIN Business fb ON so.FarmBusinessID  = fb.BusinessID
+            LEFT JOIN Business bb ON so.BuyerBusinessID = bb.BusinessID
+            WHERE so.StandingOrderID = :id
+        """), {"id": standing_order_id}).fetchone()
+        if not row:
+            return {"sent": False, "note": "standing order not found"}
+        m = row._mapping
+        base_url = os.getenv("OFN_BASE_URL", "https://oatmealfarmnetwork.com")
+        qty_label = f"{fulfillment['DeliveredQuantity'] or m.get('Quantity')}{(' ' + m.get('UnitLabel')) if m.get('UnitLabel') else ''}"
+        delivered_at = fulfillment['DeliveredAt']
+        next_date    = fulfillment['NextDeliveryDate']
+        subject = f"✓ Delivered: {m.get('ProductTitle') or 'standing order'} — {m.get('farm_name')} → {m.get('buyer_name')}"
+        html = f"""
+        <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;background:#f7f2e8;">
+          <div style="background:#fff;border-radius:14px;border:1px solid #e5e7eb;overflow:hidden;">
+            <div style="padding:20px 24px;background:#3D6B34;color:#fff;">
+              <h1 style="margin:0;font-size:20px;">✅ Delivery Confirmed</h1>
+            </div>
+            <div style="padding:20px 24px;color:#111827;font-size:14px;line-height:1.55;">
+              <table style="width:100%;border-collapse:collapse;margin:4px 0 14px;">
+                <tr><td style="padding:6px 0;color:#6b7280;width:140px;">Product</td><td><strong>{m.get('ProductTitle') or '(unnamed)'}</strong></td></tr>
+                <tr><td style="padding:6px 0;color:#6b7280;">Delivered</td><td>{qty_label}</td></tr>
+                <tr><td style="padding:6px 0;color:#6b7280;">On</td><td>{delivered_at}</td></tr>
+                <tr><td style="padding:6px 0;color:#6b7280;">From</td><td>{m.get('farm_name')}</td></tr>
+                <tr><td style="padding:6px 0;color:#6b7280;">To</td><td>{m.get('buyer_name')}</td></tr>
+                <tr><td style="padding:6px 0;color:#6b7280;">Next delivery</td><td><strong>{next_date}</strong></td></tr>
+              </table>
+              {'<p style="background:#f9fafb;border-left:3px solid #3D6B34;padding:10px 14px;border-radius:4px;color:#374151;"><em>"' + fulfillment['Notes'] + '"</em></p>' if fulfillment.get('Notes') else ''}
+              <p style="margin-top:18px;">
+                <a href="{base_url}/restaurant/standing-orders" style="display:inline-block;padding:10px 20px;background:#3D6B34;color:#fff;text-decoration:none;border-radius:8px;font-weight:bold;font-size:14px;">View standing orders →</a>
+              </p>
+            </div>
+          </div>
+        </div>
+        """
+        results = []
+        for email in [m.get('buyer_email'), m.get('farm_email')]:
+            if email:
+                sent, note = _send_email(email, subject, html)
+                results.append({"to": email, "sent": sent, "note": note})
+        return {"recipients": results}
+    except Exception as e:
+        return {"sent": False, "note": f"fulfillment notify exception: {e}"}
+
+
+class StandingOrderFulfill(BaseModel):
+    DeliveredQuantity:  Optional[float] = None
+    Notes:              Optional[str]   = None
+    RecordedByPeopleID: Optional[int]   = None
+
+
+@marketplace_router.post("/standing-orders/{standing_order_id}/fulfill")
+def fulfill_standing_order(standing_order_id: int, data: StandingOrderFulfill, db: Session = Depends(get_db)):
+    """Record a delivery, auto-advance NextDeliveryDate, and email buyer + farm."""
+    order = db.execute(text(
+        "SELECT Frequency, DayOfWeek, NextDeliveryDate FROM RestaurantStandingOrders WHERE StandingOrderID = :id"
+    ), {"id": standing_order_id}).fetchone()
+    if not order:
+        raise HTTPException(404, "Standing order not found.")
+
+    ins = db.execute(text("""
+        INSERT INTO StandingOrderFulfillments (StandingOrderID, DeliveredQuantity, Notes, RecordedByPeopleID)
+        OUTPUT INSERTED.FulfillmentID, INSERTED.DeliveredAt
+        VALUES (:id, :q, :n, :p)
+    """), {
+        "id": standing_order_id, "q": data.DeliveredQuantity,
+        "n": data.Notes, "p": data.RecordedByPeopleID,
+    }).fetchone()
+    fulfillment_id = ins[0]
+    delivered_at   = ins[1].isoformat() if ins[1] else None
+
+    base = order.NextDeliveryDate or None
+    next_date = _compute_next_delivery_date(order.Frequency, order.DayOfWeek, from_date=base).isoformat()
+    db.execute(text("""
+        UPDATE RestaurantStandingOrders
+        SET NextDeliveryDate = :nd,
+            Status = CASE WHEN Status = 'overdue' THEN 'active' ELSE Status END,
+            UpdatedAt = GETDATE()
+        WHERE StandingOrderID = :id
+    """), {"id": standing_order_id, "nd": next_date})
+    # Notify the buyer side that their delivery was marked fulfilled.
+    _notify_standing_order_event(
+        db, standing_order_id, recipient_side='buyer',
+        notification_type='standing_order.fulfilled',
+        title="✅ Your delivery was marked fulfilled",
+        body=f"Delivered {data.DeliveredQuantity or '—'}. Next delivery: {next_date}.",
+    )
+    db.commit()
+
+    notify = _notify_fulfillment(db, standing_order_id, {
+        "DeliveredAt": delivered_at,
+        "DeliveredQuantity": data.DeliveredQuantity,
+        "Notes": data.Notes,
+        "NextDeliveryDate": next_date,
+    })
+
+    return {
+        "message": "Fulfillment recorded.",
+        "FulfillmentID": fulfillment_id,
+        "DeliveredAt": delivered_at,
+        "NextDeliveryDate": next_date,
+        "notify": notify,
+    }
+
+
+@marketplace_router.get("/standing-orders/{standing_order_id}/fulfillments")
+def list_fulfillments(standing_order_id: int, db: Session = Depends(get_db)):
+    rows = db.execute(text("""
+        SELECT FulfillmentID, StandingOrderID, DeliveredAt, DeliveredQuantity, RecordedByPeopleID, Notes
+        FROM StandingOrderFulfillments
+        WHERE StandingOrderID = :id
+        ORDER BY DeliveredAt DESC
+    """), {"id": standing_order_id}).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+def _render_reminder_html(row_mapping, days_until: int, base_url: str) -> str:
+    product  = row_mapping.get('ProductTitle') or '(unnamed)'
+    qty      = row_mapping.get('Quantity')
+    unit     = row_mapping.get('UnitLabel') or ''
+    qty_line = f"{qty}{(' ' + unit) if unit else ''}"
+    when     = "tomorrow" if days_until == 1 else f"in {days_until} days"
+    farm     = row_mapping.get('farm_name') or 'Your farm partner'
+    buyer    = row_mapping.get('buyer_name') or 'Your restaurant partner'
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;background:#f7f2e8;">
+      <div style="background:#fff;border-radius:14px;border:1px solid #e5e7eb;overflow:hidden;">
+        <div style="padding:20px 24px;background:#3D6B34;color:#fff;">
+          <h1 style="margin:0;font-size:20px;">⏰ Delivery {when}</h1>
+        </div>
+        <div style="padding:20px 24px;color:#111827;font-size:14px;line-height:1.55;">
+          <table style="width:100%;border-collapse:collapse;margin:4px 0 14px;">
+            <tr><td style="padding:6px 0;color:#6b7280;width:140px;">Product</td><td><strong>{product}</strong></td></tr>
+            <tr><td style="padding:6px 0;color:#6b7280;">Quantity</td><td>{qty_line}</td></tr>
+            <tr><td style="padding:6px 0;color:#6b7280;">From</td><td>{farm}</td></tr>
+            <tr><td style="padding:6px 0;color:#6b7280;">To</td><td>{buyer}</td></tr>
+            <tr><td style="padding:6px 0;color:#6b7280;">Scheduled</td><td><strong>{row_mapping.get('NextDeliveryDate')}</strong></td></tr>
+          </table>
+          <p>This is a friendly reminder that your standing-order delivery is {when}. Mark it fulfilled in your dashboard once it's delivered.</p>
+          <p style="margin-top:18px;">
+            <a href="{base_url}/restaurant/standing-orders" style="display:inline-block;padding:10px 20px;background:#3D6B34;color:#fff;text-decoration:none;border-radius:8px;font-weight:bold;font-size:14px;">Open standing orders →</a>
+          </p>
+        </div>
+      </div>
+    </div>
+    """
+
+
+@marketplace_router.post("/standing-orders/remind-due")
+def remind_due_standing_orders(db: Session = Depends(get_db)):
+    """Send pre-delivery reminder emails for active orders whose NextDeliveryDate is 1-2 days out.
+    Idempotent: a row's LastReminderSentFor = NextDeliveryDate blocks re-sends within the same cycle.
+    Safe to call hourly from an external scheduler."""
+    run = db.execute(text("""
+        INSERT INTO CronJobRuns (JobName, Status) OUTPUT INSERTED.CronRunID
+        VALUES ('standing_order_reminders', 'running')
+    """)).fetchone()
+    run_id = run[0]
+    db.commit()
+
+    processed = succeeded = failed = 0
+    notes = []
+    try:
+        rows = db.execute(text("""
+            SELECT so.StandingOrderID, so.NextDeliveryDate, so.ProductTitle,
+                   so.Quantity, so.UnitLabel,
+                   fb.BusinessName AS farm_name,  fb.BusinessEmail AS farm_email,
+                   bb.BusinessName AS buyer_name, bb.BusinessEmail AS buyer_email,
+                   DATEDIFF(day, CAST(GETDATE() AS DATE), so.NextDeliveryDate) AS days_until
+            FROM RestaurantStandingOrders so
+            LEFT JOIN Business fb ON so.FarmBusinessID  = fb.BusinessID
+            LEFT JOIN Business bb ON so.BuyerBusinessID = bb.BusinessID
+            WHERE so.Status = 'active'
+              AND so.NextDeliveryDate IS NOT NULL
+              AND DATEDIFF(day, CAST(GETDATE() AS DATE), so.NextDeliveryDate) BETWEEN 1 AND 2
+              AND (so.LastReminderSentFor IS NULL OR so.LastReminderSentFor <> so.NextDeliveryDate)
+        """)).fetchall()
+
+        base_url = os.getenv("OFN_BASE_URL", "https://oatmealfarmnetwork.com")
+        for r in rows:
+            processed += 1
+            m = r._mapping
+            days_until = int(m['days_until'])
+            subject = f"⏰ Delivery {'tomorrow' if days_until == 1 else f'in {days_until} days'}: {m.get('ProductTitle') or 'standing order'}"
+            html = _render_reminder_html(m, days_until, base_url)
+            any_sent = False
+            for email in [m.get('buyer_email'), m.get('farm_email')]:
+                if email:
+                    sent, note = _send_email(email, subject, html)
+                    if sent:
+                        any_sent = True
+                    else:
+                        notes.append(f"[{m['StandingOrderID']}] {email}: {note}")
+            if any_sent:
+                db.execute(text("""
+                    UPDATE RestaurantStandingOrders
+                    SET LastReminderSentFor = :nd
+                    WHERE StandingOrderID = :id
+                """), {"nd": m['NextDeliveryDate'], "id": m['StandingOrderID']})
+                succeeded += 1
+            else:
+                failed += 1
+                notes.append(f"[{m['StandingOrderID']}] no recipient with BusinessEmail")
+
+        db.commit()
+        status = 'success' if failed == 0 else ('partial' if succeeded > 0 else 'error')
+        db.execute(text("""
+            UPDATE CronJobRuns
+            SET CompletedAt = GETDATE(), Status = :s,
+                ItemsProcessed = :p, ItemsSucceeded = :ok, ItemsFailed = :f, Notes = :n
+            WHERE CronRunID = :id
+        """), {"id": run_id, "s": status, "p": processed, "ok": succeeded, "f": failed,
+               "n": ("\n".join(notes))[:3500] if notes else None})
+        db.commit()
+        return {"run_id": run_id, "status": status, "processed": processed,
+                "succeeded": succeeded, "failed": failed}
+    except Exception as e:
+        db.execute(text("""
+            UPDATE CronJobRuns SET CompletedAt = GETDATE(), Status = 'error', Notes = :n
+            WHERE CronRunID = :id
+        """), {"id": run_id, "n": f"exception: {e}"})
+        db.commit()
+        raise
+
+
+@marketplace_router.post("/standing-orders/flag-overdue")
+def flag_overdue_standing_orders(db: Session = Depends(get_db)):
+    """Mark active standing orders as overdue when NextDeliveryDate has passed
+    with no fulfillment recorded on or after that date. Safe to run nightly."""
+    run = db.execute(text("""
+        INSERT INTO CronJobRuns (JobName, Status) OUTPUT INSERTED.CronRunID
+        VALUES ('standing_order_flag_overdue', 'running')
+    """)).fetchone()
+    run_id = run[0]
+    db.commit()
+    try:
+        result = db.execute(text("""
+            UPDATE so
+            SET Status = 'overdue', UpdatedAt = GETDATE()
+            OUTPUT INSERTED.StandingOrderID
+            FROM RestaurantStandingOrders so
+            WHERE so.Status = 'active'
+              AND so.NextDeliveryDate IS NOT NULL
+              AND so.NextDeliveryDate < CAST(GETDATE() AS DATE)
+              AND NOT EXISTS (
+                  SELECT 1 FROM StandingOrderFulfillments f
+                  WHERE f.StandingOrderID = so.StandingOrderID
+                    AND CAST(f.DeliveredAt AS DATE) >= so.NextDeliveryDate
+              )
+        """)).fetchall()
+        flagged = [r[0] for r in result]
+        # Notify farms of each newly-overdue order.
+        for soid in flagged:
+            _notify_standing_order_event(
+                db, soid, recipient_side='farm',
+                notification_type='standing_order.overdue',
+                title="⚠️ Delivery is overdue",
+                body="The scheduled delivery date has passed with no fulfillment recorded. Mark it fulfilled or skip/reschedule.",
+            )
+        db.commit()
+
+        db.execute(text("""
+            UPDATE CronJobRuns
+            SET CompletedAt = GETDATE(), Status = 'success',
+                ItemsProcessed = :p, ItemsSucceeded = :ok, ItemsFailed = 0,
+                Notes = :n
+            WHERE CronRunID = :id
+        """), {"id": run_id, "p": len(flagged), "ok": len(flagged),
+               "n": f"Flagged StandingOrderIDs: {flagged}" if flagged else "No orders overdue."})
+        db.commit()
+        return {"run_id": run_id, "status": "success",
+                "flagged_count": len(flagged), "flagged_ids": flagged}
+    except Exception as e:
+        db.execute(text("""
+            UPDATE CronJobRuns SET CompletedAt = GETDATE(), Status = 'error', Notes = :n
+            WHERE CronRunID = :id
+        """), {"id": run_id, "n": f"exception: {e}"})
+        db.commit()
+        raise
+
+
+@marketplace_router.post("/standing-orders/{standing_order_id}/advance")
+def advance_standing_order(standing_order_id: int, db: Session = Depends(get_db)):
+    """Roll NextDeliveryDate forward by one cycle without recording a fulfillment
+    (use /fulfill to track the actual delivery; /advance is a lightweight skip)."""
+    row = db.execute(text(
+        "SELECT Frequency, DayOfWeek, NextDeliveryDate FROM RestaurantStandingOrders WHERE StandingOrderID = :id"
+    ), {"id": standing_order_id}).fetchone()
+    if not row:
+        raise HTTPException(404, "Standing order not found.")
+    base = row.NextDeliveryDate or None
+    next_date = _compute_next_delivery_date(row.Frequency, row.DayOfWeek, from_date=base).isoformat()
+    db.execute(text(
+        "UPDATE RestaurantStandingOrders SET NextDeliveryDate = :nd, UpdatedAt = GETDATE() WHERE StandingOrderID = :id"
+    ), {"id": standing_order_id, "nd": next_date})
+    db.commit()
+    return {"message": "Advanced.", "NextDeliveryDate": next_date}
+
+
+class StandingOrderSkip(BaseModel):
+    Reason:        Optional[str] = None
+    InitiatedBy:   Optional[str] = None  # 'buyer' | 'farm' — for the email salutation
+
+
+class StandingOrderReschedule(BaseModel):
+    NewDate:       str                   # ISO date (YYYY-MM-DD), must be in the future
+    Reason:        Optional[str] = None
+    InitiatedBy:   Optional[str] = None  # 'buyer' | 'farm'
+
+
+def _notify_schedule_change(db: Session, standing_order_id: int, change_type: str,
+                            old_date, new_date: str, reason, initiated_by):
+    """Email both parties (best-effort) when a delivery is skipped or rescheduled.
+    change_type: 'skipped' | 'rescheduled'."""
+    try:
+        row = db.execute(text("""
+            SELECT so.ProductTitle, so.Quantity, so.UnitLabel,
+                   fb.BusinessName AS farm_name,  fb.BusinessEmail AS farm_email,
+                   bb.BusinessName AS buyer_name, bb.BusinessEmail AS buyer_email
+            FROM RestaurantStandingOrders so
+            LEFT JOIN Business fb ON so.FarmBusinessID  = fb.BusinessID
+            LEFT JOIN Business bb ON so.BuyerBusinessID = bb.BusinessID
+            WHERE so.StandingOrderID = :id
+        """), {"id": standing_order_id}).fetchone()
+        if not row:
+            return {"sent": False, "note": "standing order not found"}
+        m = row._mapping
+        base_url   = os.getenv("OFN_BASE_URL", "https://oatmealfarmnetwork.com")
+        product    = m.get('ProductTitle') or '(unnamed)'
+        actor      = 'The restaurant' if initiated_by == 'buyer' else ('The farm' if initiated_by == 'farm' else 'Someone')
+        verb       = 'skipped a delivery' if change_type == 'skipped' else 'rescheduled a delivery'
+        emoji      = '⏭️' if change_type == 'skipped' else '📅'
+        subject    = f"{emoji} Delivery {change_type}: {product} — {m.get('farm_name')} → {m.get('buyer_name')}"
+        old_label  = old_date if old_date else '(no date set)'
+        html = f"""
+        <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:24px;background:#f7f2e8;">
+          <div style="background:#fff;border-radius:14px;border:1px solid #e5e7eb;overflow:hidden;">
+            <div style="padding:20px 24px;background:#3D6B34;color:#fff;">
+              <h1 style="margin:0;font-size:20px;">{emoji} Delivery {change_type.capitalize()}</h1>
+            </div>
+            <div style="padding:20px 24px;color:#111827;font-size:14px;line-height:1.55;">
+              <p>{actor} {verb} for the standing order below.</p>
+              <table style="width:100%;border-collapse:collapse;margin:12px 0;">
+                <tr><td style="padding:6px 0;color:#6b7280;width:160px;">Product</td><td><strong>{product}</strong></td></tr>
+                <tr><td style="padding:6px 0;color:#6b7280;">Farm → Restaurant</td><td>{m.get('farm_name')} → {m.get('buyer_name')}</td></tr>
+                <tr><td style="padding:6px 0;color:#6b7280;">Was scheduled</td><td>{old_label}</td></tr>
+                <tr><td style="padding:6px 0;color:#6b7280;">New date</td><td><strong>{new_date}</strong></td></tr>
+              </table>
+              {'<p style="background:#f9fafb;border-left:3px solid #3D6B34;padding:10px 14px;border-radius:4px;color:#374151;"><em>"' + reason + '"</em></p>' if reason else ''}
+              <p style="margin-top:18px;">
+                <a href="{base_url}/restaurant/standing-orders" style="display:inline-block;padding:10px 20px;background:#3D6B34;color:#fff;text-decoration:none;border-radius:8px;font-weight:bold;font-size:14px;">View standing orders →</a>
+              </p>
+            </div>
+          </div>
+        </div>
+        """
+        results = []
+        for email in [m.get('buyer_email'), m.get('farm_email')]:
+            if email:
+                sent, note = _send_email(email, subject, html)
+                results.append({"to": email, "sent": sent, "note": note})
+        return {"recipients": results}
+    except Exception as e:
+        return {"sent": False, "note": f"schedule-change notify exception: {e}"}
+
+
+@marketplace_router.post("/standing-orders/{standing_order_id}/skip")
+def skip_standing_order(standing_order_id: int, data: StandingOrderSkip,
+                        db: Session = Depends(get_db)):
+    """Skip the next scheduled delivery, advance NextDeliveryDate by one cycle,
+    and email both buyer and farm. Status='overdue' resets to 'active'."""
+    row = db.execute(text(
+        "SELECT Frequency, DayOfWeek, NextDeliveryDate FROM RestaurantStandingOrders WHERE StandingOrderID = :id"
+    ), {"id": standing_order_id}).fetchone()
+    if not row:
+        raise HTTPException(404, "Standing order not found.")
+    old_date  = row.NextDeliveryDate.isoformat() if row.NextDeliveryDate else None
+    base      = row.NextDeliveryDate or None
+    next_date = _compute_next_delivery_date(row.Frequency, row.DayOfWeek, from_date=base).isoformat()
+    db.execute(text("""
+        UPDATE RestaurantStandingOrders
+        SET NextDeliveryDate = :nd,
+            Status = CASE WHEN Status = 'overdue' THEN 'active' ELSE Status END,
+            UpdatedAt = GETDATE()
+        WHERE StandingOrderID = :id
+    """), {"id": standing_order_id, "nd": next_date})
+    # Notify the OTHER party of the skip.
+    recipient_side = 'buyer' if data.InitiatedBy == 'farm' else 'farm'
+    _notify_standing_order_event(
+        db, standing_order_id, recipient_side=recipient_side,
+        notification_type='standing_order.skipped',
+        title=f"⏭️ Delivery skipped ({old_date or '—'})",
+        body=(data.Reason or '') + f" Next delivery: {next_date}.",
+    )
+    db.commit()
+    notify = _notify_schedule_change(db, standing_order_id, 'skipped',
+                                     old_date, next_date, data.Reason, data.InitiatedBy)
+    return {"message": "Delivery skipped.",
+            "OldDate": old_date, "NextDeliveryDate": next_date, "notify": notify}
+
+
+@marketplace_router.post("/standing-orders/{standing_order_id}/reschedule")
+def reschedule_standing_order(standing_order_id: int, data: StandingOrderReschedule,
+                              db: Session = Depends(get_db)):
+    """Move the next delivery to a specific future date and email both parties."""
+    from datetime import date as _date
+    try:
+        new_date = _date.fromisoformat(data.NewDate)
+    except ValueError:
+        raise HTTPException(400, "NewDate must be ISO YYYY-MM-DD.")
+    if new_date < _date.today():
+        raise HTTPException(400, "NewDate must be today or later.")
+
+    row = db.execute(text(
+        "SELECT NextDeliveryDate FROM RestaurantStandingOrders WHERE StandingOrderID = :id"
+    ), {"id": standing_order_id}).fetchone()
+    if not row:
+        raise HTTPException(404, "Standing order not found.")
+    old_date = row.NextDeliveryDate.isoformat() if row.NextDeliveryDate else None
+    db.execute(text("""
+        UPDATE RestaurantStandingOrders
+        SET NextDeliveryDate = :nd,
+            Status = CASE WHEN Status = 'overdue' THEN 'active' ELSE Status END,
+            UpdatedAt = GETDATE()
+        WHERE StandingOrderID = :id
+    """), {"id": standing_order_id, "nd": new_date.isoformat()})
+    recipient_side = 'buyer' if data.InitiatedBy == 'farm' else 'farm'
+    _notify_standing_order_event(
+        db, standing_order_id, recipient_side=recipient_side,
+        notification_type='standing_order.rescheduled',
+        title=f"📅 Delivery rescheduled to {new_date.isoformat()}",
+        body=(data.Reason or '') + f" (was {old_date or '—'}).",
+    )
+    db.commit()
+    notify = _notify_schedule_change(db, standing_order_id, 'rescheduled',
+                                     old_date, new_date.isoformat(), data.Reason, data.InitiatedBy)
+    return {"message": "Delivery rescheduled.",
+            "OldDate": old_date, "NextDeliveryDate": new_date.isoformat(), "notify": notify}
+
+
+@marketplace_router.delete("/standing-orders/{standing_order_id}")
+def delete_standing_order(standing_order_id: int, db: Session = Depends(get_db)):
+    db.execute(text("DELETE FROM RestaurantStandingOrders WHERE StandingOrderID = :id"),
+               {"id": standing_order_id})
+    db.commit()
+    return {"message": "Standing order deleted."}
+
+
+# ─────────────────────────────────────────────
+# RESTAURANT — "AVAILABLE THIS WEEK" EMAIL DIGEST
+# ─────────────────────────────────────────────
+
+class DigestSubscriptionUpsert(BaseModel):
+    BuyerBusinessID: int
+    Email:           str
+    Frequency:       str  = 'weekly'
+    SavedFarmsOnly:  bool = False
+    Status:          str  = 'active'
+
+
+@marketplace_router.get("/digest-subscription")
+def get_digest_subscription(buyer_business_id: int, db: Session = Depends(get_db)):
+    row = db.execute(text("""
+        SELECT SubscriptionID, BuyerBusinessID, Email, Frequency,
+               SavedFarmsOnly, Status, LastSentAt, CreatedAt, UpdatedAt
+        FROM RestaurantDigestSubscriptions
+        WHERE BuyerBusinessID = :bid
+    """), {"bid": buyer_business_id}).fetchone()
+    return dict(row._mapping) if row else None
+
+
+@marketplace_router.post("/digest-subscription")
+def upsert_digest_subscription(data: DigestSubscriptionUpsert, db: Session = Depends(get_db)):
+    existing = db.execute(text("""
+        SELECT SubscriptionID FROM RestaurantDigestSubscriptions WHERE BuyerBusinessID = :bid
+    """), {"bid": data.BuyerBusinessID}).fetchone()
+    if existing:
+        db.execute(text("""
+            UPDATE RestaurantDigestSubscriptions
+            SET Email = :e, Frequency = :f, SavedFarmsOnly = :s, Status = :st, UpdatedAt = GETDATE()
+            WHERE BuyerBusinessID = :bid
+        """), {"e": data.Email, "f": data.Frequency,
+               "s": 1 if data.SavedFarmsOnly else 0,
+               "st": data.Status, "bid": data.BuyerBusinessID})
+    else:
+        db.execute(text("""
+            INSERT INTO RestaurantDigestSubscriptions
+                (BuyerBusinessID, Email, Frequency, SavedFarmsOnly, Status)
+            VALUES (:bid, :e, :f, :s, :st)
+        """), {"bid": data.BuyerBusinessID, "e": data.Email, "f": data.Frequency,
+               "s": 1 if data.SavedFarmsOnly else 0, "st": data.Status})
+    db.commit()
+    return {"message": "Subscription saved."}
+
+
+@marketplace_router.delete("/digest-subscription")
+def remove_digest_subscription(buyer_business_id: int, db: Session = Depends(get_db)):
+    db.execute(text("DELETE FROM RestaurantDigestSubscriptions WHERE BuyerBusinessID = :bid"),
+               {"bid": buyer_business_id})
+    db.commit()
+    return {"message": "Unsubscribed."}
+
+
+def _build_digest_items(db: Session, buyer_business_id: int, saved_farms_only: bool):
+    """Items available within the next 7 days, optionally restricted to the buyer's saved farms."""
+    saved_filter = ""
+    if saved_farms_only:
+        saved_filter = "AND b.BusinessID IN (SELECT FarmBusinessID FROM RestaurantSavedFarms WHERE BuyerBusinessID = :bid)"
+
+    items = []
+    # Produce
+    rows = db.execute(text(f"""
+        SELECT TOP 50
+            'produce' AS ProductType, p.ProduceID AS SourceID,
+            i.IngredientName AS Title, p.Quantity, p.RetailPrice, p.WholesalePrice,
+            p.AvailableDate, b.BusinessID AS FarmID, b.BusinessName AS FarmName,
+            a.AddressCity, a.AddressState
+        FROM Produce p
+        JOIN Ingredients i ON p.IngredientID = i.IngredientID
+        JOIN Business b    ON p.BusinessID   = b.BusinessID
+        LEFT JOIN Address a ON b.AddressID = a.AddressID
+        WHERE p.Quantity > 0
+          AND (p.ExpirationDate IS NULL OR p.ExpirationDate >= CAST(GETDATE() AS DATE))
+          AND (p.AvailableDate IS NULL OR p.AvailableDate <= DATEADD(DAY, 7, GETDATE()))
+          {saved_filter}
+        ORDER BY p.AvailableDate ASC
+    """), {"bid": buyer_business_id}).fetchall()
+    items += [dict(r._mapping) for r in rows]
+
+    # Meat
+    rows = db.execute(text(f"""
+        SELECT TOP 50
+            'meat' AS ProductType, m.MeatInventoryID AS SourceID,
+            CONCAT(i.IngredientName, ' - ', ic.IngredientCut) AS Title,
+            m.Quantity, m.RetailPrice, m.WholesalePrice,
+            m.AvailableDate, b.BusinessID AS FarmID, b.BusinessName AS FarmName,
+            a.AddressCity, a.AddressState
+        FROM MeatInventory m
+        JOIN Ingredients i      ON m.IngredientID = i.IngredientID
+        LEFT JOIN Cut ic        ON m.IngredientCutID = ic.IngredientCutID
+        JOIN Business b         ON m.BusinessID = b.BusinessID
+        LEFT JOIN Address a     ON b.AddressID  = a.AddressID
+        WHERE m.ShowMeat = 1 AND m.Quantity > 0
+          AND (m.AvailableDate IS NULL OR m.AvailableDate <= DATEADD(DAY, 7, GETDATE()))
+          {saved_filter}
+        ORDER BY m.AvailableDate ASC
+    """), {"bid": buyer_business_id}).fetchall()
+    items += [dict(r._mapping) for r in rows]
+
+    return items
+
+
+@marketplace_router.get("/digest-preview")
+def preview_digest(buyer_business_id: int, db: Session = Depends(get_db)):
+    """Returns the items that would appear in the next digest — for the opt-in UI preview."""
+    sub = db.execute(text("""
+        SELECT SavedFarmsOnly FROM RestaurantDigestSubscriptions WHERE BuyerBusinessID = :bid
+    """), {"bid": buyer_business_id}).fetchone()
+    saved_only = bool(sub and sub._mapping.get('SavedFarmsOnly'))
+    items = _build_digest_items(db, buyer_business_id, saved_only)
+    return {"saved_farms_only": saved_only, "item_count": len(items), "items": items[:30]}
+
+
+def _render_digest_html(items, base_url):
+    if not items:
+        body_rows = '<tr><td style="padding:16px;color:#6b7280;font-style:italic;">Nothing fresh from your selected farms this week — check back soon.</td></tr>'
+    else:
+        rows = []
+        for it in items[:50]:
+            title    = it.get('Title') or ''
+            farm     = it.get('FarmName') or ''
+            city     = it.get('AddressCity') or ''
+            state    = it.get('AddressState') or ''
+            location = f"{city}, {state}" if city else ''
+            retail   = it.get('RetailPrice')
+            wholesale = it.get('WholesalePrice')
+            qty      = it.get('Quantity')
+            price_html = ''
+            if wholesale:
+                price_html += f'<span style="color:#8a6a0a;font-weight:bold;">WS ${float(wholesale):.2f}</span> &middot; '
+            if retail is not None:
+                price_html += f'<span style="color:#3D6B34;font-weight:bold;">${float(retail):.2f}</span>'
+            qty_html = f'<span style="color:#6b7280;font-size:12px;">&nbsp;({qty} avail)</span>' if qty else ''
+            rows.append(f"""
+              <tr>
+                <td style="padding:12px 16px;border-bottom:1px solid #f3f4f6;">
+                  <div style="font-weight:600;color:#111827;">{title}</div>
+                  <div style="font-size:12px;color:#6b7280;">{farm}{(' &middot; ' + location) if location else ''}</div>
+                </td>
+                <td style="padding:12px 16px;border-bottom:1px solid #f3f4f6;text-align:right;white-space:nowrap;">{price_html}{qty_html}</td>
+              </tr>""")
+        body_rows = ''.join(rows)
+    return f"""
+    <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;padding:24px;background:#f7f2e8;">
+      <div style="background:#fff;border-radius:14px;border:1px solid #e5e7eb;overflow:hidden;">
+        <div style="padding:20px 24px;background:#3D6B34;color:#fff;">
+          <h1 style="margin:0;font-size:20px;">📬 Available This Week</h1>
+          <p style="margin:4px 0 0;font-size:13px;opacity:0.9;">Fresh from local farms — perfect for menu planning.</p>
+        </div>
+        <table style="width:100%;border-collapse:collapse;">
+          {body_rows}
+        </table>
+        <div style="padding:18px 24px;text-align:center;">
+          <a href="{base_url}/marketplaces/farm-to-table" style="display:inline-block;padding:10px 20px;background:#3D6B34;color:#fff;text-decoration:none;border-radius:8px;font-weight:bold;font-size:14px;">Browse the marketplace →</a>
+        </div>
+        <p style="padding:0 24px 18px;color:#9ca3af;font-size:11px;text-align:center;">
+          Manage this digest at <a href="{base_url}/restaurant/digest" style="color:#3D6B34;">{base_url.replace('https://','').replace('http://','')}/restaurant/digest</a>
+        </p>
+      </div>
+    </div>
+    """
+
+
+def _send_email(to_email, subject, html):
+    api_key   = os.getenv("SENDGRID_API_KEY", "")
+    from_addr = os.getenv("FROM_EMAIL", "john@oatmeal-ai.com")
+    from_name = os.getenv("FROM_NAME", "Oatmeal Farm Network")
+    if not api_key:
+        return False, "SENDGRID_API_KEY not configured"
+    try:
+        import sendgrid
+        from sendgrid.helpers.mail import Mail, Email, To, Content
+        sg = sendgrid.SendGridAPIClient(api_key=api_key)
+        msg = Mail(
+            from_email=Email(from_addr, from_name),
+            to_emails=To(to_email),
+            subject=subject,
+            html_content=Content("text/html", html),
+        )
+        resp = sg.send(msg)
+        return resp.status_code < 300, f"sendgrid status {resp.status_code}"
+    except Exception as e:
+        return False, f"sendgrid error: {e}"
+
+
+@marketplace_router.post("/digest-send-now")
+def send_digest_now(buyer_business_id: int, db: Session = Depends(get_db)):
+    """Build and send the weekly digest immediately via SendGrid."""
+    sub = db.execute(text("""
+        SELECT BuyerBusinessID, Email, SavedFarmsOnly FROM RestaurantDigestSubscriptions
+        WHERE BuyerBusinessID = :bid AND Status = 'active'
+    """), {"bid": buyer_business_id}).fetchone()
+    if not sub:
+        raise HTTPException(404, "No active digest subscription for this business.")
+
+    to_email   = sub._mapping.get('Email')
+    saved_only = bool(sub._mapping.get('SavedFarmsOnly'))
+    items      = _build_digest_items(db, buyer_business_id, saved_only)
+    subject    = f"OFN Marketplace — {len(items)} items available this week"
+    base_url   = os.getenv("OFN_BASE_URL", "https://oatmealfarmnetwork.com")
+    html       = _render_digest_html(items, base_url)
+
+    sent, note = _send_email(to_email, subject, html)
+    if sent:
+        db.execute(text("""
+            UPDATE RestaurantDigestSubscriptions SET LastSentAt = GETDATE(), UpdatedAt = GETDATE()
+            WHERE BuyerBusinessID = :bid
+        """), {"bid": buyer_business_id})
+        db.commit()
+
+    return {
+        "to": to_email,
+        "subject": subject,
+        "item_count": len(items),
+        "sent": sent,
+        "note": note,
+    }
+
+
+# ─────────────────────────────────────────────
+# CRON RUNNER — fires every active digest that's due
+# Designed for an external scheduler (Windows Task Scheduler, GitHub Action, etc.)
+# to POST hourly. Idempotent: only sends to subs whose LastSentAt + interval has passed.
+# ─────────────────────────────────────────────
+
+_DIGEST_INTERVAL_DAYS = {'weekly': 7, 'biweekly': 14, 'monthly': 30}
+
+
+@marketplace_router.post("/digest-run-due")
+def run_due_digests(db: Session = Depends(get_db)):
+    """Send the digest to every active subscription that is due. Records a CronJobRuns row."""
+    from datetime import datetime, timedelta
+
+    run = db.execute(text("""
+        INSERT INTO CronJobRuns (JobName, Status) OUTPUT INSERTED.CronRunID
+        VALUES ('digest-run-due', 'running')
+    """)).fetchone()
+    cron_run_id = run[0]
+    db.commit()
+
+    subs = db.execute(text("""
+        SELECT BuyerBusinessID, Email, Frequency, SavedFarmsOnly, LastSentAt
+        FROM RestaurantDigestSubscriptions
+        WHERE Status = 'active'
+    """)).fetchall()
+
+    base_url = os.getenv("OFN_BASE_URL", "https://oatmealfarmnetwork.com")
+    now      = datetime.utcnow()
+    processed = succeeded = failed = 0
+    notes_lines = []
+
+    for s in subs:
+        m = s._mapping
+        interval = _DIGEST_INTERVAL_DAYS.get(m.get('Frequency') or 'weekly', 7)
+        last     = m.get('LastSentAt')
+        if last and (now - last) < timedelta(days=interval):
+            continue  # not due yet
+        processed += 1
+        bid = m.get('BuyerBusinessID')
+        try:
+            items   = _build_digest_items(db, bid, bool(m.get('SavedFarmsOnly')))
+            subject = f"OFN Marketplace — {len(items)} items available this week"
+            html    = _render_digest_html(items, base_url)
+            sent, note = _send_email(m.get('Email'), subject, html)
+            if sent:
+                succeeded += 1
+                db.execute(text("""
+                    UPDATE RestaurantDigestSubscriptions SET LastSentAt = GETDATE(), UpdatedAt = GETDATE()
+                    WHERE BuyerBusinessID = :bid
+                """), {"bid": bid})
+                db.commit()
+            else:
+                failed += 1
+                notes_lines.append(f"buyer {bid}: {note}")
+        except Exception as e:
+            failed += 1
+            notes_lines.append(f"buyer {bid}: exception {e}")
+
+    status = 'success' if failed == 0 else ('error' if succeeded == 0 else 'partial')
+    db.execute(text("""
+        UPDATE CronJobRuns
+        SET CompletedAt = GETDATE(), Status = :st,
+            ItemsProcessed = :p, ItemsSucceeded = :s, ItemsFailed = :f,
+            Notes = :n
+        WHERE CronRunID = :id
+    """), {
+        "id": cron_run_id, "st": status,
+        "p": processed, "s": succeeded, "f": failed,
+        "n": '\n'.join(notes_lines)[:4000] if notes_lines else None,
+    })
+    db.commit()
+
+    return {
+        "cron_run_id": cron_run_id,
+        "status": status,
+        "subscriptions_checked": len(subs),
+        "processed": processed,
+        "succeeded": succeeded,
+        "failed": failed,
+    }
+
+
+@marketplace_router.get("/cron-runs")
+def list_cron_runs(limit: int = 100, job_name: Optional[str] = None, db: Session = Depends(get_db)):
+    """Recent cron-job runs, newest first. Used by the admin tracking page."""
+    where = ""
+    params = {"lim": limit}
+    if job_name:
+        where = "WHERE JobName = :jn"
+        params["jn"] = job_name
+    rows = db.execute(text(f"""
+        SELECT TOP (:lim) CronRunID, JobName, StartedAt, CompletedAt, Status,
+               ItemsProcessed, ItemsSucceeded, ItemsFailed, Notes
+        FROM CronJobRuns
+        {where}
+        ORDER BY StartedAt DESC
+    """), params).fetchall()
+    return [dict(r._mapping) for r in rows]
