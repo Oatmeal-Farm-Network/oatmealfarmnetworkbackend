@@ -314,6 +314,8 @@ def get_profile(business_id: int, db: Session = Depends(get_db)):
                 b.BusinessX, b.BusinessPinterest, b.BusinessYouTube,
                 b.BusinessTruthSocial, b.BusinessBlog,
                 b.BusinessOtherSocial1, b.BusinessOtherSocial2,
+                b.Cuisine, b.HeadChef, b.SeatingCapacity,
+                b.RestaurantHours, b.YearOpened, b.SourcingPhilosophy,
                 a.AddressStreet, a.AddressApt, a.AddressCity,
                 a.AddressState, a.AddressZip, a.StateIndex, a.country_id,
                 w.Website,
@@ -373,6 +375,12 @@ def get_profile(business_id: int, db: Session = Depends(get_db)):
             "BusinessBlog":         row.BusinessBlog,
             "BusinessOtherSocial1": row.BusinessOtherSocial1,
             "BusinessOtherSocial2": row.BusinessOtherSocial2,
+            "Cuisine":              getattr(row, 'Cuisine', None),
+            "HeadChef":             getattr(row, 'HeadChef', None),
+            "SeatingCapacity":      getattr(row, 'SeatingCapacity', None),
+            "RestaurantHours":      getattr(row, 'RestaurantHours', None),
+            "YearOpened":           getattr(row, 'YearOpened', None),
+            "SourcingPhilosophy":   getattr(row, 'SourcingPhilosophy', None),
         }
     except HTTPException:
         raise
@@ -507,7 +515,13 @@ def update_profile(business_id: int, payload: dict, db: Session = Depends(get_db
                 BusinessTruthSocial = :truth,
                 BusinessBlog        = :blog,
                 BusinessOtherSocial1= :other1,
-                BusinessOtherSocial2= :other2
+                BusinessOtherSocial2= :other2,
+                Cuisine             = :cuisine,
+                HeadChef            = :chef,
+                SeatingCapacity     = :capacity,
+                RestaurantHours     = :hours,
+                YearOpened          = :year_opened,
+                SourcingPhilosophy  = :sourcing
             WHERE BusinessID = :bid
         """), {
             "name":      (payload.get("BusinessName")     or "").strip(),
@@ -523,6 +537,12 @@ def update_profile(business_id: int, payload: dict, db: Session = Depends(get_db
             "blog":      s("BusinessBlog"),
             "other1":    s("BusinessOtherSocial1"),
             "other2":    s("BusinessOtherSocial2"),
+            "cuisine":   s("Cuisine"),
+            "chef":      s("HeadChef"),
+            "capacity":  payload.get("SeatingCapacity") or None,
+            "hours":     s("RestaurantHours"),
+            "year_opened": payload.get("YearOpened") or None,
+            "sourcing":  s("SourcingPhilosophy"),
             "bid":       business_id,
         })
 

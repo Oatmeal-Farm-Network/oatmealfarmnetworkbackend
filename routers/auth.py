@@ -247,9 +247,10 @@ def update_login(payload: UpdateLoginRequest, current_user=Depends(get_current_u
 @router.get("/my-businesses")
 def GetMyBusinesses(PeopleID: int, Db: Session = Depends(get_db)):
     rows = (
-        Db.query(models.Business, models.Address)
+        Db.query(models.Business, models.Address, models.BusinessTypeLookup)
         .join(models.BusinessAccess, models.Business.BusinessID == models.BusinessAccess.BusinessID)
         .outerjoin(models.Address, models.Business.AddressID == models.Address.AddressID)
+        .outerjoin(models.BusinessTypeLookup, models.Business.BusinessTypeID == models.BusinessTypeLookup.BusinessTypeID)
         .filter(
             models.BusinessAccess.PeopleID == PeopleID,
             models.BusinessAccess.Active == 1
@@ -261,12 +262,13 @@ def GetMyBusinesses(PeopleID: int, Db: Session = Depends(get_db)):
             "BusinessID": B.BusinessID,
             "BusinessName": B.BusinessName,
             "BusinessTypeID": B.BusinessTypeID,
+            "BusinessType":   BT.BusinessType if BT else None,
             "AddressCity":    A.AddressCity    if A else None,
             "AddressState":   A.AddressState   if A else None,
             "AddressZip":     A.AddressZip     if A else None,
             "AddressCountry": A.AddressCountry if A else None,
         }
-        for B, A in rows
+        for B, A, BT in rows
     ]
 
 

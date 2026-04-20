@@ -49,6 +49,7 @@ from routers import blog
 from routers import accounting
 from routers import animals
 from routers import platform_settings
+from routers import platform_subscriptions
 from routers import event_registration_cart
 from routers import event_meals
 from routers import event_exports
@@ -60,6 +61,7 @@ from routers import stripe_payments
 
 from routers.marketplace import marketplace_router
 from marketplace_stripe import stripe_router
+from routers import notifications
 
 load_dotenv()
 
@@ -197,6 +199,7 @@ app.include_router(meat.router)
 
 app.include_router(marketplace_router, prefix="/api/marketplace")
 app.include_router(stripe_router, prefix="/api/marketplace/payments")
+app.include_router(notifications.router)
 app.include_router(forgot_password.router)
 app.include_router(weather.router)
 app.include_router(notes.router)
@@ -227,6 +230,7 @@ app.include_router(blog.router)
 app.include_router(accounting.router)
 app.include_router(animals.router)
 app.include_router(platform_settings.router)
+app.include_router(platform_subscriptions.platform_subscriptions_router)
 app.include_router(event_registration_cart.router)
 app.include_router(event_meals.router)
 app.include_router(event_exports.router)
