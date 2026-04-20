@@ -787,6 +787,158 @@ def delete_page(page_id: int, db: Session = Depends(get_db)):
     return {"success": True}
 
 
+# ── Page templates ───────────────────────────────────────────────
+
+class PageFromTemplate(BaseModel):
+    website_id: int
+    business_id: int
+    template_key: str
+    page_name: Optional[str] = None
+    slug: Optional[str] = None
+
+
+def _unique_slug(db: Session, website_id: int, base: str) -> str:
+    base = (base or "page").strip().lower()
+    base = re.sub(r"[^a-z0-9-]+", "-", base).strip("-") or "page"
+    slug = base
+    i = 2
+    while db.query(models.BusinessWebPage).filter(
+        models.BusinessWebPage.WebsiteID == website_id,
+        models.BusinessWebPage.Slug == slug,
+    ).first():
+        slug = f"{base}-{i}"
+        i += 1
+    return slug
+
+
+@router.get("/templates")
+def list_page_templates(business_id: int, db: Session = Depends(get_db)):
+    """Return page templates applicable to this business's BusinessTypeID."""
+    import page_templates
+    biz = db.query(models.Business).filter(models.Business.BusinessID == business_id).first()
+    if not biz:
+        raise HTTPException(status_code=404, detail="Business not found")
+    return {
+        "business_type_id": biz.BusinessTypeID,
+        "templates": page_templates.list_templates(biz.BusinessTypeID),
+    }
+
+
+@router.post("/pages/from-template")
+def create_page_from_template(body: PageFromTemplate, db: Session = Depends(get_db)):
+    """Create a page + seed blocks from a named template."""
+    import page_templates
+    tpl = page_templates.get_template(body.template_key)
+    if not tpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    # Gate: template must apply to this business's BusinessTypeID (unless universal)
+    gate = tpl.get("business_type_ids")
+    if gate is not None:
+        biz = db.query(models.Business).filter(models.Business.BusinessID == body.business_id).first()
+        if not biz or biz.BusinessTypeID not in gate:
+            raise HTTPException(status_code=403, detail="Template not available for this business type")
+
+    name = (body.page_name or tpl.get("name") or "New Page").strip()
+    slug = _unique_slug(db, body.website_id, body.slug or tpl.get("slug") or name)
+
+    # Sort order: append at end
+    last = db.query(models.BusinessWebPage).filter(
+        models.BusinessWebPage.WebsiteID == body.website_id
+    ).order_by(models.BusinessWebPage.SortOrder.desc()).first()
+    next_order = (last.SortOrder + 1) if last and last.SortOrder is not None else 0
+
+    page = models.BusinessWebPage(
+        WebsiteID=body.website_id, BusinessID=body.business_id,
+        PageName=name, Slug=slug,
+        PageTitle=tpl.get("page_title"),
+        MetaDescription=tpl.get("meta_description"),
+        SortOrder=next_order, IsPublished=True, IsHomePage=False,
+        IsNavHeading=False,
+        CreatedAt=datetime.utcnow(), UpdatedAt=datetime.utcnow()
+    )
+    db.add(page); db.commit(); db.refresh(page)
+
+    blocks_out = []
+    for i, b in enumerate(tpl.get("default_blocks", [])):
+        block = models.BusinessWebBlock(
+            PageID=page.PageID,
+            BlockType=b.get("block_type", "content"),
+            BlockData=json.dumps(b.get("block_data", {})),
+            SortOrder=i,
+            CreatedAt=datetime.utcnow(), UpdatedAt=datetime.utcnow(),
+        )
+        db.add(block); blocks_out.append(block)
+    db.commit()
+    for bl in blocks_out:
+        db.refresh(bl)
+
+    return {
+        "page": _ser_page(page),
+        "blocks": [_ser_block(b) for b in blocks_out],
+        "template_key": tpl["key"],
+    }
+
+
+class PagesFromTemplatesBulk(BaseModel):
+    website_id: int
+    business_id: int
+    template_keys: List[str]
+
+
+@router.post("/pages/from-templates-bulk")
+def create_pages_from_templates_bulk(body: PagesFromTemplatesBulk, db: Session = Depends(get_db)):
+    """Apply a batch of templates to a site in one call. Best-effort: skips invalid
+    keys and templates the business type isn't entitled to, returns what was created
+    plus what was skipped and why."""
+    import page_templates
+
+    biz = db.query(models.Business).filter(models.Business.BusinessID == body.business_id).first()
+    if not biz:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    last = db.query(models.BusinessWebPage).filter(
+        models.BusinessWebPage.WebsiteID == body.website_id
+    ).order_by(models.BusinessWebPage.SortOrder.desc()).first()
+    next_order = (last.SortOrder + 1) if last and last.SortOrder is not None else 0
+
+    created, skipped = [], []
+    for key in body.template_keys:
+        tpl = page_templates.get_template(key)
+        if not tpl:
+            skipped.append({"template_key": key, "reason": "not_found"}); continue
+        gate = tpl.get("business_type_ids")
+        if gate is not None and biz.BusinessTypeID not in gate:
+            skipped.append({"template_key": key, "reason": "gated"}); continue
+
+        name = (tpl.get("name") or "New Page").strip()
+        slug = _unique_slug(db, body.website_id, tpl.get("slug") or name)
+        page = models.BusinessWebPage(
+            WebsiteID=body.website_id, BusinessID=body.business_id,
+            PageName=name, Slug=slug,
+            PageTitle=tpl.get("page_title"),
+            MetaDescription=tpl.get("meta_description"),
+            SortOrder=next_order, IsPublished=True, IsHomePage=False,
+            IsNavHeading=False,
+            CreatedAt=datetime.utcnow(), UpdatedAt=datetime.utcnow(),
+        )
+        db.add(page); db.commit(); db.refresh(page)
+        next_order += 1
+
+        for i, b in enumerate(tpl.get("default_blocks", [])):
+            db.add(models.BusinessWebBlock(
+                PageID=page.PageID,
+                BlockType=b.get("block_type", "content"),
+                BlockData=json.dumps(b.get("block_data", {})),
+                SortOrder=i,
+                CreatedAt=datetime.utcnow(), UpdatedAt=datetime.utcnow(),
+            ))
+        db.commit()
+        created.append({"template_key": key, "page": _ser_page(page)})
+
+    return {"created": created, "skipped": skipped}
+
+
 # ── Block endpoints ──────────────────────────────────────────────
 
 @router.get("/blocks/{page_id}")
@@ -841,6 +993,116 @@ def reorder_blocks(body: BlockReorder, db: Session = Depends(get_db)):
 
 
 # ── Live content endpoints (for dynamic blocks) ──────────────────
+
+@router.get("/content/members")
+def get_association_members(business_id: int, q: Optional[str] = None, state: Optional[str] = None,
+                             max_items: int = 24, db: Session = Depends(get_db)):
+    """Return member businesses for an association.
+    A business is treated as a 'member' of the association if any of its animals carry an
+    AnimalRegistration whose RegType matches the association's acronym. Associations are
+    matched to the requesting Business by name (best-effort)."""
+    try:
+        # Resolve the association's acronym. Match by AssociationName ≈ BusinessName (case-insensitive).
+        acro_row = db.execute(text("""
+            SELECT TOP 1 AssociationAcronym FROM Associations a
+            JOIN Business b ON LOWER(LTRIM(RTRIM(a.AssociationName))) = LOWER(LTRIM(RTRIM(b.BusinessName)))
+            WHERE b.BusinessID = :bid AND a.AssociationAcronym IS NOT NULL AND a.AssociationAcronym <> ''
+        """), {"bid": business_id}).fetchone()
+        if not acro_row:
+            return []  # no acronym on record → can't resolve members
+        acronym = acro_row[0]
+
+        filters = ["reg.RegType = :acro", "b.BusinessID <> :selfid"]
+        params  = {"acro": acronym, "selfid": business_id, "top": max_items}
+        if q:
+            filters.append("b.BusinessName LIKE :q")
+            params["q"] = f"%{q}%"
+        if state:
+            filters.append("addr.AddressState = :state")
+            params["state"] = state
+        where = " AND ".join(filters)
+
+        rows = db.execute(text(f"""
+            SELECT TOP (:top)
+                b.BusinessID, b.BusinessName, b.Logo, b.BusinessWebsite,
+                addr.AddressCity, addr.AddressState
+            FROM Business b
+            JOIN Animals a              ON a.BusinessID = b.BusinessID
+            JOIN AnimalRegistration reg ON reg.AnimalID = a.AnimalID
+            LEFT JOIN Address addr      ON addr.AddressID = b.AddressID
+            WHERE {where}
+            GROUP BY b.BusinessID, b.BusinessName, b.Logo, b.BusinessWebsite,
+                     addr.AddressCity, addr.AddressState
+            ORDER BY b.BusinessName
+        """), params).fetchall()
+        return [{
+            "business_id": r.BusinessID,
+            "name":        r.BusinessName,
+            "logo_url":    r.Logo,
+            "website_url": r.BusinessWebsite,
+            "city":        r.AddressCity,
+            "state":       r.AddressState,
+            "slug":        str(r.BusinessID),
+        } for r in rows]
+    except Exception as e:
+        import traceback
+        print(f"[content/members] ERROR for business_id={business_id}: {e}")
+        traceback.print_exc()
+        return []
+
+
+@router.get("/content/registry")
+def get_association_registry(business_id: int, name: Optional[str] = None,
+                              reg_number: Optional[str] = None, owner: Optional[str] = None,
+                              max_results: int = 20, db: Session = Depends(get_db)):
+    """Search animal registrations scoped to this association's acronym."""
+    if not any([name, reg_number, owner]):
+        return []
+    try:
+        acro_row = db.execute(text("""
+            SELECT TOP 1 AssociationAcronym FROM Associations a
+            JOIN Business b ON LOWER(LTRIM(RTRIM(a.AssociationName))) = LOWER(LTRIM(RTRIM(b.BusinessName)))
+            WHERE b.BusinessID = :bid AND a.AssociationAcronym IS NOT NULL AND a.AssociationAcronym <> ''
+        """), {"bid": business_id}).fetchone()
+        if not acro_row:
+            return []
+        acronym = acro_row[0]
+
+        filters = ["reg.RegType = :acro"]
+        params  = {"acro": acronym, "top": max_results}
+        if name:
+            filters.append("a.FullName LIKE :name")
+            params["name"] = f"%{name}%"
+        if reg_number:
+            filters.append("reg.RegNumber LIKE :reg")
+            params["reg"] = f"%{reg_number}%"
+        if owner:
+            filters.append("b.BusinessName LIKE :owner")
+            params["owner"] = f"%{owner}%"
+        where = " AND ".join(filters)
+
+        rows = db.execute(text(f"""
+            SELECT TOP (:top)
+                a.AnimalID, a.FullName, reg.RegNumber, b.BusinessName
+            FROM Animals a
+            JOIN AnimalRegistration reg ON reg.AnimalID = a.AnimalID
+            LEFT JOIN Business b        ON b.BusinessID = a.BusinessID
+            WHERE {where}
+            ORDER BY a.FullName
+        """), params).fetchall()
+        return [{
+            "animal_id":  r.AnimalID,
+            "name":       r.FullName,
+            "reg_number": r.RegNumber,
+            "owner":      r.BusinessName,
+            "detail_url": f"/livestock/{r.AnimalID}",
+        } for r in rows]
+    except Exception as e:
+        import traceback
+        print(f"[content/registry] ERROR for business_id={business_id}: {e}")
+        traceback.print_exc()
+        return []
+
 
 @router.get("/content/livestock")
 def get_livestock(business_id: int, include_unpublished: int = 0, db: Session = Depends(get_db)):

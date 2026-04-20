@@ -81,6 +81,22 @@ except Exception as _e:
     insurance_tool = None
     INSURANCE_AVAILABLE = False
 
+try:
+    from events import (
+        event_tools,
+        list_upcoming_events_tool,
+        get_event_details_tool,
+        event_attendee_count_tool,
+    )
+    EVENTS_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] events unavailable: {_e}")
+    event_tools = []
+    list_upcoming_events_tool = None
+    get_event_details_tool = None
+    event_attendee_count_tool = None
+    EVENTS_AVAILABLE = False
+
 VALID_ADVISORY_TYPES = {"weather", "livestock", "crops", "mixed"}
 ADVISORY_TYPE_ALIASES = {
     "crop": "crops",
@@ -703,6 +719,8 @@ Write like you're talking to a friend."""
         bound_tools.extend(subsidies_tools)
     if INSURANCE_AVAILABLE:
         bound_tools.extend(insurance_tools)
+    if EVENTS_AVAILABLE:
+        bound_tools.extend(event_tools)
     llm_with_tools = llm.bind_tools(bound_tools) if bound_tools else llm
 
     # 5. Tool Execution Loop (ReAct Pattern)
@@ -716,6 +734,7 @@ Write like you're talking to a friend."""
     price_context = ""
     subsidies_context = ""
     insurance_context = ""
+    events_context = ""
     max_iterations = 3
     final_response = ""
 
@@ -740,6 +759,8 @@ Write like you're talking to a friend."""
                 current_input += f"\n\n[Subsidies / Grants]: {subsidies_context}"
             if insurance_context:
                 current_input += f"\n\n[Crop Insurance]: {insurance_context}"
+            if events_context:
+                current_input += f"\n\n[Farm Events]: {events_context}"
             response = llm_with_tools.invoke(current_input)
 
             # Check for tool calls
@@ -820,6 +841,24 @@ Write like you're talking to a friend."""
                         print(f"[Advisory Agent] Executing Insurance Tool: {crop}")
                         tool_result = insurance_tool.invoke({"crop": crop})
                         insurance_context = (insurance_context + "\n\n" if insurance_context else "") + tool_result
+                    elif tc_name == 'list_upcoming_events_tool' and EVENTS_AVAILABLE:
+                        args = {
+                            "business_id": int(tc_args.get('business_id', 0) or 0),
+                            "limit": int(tc_args.get('limit', 10) or 10),
+                        }
+                        print(f"[Advisory Agent] Executing List Upcoming Events Tool: {args}")
+                        tool_result = list_upcoming_events_tool.invoke(args)
+                        events_context = (events_context + "\n\n" if events_context else "") + tool_result
+                    elif tc_name == 'get_event_details_tool' and EVENTS_AVAILABLE:
+                        eid = int(tc_args.get('event_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Get Event Details Tool: {eid}")
+                        tool_result = get_event_details_tool.invoke({"event_id": eid})
+                        events_context = (events_context + "\n\n" if events_context else "") + tool_result
+                    elif tc_name == 'event_attendee_count_tool' and EVENTS_AVAILABLE:
+                        eid = int(tc_args.get('event_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Event Attendee Count Tool: {eid}")
+                        tool_result = event_attendee_count_tool.invoke({"event_id": eid})
+                        events_context = (events_context + "\n\n" if events_context else "") + tool_result
                 continue  # Loop back to LLM with new context
 
             # No tool calls - we have our answer

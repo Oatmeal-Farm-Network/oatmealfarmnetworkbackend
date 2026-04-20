@@ -1,11 +1,33 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db
+from database import get_db, SessionLocal
 import models
 import datetime
 
 router = APIRouter(prefix="/api/businesses", tags=["businesses"])
+
+
+def _seed_business_types():
+    """Idempotent seed of business categories surfaced in the public /directory.
+    Runs once on module load — safe to re-run because each insert is gated by a
+    NOT EXISTS check on BusinessType."""
+    seed_types = [
+        "Hunger Relief Organization",
+    ]
+    try:
+        with SessionLocal() as db:
+            for bt in seed_types:
+                db.execute(text("""
+                    IF NOT EXISTS (SELECT 1 FROM businesstypelookup WHERE BusinessType = :bt)
+                    INSERT INTO businesstypelookup (BusinessType) VALUES (:bt)
+                """), {"bt": bt})
+            db.commit()
+    except Exception as e:
+        print(f"[businesses] seed_business_types error: {e}")
+
+
+_seed_business_types()
 
 
 @router.get("/{business_id}/team")

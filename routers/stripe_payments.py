@@ -174,6 +174,14 @@ def confirm_payment(cart_id: int, payload: dict, db: Session = Depends(get_db)):
 
     if cart_status == "paid":
         _mark_entries_paid(db, cart_id)
+        try:
+            from routers.events import _check_and_record_sold_out
+            eid = db.execute(text("SELECT EventID FROM OFNEventRegistrationCart WHERE CartID = :id"),
+                             {"id": cart_id}).scalar()
+            if eid:
+                _check_and_record_sold_out(db, int(eid))
+        except Exception as e:
+            print(f"[stripe_payments] sold-out check failed: {e}")
     db.commit()
     if cart_status == "paid":
         _send_cart_receipt(db, cart_id)
@@ -201,6 +209,14 @@ def capture_payment(cart_id: int, db: Session = Depends(get_db)):
          WHERE CartID = :id
     """), {"id": cart_id, "amt": amount_paid})
     _mark_entries_paid(db, cart_id)
+    try:
+        from routers.events import _check_and_record_sold_out
+        eid = db.execute(text("SELECT EventID FROM OFNEventRegistrationCart WHERE CartID = :id"),
+                         {"id": cart_id}).scalar()
+        if eid:
+            _check_and_record_sold_out(db, int(eid))
+    except Exception as e:
+        print(f"[stripe_payments] sold-out check failed: {e}")
     db.commit()
     _send_cart_receipt(db, cart_id)
     return {"Status": "paid", "AmountPaid": amount_paid}

@@ -814,7 +814,8 @@ def get_seller_listings(business_id: int, db: Session = Depends(get_db)):
                p.WholesalePrice, 'unit' AS UnitLabel,
                p.Quantity AS QuantityAvailable,
                p.IsOrganic, p.IsLocal, p.ShowProduce AS IsActive,
-               p.AvailableDate, p.ExpirationDate
+               p.AvailableDate, p.ExpirationDate,
+               i.IngredientImage AS ImageURL
         FROM Produce p
         JOIN Ingredients i ON p.IngredientID = i.IngredientID
         WHERE p.BusinessID = :bid
@@ -839,7 +840,8 @@ def get_seller_listings(business_id: int, db: Session = Depends(get_db)):
                m.RetailPrice AS UnitPrice, m.WholesalePrice,
                m.WeightUnit AS UnitLabel, m.Quantity AS QuantityAvailable,
                0 AS IsOrganic, 1 AS IsLocal, m.ShowMeat AS IsActive,
-               m.AvailableDate, NULL AS ExpirationDate
+               m.AvailableDate, NULL AS ExpirationDate,
+               i.IngredientImage AS ImageURL
         FROM MeatInventory m
         JOIN Ingredients i ON m.IngredientID = i.IngredientID
         LEFT JOIN Cut ic ON m.IngredientCutID = ic.IngredientCutID
@@ -865,7 +867,8 @@ def get_seller_listings(business_id: int, db: Session = Depends(get_db)):
                f.WholesalePrice, 'each' AS UnitLabel,
                f.Quantity AS QuantityAvailable,
                0 AS IsOrganic, 1 AS IsLocal, f.ShowProcessedFood AS IsActive,
-               f.AvailableDate, NULL AS ExpirationDate
+               f.AvailableDate, NULL AS ExpirationDate,
+               f.ImageURL AS ImageURL
         FROM ProcessedFood f
         WHERE f.BusinessID = :bid
         ORDER BY f.ProcessedFoodID DESC
@@ -887,7 +890,8 @@ def get_seller_listings(business_id: int, db: Session = Depends(get_db)):
         SELECT pr.ProductID AS SourceID, 'product' AS ProductType,
                pr.Title, pr.UnitPrice, pr.WholesalePrice, pr.UnitLabel,
                pr.QuantityAvailable, pr.IsOrganic, pr.IsActive,
-               pr.CategoryName, NULL AS ExpirationDate, NULL AS AvailableDate
+               pr.CategoryName, NULL AS ExpirationDate, NULL AS AvailableDate,
+               pr.ImageURL
         FROM MarketplaceProducts pr
         WHERE pr.BusinessID = :bid
         ORDER BY pr.ProductID DESC

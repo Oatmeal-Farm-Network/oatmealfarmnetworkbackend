@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import Optional
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -87,13 +88,191 @@ def ensure_tables(db: Session):
             UnitPrice   DECIMAL(10,2) DEFAULT 0
         )
     """))
+    db.execute(text("""
+        IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'OFNFeedEvents')
+        CREATE TABLE OFNFeedEvents (
+            FeedEventID  INT IDENTITY(1,1) PRIMARY KEY,
+            BusinessID   INT NOT NULL,
+            EventID      INT,
+            Kind         NVARCHAR(50) NOT NULL,
+            Title        NVARCHAR(300),
+            Body         NVARCHAR(MAX),
+            LinkUrl      NVARCHAR(500),
+            ImageUrl     NVARCHAR(500),
+            CreatedDate  DATETIME DEFAULT GETDATE()
+        )
+    """))
+    db.execute(text("""
+        IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'OFNEventBlogDrafts')
+        CREATE TABLE OFNEventBlogDrafts (
+            EventID     INT NOT NULL PRIMARY KEY,
+            BlogID      INT NOT NULL,
+            CreatedDate DATETIME DEFAULT GETDATE()
+        )
+    """))
     db.commit()
+
+
+# ── Social feed helpers ───────────────────────────────────────────────────────
+def _record_feed_event(db: Session, business_id: int, event_id: int | None,
+                       kind: str, title: str, body: str | None = None,
+                       link_url: str | None = None, image_url: str | None = None):
+    """Idempotent per (BusinessID, EventID, Kind) — skip if already recorded."""
+    if not business_id or not kind:
+        return
+    existing = db.execute(text("""
+        SELECT FeedEventID FROM OFNFeedEvents
+         WHERE BusinessID = :bid AND Kind = :kind
+           AND ((:eid IS NULL AND EventID IS NULL) OR EventID = :eid)
+    """), {"bid": business_id, "eid": event_id, "kind": kind}).fetchone()
+    if existing:
+        return
+    db.execute(text("""
+        INSERT INTO OFNFeedEvents (BusinessID, EventID, Kind, Title, Body, LinkUrl, ImageUrl)
+        VALUES (:bid, :eid, :kind, :title, :body, :link, :img)
+    """), {"bid": business_id, "eid": event_id, "kind": kind,
+           "title": title, "body": body, "link": link_url, "img": image_url})
+
+
+def _check_and_record_sold_out(db: Session, event_id: int):
+    """Record a 'event_sold_out' feed entry once capacity is hit."""
+    ev = db.execute(text("""
+        SELECT EventID, BusinessID, EventName, MaxAttendees, EventImage
+          FROM OFNEvents
+         WHERE EventID = :eid AND Deleted = 0
+    """), {"eid": event_id}).mappings().first()
+    if not ev or not ev["MaxAttendees"]:
+        return
+    paid = db.execute(text("""
+        SELECT COUNT(1) FROM OFNEventRegistrationCart
+         WHERE EventID = :eid AND Status = 'paid'
+    """), {"eid": event_id}).scalar() or 0
+    if paid >= ev["MaxAttendees"]:
+        _record_feed_event(
+            db, ev["BusinessID"], ev["EventID"], "event_sold_out",
+            title=f"{ev['EventName']} is sold out!",
+            body=f"All {ev['MaxAttendees']} spots have been claimed. Join the waitlist to be notified if a spot opens up.",
+            link_url=f"/events/{event_id}",
+            image_url=ev.get("EventImage") or None,
+        )
+
+def _slugify_title(title: str) -> str:
+    import re as _re
+    s = (title or '').lower().strip()
+    s = _re.sub(r'[^a-z0-9\s-]', '', s)
+    s = _re.sub(r'[\s]+', '-', s)
+    return s[:200] or 'event-recap'
+
+
+def _generate_event_recap_draft(db: Session, event_id: int):
+    """Idempotent: create a blog draft summarizing a past event. Returns BlogID or None."""
+    existing = db.execute(text("""
+        SELECT BlogID FROM OFNEventBlogDrafts WHERE EventID = :eid
+    """), {"eid": event_id}).scalar()
+    if existing:
+        return int(existing)
+
+    ev = db.execute(text("""
+        SELECT EventID, BusinessID, EventName, EventDescription, EventType,
+               EventStartDate, EventEndDate, EventImage,
+               EventLocationName, EventLocationCity, EventLocationState
+          FROM OFNEvents
+         WHERE EventID = :eid AND Deleted = 0
+    """), {"eid": event_id}).mappings().first()
+    if not ev:
+        return None
+
+    attendee_count = db.execute(text("""
+        SELECT COUNT(1) FROM OFNEventRegistrationCart
+         WHERE EventID = :eid AND Status = 'paid'
+    """), {"eid": event_id}).scalar() or 0
+
+    def _fmt(d):
+        if not d: return ''
+        try: return d.strftime('%B %d, %Y')
+        except Exception: return str(d)
+
+    location_line = ', '.join([x for x in [ev.get('EventLocationCity'), ev.get('EventLocationState')] if x])
+    date_line = _fmt(ev.get('EventStartDate'))
+    if ev.get('EventEndDate') and ev.get('EventEndDate') != ev.get('EventStartDate'):
+        date_line = f"{date_line} – {_fmt(ev['EventEndDate'])}"
+
+    title = f"Recap: {ev['EventName']}"
+    slug = _slugify_title(title) + f"-{event_id}"
+
+    body_parts = [f"<h2>{ev['EventName']}</h2>"]
+    if date_line:
+        body_parts.append(f"<p><strong>{date_line}</strong>{' &middot; ' + location_line if location_line else ''}</p>")
+    body_parts.append(f"<p>Thank you to the {attendee_count} {'attendee' if attendee_count == 1 else 'attendees'} who joined us for this year's {ev['EventName']}. What a great turnout!</p>")
+    if ev.get('EventDescription'):
+        body_parts.append(f"<p><em>About this event:</em></p><p>{ev['EventDescription']}</p>")
+    body_parts.append("<p><em>[Add a few highlights, favorite moments, or thank-yous here. Drop photos from the day into the gallery below and publish when ready.]</em></p>")
+    content = "\n".join(body_parts)
+
+    from datetime import datetime as _dt
+    now = _dt.utcnow()
+    result = db.execute(text("""
+        INSERT INTO blog
+            (BusinessID, Title, Slug, CoverImage, Content, IsPublished, IsFeatured,
+             ShowOnDirectory, ShowOnWebsite, CreatedAt, UpdatedAt)
+        OUTPUT INSERTED.BlogID
+        VALUES
+            (:bid, :title, :slug, :cover, :content, 0, 0, 1, 1, :now, :now)
+    """), {
+        "bid":     int(ev["BusinessID"]),
+        "title":   title,
+        "slug":    slug,
+        "cover":   ev.get("EventImage") or None,
+        "content": content,
+        "now":     now,
+    })
+    blog_id = int(result.fetchone()[0])
+    db.execute(text("""
+        INSERT INTO OFNEventBlogDrafts (EventID, BlogID) VALUES (:eid, :bid)
+    """), {"eid": event_id, "bid": blog_id})
+    return blog_id
+
+
+@router.post("/api/events/{event_id}/generate-recap-draft")
+def generate_recap_draft(event_id: int, db: Session = Depends(get_db)):
+    """Create a blog draft summarizing a past event. Idempotent — returns the existing
+    draft BlogID if one was already generated for this event."""
+    blog_id = _generate_event_recap_draft(db, event_id)
+    if not blog_id:
+        raise HTTPException(404, "Event not found")
+    db.commit()
+    return {"blog_id": blog_id}
+
 
 with __import__('database').SessionLocal() as _db:
     try:
         ensure_tables(_db)
     except Exception as e:
         print(f"Events table setup error: {e}")
+
+
+# ── Public: social feed (platform-generated event announcements) ──────────────
+@router.get("/api/feed")
+def list_feed(
+    business_id: Optional[int] = Query(None),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    where = ["1=1"]
+    params = {}
+    if business_id is not None:
+        where.append("f.BusinessID = :bid")
+        params["bid"] = business_id
+    rows = db.execute(text(f"""
+        SELECT TOP {int(limit)} f.FeedEventID, f.BusinessID, f.EventID, f.Kind,
+               f.Title, f.Body, f.LinkUrl, f.ImageUrl, f.CreatedDate,
+               b.BusinessName
+          FROM OFNFeedEvents f
+          LEFT JOIN Business b ON b.BusinessID = f.BusinessID
+         WHERE {' AND '.join(where)}
+         ORDER BY f.CreatedDate DESC
+    """), params).mappings().all()
+    return [dict(r) for r in rows]
 
 
 # ── Event types lookup ────────────────────────────────────────────────────────
@@ -110,9 +289,20 @@ def list_event_types(db: Session = Depends(get_db)):
 
 # ── Public: list upcoming events ──────────────────────────────────────────────
 @router.get("/api/events")
-def list_events(db: Session = Depends(get_db)):
-    rows = db.execute(text("""
-        SELECT e.EventID, e.BusinessID, b.BusinessName, e.EventName, e.EventDescription,
+def list_events(
+    business_id: Optional[int] = Query(None),
+    limit: Optional[int] = Query(None, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    where = ["e.Deleted = 0", "e.IsPublished = 1",
+            "(e.EventEndDate IS NULL OR e.EventEndDate >= CAST(GETDATE() AS DATE))"]
+    params = {}
+    if business_id is not None:
+        where.append("e.BusinessID = :bid")
+        params["bid"] = business_id
+    top = f"TOP {int(limit)}" if limit else ""
+    rows = db.execute(text(f"""
+        SELECT {top} e.EventID, e.BusinessID, b.BusinessName, e.EventName, e.EventDescription,
                e.EventType, e.EventStartDate, e.EventEndDate, e.EventImage,
                e.EventLocationName, e.EventLocationCity, e.EventLocationState,
                e.EventContactEmail, e.EventPhone, e.EventWebsite,
@@ -120,10 +310,9 @@ def list_events(db: Session = Depends(get_db)):
                (SELECT COUNT(1) FROM OFNEventRegistrations r WHERE r.EventID = e.EventID) AS AttendeeCount
         FROM OFNEvents e
         JOIN Business b ON e.BusinessID = b.BusinessID
-        WHERE e.Deleted = 0 AND e.IsPublished = 1
-          AND (e.EventEndDate IS NULL OR e.EventEndDate >= CAST(GETDATE() AS DATE))
+        WHERE {' AND '.join(where)}
         ORDER BY e.EventStartDate ASC
-    """)).fetchall()
+    """), params).fetchall()
     return [dict(r._mapping) for r in rows]
 
 
@@ -271,13 +460,25 @@ def create_event(data: dict, db: Session = Depends(get_db)):
         "max":    data.get("MaxAttendees") or None,
     })
     new_id = db.execute(text("SELECT SCOPE_IDENTITY() AS id")).fetchone()
+    eid = int(new_id.id)
+    if int(data.get("IsPublished", 1) or 0) == 1 and data.get("BusinessID"):
+        _record_feed_event(
+            db, int(data["BusinessID"]), eid, "event_published",
+            title=f"New event: {data.get('EventName') or 'Untitled Event'}",
+            body=(data.get("EventDescription") or "")[:300] or None,
+            link_url=f"/events/{eid}",
+            image_url=data.get("EventImage") or None,
+        )
     db.commit()
-    return {"EventID": int(new_id.id)}
+    return {"EventID": eid}
 
 
 # ── Update event ──────────────────────────────────────────────────────────────
 @router.put("/api/events/{event_id}")
 def update_event(event_id: int, data: dict, db: Session = Depends(get_db)):
+    prev = db.execute(text("""
+        SELECT IsPublished, BusinessID FROM OFNEvents WHERE EventID = :eid
+    """), {"eid": event_id}).mappings().first()
     db.execute(text("""
         UPDATE OFNEvents SET
             EventName            = :name,
@@ -320,8 +521,47 @@ def update_event(event_id: int, data: dict, db: Session = Depends(get_db)):
         "reqreg": data.get("RegistrationRequired", 0),
         "max":    data.get("MaxAttendees") or None,
     })
+    new_pub = int(data.get("IsPublished", 1) or 0)
+    prev_pub = int((prev and prev["IsPublished"]) or 0) if prev else 0
+    bid = (prev and prev["BusinessID"]) or data.get("BusinessID")
+    if new_pub == 1 and prev_pub == 0 and bid:
+        _record_feed_event(
+            db, int(bid), event_id, "event_published",
+            title=f"New event: {data.get('EventName') or 'Untitled Event'}",
+            body=(data.get("EventDescription") or "")[:300] or None,
+            link_url=f"/events/{event_id}",
+            image_url=data.get("EventImage") or None,
+        )
     db.commit()
     return {"ok": True}
+
+
+# ── Publish / unpublish (lightweight toggle, used by WebsiteBuilder) ──────────
+@router.post("/api/events/{event_id}/publish")
+def publish_event(event_id: int, data: dict = None, db: Session = Depends(get_db)):
+    publish = 1
+    if data and "publish" in data:
+        publish = 1 if data.get("publish") else 0
+    prev = db.execute(text("""
+        SELECT EventName, EventDescription, EventImage, IsPublished, BusinessID
+          FROM OFNEvents WHERE EventID = :eid AND Deleted = 0
+    """), {"eid": event_id}).mappings().first()
+    if not prev:
+        return {"ok": False, "error": "Event not found"}
+    db.execute(
+        text("UPDATE OFNEvents SET IsPublished = :pub WHERE EventID = :eid"),
+        {"pub": publish, "eid": event_id},
+    )
+    if publish == 1 and int(prev["IsPublished"] or 0) == 0 and prev["BusinessID"]:
+        _record_feed_event(
+            db, int(prev["BusinessID"]), event_id, "event_published",
+            title=f"New event: {prev['EventName'] or 'Untitled Event'}",
+            body=(prev["EventDescription"] or "")[:300] or None,
+            link_url=f"/events/{event_id}",
+            image_url=prev["EventImage"] or None,
+        )
+    db.commit()
+    return {"ok": True, "IsPublished": publish}
 
 
 # ── Delete event (soft) ───────────────────────────────────────────────────────
