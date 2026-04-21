@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from routers import businesses
 from routers import precision_ag
 from routers import plant_knowledgebase
+from routers import crop_summary
 from routers import ingredient_knowledgebase
 from routers import livestock
 from routers import produce
@@ -189,6 +190,7 @@ app.include_router(auth.router)
 app.include_router(businesses.router)
 app.include_router(precision_ag.router)
 app.include_router(plant_knowledgebase.router)
+app.include_router(crop_summary.router)
 app.include_router(ingredient_knowledgebase.router)
 app.include_router(livestock.router)
 app.include_router(produce.router)
