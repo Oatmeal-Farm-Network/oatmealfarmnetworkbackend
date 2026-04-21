@@ -29,6 +29,10 @@ def hash_password(password: str) -> str:
 def verify_password(plain: str, hashed: str) -> bool:
     if not hashed:
         return False
+    # Legacy: accounts created before bcrypt was introduced have plaintext passwords.
+    # Bcrypt hashes start with $2a$ / $2b$ / $2y$. Anything else → compare as plaintext.
+    if not hashed.startswith("$2"):
+        return plain == hashed
     try:
         return pwd_context.verify(plain, hashed)
     except Exception:
