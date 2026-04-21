@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc
+from sqlalchemy import func, desc, text
 from database import get_db
 from datetime import date, datetime
 import json
@@ -50,29 +50,49 @@ class FieldCreate(BaseModel):
 @router.get("/fields")
 def get_fields(business_id: int, db: Session = Depends(get_db)):
     try:
-        fields = (
-            db.query(models.Field)
-            .filter(models.Field.BusinessID == business_id)
-            .order_by(models.Field.Name)
-            .all()
-        )
+        # Join each field to its latest row in dbo.Analysis via OUTER APPLY so
+        # the dashboard can show the most recent health score without an
+        # N+1 fetch per field.
+        rows = db.execute(text("""
+            SELECT
+                F.FieldID, F.BusinessID, F.Name, F.Address,
+                F.Latitude, F.Longitude, F.FieldSizeHectares,
+                F.CropType, F.PlantingDate,
+                F.MonitoringEnabled, F.MonitoringIntervalDays, F.AlertThresholdHealth,
+                LA.AnalysisDate  AS LatestAnalysisDate,
+                LA.HealthScore   AS LatestHealthScore,
+                LA.Status        AS LatestStatus
+            FROM Field F
+            OUTER APPLY (
+                SELECT TOP 1 A.AnalysisDate, A.HealthScore, A.Status
+                FROM Analysis A
+                WHERE A.FieldID = F.FieldID
+                ORDER BY A.AnalysisDate DESC
+            ) LA
+            WHERE F.BusinessID = :bid AND F.DeletedAt IS NULL
+            ORDER BY F.Name
+        """), {"bid": business_id}).fetchall()
+
         return [
             {
-                "fieldid":                  f.FieldID,
-                "id":                       f.FieldID,
-                "business_id":              f.BusinessID,
-                "name":                     f.Name,
-                "address":                  f.Address,
-                "latitude":                 float(f.Latitude) if f.Latitude else None,
-                "longitude":                float(f.Longitude) if f.Longitude else None,
-                "field_size_hectares":      float(f.FieldSizeHectares) if f.FieldSizeHectares else None,
-                "crop_type":                f.CropType,
-                "planting_date":            str(f.PlantingDate) if f.PlantingDate else None,
-                "monitoring_enabled":       bool(f.MonitoringEnabled) if f.MonitoringEnabled is not None else True,
-                "monitoring_interval_days": f.MonitoringIntervalDays,
-                "alert_threshold_health":   f.AlertThresholdHealth,
+                "fieldid":                  r.FieldID,
+                "id":                       r.FieldID,
+                "business_id":              r.BusinessID,
+                "name":                     r.Name,
+                "address":                  r.Address,
+                "latitude":                 float(r.Latitude) if r.Latitude is not None else None,
+                "longitude":                float(r.Longitude) if r.Longitude is not None else None,
+                "field_size_hectares":      float(r.FieldSizeHectares) if r.FieldSizeHectares is not None else None,
+                "crop_type":                r.CropType,
+                "planting_date":            str(r.PlantingDate) if r.PlantingDate else None,
+                "monitoring_enabled":       bool(r.MonitoringEnabled) if r.MonitoringEnabled is not None else True,
+                "monitoring_interval_days": r.MonitoringIntervalDays,
+                "alert_threshold_health":   r.AlertThresholdHealth,
+                "latest_analysis_date":     r.LatestAnalysisDate.isoformat() if r.LatestAnalysisDate else None,
+                "latest_health_score":      int(r.LatestHealthScore) if r.LatestHealthScore is not None else None,
+                "latest_status":            r.LatestStatus,
             }
-            for f in fields
+            for r in rows
         ]
     except Exception as e:
         import traceback
@@ -288,11 +308,19 @@ def analyze_satellite(field_id: int, db: Session = Depends(get_db)):
     print(f"[biomass/satellite] field lat={field.Latitude} lon={field.Longitude} has_boundary={bool(field.BoundaryGeoJSON)}", flush=True)
 
     try:
-        from gee_helper import get_sentinel2_thumbnail_url
+        from gee_helper import get_sentinel2_thumbnail_url, is_available, last_init_error
         print("[biomass/satellite] gee_helper imported OK", flush=True)
     except ImportError as e:
         print(f"[biomass/satellite] gee_helper IMPORT FAILED: {e}", flush=True)
         raise HTTPException(status_code=503, detail=f"GEE helper unavailable: {e}")
+
+    if not is_available():
+        err = last_init_error() or "unknown reason"
+        print(f"[biomass/satellite] GEE not initialized: {err}", flush=True)
+        raise HTTPException(
+            status_code=503,
+            detail=f"Satellite imagery service is not configured: {err}",
+        )
 
     sat = get_sentinel2_thumbnail_url(
         latitude=float(field.Latitude) if field.Latitude is not None else None,

@@ -308,7 +308,7 @@ def GetAccountHome(BusinessID: int, Db: Session = Depends(get_db)):
             models.BusinessTypeLookup,
             models.Address,
         )
-        .join(models.BusinessTypeLookup, models.Business.BusinessTypeID == models.BusinessTypeLookup.BusinessTypeID)
+        .outerjoin(models.BusinessTypeLookup, models.Business.BusinessTypeID == models.BusinessTypeLookup.BusinessTypeID)
         .outerjoin(models.Address, models.Business.AddressID == models.Address.AddressID)
         .filter(models.Business.BusinessID == BusinessID)
         .first()
@@ -323,8 +323,8 @@ def GetAccountHome(BusinessID: int, Db: Session = Depends(get_db)):
         "BusinessID": B.BusinessID,
         "BusinessName": B.BusinessName,
         "BusinessEmail": B.BusinessEmail,
-        "BusinessTypeID": BT.BusinessTypeID,
-        "BusinessType": BT.BusinessType,
+        "BusinessTypeID": BT.BusinessTypeID if BT else None,
+        "BusinessType": BT.BusinessType if BT else None,
         "SubscriptionLevel": B.SubscriptionLevel,
         "SubscriptionEndDate": str(B.SubscriptionEndDate) if hasattr(B, 'SubscriptionEndDate') else None,
         "AddressCity": A.AddressCity if A else None,
