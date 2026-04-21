@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from database import get_db
-from auth import create_access_token, get_current_user
+from auth import create_access_token, get_current_user, hash_password, verify_password, verify_password_reset_token, create_password_reset_token
 import models
 from sqlalchemy import select, text
 
@@ -23,6 +23,10 @@ class SignupRequest(BaseModel):
 
 class ForgotPasswordRequest(BaseModel):
     Email: str
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
 
 class UpdateLoginRequest(BaseModel):
     first_name: str = None
@@ -71,7 +75,7 @@ def signup(request: SignupRequest, db: Session = Depends(get_db)):
         PeopleFirstName=request.PeopleFirstName.strip(),
         PeopleLastName=request.PeopleLastName.strip(),
         PeopleEmail=email,
-        PeoplePassword=request.Password,
+        PeoplePassword=hash_password(request.Password),
         PeopleActive=1,
         accesslevel=0,
         Subscriptionlevel=0,
@@ -94,7 +98,7 @@ def signup(request: SignupRequest, db: Session = Depends(get_db)):
 
 
 # -------------------------
-# Forgot password
+# Forgot password  (sends a reset link — never exposes the stored hash)
 # -------------------------
 @router.post("/forgot-password")
 async def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get_db)):
@@ -107,26 +111,28 @@ async def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get
         models.People.PeopleEmail == email
     ).first()
 
+    # Always return the same response to avoid user enumeration
     if not user:
-        raise HTTPException(status_code=404, detail="Email not found")
-
-    if not user.PeoplePassword:
-        raise HTTPException(status_code=500, detail="No password on file. Please contact support.")
+        return {"message": "If that email is registered you will receive a reset link.", "email": email}
 
     SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
     FROM_EMAIL       = os.getenv("FROM_EMAIL", "john@oatmeal-ai.com")
     SITE_NAME        = os.getenv("SITE_NAME", "Oatmeal Farm Network")
+    FRONTEND_URL     = os.getenv("FRONTEND_URL", "https://www.OatmealFarmNetwork.com")
 
     if not SENDGRID_API_KEY:
         raise HTTPException(status_code=503, detail="Email service not configured.")
 
+    reset_token = create_password_reset_token(user.PeopleID)
+    reset_link  = f"{FRONTEND_URL}/reset-password?token={reset_token}"
+
     html_body = f"""
     <font face="arial">
     Dear {user.PeopleFirstName},<br><br>
-    Your {SITE_NAME} password is provided below:<br><br>
-    Your password: <b>{user.PeoplePassword}</b><br><br>
-    If you did not request this email, please contact us at 458.225.4903.<br><br>
-    Thank You.<br><br>
+    We received a request to reset your {SITE_NAME} password.
+    Click the link below to choose a new password. This link expires in 1 hour.<br><br>
+    <a href="{reset_link}">Reset my password</a><br><br>
+    If you did not request this, you can safely ignore this email.<br><br>
     Sincerely,<br><br>
     {SITE_NAME}
     </font>
@@ -137,14 +143,33 @@ async def forgot_password(body: ForgotPasswordRequest, db: Session = Depends(get
         sg.send(Mail(
             from_email=FROM_EMAIL,
             to_emails=email,
-            subject=f"Your {SITE_NAME} Password",
+            subject=f"Reset your {SITE_NAME} password",
             html_content=html_body,
         ))
-    except Exception as e:
+    except Exception:
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail="Failed to send email. Please try again.")
 
-    return {"message": "Password sent", "email": email}
+    return {"message": "If that email is registered you will receive a reset link.", "email": email}
+
+
+# -------------------------
+# Reset password  (accepts the token from the reset email)
+# -------------------------
+@router.post("/reset-password")
+def reset_password(body: ResetPasswordRequest, db: Session = Depends(get_db)):
+    if not body.new_password or len(body.new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+
+    people_id = verify_password_reset_token(body.token)
+
+    user = db.query(models.People).filter(models.People.PeopleID == people_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    user.PeoplePassword = hash_password(body.new_password)
+    db.commit()
+    return {"message": "Password has been reset. You can now log in."}
 
 
 # -------------------------
@@ -157,7 +182,7 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
             models.People.PeopleEmail == request.Email,
             models.People.PeopleActive == 1
         ).first()
-        if not user or user.PeoplePassword != request.Password:
+        if not user or not verify_password(request.Password, user.PeoplePassword or ""):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email or password"
@@ -214,9 +239,9 @@ def update_login(payload: UpdateLoginRequest, current_user=Depends(get_current_u
         raise HTTPException(status_code=404, detail="User not found")
 
     if payload.new_password:
-        if not payload.current_password or user.PeoplePassword != payload.current_password:
+        if not payload.current_password or not verify_password(payload.current_password, user.PeoplePassword or ""):
             raise HTTPException(status_code=400, detail="Current password is incorrect")
-        user.PeoplePassword = payload.new_password
+        user.PeoplePassword = hash_password(payload.new_password)
 
     if payload.email and payload.email.strip().lower() != user.PeopleEmail:
         existing = db.query(models.People).filter(
@@ -1273,6 +1298,6 @@ def reset_lkm_member_password(people_id: int, payload: LKMPasswordResetRequest, 
     person = db.query(models.People).filter(models.People.PeopleID == people_id).first()
     if not person:
         raise HTTPException(status_code=404, detail="Person not found.")
-    person.PeoplePassword = new_pw
+    person.PeoplePassword = hash_password(new_pw)
     db.commit()
     return {"message": "Password reset", "PeopleID": people_id}
