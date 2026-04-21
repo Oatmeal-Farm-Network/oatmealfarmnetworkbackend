@@ -19,29 +19,56 @@ from typing import Optional
 
 
 _initialized = False
+_last_init_error: Optional[str] = None
+
+
+def is_available() -> bool:
+    """Public check — returns True only if GEE is initialized and callable."""
+    return _ensure_initialized()
+
+
+def last_init_error() -> Optional[str]:
+    """Why the last init attempt failed, or None if no attempt / success."""
+    return _last_init_error
 
 
 def _ensure_initialized() -> bool:
-    global _initialized
+    global _initialized, _last_init_error
     if _initialized:
         return True
     try:
         import ee  # type: ignore
-    except ImportError:
+    except ImportError as e:
+        _last_init_error = f"earthengine-api package not installed: {e}"
         return False
 
     svc_account = os.getenv("GEE_SERVICE_ACCOUNT")
     key_file = os.getenv("GEE_KEY_FILE") or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    project = os.getenv("GEE_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT")
+    # If svc_account wasn't set but the key file is a service-account JSON, pull
+    # the email from it so the user only has to configure GOOGLE_APPLICATION_CREDENTIALS.
+    if key_file and not svc_account:
+        try:
+            with open(key_file) as f:
+                info = json.load(f)
+            svc_account = info.get("client_email")
+            if not project:
+                project = info.get("project_id")
+        except Exception as e:
+            print(f"[gee_helper] could not parse key file {key_file}: {e}")
     try:
+        init_kwargs = {}
         if svc_account and key_file:
-            creds = ee.ServiceAccountCredentials(svc_account, key_file)
-            ee.Initialize(credentials=creds)
-        else:
-            ee.Initialize()
+            init_kwargs["credentials"] = ee.ServiceAccountCredentials(svc_account, key_file)
+        if project:
+            init_kwargs["project"] = project
+        ee.Initialize(**init_kwargs)
         _initialized = True
+        _last_init_error = None
         return True
     except Exception as e:
-        print(f"[gee_helper] init failed: {e}")
+        _last_init_error = f"{type(e).__name__}: {e}"
+        print(f"[gee_helper] init failed: {_last_init_error}")
         return False
 
 

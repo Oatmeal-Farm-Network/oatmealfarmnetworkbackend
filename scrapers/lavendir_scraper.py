@@ -430,6 +430,42 @@ def _detect_layout_patterns(soup: "BeautifulSoup") -> Dict[str, Any]:
 # Core content extraction (text/images/links)
 # ─────────────────────────────────────────────────────────────────────────────
 
+_ARTICLE_SCOPE_SELECTORS = [
+    "article.post",
+    "article.hentry",
+    "article[class*='post']",
+    "article[class*='entry']",
+    "main article",
+    "article",
+    ".entry-content",
+    ".post-content",
+    ".article-content",
+    ".single-post .content",
+    "main .content",
+    "[role='main'] article",
+    "[role='main']",
+    "main",
+]
+
+
+def _find_article_scope(soup: "BeautifulSoup"):
+    """Return (scope_element, scope_kind) for the main article container, or (None, '')."""
+    # Prefer the <article> with the longest body text — avoids related-post <article> stubs.
+    articles = soup.find_all("article")
+    if articles:
+        best = max(articles, key=lambda el: len(_clean(el.get_text())), default=None)
+        if best and len(_clean(best.get_text())) > 120:
+            return best, "article"
+    for sel in _ARTICLE_SCOPE_SELECTORS:
+        try:
+            el = soup.select_one(sel)
+        except Exception:
+            continue
+        if el and len(_clean(el.get_text())) > 120:
+            return el, sel
+    return None, ""
+
+
 def _extract_content(soup: "BeautifulSoup", base_url: str) -> Dict[str, Any]:
     page_title = _clean(
         (soup.title.get_text() if soup.title else "")
@@ -441,28 +477,45 @@ def _extract_content(soup: "BeautifulSoup", base_url: str) -> Dict[str, Any]:
                 or soup.find("meta", attrs={"property": "og:description"})
     meta_description = _clean(meta_desc_el["content"]) if (meta_desc_el and meta_desc_el.get("content")) else ""
 
-    # Remove noise (after design tokens + layout have already been captured)
-    for sel in ["script", "style", "noscript", "iframe"]:
-        for el in soup.find_all(sel):
-            el.decompose()
+    og_image_el = soup.find("meta", attrs={"property": "og:image"}) \
+               or soup.find("meta", attrs={"name": "og:image"}) \
+               or soup.find("meta", attrs={"property": "twitter:image"})
+    og_image = _resolve(base_url, og_image_el["content"]) if (og_image_el and og_image_el.get("content")) else ""
 
-    # Headings
+    # Remove noise (after design tokens + layout have already been captured)
+    for sel in ["script", "style", "noscript", "iframe",
+                "header", "nav", "footer", "aside",
+                "[role='navigation']", "[role='banner']", "[role='contentinfo']",
+                "[class*='sidebar']", "[class*='related']", "[class*='you-may-also-like']",
+                "[class*='comments']", "[id*='comments']",
+                "[class*='share']", "[class*='social']",
+                "[class*='breadcrumb']", "[class*='pagination']",
+                "[class*='menu']", "[class*='navbar']"]:
+        try:
+            for el in soup.select(sel):
+                el.decompose()
+        except Exception:
+            pass
+
+    # Scope: prefer the main article container when we can find one.
+    article_scope, scope_kind = _find_article_scope(soup)
+    scope_soup = article_scope if article_scope is not None else soup
+
+    # Headings — only within article scope when we have one; otherwise page-wide.
     headings: List[Dict[str, str]] = []
     for tag in ["h1", "h2", "h3", "h4"]:
-        for h in soup.find_all(tag):
+        for h in scope_soup.find_all(tag):
             t = _clean(h.get_text())
             if t:
                 headings.append({"level": tag.upper(), "text": t})
 
-    # Body paragraphs
+    # Body paragraphs — scoped.
     body_text: List[str] = []
-    body_selectors = ["p", "li", "td", "th", "blockquote", "figcaption",
-                      "[class*='content']", "[class*='text']",
-                      "[class*='description']", "[class*='body']"]
+    body_selectors = ["p", "li", "blockquote", "figcaption"]
     seen_text: set[str] = set()
     for sel in body_selectors:
         try:
-            for el in soup.select(sel):
+            for el in scope_soup.select(sel):
                 t = _clean(el.get_text())
                 if t and len(t) > 20 and t not in seen_text:
                     seen_text.add(t)
@@ -470,14 +523,18 @@ def _extract_content(soup: "BeautifulSoup", base_url: str) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # Images
+    # Images — scoped.
     images: List[Dict[str, Any]] = []
     seen_img: set[str] = set()
-    for img in soup.find_all("img"):
+    for img in scope_soup.find_all("img"):
         src = (img.get("src") or img.get("data-src")
                or img.get("data-lazy-src") or img.get("data-original"))
         abs_src = _resolve(base_url, src)
         if not abs_src or abs_src in seen_img:
+            continue
+        lower = abs_src.lower()
+        if any(x in lower for x in ("logo", "favicon", "avatar", "sprite", "gravatar",
+                                     "spinner", "icon-", "/icons/", "placeholder")):
             continue
         seen_img.add(abs_src)
         images.append({
@@ -486,8 +543,8 @@ def _extract_content(soup: "BeautifulSoup", base_url: str) -> Dict[str, Any]:
             "width":  img.get("width"),
             "height": img.get("height"),
         })
-    # CSS background images
-    for el in soup.select("[style*='background']"):
+    # CSS background images within scope
+    for el in scope_soup.select("[style*='background']"):
         style_val = el.get("style", "")
         m = re.search(r"url\(['\"]?([^'\")\s]+)['\"]?\)", style_val, re.IGNORECASE)
         if m:
@@ -496,10 +553,10 @@ def _extract_content(soup: "BeautifulSoup", base_url: str) -> Dict[str, Any]:
                 seen_img.add(abs_src)
                 images.append({"url": abs_src, "alt": "", "width": None, "height": None})
 
-    # Links
+    # Links — scoped.
     links: List[Dict[str, str]] = []
     seen_link: set[str] = set()
-    for a in soup.find_all("a", href=True):
+    for a in scope_soup.find_all("a", href=True):
         href = _resolve(base_url, a.get("href"))
         text = _clean(a.get_text())
         if href and text and href not in seen_link:
@@ -509,6 +566,8 @@ def _extract_content(soup: "BeautifulSoup", base_url: str) -> Dict[str, Any]:
     return {
         "pageTitle":       page_title,
         "metaDescription": meta_description,
+        "ogImage":         og_image,
+        "articleScope":    scope_kind,
         "headings":        headings,
         "bodyText":        body_text,
         "images":          images,
@@ -1002,6 +1061,22 @@ async def scrape(url: str, *, use_playwright: bool = False,
             return {"error": f"Target site returned HTTP {status_code}.", "status": status_code,
                     "bot_blocked": bot_blocked}
         return {"error": f"Could not reach {url}.", "bot_blocked": bot_blocked}
+
+    # ── SPA shell fallback: static HTML parsed but has almost no body content.
+    # Covers React/Next/Vue/Angular sites where the initial HTML is just a
+    # <div id="root"></div> and all text/images are painted by JS.
+    if PLAYWRIGHT_AVAILABLE and fetch_method == "httpx":
+        probe_soup = BeautifulSoup(html, "html.parser")
+        for tag in probe_soup(["script", "style", "noscript"]):
+            tag.decompose()
+        visible_text = _clean(probe_soup.get_text(" "))
+        headings_ct = len(probe_soup.find_all(["h1", "h2", "h3"]))
+        imgs_ct = len(probe_soup.find_all("img"))
+        if headings_ct == 0 and imgs_ct == 0 and len(visible_text) < 400:
+            rendered = await _fetch_html_via_playwright(url)
+            if rendered and len(rendered) > len(html):
+                html = rendered
+                fetch_method = "playwright-spa"
 
     soup = BeautifulSoup(html, "html.parser")
 

@@ -9,7 +9,7 @@ from sqlalchemy import text
 from database import get_db
 from pydantic import BaseModel
 from typing import Optional, List, Any
-import os, json, datetime, asyncio
+import os, json, datetime, asyncio, re
 
 router = APIRouter(prefix="/api/lavendir", tags=["lavendir-ai"])
 
@@ -70,7 +70,7 @@ def _get_firestore():
     return _firestore_client
 
 
-def _rag_search(query: str, n: int = 5) -> str:
+def _rag_search(query: str, n: int = 10) -> str:
     """
     Search lavendir-docs. Supports both:
     - Vector search (if docs have 'embedding' field)
@@ -188,6 +188,8 @@ def _get_site_context(website_id: int, business_id: int, db: Session) -> str:
         biz = None
 
     lines = []
+    lines.append(f"BusinessID: {business_id}")
+    lines.append(f"WebsiteID: {website_id}")
     if biz:
         lines.append(f"Business: {biz.BusinessName} ({biz.BusinessType})")
     if site:
@@ -610,7 +612,7 @@ TOOLS = [
     },
     {
         "name": "add_block",
-        "description": "Add a content block to a page. Use for common improvements: adding a hero banner, about section, contact block, gallery, events block, blog feed, testimonials, etc. Valid types: hero, about, content, livestock, studs, produce, meat, processed_food, services, marketplace, gallery, blog, events, contact, links, testimonials, testimonial_random, packages, divider.",
+        "description": "Add a LAYOUT block to a page (not a blog post). Use for visual/structural improvements: hero banner, about section, contact block, gallery, events listing block, testimonials, etc. DO NOT use this to create a blog POST — a blog post is a data row created via `create_blog_post`. Use block_type='blog' ONLY when the user wants a blog-listing widget embedded on one of their website pages (phrasings like 'show my blog on the homepage', 'add a blog section', 'embed my blog feed'). Never use block_type='blog' in response to 'create a blog post', 'write a post', 'add a post', etc. — those are `create_blog_post` requests. Valid types: hero, about, content, livestock, studs, produce, meat, processed_food, services, marketplace, gallery, blog, events, contact, links, testimonials, testimonial_random, packages, divider.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -641,12 +643,12 @@ TOOLS = [
     },
     {
         "name": "review_site",
-        "description": "Run a full audit of the website and return a prioritized list of improvement findings. Use when the user asks you to review, audit, critique, or improve their site — or asks 'what should I do next?'.",
+        "description": "Audit the user's OWN site inside this builder (no URL given). Use ONLY when the user asks to review/critique/improve their site WITHOUT mentioning any URL or domain. If ANY URL or domain is mentioned (even oatmealfarmnetwork.com or their own published domain), use review_competitor_site instead — that one actually fetches and sees the live rendered site.",
         "parameters": {"type": "object", "properties": {}, "required": []},
     },
     {
         "name": "scrape_website",
-        "description": "Scrape any public website and report what you found — platform/CMS, color palette, fonts, logo, hero content, and structure. Read-only; use when the user asks what a site looks like, to analyze a URL, or to gather design DNA before making changes. Every scrape also teaches the shared learning system so future scrapes of similar sites are smarter.",
+        "description": "Fetch a URL and return raw design tokens, fonts, colors, layout patterns, and content stats. Use when the user wants factual info about a URL without a critique — e.g. 'what colors does this site use?'. For a UX/design critique of a URL, use review_competitor_site instead.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -658,11 +660,11 @@ TOOLS = [
     },
     {
         "name": "review_competitor_site",
-        "description": "Scrape a competitor/inspiration URL and narrate what makes it work — design tokens, copy voice, layout choices, and concrete takeaways the user can apply to their own site. Read-only.",
+        "description": "Fetch ANY URL (competitor, inspiration, or the user's OWN live domain like oatmealfarmnetwork.com) and deliver a senior-designer UX/UI critique grounded in your KNOWLEDGE BASE — naming principles (visual hierarchy, Gestalt, typographic scale, contrast, F-pattern, etc.) and applying them to what you actually see. Use this whenever the user gives you a URL or domain and asks for an opinion, review, critique, or analysis. Read-only.",
         "parameters": {
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "Competitor or inspiration URL."},
+                "url": {"type": "string", "description": "Full URL or bare domain (https:// will be added if missing)."},
             },
             "required": ["url"]
         }
@@ -709,6 +711,111 @@ TOOLS = [
                 "include":   {"type": "string", "description": "Comma-separated subset of 'hero,about,gallery,design'. Default 'hero,about,design'."},
             },
             "required": ["url"]
+        }
+    },
+    {
+        "name": "import_blog_posts",
+        "description": "Scrape a blog index page (e.g. /blog/, /news/, /articles/), discover individual article URLs, fetch each article, and import them as DRAFT blog posts on the user's site. Every imported post lands with IsPublished=false so the user can review before publishing. Use when the user asks to 'add these blog articles', 'import blog posts from URL', 'pull my blog in from my old site', or similar. Requires user confirmation.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url":      {"type": "string", "description": "Blog index URL (full https:// or bare domain)."},
+                "limit":    {"type": "integer", "description": "Max articles to import. Default 10, hard cap 30."},
+                "category": {"type": "string", "description": "Optional category label applied to all imported posts."},
+            },
+            "required": ["url"]
+        }
+    },
+    {
+        "name": "import_blog_post_from_url",
+        "description": "Scrape ONE specific page (an individual article, event page, news story, etc.) and create a single DRAFT blog post from it. Use this whenever the user gives a URL to a single page and asks to add it, scrape it, pull it in, repost it, etc. For a blog INDEX with many articles, use import_blog_posts instead. Requires confirmation.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url":      {"type": "string", "description": "Full URL of the single article/page to scrape."},
+                "category": {"type": "string", "description": "Optional category label for the new post."},
+                "publish":  {"type": "boolean", "description": "Publish immediately. Default false (draft)."},
+            },
+            "required": ["url"]
+        }
+    },
+    {
+        "name": "list_blog_posts",
+        "description": "List the user's blog posts for the current business. Use when the user asks 'what blog posts do I have?', 'show my drafts', 'list my published articles', etc. Read-only, runs inline without confirmation.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "limit":               {"type": "integer", "description": "Max posts to return. Default 25."},
+                "include_unpublished": {"type": "boolean", "description": "Include drafts. Default true (authoring context)."},
+                "category":            {"type": "string",  "description": "Filter by category label."},
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "read_blog_post",
+        "description": "Fetch full content of a single blog post by ID. Use when the user asks to see, summarize, or critique a specific post ('show me post 42', 'what does my welcome article say?'). Read-only, runs inline.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "post_id": {"type": "integer", "description": "BusinessBlogPost.PostID"},
+            },
+            "required": ["post_id"]
+        }
+    },
+    {
+        "name": "create_blog_post",
+        "description": "Create a new blog-post ROW (data record) for the business. This is the ONLY correct tool whenever the user says 'create a blog post', 'new post', 'add an article', 'draft a post titled X', 'write me a post about Y', etc. — even if they give only a title and nothing else. DO NOT ask whether they want a blog page or a blog block — those are layout questions handled by `add_block` and are NEVER the right answer to 'create a blog post'. The post saves to the shared blog table that feeds BOTH the business's My Website Blog widget AND the oatmealfarmnetwork.com directory feed. Drafts by default (IsPublished=false). If the user gives only a title with no body, YOU draft a short placeholder body yourself (2 short paragraphs related to the title, or a clear TODO note) and pass it as `content` — NEVER refuse, go silent, or redirect to a different tool because content is missing. Requires confirmation.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title":       {"type": "string", "description": "Post title (required)."},
+                "content":     {"type": "string", "description": "Full post body. HTML allowed. If the user didn't provide one, YOU write a short placeholder body (2 short paragraphs) based on the title."},
+                "excerpt":     {"type": "string", "description": "Short summary shown on listing pages."},
+                "category":    {"type": "string", "description": "Category label."},
+                "cover_image": {"type": "string", "description": "Cover image URL."},
+                "publish":     {"type": "boolean", "description": "Publish immediately. Default false (draft)."},
+            },
+            "required": ["title"]
+        }
+    },
+    {
+        "name": "update_blog_post",
+        "description": "Edit an existing blog post. Only provided fields are changed. Use when the user asks to 'fix the typo in post 12', 'change the title of my welcome post', 'rewrite the excerpt of …'. Requires confirmation.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "post_id":     {"type": "integer", "description": "BusinessBlogPost.PostID"},
+                "title":       {"type": "string"},
+                "content":     {"type": "string"},
+                "excerpt":     {"type": "string"},
+                "category":    {"type": "string"},
+                "cover_image": {"type": "string"},
+            },
+            "required": ["post_id"]
+        }
+    },
+    {
+        "name": "delete_blog_post",
+        "description": "Permanently delete a blog post. Use only when the user explicitly says 'delete', 'remove', 'trash' a specific post. Requires confirmation.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "post_id": {"type": "integer", "description": "BusinessBlogPost.PostID"},
+            },
+            "required": ["post_id"]
+        }
+    },
+    {
+        "name": "publish_blog_post",
+        "description": "Set a blog post's IsPublished flag. Use for 'publish post 5', 'make it live', 'take post 5 offline', 'unpublish …'. Requires confirmation.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "post_id": {"type": "integer", "description": "BusinessBlogPost.PostID"},
+                "publish": {"type": "boolean", "description": "true = publish, false = unpublish."},
+            },
+            "required": ["post_id", "publish"]
         }
     },
 ]
@@ -761,6 +868,24 @@ def _describe_action(action: str, params: dict) -> str:
         page = params.get("page_name") or "your homepage"
         inc  = params.get("include") or "hero,about,design"
         return f"Import from {params.get('url')} → {page} ({inc})"
+    if action == "import_blog_posts":
+        lim = params.get("limit") or 10
+        return f"Import up to {lim} blog posts from {params.get('url')} as drafts"
+    if action == "import_blog_post_from_url":
+        state = "publish" if params.get("publish") else "save as draft"
+        return f"Scrape {params.get('url')} and {state} as a blog post"
+    if action == "create_blog_post":
+        title = params.get("title") or "Untitled"
+        state = "publish" if params.get("publish") else "save as draft"
+        return f"Create blog post \"{title}\" and {state}"
+    if action == "update_blog_post":
+        fields = [k for k in ("title", "content", "excerpt", "category", "cover_image") if params.get(k)]
+        return f"Update blog post #{params.get('post_id')} ({', '.join(fields) or 'fields'})"
+    if action == "delete_blog_post":
+        return f"Permanently delete blog post #{params.get('post_id')}"
+    if action == "publish_blog_post":
+        verb = "Publish" if params.get("publish") else "Unpublish"
+        return f"{verb} blog post #{params.get('post_id')}"
     if action == "generate_hero_image":
         where = "site header" if params.get("apply_to") == "header" else f"hero on {params.get('page_name') or 'your homepage'}"
         return f"Use the generated image as the {where}"
@@ -1141,6 +1266,30 @@ def _execute_action(action: str, params: dict, website_id: int, business_id: int
 
     if action == "import_from_website":
         return _execute_import_from_website(params, website_id, business_id, db)
+
+    if action == "import_blog_posts":
+        return _execute_import_blog_posts(params, website_id, business_id, db)
+
+    if action == "import_blog_post_from_url":
+        return _execute_import_blog_post_from_url(params, business_id, db)
+
+    if action == "list_blog_posts":
+        return _execute_list_blog_posts(params, business_id, db)
+
+    if action == "read_blog_post":
+        return _execute_read_blog_post(params, business_id, db)
+
+    if action == "create_blog_post":
+        return _execute_create_blog_post(params, business_id, db)
+
+    if action == "update_blog_post":
+        return _execute_update_blog_post(params, business_id, db)
+
+    if action == "delete_blog_post":
+        return _execute_delete_blog_post(params, business_id, db)
+
+    if action == "publish_blog_post":
+        return _execute_publish_blog_post(params, business_id, db)
 
     if action == "generate_hero_image":
         return _execute_apply_hero_image(params, website_id, business_id, db)
@@ -1611,10 +1760,575 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
     return f"Imported from {url}: {', '.join(added)}."
 
 
+# ── Blog-post discovery & import ──────────────────────────────────
+
+_BLOG_URL_HINTS = ("/blog/", "/blog-", "/news/", "/article/", "/articles/",
+                   "/post/", "/posts/", "/story/", "/stories/", "/journal/")
+_BLOG_SKIP_HINTS = ("/tag/", "/tags/", "/category/", "/categories/",
+                    "/author/", "/authors/", "/page/", "/feed", "/rss",
+                    "/wp-admin", "/wp-login", "/privacy", "/terms",
+                    "/contact", "/about", "/subscribe", "#")
+
+
+def _discover_blog_article_urls(index_data: dict, index_url: str, limit: int) -> List[str]:
+    """Pick likely article URLs from an index-page scrape."""
+    from urllib.parse import urlparse
+    links = index_data.get("links") or []
+    try:
+        index_host = urlparse(index_url).netloc.lower().lstrip("www.")
+        index_path = urlparse(index_url).path.rstrip("/")
+    except Exception:
+        index_host = ""
+        index_path = ""
+
+    picked: List[str] = []
+    seen: set = set()
+    for a in links:
+        href = (a.get("href") or "").strip() if isinstance(a, dict) else ""
+        if not href or href.startswith(("mailto:", "tel:", "javascript:")):
+            continue
+        try:
+            p = urlparse(href)
+        except Exception:
+            continue
+        if p.scheme not in ("http", "https"):
+            continue
+        host = (p.netloc or "").lower().lstrip("www.")
+        if index_host and host and host != index_host:
+            continue
+        path = (p.path or "").rstrip("/")
+        lower = (path + "?" + (p.query or "")).lower()
+        if any(s in lower for s in _BLOG_SKIP_HINTS):
+            continue
+        # Must either live under the index path or match a blog-ish hint,
+        # and must be deeper than the index itself (i.e. has slugs after).
+        looks_blog = any(h in lower for h in _BLOG_URL_HINTS)
+        under_index = index_path and path.startswith(index_path) and path != index_path
+        if not (looks_blog or under_index):
+            continue
+        # Require at least one extra path segment beyond the index (a slug)
+        if index_path and path == index_path:
+            continue
+        # Strip fragments for dedupe; keep original href for scraping
+        key = href.split("#", 1)[0]
+        if key in seen:
+            continue
+        seen.add(key)
+        picked.append(key)
+        if len(picked) >= limit:
+            break
+    return picked
+
+
+def _slugify(value: str) -> str:
+    import re as _re
+    s = (value or "").strip().lower()
+    s = _re.sub(r"[^a-z0-9]+", "-", s)
+    s = s.strip("-")
+    return s[:200] or "post"
+
+
+def _article_to_blog_post(article_data: dict) -> dict:
+    """Reduce a scrape result down to the fields we need for a BlogPost row."""
+    headings = article_data.get("headings") or []
+    title = ""
+    for h in headings:
+        if isinstance(h, dict):
+            level = h.get("level") or h.get("tag") or ""
+            if "1" in str(level) and h.get("text"):
+                title = h["text"].strip()
+                break
+    if not title:
+        title = (article_data.get("pageTitle") or "").strip()
+        # Strip common site-name suffix "Post Title | Site Name"
+        for sep in (" | ", " — ", " – ", " - "):
+            if sep in title:
+                title = title.split(sep, 1)[0].strip()
+                break
+
+    body_items = article_data.get("bodyText") or []
+    paragraphs = [
+        (p if isinstance(p, str) else (p.get("text") or ""))
+        for p in body_items
+    ]
+    paragraphs = [p.strip() for p in paragraphs if p and len(p.strip()) > 30]
+    content_html = "\n".join(f"<p>{_html_escape(p)}</p>" for p in paragraphs)
+    excerpt = (paragraphs[0][:280] + "…") if paragraphs and len(paragraphs[0]) > 280 else (paragraphs[0] if paragraphs else "")
+
+    # Cover image priority: probed hero_image → og:image → first usable scope image.
+    cover = ""
+    probed = article_data.get("probed_fields") or {}
+    hero = probed.get("hero_image") if isinstance(probed, dict) else None
+    if isinstance(hero, dict):
+        v = hero.get("value")
+        if isinstance(v, str) and v.strip():
+            cover = v.strip()
+    if not cover:
+        og = article_data.get("ogImage") or ""
+        if isinstance(og, str) and og.strip():
+            cover = og.strip()
+    if not cover:
+        design = article_data.get("designTokens") or {}
+        og2 = design.get("ogImage") if isinstance(design, dict) else ""
+        if isinstance(og2, str) and og2.strip():
+            cover = og2.strip()
+    if not cover:
+        for img in (article_data.get("images") or []):
+            if isinstance(img, dict):
+                src = img.get("url") or img.get("src") or ""
+            else:
+                src = str(img)
+            if not src:
+                continue
+            lower = src.lower()
+            if any(x in lower for x in ("logo", "favicon", "avatar", "sprite", "gravatar",
+                                         "spinner", "icon-", "/icons/", "placeholder")):
+                continue
+            cover = src
+            break
+
+    return {
+        "title":   title or "Untitled post",
+        "excerpt": excerpt,
+        "content": content_html,
+        "cover":   cover,
+    }
+
+
+def _html_escape(s: str) -> str:
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _execute_list_blog_posts(params: dict, business_id: int, db: Session) -> str:
+    from sqlalchemy import text as _sql
+    limit = min(int(params.get("limit") or 25), 100)
+    include_unpub = params.get("include_unpublished")
+    if include_unpub is None:
+        include_unpub = True
+    category = (params.get("category") or "").strip()
+
+    where = ["BusinessID = :bid"]
+    bind = {"bid": business_id, "lim": limit}
+    if not include_unpub:
+        where.append("IsPublished = 1")
+    if category:
+        where.append("(BlogCatID IN (SELECT BlogCatID FROM blogcategories WHERE BlogCategoryName = :cat) "
+                     "OR CustomCatID IN (SELECT BlogCatID FROM blogcategories WHERE BlogCategoryName = :cat))")
+        bind["cat"] = category
+
+    rows = db.execute(_sql(f"""
+        SELECT TOP (:lim) BlogID, Title, IsPublished, BlogCatID, CustomCatID
+        FROM blog
+        WHERE {' AND '.join(where)}
+        ORDER BY COALESCE(PublishedAt, CreatedAt) DESC
+    """), bind).fetchall()
+
+    if not rows:
+        return "No blog posts found for this business yet."
+
+    total = db.execute(_sql("SELECT COUNT(*) FROM blog WHERE BusinessID = :bid"),
+                      {"bid": business_id}).scalar() or 0
+    published = db.execute(_sql("SELECT COUNT(*) FROM blog WHERE BusinessID = :bid AND IsPublished = 1"),
+                          {"bid": business_id}).scalar() or 0
+    lines = [f"Showing {len(rows)} of {total} posts ({published} published, {total - published} drafts):"]
+    for r in rows:
+        flag = "✅ published" if r.IsPublished else "📝 draft"
+        lines.append(f"• #{r.BlogID} — {r.Title} — {flag}")
+    return "\n".join(lines)
+
+
+def _execute_read_blog_post(params: dict, business_id: int, db: Session) -> str:
+    from sqlalchemy import text as _sql
+    pid = int(params.get("post_id") or 0)
+    if not pid:
+        return "I need a post_id."
+    row = db.execute(_sql("""
+        SELECT BlogID, Title, Author, CoverImage, Content, IsPublished
+        FROM blog
+        WHERE BlogID = :pid AND BusinessID = :bid
+    """), {"pid": pid, "bid": business_id}).fetchone()
+    if not row:
+        return f"I couldn't find post #{pid} on this business."
+    flag = "Published" if row.IsPublished else "Draft"
+    parts = [f"Post #{row.BlogID} — {row.Title} ({flag})"]
+    if row.Author:
+        parts.append(f"Author: {row.Author}")
+    if row.CoverImage:
+        parts.append(f"Cover image: {row.CoverImage}")
+    body = (row.Content or "").strip()
+    if body:
+        parts.append("\n--- Content ---\n" + body)
+    else:
+        parts.append("\n(Content is empty.)")
+    return "\n".join(parts)
+
+
+def _execute_create_blog_post(params: dict, business_id: int, db: Session) -> str:
+    from sqlalchemy import text as _sql
+    from datetime import datetime as dt_now
+    title = (params.get("title") or "").strip()
+    content = (params.get("content") or "").strip()
+    if not title or not content:
+        return "I need a title and content to create a post."
+    publish = bool(params.get("publish"))
+    now = dt_now.utcnow()
+    row = db.execute(_sql("""
+        INSERT INTO blog
+            (BusinessID, Title, Slug, CoverImage, Content,
+             IsPublished, IsFeatured, ShowOnDirectory, ShowOnWebsite,
+             PublishedAt, CreatedAt, UpdatedAt)
+        OUTPUT INSERTED.BlogID
+        VALUES
+            (:bid, :title, :slug, :cover, :content,
+             :pub, 0, 1, 1,
+             :published_at, :now, :now)
+    """), {
+        "bid":          business_id,
+        "title":        title[:500],
+        "slug":         _slugify(title)[:500] or title[:200],
+        "cover":        (params.get("cover_image") or "").strip()[:500] or None,
+        "content":      content,
+        "pub":          1 if publish else 0,
+        "published_at": now if publish else None,
+        "now":          now,
+    }).fetchone()
+    db.commit()
+    state = "published" if publish else "saved as a draft"
+    return f"Blog post #{row[0]} \"{title}\" {state}."
+
+
+def _execute_update_blog_post(params: dict, business_id: int, db: Session) -> str:
+    from sqlalchemy import text as _sql
+    from datetime import datetime as dt_now
+    pid = int(params.get("post_id") or 0)
+    if not pid:
+        return "I need a post_id to update."
+    exists = db.execute(_sql(
+        "SELECT Title FROM blog WHERE BlogID = :pid AND BusinessID = :bid"
+    ), {"pid": pid, "bid": business_id}).fetchone()
+    if not exists:
+        return f"I couldn't find post #{pid}."
+    sets = []
+    bind = {"pid": pid, "bid": business_id, "now": dt_now.utcnow()}
+    if params.get("title"):
+        sets.append("Title = :title")
+        sets.append("Slug = :slug")
+        bind["title"] = params["title"][:500]
+        bind["slug"]  = _slugify(params["title"])[:500] or params["title"][:200]
+    if params.get("content") is not None:
+        sets.append("Content = :content")
+        bind["content"] = params["content"]
+    if params.get("cover_image") is not None:
+        sets.append("CoverImage = :cover")
+        bind["cover"] = (params["cover_image"] or "")[:500] or None
+    if not sets:
+        return f"Nothing to update on post #{pid}."
+    sets.append("UpdatedAt = :now")
+    db.execute(_sql(f"""
+        UPDATE blog SET {', '.join(sets)}
+        WHERE BlogID = :pid AND BusinessID = :bid
+    """), bind)
+    db.commit()
+    return f"Updated post #{pid}."
+
+
+def _execute_delete_blog_post(params: dict, business_id: int, db: Session) -> str:
+    from sqlalchemy import text as _sql
+    pid = int(params.get("post_id") or 0)
+    if not pid:
+        return "I need a post_id to delete."
+    row = db.execute(_sql(
+        "SELECT Title FROM blog WHERE BlogID = :pid AND BusinessID = :bid"
+    ), {"pid": pid, "bid": business_id}).fetchone()
+    if not row:
+        return f"I couldn't find post #{pid}."
+    db.execute(_sql(
+        "DELETE FROM blog WHERE BlogID = :pid AND BusinessID = :bid"
+    ), {"pid": pid, "bid": business_id})
+    db.commit()
+    return f"Deleted post #{pid} (\"{row.Title}\")."
+
+
+def _execute_publish_blog_post(params: dict, business_id: int, db: Session) -> str:
+    from sqlalchemy import text as _sql
+    from datetime import datetime as dt_now
+    pid = int(params.get("post_id") or 0)
+    if not pid:
+        return "I need a post_id."
+    row = db.execute(_sql(
+        "SELECT Title FROM blog WHERE BlogID = :pid AND BusinessID = :bid"
+    ), {"pid": pid, "bid": business_id}).fetchone()
+    if not row:
+        return f"I couldn't find post #{pid}."
+    publish = bool(params.get("publish"))
+    now = dt_now.utcnow()
+    db.execute(_sql("""
+        UPDATE blog
+        SET IsPublished = :pub,
+            PublishedAt = CASE WHEN :pub = 1 AND PublishedAt IS NULL THEN :now ELSE PublishedAt END,
+            UpdatedAt = :now
+        WHERE BlogID = :pid AND BusinessID = :bid
+    """), {"pid": pid, "bid": business_id, "pub": 1 if publish else 0, "now": now})
+    db.commit()
+    verb = "published" if publish else "unpublished"
+    return f"Post #{pid} ({row.Title}) {verb}."
+
+
+def _execute_import_blog_post_from_url(params: dict, business_id: int, db: Session) -> str:
+    """Scrape ONE article/event/news page and insert it as a single row in `blog`."""
+    from sqlalchemy import text as _sql
+    from datetime import datetime as dt_now
+
+    url = _normalize_url(params.get("url") or "")
+    if not url:
+        return "I need a URL to scrape."
+    publish = bool(params.get("publish"))
+
+    data = _run_scrape(url, deep=True)
+    if data.get("error"):
+        return f"Couldn't read {url} — {data['error']}"
+    post = _article_to_blog_post(data)
+    if not post["title"] or not post["content"] or len(post["content"]) < 80:
+        return (f"I loaded {url} but couldn't extract enough readable content to build a post. "
+                f"If you can share a URL with more body text, I'll try again.")
+
+    now = dt_now.utcnow()
+    row = db.execute(_sql("""
+        INSERT INTO blog
+            (BusinessID, Title, Slug, CoverImage, Content,
+             IsPublished, IsFeatured, ShowOnDirectory, ShowOnWebsite,
+             PublishedAt, CreatedAt, UpdatedAt)
+        OUTPUT INSERTED.BlogID
+        VALUES
+            (:bid, :title, :slug, :cover, :content,
+             :pub, 0, 1, 1,
+             :published_at, :now, :now)
+    """), {
+        "bid":          business_id,
+        "title":        post["title"][:500],
+        "slug":         _slugify(post["title"])[:500] or post["title"][:200],
+        "cover":        post["cover"][:500] if post["cover"] else None,
+        "content":      post["content"],
+        "pub":          1 if publish else 0,
+        "published_at": now if publish else None,
+        "now":          now,
+    }).fetchone()
+    db.commit()
+    state = "published" if publish else "saved as a draft"
+    return f"Post #{row[0]} \"{post['title']}\" {state} from {url}."
+
+
+def _execute_import_blog_posts(params: dict, website_id: int, business_id: int, db: Session) -> str:
+    """Scrape a blog index, discover article URLs, and insert each as a draft post."""
+    import models
+    from datetime import datetime as dt_now
+
+    index_url = _normalize_url(params.get("url") or "")
+    if not index_url:
+        return "I need a blog URL to import from."
+    try:
+        limit = int(params.get("limit") or 10)
+    except Exception:
+        limit = 10
+    limit = max(1, min(limit, 30))
+    category = (params.get("category") or "").strip()[:100] or None
+
+    # Playwright so SPAs and JS-rendered blog indexes render before link extraction.
+    index_data = _run_scrape(index_url, deep=True)
+    if index_data.get("error"):
+        return f"Couldn't read the blog index — {index_data['error']}"
+
+    article_urls = _discover_blog_article_urls(index_data, index_url, limit)
+    if not article_urls:
+        return (f"I loaded {index_url} but couldn't find individual article links. "
+                f"If the blog is paginated or dynamically loaded, try pointing me at a "
+                f"specific article URL or a deeper index page.")
+
+    from sqlalchemy import text as _sql
+    imported: List[str] = []
+    skipped: List[str] = []
+    for url in article_urls:
+        try:
+            data = _run_scrape(url, deep=True)
+            if data.get("error"):
+                skipped.append(url)
+                continue
+            post = _article_to_blog_post(data)
+            if not post["title"] or not post["content"] or len(post["content"]) < 120:
+                skipped.append(url)
+                continue
+            now = dt_now.utcnow()
+            db.execute(_sql("""
+                INSERT INTO blog
+                    (BusinessID, Title, Slug, CoverImage, Content,
+                     IsPublished, IsFeatured, ShowOnDirectory, ShowOnWebsite,
+                     PublishedAt, CreatedAt, UpdatedAt)
+                VALUES
+                    (:bid, :title, :slug, :cover, :content,
+                     0, 0, 1, 1,
+                     NULL, :now, :now)
+            """), {
+                "bid":     business_id,
+                "title":   post["title"][:500],
+                "slug":    _slugify(post["title"])[:500] or post["title"][:200],
+                "cover":   post["cover"][:500] if post["cover"] else None,
+                "content": post["content"],
+                "now":     now,
+            })
+            imported.append(post["title"])
+        except Exception as e:
+            print(f"[Lavendir] blog import failed for {url}: {e}")
+            skipped.append(url)
+    db.commit()
+
+    if not imported:
+        return (f"I found {len(article_urls)} candidate article links on {index_url} "
+                f"but couldn't extract usable content from any of them.")
+    lines = [f"Imported {len(imported)} draft posts from {index_url}:"]
+    for t in imported[:10]:
+        lines.append(f"  • {t}")
+    if len(imported) > 10:
+        lines.append(f"  • …and {len(imported) - 10} more")
+    if skipped:
+        lines.append(f"Skipped {len(skipped)} URLs (couldn't parse article content).")
+    lines.append("All posts are drafts — review and publish in Manage Blog.")
+    return "\n".join(lines)
+
+
+# ── Expert-critique narration ─────────────────────────────────────
+# Feeds raw tool output (audit findings, scrape results) back through Gemini
+# with the RAG corpus so Lavendir speaks as a design expert instead of dumping
+# a canned bullet list.
+
+def _normalize_url(raw: str) -> str:
+    u = (raw or "").strip()
+    if not u:
+        return u
+    if not u.lower().startswith(("http://", "https://")):
+        u = "https://" + u.lstrip("/")
+    return u
+
+
+def _narrate_as_expert(
+    *,
+    api_key: str,
+    user_question: str,
+    raw_findings: str,
+    site_context: str,
+    rag_context: str,
+    mode: str,           # 'site_audit' | 'url_critique'
+    url: str = "",
+) -> str:
+    """Re-render tool output as a senior-designer critique, grounded in the RAG."""
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+
+        # Pull extra design-theory chunks on top of whatever was retrieved for
+        # the user's raw query — critique-specific keywords bias retrieval
+        # toward the heuristics/typography/color texts.
+        extra_rag = _rag_search(
+            f"{user_question} UX heuristics visual hierarchy typography color contrast "
+            f"accessibility F-pattern Gestalt whitespace readability information architecture",
+            n=10,
+        )
+        combined_rag = "\n---\n".join(c for c in [rag_context, extra_rag] if c)
+
+        if mode == "site_audit":
+            framing = (
+                "The user asked you to critique THEIR OWN site inside this builder. "
+                "The TOOL OUTPUT below is a raw audit of their site state. Do NOT "
+                "just repeat it. Write a senior-designer critique that groups "
+                "observations under UX principles (visual hierarchy, trust signals, "
+                "navigation, content strategy, brand identity, accessibility, "
+                "scannability), names the relevant concept from the KNOWLEDGE BASE, "
+                "and explains WHY each issue matters to real users. End with 3–5 "
+                "prioritized, concrete next actions the user can take."
+            )
+        else:
+            framing = (
+                "The user asked for a UX/UI critique of the URL below. You scraped "
+                "the live site and gathered design tokens, fonts, colors, layout "
+                "patterns, and content stats (shown in TOOL OUTPUT). Deliver a "
+                "senior-designer's critique: strengths, weaknesses, and specific "
+                "recommendations. Reference principles from the KNOWLEDGE BASE by "
+                "name (Gestalt grouping, F-pattern, typographic scale, contrast "
+                "ratio, whitespace, visual hierarchy, Fitts's Law, Hick's Law, "
+                "etc.) and tie each one to something concrete you saw. If the "
+                "content stats are thin, say what that implies about information "
+                "density, SEO, and scannability. End with a ranked list of what "
+                "YOU would change."
+            )
+
+        prompt = (
+            f"You are {AGENT_NAME}, speaking as a senior UX/UI and graphic-design "
+            f"expert. Be direct and authoritative — you are the expert, do not "
+            f"hedge or apologize.\n\n"
+            f"KNOWLEDGE BASE (your curated design-theory references — cite these "
+            f"by principle name when they apply):\n{combined_rag or '(nothing retrieved)'}\n\n"
+            f"CURRENT SITE CONTEXT (for reference — the user's site in the builder):\n"
+            f"{site_context}\n\n"
+            + (f"URL UNDER REVIEW: {url}\n\n" if url else "")
+            + f"TOOL OUTPUT (raw data you just gathered):\n{raw_findings}\n\n"
+            f"TASK: {framing}\n\n"
+            f"USER'S QUESTION: \"{user_question}\"\n\n"
+            f"Respond in clean markdown with short section headings. 300–550 words. "
+            f"Every critique point should cite a specific observation from the "
+            f"TOOL OUTPUT. When you invoke a design principle, name it."
+        )
+        # gemini-2.5-flash consumes thinking tokens from max_output_tokens,
+        # which was silently truncating critiques after ~40 words. Generous
+        # ceiling + explicit thinking budget keeps visible output intact.
+        gen_cfg = {"temperature": 0.6, "max_output_tokens": 8192}
+        try:
+            from google.generativeai.types import GenerationConfig  # noqa: F401
+        except Exception:
+            pass
+        model = genai.GenerativeModel(
+            model_name="gemini-2.5-flash",
+            generation_config=gen_cfg,
+        )
+        resp = model.generate_content(prompt)
+
+        # Defensive extraction: resp.text only returns the first text part and
+        # raises when finish_reason isn't STOP. Walk every candidate + part so
+        # we recover everything the model emitted, even on MAX_TOKENS.
+        chunks: List[str] = []
+        try:
+            for cand in (resp.candidates or []):
+                content = getattr(cand, "content", None)
+                parts = getattr(content, "parts", None) or []
+                for p in parts:
+                    t = getattr(p, "text", None)
+                    if t:
+                        chunks.append(t)
+                fr = getattr(cand, "finish_reason", None)
+                if fr and str(fr).split(".")[-1] not in ("STOP", "1"):
+                    print(f"[Lavendir] narrate finish_reason={fr}")
+        except Exception as ex:
+            print(f"[Lavendir] narrate part-walk failed: {ex}")
+
+        if not chunks:
+            try:
+                t = resp.text
+                if t:
+                    chunks.append(t)
+            except Exception:
+                pass
+
+        out = "\n".join(chunks).strip()
+        return out or raw_findings
+    except Exception as e:
+        print(f"[Lavendir] narrate_as_expert error: {e}")
+        return raw_findings
+
+
 # ── System prompt ─────────────────────────────────────────────────
 
 def _build_system_prompt(site_context: str, rag_context: str, recent_scrape: str = "") -> str:
     return f"""You are {AGENT_NAME}, a warm and knowledgeable AI website design assistant for OatmealFarmNetwork — a platform for farmers, ranchers, and agricultural businesses.
+
+You are a trained UI/UX and graphic-design expert. Your KNOWLEDGE BASE (when present below) is a curated library of UI/UX, visual-design, typography, color-theory, and graphic-design references uploaded specifically to make you an authoritative design advisor. Treat those passages as your professional source material: when the user asks about layout, hierarchy, typography, color, composition, accessibility, brand identity, or any design decision, GROUND your advice in the KNOWLEDGE BASE — cite principles from it, name the concept, and apply it to the user's specific site. If the retrieved passages don't cover the question, say so briefly before falling back on general design best practices.
 
 You guide users in building beautiful, effective farm websites. You can ALSO make changes to their website directly when asked — you will propose the change and wait for the user to confirm before executing it.
 
@@ -1629,7 +2343,9 @@ WEBSITE BUILDER FEATURES YOU KNOW:
 - Events: the farm can host events (clinics, auctions, farm tours, workshops, fiber-arts gatherings, dinners). Events can be displayed on the site via the "Upcoming Events" block, and individual events can be published/unpublished. Only PUBLISHED events appear on the public site and in the network feed.
 
 WHEN THE USER ASKS YOU TO MAKE A CHANGE:
-- Use the appropriate tool to propose the change
+- CALL THE TOOL IMMEDIATELY. Do not write a text reply like "I'll do that, does that sound right?" — the tool call IS the confirmation prompt. The frontend renders a proper "Yes, do it / No, cancel" card the moment your tool call arrives.
+- NEVER ask for confirmation in natural language when you have all the info you need to call a tool. The user's request IS the intent signal; the tool's confirmation card is the safety net.
+- If a user says "yes", "yes please", "go ahead", "do it", etc., and you recently PROPOSED an action in words (instead of via a tool call), you must IMMEDIATELY call the tool now — don't acknowledge verbally again.
 - Be specific about what you're about to change
 - Keep responses concise — 2-3 short paragraphs max
 - After a change is confirmed and done, tell the user to refresh their browser to see it
@@ -1639,12 +2355,13 @@ EVENT HINTS:
 - If the user wants their events visible on their site, use `add_events_block` to drop an Upcoming Events block on their homepage (or a specific page).
 - You can reference an event by its ID or by its name — if the user gives a name, use `event_title` and the system will match it.
 
-REVIEWING & IMPROVING THE SITE:
-- The site context above already includes an AUDIT FINDINGS block listing prioritized issues — reference these directly when giving advice.
-- When the user asks to "review", "audit", "critique", or "improve" the site, call the `review_site` tool (it runs inline, no confirmation needed).
-- After reviewing, offer to fix the top 1-2 issues using the appropriate tool: `add_block` to add missing sections (hero, about, contact, gallery, events, blog, testimonials, etc.), `update_block` to rewrite weak copy or swap images, `update_site_design`/`update_site_settings` for design and contact fixes, `publish_event` for draft events.
-- Lead with the highest-severity findings. Be specific ("Your homepage has no hero banner — want me to add one?") rather than vague.
-- Don't overwhelm — surface 3-4 top findings, then offer to fix them one at a time.
+REVIEWING & IMPROVING THE SITE — TOOL ROUTING IS CRITICAL:
+- If the user mentions ANY URL or domain (e.g. "oatmealfarmnetwork.com", "my published site", "example.farm", "this link: …") and asks for your opinion/review/critique/UX analysis, you MUST call `review_competitor_site(url)`. This is true even if it's the user's own live domain — the builder's audit can only see the database, not what real visitors see in a browser.
+- Only call `review_site` when the user asks for a critique of their site inside this builder WITHOUT giving any URL.
+- Use `scrape_website` only for factual/data questions about a URL ("what fonts does this use?") where no critique is wanted.
+- Both `review_site` and `review_competitor_site` now return a senior-designer critique grounded in your KNOWLEDGE BASE — you don't need to re-critique the output; just read it to the user as your answer.
+- After critiquing, offer to fix the top 1–2 issues with `add_block`, `update_block`, `update_site_design`, `update_site_settings`, or `publish_event`.
+- Be specific and authoritative. Name the design principle you're invoking. Don't overwhelm — 3–5 prioritized findings, then offer to fix one at a time.
 
 GENERATING VISUAL DESIGNS:
 - You can PRODUCE designs the user can see BEFORE applying them.
@@ -1656,7 +2373,17 @@ WEB SCRAPING & COMPETITIVE RESEARCH:
 - When the user pastes a URL or asks about "their old site", a competitor, or a design they like, use `scrape_website(url)` to fetch and report what you found (platform, colors, fonts, layout, images). Runs inline.
 - Use `review_competitor_site(url)` instead when the intent is comparison or inspiration — you'll get design takeaways phrased for coaching.
 - To actually pull content in, use `import_from_website(url, page_name, include)` — this writes blocks to their page and requires confirmation. `include` is a comma-separated subset of "hero,about,gallery,design".
+- To pull BLOG ARTICLES from another site's blog index, use `import_blog_posts(url, limit, category)`. It discovers individual article links on the index page, scrapes each article, and creates DRAFT BusinessBlogPost rows (the user reviews + publishes in Manage Blog). Use this whenever the user says "add these blog articles to my blog", "import the posts from this blog", "pull my old blog over", etc. Requires confirmation.
+- If the user gives you a URL to a SINGLE page (one article, one event, one news story — NOT a blog index) and asks to add it / scrape it / turn it into a blog post, use `import_blog_post_from_url(url, category?, publish?)` instead. It scrapes that one page and creates exactly one draft. Never refuse a single-page URL — this tool handles it. Requires confirmation.
+- You have full CRUD over the user's OWN blog: `list_blog_posts` (inline, no confirmation — use for "what posts do I have?"), `read_blog_post(post_id)` (inline), `create_blog_post(title, content, excerpt?, category?, cover_image?, publish?)`, `update_blog_post(post_id, …fields)`, `delete_blog_post(post_id)`, and `publish_blog_post(post_id, publish)`. Creates/updates/deletes/publish require confirmation. When the user asks you to write a post, draft the full HTML body yourself and pass it as `content`; default to `publish=false` so it lands as a draft unless they explicitly say "publish it now".
+
+BLOG POST vs BLOG PAGE/BLOCK — CRITICAL DISAMBIGUATION:
+- "blog post", "post", "article", "entry" → ALWAYS a row in the blog-posts data store. Use `create_blog_post` / `update_blog_post` / `delete_blog_post` / `publish_blog_post` / `import_blog_post_from_url`. These are posts that appear BOTH on the business's My Website Blog widget (ShowOnWebsite=1) AND on the oatmealfarmnetwork.com directory feed (ShowOnDirectory=1 / IsPublished=1).
+- "blog page", "blog section", "blog feed", "blog block" → a website builder layout element. Only then use `add_block` with BlockType='blog' (or add a new page).
+- When the user says "create a blog post titled X" (or any variant naming a post), CALL `create_blog_post` with title=X IMMEDIATELY. Do NOT ask "would you like a blog page or a blog section?" — that question is for layout requests, not post creation. If content is missing, you draft a short placeholder body yourself and pass it as `content`. Never go silent, never refuse, never redirect the user to the layout question.
 - Every scrape teaches a shared knowledge base you and Chearvil (the admin scraper) share, so the more sites you read, the better both of you get at reading similar ones.
+
+IDENTIFIERS (these are NOT secret — the user sees them in their own URLs and dashboards every day. If they ask "what is my business id" or "what is my website id", answer directly with the number from CURRENT WEBSITE STATE below. Never refuse to share these IDs.):
 
 CURRENT WEBSITE STATE:
 {site_context}
@@ -1668,6 +2395,168 @@ CURRENT WEBSITE STATE:
 Always be encouraging, practical, and warm — like a knowledgeable creative friend helping them build something beautiful."""
 
 
+# ── Deterministic intent detectors ────────────────────────────────
+# Gemini repeatedly misroutes "create a blog post titled X" into a layout
+# suggestion ("want me to add a Blog page?") even with explicit tool
+# instructions. For intents this narrow and this important, a regex fast
+# path is more reliable than prompt engineering.
+
+# Matches "create/add/write/... a (new) (blog) post" anywhere in the msg.
+# Title capture is optional so phrasings without a title still fire the
+# fast-path (we use a default placeholder title in that case).
+_CREATE_BLOG_POST_RE = re.compile(
+    r"""(?ix)
+    (?:please\s+)?
+    (?:can\s+you\s+|could\s+you\s+|would\s+you\s+|i'?d\s+like\s+(?:you\s+)?to\s+|i\s+want\s+(?:you\s+)?to\s+|let'?s\s+)?
+    (?:create|make|write|add|draft|start|publish|post|put\s+up)
+    \s+
+    (?:me\s+|for\s+me\s+|a\s+|an\s+|another\s+|some\s+|)*
+    (?:new\s+)?
+    (?:blog\s+post|post\s+to\s+(?:my|our|the)\s+blog|post\s+on\s+(?:my|our|the)\s+blog|article|blog\s+entry|blog\s+article)
+    (?:
+        \s+
+        (?:titled|called|named|with\s+the\s+title|about|on|regarding)
+        \s+
+        ['"]?
+        (?P<title>.+?)
+        ['"]?
+        \s*
+        (?:\.|,|!|\?|$)
+    )?
+    """,
+    re.VERBOSE,
+)
+
+
+_NEGATION_RE = re.compile(
+    r"(?i)\b(don'?t|do\s+not|never|stop|cancel|nevermind|no\s+don'?t)\b"
+)
+
+
+def _detect_create_blog_post_intent(msg: str) -> Optional[str]:
+    """Return a title if the user clearly asked to create a blog post, else None.
+
+    Returns '' (empty string) as a sentinel when the intent is clear but no
+    title was given — caller substitutes a default title. Returns None when
+    the message doesn't match the create-blog-post intent at all.
+    """
+    if not msg:
+        return None
+    stripped = msg.strip()
+    if _NEGATION_RE.search(stripped):
+        return None
+    m = _CREATE_BLOG_POST_RE.search(stripped)
+    if not m:
+        return None
+    title = (m.group("title") or "").strip().strip('."\'!?,')
+    if len(title) > 200:
+        return None
+    return title  # may be "" when intent is clear but title is missing
+
+
+# URL-based: "scrape https://... and add it as a blog post", "create a blog post from https://..."
+_URL_RE = re.compile(r"https?://[^\s<>\"')]+", re.IGNORECASE)
+_BLOG_KEYWORD_RE = re.compile(
+    r"(?i)\b(blog(?:\s+(?:post|article|entry))?|article|post\s+(?:to|on)\s+(?:my|our|the)\s+blog|to\s+(?:my|our|the)\s+blog)\b"
+)
+_IMPORT_VERB_RE = re.compile(
+    r"(?i)\b(scrape|fetch|import|pull\s+in|pull\s+over|add|create|make|draft|turn\s+into|post|publish|save|grab|bring\s+in|repost)\b"
+)
+
+# "create another one", "make a second one", "one more", "do it again", etc.
+_ANOTHER_ONE_RE = re.compile(
+    r"""(?ix)
+    (?:please\s+)?
+    (?:can\s+you\s+|could\s+you\s+|would\s+you\s+|i'?d\s+like\s+(?:you\s+)?to\s+|i\s+want\s+(?:you\s+)?to\s+|let'?s\s+|go\s+ahead\s+and\s+)?
+    (?:
+        (?:create|make|write|add|draft|scrape|import|fetch|pull\s+in|generate|do|give\s+me|post|publish)
+        \s+
+        (?:me\s+|for\s+me\s+)?
+        (?:another|a\s+second|a\s+third|a\s+fourth|a\s+fifth|one\s+more|yet\s+another|a\s+new)
+        (?:\s+(?:one|blog\s+post|post|article|entry|draft|copy))?
+        |
+        (?:do\s+it\s+again|do\s+another|again,?\s+please|one\s+more\s+time|same\s+(?:thing|again))
+    )
+    \b
+    """
+)
+
+
+def _strip_url_trailing(u: str) -> str:
+    return (u or "").rstrip('.,!?;:)(]"\'>')
+
+
+def _extract_url(msg: str) -> Optional[str]:
+    if not msg:
+        return None
+    m = _URL_RE.search(msg)
+    if not m:
+        return None
+    return _strip_url_trailing(m.group(0)) or None
+
+
+def _detect_url_blog_post_intent(msg: str) -> Optional[str]:
+    """Return URL if the user wants to turn a specific URL into a blog post, else None."""
+    if not msg or _NEGATION_RE.search(msg):
+        return None
+    url = _extract_url(msg)
+    if not url:
+        return None
+    if _BLOG_KEYWORD_RE.search(msg) and _IMPORT_VERB_RE.search(msg):
+        return url
+    return None
+
+
+def _most_recent_url_in_history(messages) -> Optional[str]:
+    """Walk history newest-to-oldest, return the first URL found."""
+    if not messages:
+        return None
+    for m in reversed(messages):
+        content = getattr(m, "content", None)
+        if content is None and isinstance(m, dict):
+            content = m.get("content")
+        url = _extract_url(content or "")
+        if url:
+            return url
+    return None
+
+
+def _last_assistant_mentioned_blog_post(messages) -> bool:
+    """True if the most recent assistant reply was about a blog-post action."""
+    if not messages:
+        return False
+    for m in reversed(messages):
+        role = getattr(m, "role", None) or (isinstance(m, dict) and m.get("role"))
+        if role != "assistant":
+            continue
+        content = getattr(m, "content", None) or (isinstance(m, dict) and m.get("content")) or ""
+        return bool(_BLOG_KEYWORD_RE.search(content) or "import_blog_post" in content or "Scrape" in content)
+    return False
+
+
+def _detect_another_blog_post_intent(msg: str, messages) -> Optional[str]:
+    """Return a URL from history when the user says 'create another one' style phrases
+    in a context where the most recent action was a blog-post import."""
+    if not msg or _NEGATION_RE.search(msg):
+        return None
+    if not _ANOTHER_ONE_RE.search(msg):
+        return None
+    if not _last_assistant_mentioned_blog_post(messages):
+        return None
+    return _most_recent_url_in_history(messages)
+
+
+def _draft_placeholder_post_body(title: str) -> str:
+    """Simple placeholder body used when the user gives only a title."""
+    safe_title = (title or "").strip() or "this post"
+    return (
+        f"<p>This is a draft for <strong>{safe_title}</strong>. "
+        f"Replace this placeholder with your real content.</p>"
+        f"<p>Ask Lavendir to rewrite the body any time — "
+        f"just tell her what you want this post to say.</p>"
+    )
+
+
 # ── Chat endpoint ─────────────────────────────────────────────────
 
 @router.post("/chat")
@@ -1677,11 +2566,63 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=503, detail="AI service not configured")
 
     # Build context
+    print(f"[Lavendir] incoming request: website_id={body.website_id} business_id={body.business_id}")
     site_context = _get_site_context(body.website_id, body.business_id, db)
     last_user_msg = next((m.content for m in reversed(body.messages) if m.role == "user"), "")
     rag_context   = _rag_search(last_user_msg) if last_user_msg else ""
     recent_scrape = _format_last_scrape(_load_last_scrape(body.website_id) or {})
     system_prompt = _build_system_prompt(site_context, rag_context, recent_scrape)
+
+    # Deterministic intent fast-paths: when the user clearly asks for a blog-post
+    # action, bypass Gemini and emit the pending_action directly. Gemini keeps
+    # second-guessing these requests (redirecting to layout blocks, or refusing
+    # to re-scrape a URL it already scraped); the regexes guarantee the
+    # confirmation card shows up every time.
+    fast_title = _detect_create_blog_post_intent(last_user_msg)
+    print(f"[Lavendir] fast-path probe: msg={last_user_msg!r} -> title={fast_title!r}")
+    if fast_title is not None:
+        title_for_post = fast_title or "Untitled draft"
+        params = {
+            "title": title_for_post,
+            "content": _draft_placeholder_post_body(title_for_post),
+            "publish": False,
+        }
+        description = _describe_action("create_blog_post", params)
+        print(f"[Lavendir] fast-path create_blog_post title={title_for_post!r}")
+        return {
+            "role": "assistant",
+            "content": f"I'd like to make this change for you:\n\n**{description}**\n\nShall I go ahead?",
+            "pending_action": {"action": "create_blog_post", "params": params, "description": description},
+            "agent": AGENT_NAME,
+        }
+
+    # URL in the current message + "blog post" / "import" intent → scrape-to-post.
+    url_intent = _detect_url_blog_post_intent(last_user_msg)
+    if url_intent:
+        params = {"url": url_intent, "publish": False}
+        description = _describe_action("import_blog_post_from_url", params)
+        print(f"[Lavendir] fast-path import_blog_post_from_url url={url_intent!r}")
+        return {
+            "role": "assistant",
+            "content": f"I'd like to make this change for you:\n\n**{description}**\n\nShall I go ahead?",
+            "pending_action": {"action": "import_blog_post_from_url", "params": params, "description": description},
+            "agent": AGENT_NAME,
+        }
+
+    # "Create another one" / "do it again" style follow-ups after a prior
+    # blog-post import. Pull the URL from conversation history so Gemini
+    # doesn't refuse on the grounds that it already scraped the URL.
+    another_url = _detect_another_blog_post_intent(last_user_msg, body.messages)
+    if another_url:
+        params = {"url": another_url, "publish": False}
+        description = _describe_action("import_blog_post_from_url", params)
+        print(f"[Lavendir] fast-path another_blog_post url={another_url!r}")
+        return {
+            "role": "assistant",
+            "content": f"I'd like to make this change for you:\n\n**{description}**\n\nShall I go ahead?",
+            "pending_action": {"action": "import_blog_post_from_url", "params": params, "description": description},
+            "agent": AGENT_NAME,
+        }
 
     try:
         import google.generativeai as genai
@@ -1697,12 +2638,13 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
             ) for t in TOOLS
         ])]
 
-        model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash",
-            system_instruction=system_prompt,
-            tools=gemini_tools,
-            generation_config={"temperature": 0.7, "max_output_tokens": 600},
-        )
+        def _build_model(model_name: str, max_tokens: int = 8192):
+            return genai.GenerativeModel(
+                model_name=model_name,
+                system_instruction=system_prompt,
+                tools=gemini_tools,
+                generation_config={"temperature": 0.7, "max_output_tokens": max_tokens},
+            )
 
         history = []
         for msg in body.messages[:-1]:
@@ -1711,8 +2653,65 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
                 "parts": [msg.content]
             })
 
-        chat = model.start_chat(history=history)
-        response = chat.send_message(last_user_msg)
+        def _has_useful_output(resp) -> bool:
+            try:
+                cand = resp.candidates[0]
+                for p in getattr(cand.content, "parts", []) or []:
+                    if hasattr(p, "function_call") and p.function_call.name:
+                        return True
+                    if getattr(p, "text", None):
+                        return True
+            except Exception:
+                return False
+            return False
+
+        # Tiered fallback: if one model goes silent (thinking-token drain) or
+        # 429s (quota), walk down the ladder so the user always gets an answer.
+        # 2.5-flash: smart, can silence via thinking
+        # 2.0-flash: no thinking, but its own quota bucket
+        # 2.5-flash-lite: fastest/cheapest, separate quota
+        model_ladder = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite"]
+        response = None
+        last_error = None
+        for mi, model_name in enumerate(model_ladder):
+            try:
+                _model = _build_model(model_name)
+                _chat = _model.start_chat(history=history)
+                _resp = _chat.send_message(last_user_msg)
+            except Exception as _mex:
+                last_error = _mex
+                print(f"[Lavendir] {model_name} send failed: {_mex}")
+                continue
+            if _has_useful_output(_resp):
+                response = _resp
+                if mi > 0:
+                    print(f"[Lavendir] recovered on {model_name} after {mi} silent tier(s)")
+                break
+            print(f"[Lavendir] empty response from {model_name} — trying next tier")
+            response = _resp  # keep last so we can still inspect it
+
+        if response is None:
+            # Every tier raised. Surface a helpful message instead of a canned
+            # greeting so the user understands what happened.
+            detail = str(last_error) if last_error else "unknown"
+            short = "the AI service is rate-limited right now" if "429" in detail or "quota" in detail.lower() else "the AI service is temporarily unavailable"
+            return {
+                "role": "assistant",
+                "content": f"I hit a snag — {short}. Give it a minute and ask me again.",
+                "agent": AGENT_NAME,
+            }
+
+        # Debug: surface Gemini's decision so we can diagnose silent failures
+        try:
+            _cand = response.candidates[0]
+            _fr = getattr(_cand, "finish_reason", "?")
+            _parts = getattr(_cand.content, "parts", []) or []
+            _fc_names = [p.function_call.name for p in _parts if hasattr(p, "function_call") and p.function_call.name]
+            _has_text = any(getattr(p, "text", None) for p in _parts)
+            print(f"[Lavendir] chat question={last_user_msg!r} wid={body.website_id} bid={body.business_id} "
+                  f"finish={_fr} parts={len(_parts)} fc={_fc_names} has_text={_has_text} tools={len(TOOLS)}")
+        except Exception as _dbg_ex:
+            print(f"[Lavendir] chat debug-log failed: {_dbg_ex}")
 
         # Check if Gemini wants to call a tool
         candidate = response.candidates[0]
@@ -1721,15 +2720,34 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
                 fc = part.function_call
                 action = fc.name
                 params = dict(fc.args)
+                print(f"[Lavendir] tool_call action={action} params={dict(params)}")
 
                 # Read-only actions: run inline, return results in the reply
-                if action == "review_site":
-                    audit_text = _execute_action(
+                if action in ("list_blog_posts", "read_blog_post"):
+                    result_text = _execute_action(
                         action, params, body.website_id, body.business_id, db
                     )
                     return {
                         "role": "assistant",
-                        "content": audit_text + "\n\nWant me to fix any of these for you?",
+                        "content": result_text,
+                        "agent": AGENT_NAME,
+                    }
+
+                if action == "review_site":
+                    audit_text = _execute_action(
+                        action, params, body.website_id, body.business_id, db
+                    )
+                    critique = _narrate_as_expert(
+                        api_key=api_key,
+                        user_question=last_user_msg,
+                        raw_findings=audit_text,
+                        site_context=site_context,
+                        rag_context=rag_context,
+                        mode="site_audit",
+                    )
+                    return {
+                        "role": "assistant",
+                        "content": critique + "\n\nWant me to tackle any of these for you?",
                         "agent": AGENT_NAME,
                     }
 
@@ -1793,7 +2811,7 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
                     }
 
                 if action in ("scrape_website", "review_competitor_site"):
-                    url = (params.get("url") or "").strip()
+                    url = _normalize_url(params.get("url") or "")
                     if not url:
                         return {
                             "role": "assistant",
@@ -1802,9 +2820,12 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
                         }
                     try:
                         from scrapers.lavendir_scraper import scrape as _scrape_async
+                        # Critique mode uses the browser-based capture so we see
+                        # what a real visitor sees (SPAs, JS-rendered content).
+                        use_pw = (action == "review_competitor_site") or bool(params.get("deep"))
                         data = await _scrape_async(
                             url,
-                            use_playwright=bool(params.get("deep")),
+                            use_playwright=use_pw,
                             learn=True,
                         )
                     except Exception as e:
@@ -1819,11 +2840,46 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
                         _store_last_scrape(body.website_id, {**data, "summary": summary})
                     except Exception:
                         pass
-                    tail = ("\n\nWant me to try any of these ideas on your site?" if competitor
-                            else "\n\nWant me to import anything from this site onto one of your pages?")
+                    if competitor:
+                        # Build a richer raw-findings block than the bullet summary —
+                        # include headings, first paragraphs, and detected tokens so
+                        # the expert narrator has real content to critique.
+                        raw_headings = data.get("headings") or []
+                        headings = [
+                            (h.get("text") if isinstance(h, dict) else str(h))
+                            for h in raw_headings[:8]
+                            if (h.get("text") if isinstance(h, dict) else h)
+                        ]
+                        body_items = data.get("bodyText") or data.get("paragraphs") or []
+                        paragraphs = [
+                            (p if isinstance(p, str) else (p.get("text") or ""))
+                            for p in body_items[:6]
+                        ]
+                        paragraphs = [p for p in paragraphs if p]
+                        tokens = data.get("designTokens") or {}
+                        stats = data.get("stats") or {}
+                        raw_for_expert = (
+                            summary
+                            + "\n\nHEADINGS:\n"  + "\n".join(f"• {h}" for h in headings)
+                            + "\n\nFIRST PARAGRAPHS:\n" + "\n".join(f"• {p[:240]}" for p in paragraphs)
+                            + f"\n\nDESIGN TOKENS: {json.dumps(tokens, default=str)}"
+                            + f"\n\nSTATS: {json.dumps(stats, default=str)}"
+                        )
+                        critique = _narrate_as_expert(
+                            api_key=api_key,
+                            user_question=last_user_msg,
+                            raw_findings=raw_for_expert,
+                            site_context=site_context,
+                            rag_context=rag_context,
+                            mode="url_critique",
+                            url=url,
+                        )
+                        content = critique + "\n\nWant me to try any of these ideas on your site?"
+                    else:
+                        content = summary + "\n\nWant me to import anything from this site onto one of your pages?"
                     return {
                         "role": "assistant",
-                        "content": summary + tail,
+                        "content": content,
                         "agent": AGENT_NAME,
                         "scrape_result": {
                             "url": data.get("url"),
@@ -1842,7 +2898,35 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
                     "agent": AGENT_NAME,
                 }
 
-        reply = response.text
+        # Robust text extraction — resp.text raises on MAX_TOKENS and only
+        # returns the first part, so walk every candidate's parts instead.
+        reply_chunks: List[str] = []
+        try:
+            for cand in (response.candidates or []):
+                content = getattr(cand, "content", None)
+                parts = getattr(content, "parts", None) or []
+                for p in parts:
+                    t = getattr(p, "text", None)
+                    if t:
+                        reply_chunks.append(t)
+                fr = getattr(cand, "finish_reason", None)
+                if fr and str(fr).split(".")[-1] not in ("STOP", "1"):
+                    print(f"[Lavendir] chat finish_reason={fr}")
+        except Exception as _ex:
+            print(f"[Lavendir] chat part-walk failed: {_ex}")
+        if not reply_chunks:
+            try:
+                reply_chunks.append(response.text or "")
+            except Exception:
+                pass
+        # If every model tier returned empty on a tool-worthy request, don't
+        # show the canned greeting — tell the user what happened so they can
+        # rephrase or retry.
+        if not reply_chunks:
+            reply = ("I wasn't able to generate a reply just now — the AI service may be rate-limited or the request was too complex. "
+                     "Try rephrasing or ask again in a moment.")
+        else:
+            reply = "\n".join(reply_chunks).strip() or _fallback_response(last_user_msg)
 
     except ImportError:
         reply = _fallback_response(last_user_msg)
