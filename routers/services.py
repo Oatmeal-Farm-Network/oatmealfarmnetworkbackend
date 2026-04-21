@@ -97,8 +97,10 @@ def add_service(data: dict, db: Session = Depends(get_db)):
 
 # -------------------------
 # Get single service (for editing)
+# NOTE: path uses {services_id:int} so literal segments like "public" or
+# "subcategories" fall through to their own specific routes.
 # -------------------------
-@router.get("/api/services/{services_id}")
+@router.get("/api/services/{services_id:int}")
 def get_service(services_id: int, db: Session = Depends(get_db)):
     row = db.execute(text("""
         SELECT s.*, sc.ServicesCategory
@@ -114,7 +116,7 @@ def get_service(services_id: int, db: Session = Depends(get_db)):
 # -------------------------
 # Update a service
 # -------------------------
-@router.post("/api/services/{services_id}/update")
+@router.post("/api/services/{services_id:int}/update")
 def update_service(services_id: int, data: dict, db: Session = Depends(get_db)):
     db.execute(text("""
         UPDATE Services SET
@@ -148,41 +150,61 @@ def update_service(services_id: int, data: dict, db: Session = Depends(get_db)):
 # -------------------------
 # Delete a service
 # -------------------------
-@router.delete("/api/services/{services_id}")
+@router.delete("/api/services/{services_id:int}")
 def delete_service(services_id: int, db: Session = Depends(get_db)):
     db.execute(text("DELETE FROM Services WHERE ServicesID = :sid"), {"sid": services_id})
     db.commit()
     return {"ok": True}
 
 # -------------------------
-# Public: browse services (optional category filter)
+# Public: all subcategories across all categories
+# -------------------------
+@router.get("/api/services/subcategories/all")
+def all_subcategories(db: Session = Depends(get_db)):
+    rows = db.execute(text("""
+        SELECT ssc.ServicesSubcategoryID AS ServiceSubCategoryID,
+               ssc.ServiceSubCategoryName,
+               ssc.ServiceCategoryID, sc.ServicesCategory
+        FROM servicessubcategories ssc
+        LEFT JOIN servicescategories sc ON ssc.ServiceCategoryID = sc.ServiceCategoryID
+        ORDER BY sc.ServicesCategory, ssc.ServiceSubCategoryName
+    """)).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+# -------------------------
+# Public: browse services (optional category / subcategory / search filter)
 # -------------------------
 @router.get("/api/services/public")
-def browse_services(category_id: int = None, db: Session = Depends(get_db)):
+def browse_services(
+    category_id: int = None,
+    subcategory_id: int = None,
+    q: str = None,
+    db: Session = Depends(get_db),
+):
+    where = ["s.ServiceAvailable = 1"]
+    params = {}
     if category_id:
-        rows = db.execute(text("""
-            SELECT s.ServicesID, s.ServiceTitle, s.ServicesDescription,
-                   s.ServicePrice, s.ServiceContactForPrice, s.ServiceAvailable,
-                   s.Photo1, s.BusinessID,
-                   b.BusinessName, sc.ServicesCategory, sc.ServiceCategoryID
-            FROM Services s
-            JOIN Business b ON s.BusinessID = b.BusinessID
-            LEFT JOIN servicescategories sc ON s.ServiceCategoryID = sc.ServiceCategoryID
-            WHERE s.ServiceAvailable = 1 AND s.ServiceCategoryID = :cid
-            ORDER BY s.ServiceTitle
-        """), {"cid": category_id}).fetchall()
-    else:
-        rows = db.execute(text("""
-            SELECT s.ServicesID, s.ServiceTitle, s.ServicesDescription,
-                   s.ServicePrice, s.ServiceContactForPrice, s.ServiceAvailable,
-                   s.Photo1, s.BusinessID,
-                   b.BusinessName, sc.ServicesCategory, sc.ServiceCategoryID
-            FROM Services s
-            JOIN Business b ON s.BusinessID = b.BusinessID
-            LEFT JOIN servicescategories sc ON s.ServiceCategoryID = sc.ServiceCategoryID
-            WHERE s.ServiceAvailable = 1
-            ORDER BY sc.ServicesCategory, s.ServiceTitle
-        """)).fetchall()
+        where.append("s.ServiceCategoryID = :cid")
+        params["cid"] = category_id
+    if q:
+        where.append(
+            "(s.ServiceTitle LIKE :q OR s.ServicesDescription LIKE :q OR b.BusinessName LIKE :q)"
+        )
+        params["q"] = f"%{q}%"
+
+    sql = f"""
+        SELECT s.ServicesID, s.ServiceTitle, s.ServicesDescription,
+               s.ServicePrice, s.ServiceContactForPrice, s.ServiceAvailable,
+               s.Photo1, s.BusinessID,
+               b.BusinessName,
+               sc.ServicesCategory, sc.ServiceCategoryID
+        FROM Services s
+        JOIN Business b ON s.BusinessID = b.BusinessID
+        LEFT JOIN servicescategories sc ON s.ServiceCategoryID = sc.ServiceCategoryID
+        WHERE {' AND '.join(where)}
+        ORDER BY sc.ServicesCategory, s.ServiceTitle
+    """
+    rows = db.execute(text(sql), params).fetchall()
     return [dict(r._mapping) for r in rows]
 
 # -------------------------

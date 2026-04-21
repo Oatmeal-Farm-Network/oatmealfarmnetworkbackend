@@ -1,6 +1,4 @@
-INFO:     Started server process [28512]
+INFO:     Started server process [8884]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
-F:\Oatmeal AI\OatmealFarmNetwork Repo\Backend\venv\Lib\site-packages\fastapi\openapi\utils.py:252: UserWarning: Duplicate Operation ID forgot_password_auth_forgot_password_post for function forgot_password at F:\Oatmeal AI\OatmealFarmNetwork Repo\Backend\oatmealfarmnetworkbackend\routers\forgot_password.py
-  warnings.warn(message, stacklevel=1)
