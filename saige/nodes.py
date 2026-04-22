@@ -97,6 +97,96 @@ except Exception as _e:
     event_attendee_count_tool = None
     EVENTS_AVAILABLE = False
 
+try:
+    from precision_ag import (
+        precision_ag_tools,
+        list_my_fields_tool,
+        get_field_analysis_tool,
+        get_field_history_tool,
+        get_field_alerts_tool,
+    )
+    PRECISION_AG_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] precision_ag unavailable: {_e}")
+    precision_ag_tools = []
+    list_my_fields_tool = None
+    get_field_analysis_tool = None
+    get_field_history_tool = None
+    get_field_alerts_tool = None
+    PRECISION_AG_AVAILABLE = False
+
+try:
+    from farm_data import (
+        farm_data_tools,
+        list_my_animals_tool,
+        list_my_listings_tool,
+        count_my_animals_tool,
+    )
+    FARM_DATA_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] farm_data unavailable: {_e}")
+    farm_data_tools = []
+    list_my_animals_tool = None
+    list_my_listings_tool = None
+    count_my_animals_tool = None
+    FARM_DATA_AVAILABLE = False
+
+try:
+    from actions import (
+        actions_tools,
+        draft_produce_listing_tool,
+        draft_event_tool,
+        draft_blog_post_tool,
+    )
+    ACTIONS_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] actions unavailable: {_e}")
+    actions_tools = []
+    draft_produce_listing_tool = None
+    draft_event_tool = None
+    draft_blog_post_tool = None
+    ACTIONS_AVAILABLE = False
+
+try:
+    from agronomy import (
+        agronomy_tools,
+        planting_calendar_tool,
+        irrigation_schedule_tool,
+        manure_pairing_tool,
+    )
+    AGRONOMY_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] agronomy unavailable: {_e}")
+    agronomy_tools = []
+    planting_calendar_tool = None
+    irrigation_schedule_tool = None
+    manure_pairing_tool = None
+    AGRONOMY_AVAILABLE = False
+
+try:
+    from chef import (
+        chef_tools,
+        save_recipe_tool,
+        cost_recipe_tool,
+        seasonal_menu_tool,
+        set_par_tool,
+        check_par_levels_tool,
+        draft_restock_order_tool,
+        provenance_cards_tool,
+    )
+    CHEF_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] chef unavailable: {_e}")
+    chef_tools = []
+    save_recipe_tool = None
+    cost_recipe_tool = None
+    seasonal_menu_tool = None
+    set_par_tool = None
+    check_par_levels_tool = None
+    draft_restock_order_tool = None
+    provenance_cards_tool = None
+    CHEF_AVAILABLE = False
+
 VALID_ADVISORY_TYPES = {"weather", "livestock", "crops", "mixed"}
 ADVISORY_TYPE_ALIASES = {
     "crop": "crops",
@@ -688,6 +778,26 @@ Additional tools available:
 - price_forecast_tool(commodity, months_ahead): short-horizon US commodity price forecast (corn/soy/wheat/cotton/rice/cattle/hog/milk/egg/hay/etc.). Use for marketing, selling-timing, or revenue planning questions.
 - subsidies_tool(category, keyword): US federal farm subsidy / cost-share / grant / loan programs (EQIP, CSP, CRP, ARC/PLC, WFRP, BFRDP, VAPG, REAP, SARE). Use when user asks about government funding or assistance.
 - insurance_tool(crop): US federal crop-insurance products (RP/YP/APH/WFRP/MP/PRF/LRP/LGM/DRP/NAP) for a specific crop or livestock class. Use when user asks about insurance or risk management.
+- list_my_fields_tool(): list the current user's satellite-monitored fields (field ID, name, crop, size, planting date). Call this whenever the user says "my fields / my farm / my plots" so you can reference them by ID.
+- get_field_analysis_tool(field_id): latest NDVI/EVI/SAVI vegetation indices + trend vs. previous pass. Use for "how is field X doing", "is my crop healthy".
+- get_field_history_tool(field_id, months): NDVI/EVI time series over last N months. Use for trend questions.
+- get_field_alerts_tool(field_id): open precision-ag alerts (pass field_id=0 for all fields). Use for "any issues", "what needs attention".
+- list_my_animals_tool(studs_only): animals on the current business (for-sale by default; set studs_only=true for stud listings). Use for "my animals", "what's for sale on my ranch".
+- list_my_listings_tool(): unified marketplace inventory (produce + meat + processed food) for the current business. Use for "my inventory", "my marketplace listings".
+- count_my_animals_tool(): quick count of for-sale vs at-stud animals on the current business. Use for "how many animals do I have".
+- draft_produce_listing_tool(ingredient_name, quantity, measurement, retail_price, wholesale_price, available_date): DRAFT a new produce listing — saves a pending draft for the farmer to approve, never publishes directly. Use for "list my tomatoes at $3/lb", "put 10 dozen eggs on the marketplace". Always confirm the draft with the user before calling.
+- draft_event_tool(event_name, description, start_date, end_date, location_name, city, state, is_free, registration_required): DRAFT a new farm event. Use for "plan a farm tour", "create an open-ranch day". Saves pending — does not publish.
+- draft_blog_post_tool(title, content, category): DRAFT a new blog post for the business. Use for "write a blog post about…", "draft an article". Saves pending — does not publish.
+- planting_calendar_tool(crop, zone, lat, lon): when/how to plant a specific crop (earliest safe plant-out date, soil-temp target, seed depth, direct-sow vs transplant, days to maturity). Use for "when should I plant X", "is it too early for Y".
+- irrigation_schedule_tool(crop, stage, soil_type, climate, days_since_rain): how much and how often to water. stage='initial'|'mid'|'late'; soil_type sandy/loam/clay/silty; climate tropical/subtropical/temperate/continental/mediterranean/arid/highland/boreal. Use for "how often do I water X", "am I overwatering".
+- manure_pairing_tool(crop, available_manures): rank manures for a given crop by N-P-K fit + composting caveats. available_manures is an optional comma list (e.g., "goat,chicken") to restrict to what's on hand. Use for "what manure works best for X", "can I use my goat manure on tomatoes".
+- save_recipe_tool(name, items_json, portion_yield, menu_price): save a kitchen recipe so it can be costed later. items_json is a JSON array like [{"ingredient":"ground beef","qty":0.33,"unit":"lb"}]. Use for "save my summer salad recipe", "let me track the burger plate".
+- cost_recipe_tool(recipe_name): live plate-cost calculation for a saved recipe using current OFN marketplace prices. Use for "cost my burger", "what does the salad run now", "update my plate costs".
+- seasonal_menu_tool(state, category): what's actively in season on OFN right now in the chef's state (defaults to the chef's own state). Use for "what's local right now", "seasonal menu ideas", "what's in season near me". category optional (Vegetable/Fruit/Herb/Meat).
+- set_par_tool(ingredient_name, unit, on_hand, par_level, reorder_at, preferred_business_id): set or update a par level for an ingredient in the restaurant's inventory. Use for "set par for ground beef at 20 lb", "reorder tomatoes at 5 lb".
+- check_par_levels_tool(): list ingredients currently at/below their reorder threshold. Use for "what's running low", "check my pars".
+- draft_restock_order_tool(): build a multi-farm restock cart from below-par items, with live OFN pricing and totals, grouped by farm. Use for "draft my order", "restock what's low", "what should I buy this week".
+- provenance_cards_tool(ingredient_names): "meet your farmers" provenance cards (markdown) for a comma-separated ingredient list — farm name, location, slogan, description. Use for "make provenance cards for my menu", "who grew these tomatoes".
 
 Prioritize the latest user message and any newly provided measurements over older generic context.
 If soil-test values are present, reference them explicitly and avoid repeating unchanged advice.
@@ -721,6 +831,16 @@ Write like you're talking to a friend."""
         bound_tools.extend(insurance_tools)
     if EVENTS_AVAILABLE:
         bound_tools.extend(event_tools)
+    if PRECISION_AG_AVAILABLE:
+        bound_tools.extend(precision_ag_tools)
+    if FARM_DATA_AVAILABLE:
+        bound_tools.extend(farm_data_tools)
+    if ACTIONS_AVAILABLE:
+        bound_tools.extend(actions_tools)
+    if AGRONOMY_AVAILABLE:
+        bound_tools.extend(agronomy_tools)
+    if CHEF_AVAILABLE:
+        bound_tools.extend(chef_tools)
     llm_with_tools = llm.bind_tools(bound_tools) if bound_tools else llm
 
     # 5. Tool Execution Loop (ReAct Pattern)
@@ -735,8 +855,19 @@ Write like you're talking to a friend."""
     subsidies_context = ""
     insurance_context = ""
     events_context = ""
+    precision_ag_context = ""
+    farm_data_context = ""
+    actions_context = ""
+    agronomy_context = ""
+    chef_context = ""
     max_iterations = 3
     final_response = ""
+    people_id_for_tools = state.get("people_id") or ""
+    business_id_for_tools = 0
+    try:
+        business_id_for_tools = int(state.get("business_id") or 0)
+    except (TypeError, ValueError):
+        business_id_for_tools = 0
 
     try:
         for iteration in range(max_iterations):
@@ -761,6 +892,16 @@ Write like you're talking to a friend."""
                 current_input += f"\n\n[Crop Insurance]: {insurance_context}"
             if events_context:
                 current_input += f"\n\n[Farm Events]: {events_context}"
+            if precision_ag_context:
+                current_input += f"\n\n[Precision Ag]: {precision_ag_context}"
+            if farm_data_context:
+                current_input += f"\n\n[Farm Data]: {farm_data_context}"
+            if actions_context:
+                current_input += f"\n\n[Draft Saved]: {actions_context}"
+            if agronomy_context:
+                current_input += f"\n\n[Agronomy]: {agronomy_context}"
+            if chef_context:
+                current_input += f"\n\n[Chef]: {chef_context}"
             response = llm_with_tools.invoke(current_input)
 
             # Check for tool calls
@@ -859,6 +1000,187 @@ Write like you're talking to a friend."""
                         print(f"[Advisory Agent] Executing Event Attendee Count Tool: {eid}")
                         tool_result = event_attendee_count_tool.invoke({"event_id": eid})
                         events_context = (events_context + "\n\n" if events_context else "") + tool_result
+                    elif tc_name == 'list_my_fields_tool' and PRECISION_AG_AVAILABLE:
+                        print(f"[Advisory Agent] Executing List My Fields Tool (people_id from state)")
+                        tool_result = list_my_fields_tool.invoke({"people_id": people_id_for_tools})
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'get_field_analysis_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Get Field Analysis Tool: field_id={fid}")
+                        tool_result = get_field_analysis_tool.invoke({
+                            "field_id": fid,
+                            "people_id": people_id_for_tools,
+                        })
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'get_field_history_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        months = int(tc_args.get('months', 6) or 6)
+                        print(f"[Advisory Agent] Executing Get Field History Tool: field_id={fid}, months={months}")
+                        tool_result = get_field_history_tool.invoke({
+                            "field_id": fid,
+                            "months": months,
+                            "people_id": people_id_for_tools,
+                        })
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'get_field_alerts_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Get Field Alerts Tool: field_id={fid}")
+                        tool_result = get_field_alerts_tool.invoke({
+                            "field_id": fid,
+                            "people_id": people_id_for_tools,
+                        })
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'list_my_animals_tool' and FARM_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        studs_only = bool(tc_args.get('studs_only', False))
+                        page = int(tc_args.get('page', 1) or 1)
+                        print(f"[Advisory Agent] Executing List My Animals Tool: business_id={bid}, studs_only={studs_only}")
+                        tool_result = list_my_animals_tool.invoke({
+                            "business_id": bid,
+                            "studs_only": studs_only,
+                            "page": page,
+                        })
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'list_my_listings_tool' and FARM_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing List My Listings Tool: business_id={bid}")
+                        tool_result = list_my_listings_tool.invoke({"business_id": bid})
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'count_my_animals_tool' and FARM_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Count My Animals Tool: business_id={bid}")
+                        tool_result = count_my_animals_tool.invoke({"business_id": bid})
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'draft_produce_listing_tool' and ACTIONS_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Draft Produce Listing: business_id={bid}")
+                        tool_result = draft_produce_listing_tool.invoke({
+                            "ingredient_name":  tc_args.get('ingredient_name', ''),
+                            "quantity":         float(tc_args.get('quantity', 0) or 0),
+                            "measurement":      tc_args.get('measurement', ''),
+                            "retail_price":     float(tc_args.get('retail_price', 0) or 0),
+                            "wholesale_price":  float(tc_args.get('wholesale_price', 0) or 0),
+                            "available_date":   tc_args.get('available_date', ''),
+                            "people_id":        people_id_for_tools,
+                            "business_id":      bid,
+                        })
+                        actions_context = (actions_context + "\n\n" if actions_context else "") + tool_result
+                    elif tc_name == 'draft_event_tool' and ACTIONS_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Draft Event: business_id={bid}")
+                        tool_result = draft_event_tool.invoke({
+                            "event_name":             tc_args.get('event_name', ''),
+                            "description":            tc_args.get('description', ''),
+                            "start_date":             tc_args.get('start_date', ''),
+                            "end_date":               tc_args.get('end_date', ''),
+                            "location_name":          tc_args.get('location_name', ''),
+                            "city":                   tc_args.get('city', ''),
+                            "state":                  tc_args.get('state', ''),
+                            "is_free":                bool(tc_args.get('is_free', True)),
+                            "registration_required":  bool(tc_args.get('registration_required', False)),
+                            "people_id":              people_id_for_tools,
+                            "business_id":            bid,
+                        })
+                        actions_context = (actions_context + "\n\n" if actions_context else "") + tool_result
+                    elif tc_name == 'draft_blog_post_tool' and ACTIONS_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Draft Blog Post: business_id={bid}")
+                        tool_result = draft_blog_post_tool.invoke({
+                            "title":       tc_args.get('title', ''),
+                            "content":     tc_args.get('content', ''),
+                            "category":    tc_args.get('category', ''),
+                            "people_id":   people_id_for_tools,
+                            "business_id": bid,
+                        })
+                        actions_context = (actions_context + "\n\n" if actions_context else "") + tool_result
+                    elif tc_name == 'planting_calendar_tool' and AGRONOMY_AVAILABLE:
+                        print(f"[Advisory Agent] Executing Planting Calendar: {tc_args.get('crop', '')}")
+                        tool_result = planting_calendar_tool.invoke({
+                            "crop": tc_args.get('crop', ''),
+                            "zone": int(tc_args.get('zone', 0) or 0),
+                            "lat":  float(tc_args.get('lat', 0) or 0),
+                            "lon":  float(tc_args.get('lon', 0) or 0),
+                        })
+                        agronomy_context = (agronomy_context + "\n\n" if agronomy_context else "") + tool_result
+                    elif tc_name == 'irrigation_schedule_tool' and AGRONOMY_AVAILABLE:
+                        print(f"[Advisory Agent] Executing Irrigation Schedule: {tc_args.get('crop', '')}")
+                        tool_result = irrigation_schedule_tool.invoke({
+                            "crop":            tc_args.get('crop', ''),
+                            "stage":           tc_args.get('stage', 'mid'),
+                            "soil_type":       tc_args.get('soil_type', 'loam'),
+                            "climate":         tc_args.get('climate', 'temperate'),
+                            "days_since_rain": int(tc_args.get('days_since_rain', 0) or 0),
+                        })
+                        agronomy_context = (agronomy_context + "\n\n" if agronomy_context else "") + tool_result
+                    elif tc_name == 'manure_pairing_tool' and AGRONOMY_AVAILABLE:
+                        print(f"[Advisory Agent] Executing Manure Pairing: {tc_args.get('crop', '')}")
+                        tool_result = manure_pairing_tool.invoke({
+                            "crop":              tc_args.get('crop', ''),
+                            "available_manures": tc_args.get('available_manures', ''),
+                        })
+                        agronomy_context = (agronomy_context + "\n\n" if agronomy_context else "") + tool_result
+                    elif tc_name == 'save_recipe_tool' and CHEF_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Save Recipe: business_id={bid}")
+                        tool_result = save_recipe_tool.invoke({
+                            "name":          tc_args.get('name', ''),
+                            "items_json":    tc_args.get('items_json', ''),
+                            "portion_yield": int(tc_args.get('portion_yield', 1) or 1),
+                            "menu_price":    float(tc_args.get('menu_price', 0) or 0),
+                            "business_id":   bid,
+                        })
+                        chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
+                    elif tc_name == 'cost_recipe_tool' and CHEF_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Cost Recipe: business_id={bid}")
+                        tool_result = cost_recipe_tool.invoke({
+                            "recipe_name": tc_args.get('recipe_name', ''),
+                            "business_id": bid,
+                        })
+                        chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
+                    elif tc_name == 'seasonal_menu_tool' and CHEF_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Seasonal Menu: business_id={bid}")
+                        tool_result = seasonal_menu_tool.invoke({
+                            "state":       tc_args.get('state', ''),
+                            "category":    tc_args.get('category', ''),
+                            "business_id": bid,
+                            "limit":       int(tc_args.get('limit', 20) or 20),
+                        })
+                        chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
+                    elif tc_name == 'set_par_tool' and CHEF_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Set Par: business_id={bid}")
+                        tool_result = set_par_tool.invoke({
+                            "ingredient_name":       tc_args.get('ingredient_name', ''),
+                            "unit":                  tc_args.get('unit', ''),
+                            "on_hand":               float(tc_args.get('on_hand', 0) or 0),
+                            "par_level":             float(tc_args.get('par_level', 0) or 0),
+                            "reorder_at":            float(tc_args.get('reorder_at', 0) or 0),
+                            "preferred_business_id": int(tc_args.get('preferred_business_id', 0) or 0),
+                            "business_id":           bid,
+                        })
+                        chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
+                    elif tc_name == 'check_par_levels_tool' and CHEF_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Check Par Levels: business_id={bid}")
+                        tool_result = check_par_levels_tool.invoke({
+                            "business_id": bid,
+                        })
+                        chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
+                    elif tc_name == 'draft_restock_order_tool' and CHEF_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Draft Restock Order: business_id={bid}")
+                        tool_result = draft_restock_order_tool.invoke({
+                            "business_id": bid,
+                        })
+                        chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
+                    elif tc_name == 'provenance_cards_tool' and CHEF_AVAILABLE:
+                        print(f"[Advisory Agent] Executing Provenance Cards: {tc_args.get('ingredient_names', '')}")
+                        tool_result = provenance_cards_tool.invoke({
+                            "ingredient_names": tc_args.get('ingredient_names', ''),
+                        })
+                        chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
                 continue  # Loop back to LLM with new context
 
             # No tool calls - we have our answer
