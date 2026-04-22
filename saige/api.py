@@ -1212,6 +1212,360 @@ async def history_delete(user_id: str, entry_id: str):
 
 
 # ============================================================================
+# PRECISION AG (field monitoring, satellite NDVI, alerts)
+# ============================================================================
+
+try:
+    from precision_ag import (
+        list_my_fields_tool as _pa_list_fields,
+        get_field_analysis_tool as _pa_field_analysis,
+        get_field_history_tool as _pa_field_history,
+        get_field_alerts_tool as _pa_field_alerts,
+    )
+    _PA_AVAILABLE = True
+except Exception as _pa_err:
+    print(f"[API] precision_ag import failed: {_pa_err}")
+    _PA_AVAILABLE = False
+
+
+@app.get("/precision-ag/fields")
+async def precision_ag_fields(people_id: str = Depends(get_current_user)):
+    """List the authenticated user's satellite-monitored fields."""
+    if not _PA_AVAILABLE:
+        return {"status": "unavailable"}
+    return {"status": "ok", "summary": _pa_list_fields.invoke({"people_id": people_id})}
+
+
+@app.get("/precision-ag/fields/{field_id}/analysis")
+async def precision_ag_field_analysis(
+    field_id: int,
+    people_id: str = Depends(get_current_user),
+):
+    """Latest satellite crop analysis (NDVI/EVI/SAVI + trend) for one field."""
+    if not _PA_AVAILABLE:
+        return {"status": "unavailable"}
+    return {
+        "status": "ok",
+        "summary": _pa_field_analysis.invoke({"field_id": field_id, "people_id": people_id}),
+    }
+
+
+@app.get("/precision-ag/fields/{field_id}/history")
+async def precision_ag_field_history(
+    field_id: int,
+    months: int = 6,
+    people_id: str = Depends(get_current_user),
+):
+    """Vegetation-index time series over the last N months (default 6, max 24)."""
+    if not _PA_AVAILABLE:
+        return {"status": "unavailable"}
+    return {
+        "status": "ok",
+        "summary": _pa_field_history.invoke({
+            "field_id": field_id,
+            "months": max(1, min(int(months or 6), 24)),
+            "people_id": people_id,
+        }),
+    }
+
+
+@app.get("/precision-ag/alerts")
+async def precision_ag_alerts(
+    field_id: int = 0,
+    people_id: str = Depends(get_current_user),
+):
+    """Active precision-ag alerts. Pass field_id=0 (default) for all fields."""
+    if not _PA_AVAILABLE:
+        return {"status": "unavailable"}
+    return {
+        "status": "ok",
+        "summary": _pa_field_alerts.invoke({"field_id": int(field_id or 0), "people_id": people_id}),
+    }
+
+
+# ============================================================================
+# SAIGE DRAFTS (approval queue for action tools)
+# ============================================================================
+
+try:
+    import actions as _saige_actions
+    _ACTIONS_AVAILABLE = True
+except Exception as _act_err:
+    print(f"[API] saige.actions import failed: {_act_err}")
+    _ACTIONS_AVAILABLE = False
+
+
+def _commit_produce_draft(payload: dict) -> Optional[int]:
+    """Insert a Produce row from an approved draft. Returns new ProduceID or None."""
+    try:
+        import pymssql
+        from config import DB_CONFIG
+    except Exception:
+        return None
+    conn = pymssql.connect(
+        server=DB_CONFIG["host"], port=DB_CONFIG["port"],
+        user=DB_CONFIG["user"], password=DB_CONFIG["password"],
+        database=DB_CONFIG["database"], as_dict=True,
+    )
+    try:
+        cur = conn.cursor()
+        # Resolve ingredient and measurement IDs from names
+        ingredient_id = None
+        if payload.get("IngredientName"):
+            cur.execute(
+                "SELECT TOP 1 IngredientID FROM Ingredients WHERE IngredientName = %s",
+                (str(payload["IngredientName"]),),
+            )
+            row = cur.fetchone()
+            ingredient_id = (row or {}).get("ingredientid")
+        measurement_id = None
+        if payload.get("Measurement"):
+            cur.execute(
+                "SELECT TOP 1 MeasurementID FROM MeasurementLookup "
+                "WHERE Measurement = %s OR MeasurementAbbreviation = %s",
+                (str(payload["Measurement"]), str(payload["Measurement"])),
+            )
+            row = cur.fetchone()
+            measurement_id = (row or {}).get("measurementid")
+        cur.execute(
+            """
+            INSERT INTO Produce (IngredientID, Quantity, MeasurementID, WholesalePrice,
+                                 RetailPrice, BusinessID, AvailableDate)
+            OUTPUT INSERTED.ProduceID
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                int(ingredient_id) if ingredient_id else None,
+                float(payload.get("Quantity") or 0) or None,
+                int(measurement_id) if measurement_id else None,
+                float(payload.get("WholesalePrice")) if payload.get("WholesalePrice") else None,
+                float(payload.get("RetailPrice")) if payload.get("RetailPrice") else None,
+                int(payload.get("BusinessID") or 0) or None,
+                payload.get("AvailableDate") or None,
+            ),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return int((row or {}).get("produceid") or 0) or None
+    except Exception as e:
+        print(f"[API] commit_produce_draft failed: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _commit_event_draft(payload: dict) -> Optional[int]:
+    try:
+        import pymssql
+        from config import DB_CONFIG
+    except Exception:
+        return None
+    conn = pymssql.connect(
+        server=DB_CONFIG["host"], port=DB_CONFIG["port"],
+        user=DB_CONFIG["user"], password=DB_CONFIG["password"],
+        database=DB_CONFIG["database"], as_dict=True,
+    )
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO OFNEvents (BusinessID, PeopleID, EventName, EventDescription,
+                EventStartDate, EventEndDate, EventLocationName,
+                EventLocationCity, EventLocationState,
+                IsPublished, IsFree, RegistrationRequired)
+            OUTPUT INSERTED.EventID
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                int(payload.get("BusinessID") or 0) or None,
+                str(payload.get("PeopleID")) if payload.get("PeopleID") else None,
+                payload.get("EventName"),
+                payload.get("EventDescription") or None,
+                payload.get("EventStartDate") or None,
+                payload.get("EventEndDate") or None,
+                payload.get("EventLocationName") or None,
+                payload.get("EventLocationCity") or None,
+                payload.get("EventLocationState") or None,
+                1,  # publish on approve
+                int(payload.get("IsFree") or 0),
+                int(payload.get("RegistrationRequired") or 0),
+            ),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return int((row or {}).get("eventid") or 0) or None
+    except Exception as e:
+        print(f"[API] commit_event_draft failed: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _commit_blog_draft(payload: dict) -> Optional[int]:
+    try:
+        import pymssql
+        import re as _re
+        from config import DB_CONFIG
+    except Exception:
+        return None
+    conn = pymssql.connect(
+        server=DB_CONFIG["host"], port=DB_CONFIG["port"],
+        user=DB_CONFIG["user"], password=DB_CONFIG["password"],
+        database=DB_CONFIG["database"], as_dict=True,
+    )
+    try:
+        cur = conn.cursor()
+        title = str(payload.get("Title") or "").strip()
+        slug = _re.sub(r"[^a-z0-9\s-]", "", title.lower())
+        slug = _re.sub(r"\s+", "-", slug)[:200]
+        cur.execute(
+            """
+            INSERT INTO blog (BusinessID, Title, Slug, Content, IsPublished,
+                              ShowOnDirectory, ShowOnWebsite, PublishedAt, CreatedAt, UpdatedAt)
+            OUTPUT INSERTED.BlogID
+            VALUES (%s, %s, %s, %s, 1, 1, 1, GETUTCDATE(), GETUTCDATE(), GETUTCDATE())
+            """,
+            (
+                int(payload.get("BusinessID") or 0) or None,
+                title,
+                slug,
+                payload.get("Content") or "",
+            ),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return int((row or {}).get("blogid") or 0) or None
+    except Exception as e:
+        print(f"[API] commit_blog_draft failed: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+class DraftUpdatePayload(BaseModel):
+    payload: dict
+
+
+class DraftRejectPayload(BaseModel):
+    reason: Optional[str] = None
+
+
+@app.get("/saige/drafts")
+async def saige_drafts_list(
+    business_id: int = 0,
+    people_id: str = Depends(get_current_user),
+):
+    """List the caller's pending Saige drafts. If business_id is provided,
+    also include drafts scoped to that business (co-workers can see and
+    approve the same business's drafts)."""
+    if not _ACTIONS_AVAILABLE:
+        return {"status": "unavailable", "drafts": []}
+    drafts = _saige_actions.list_pending_drafts(people_id, int(business_id or 0) or None)
+    return {"status": "ok", "drafts": drafts}
+
+
+@app.get("/saige/drafts/{draft_id}")
+async def saige_draft_get(draft_id: int, people_id: str = Depends(get_current_user)):
+    if not _ACTIONS_AVAILABLE:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    draft = _saige_actions.get_draft(int(draft_id))
+    if not draft:
+        return JSONResponse({"status": "not_found"}, status_code=404)
+    return {"status": "ok", "draft": draft}
+
+
+@app.post("/saige/drafts/{draft_id}/update")
+async def saige_draft_update(
+    draft_id: int,
+    body: DraftUpdatePayload,
+    people_id: str = Depends(get_current_user),
+):
+    if not _ACTIONS_AVAILABLE:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    ok = _saige_actions.update_draft_payload(int(draft_id), body.payload or {})
+    if not ok:
+        return JSONResponse({"status": "not_pending_or_missing"}, status_code=404)
+    return {"status": "ok", "draft": _saige_actions.get_draft(int(draft_id))}
+
+
+@app.post("/saige/drafts/{draft_id}/approve")
+async def saige_draft_approve(draft_id: int, people_id: str = Depends(get_current_user)):
+    """Validate + commit the draft to its real resource table, then mark approved."""
+    if not _ACTIONS_AVAILABLE:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    draft = _saige_actions.get_draft(int(draft_id))
+    if not draft:
+        return JSONResponse({"status": "not_found"}, status_code=404)
+    if draft.get("Status") != "pending":
+        return JSONResponse(
+            {"status": "already_processed", "current": draft.get("Status")},
+            status_code=409,
+        )
+    dtype = draft.get("DraftType")
+    payload = draft.get("Payload") or {}
+    new_id: Optional[int] = None
+    if dtype == "produce_listing":
+        new_id = _commit_produce_draft(payload)
+    elif dtype == "event":
+        new_id = _commit_event_draft(payload)
+    elif dtype == "blog_post":
+        new_id = _commit_blog_draft(payload)
+    else:
+        return JSONResponse(
+            {"status": "unsupported_type", "draft_type": dtype},
+            status_code=400,
+        )
+    if not new_id:
+        return JSONResponse(
+            {"status": "commit_failed", "draft_type": dtype},
+            status_code=500,
+        )
+    _saige_actions.mark_approved(int(draft_id), new_id)
+    return {
+        "status": "approved",
+        "draft_id": int(draft_id),
+        "draft_type": dtype,
+        "resource_id": new_id,
+    }
+
+
+@app.post("/saige/drafts/{draft_id}/reject")
+async def saige_draft_reject(
+    draft_id: int,
+    body: DraftRejectPayload | None = None,
+    people_id: str = Depends(get_current_user),
+):
+    if not _ACTIONS_AVAILABLE:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    reason = (body.reason if body else None)
+    ok = _saige_actions.mark_rejected(int(draft_id), reason)
+    if not ok:
+        return JSONResponse({"status": "not_pending_or_missing"}, status_code=404)
+    return {"status": "rejected", "draft_id": int(draft_id)}
+
+
+# ============================================================================
 # WEATHER ALERTS (signal engine that drives push)
 # ============================================================================
 
@@ -1248,6 +1602,292 @@ async def alerts_weather_check(user_id: str, days_ahead: int = 2):
     if not _WXA_AVAILABLE:
         return {"status": "unavailable"}
     return _wx_alerts.run(dry_run=True, days_ahead=days_ahead, user_id=user_id)
+
+
+# ============================================================================
+# CHEF DASHBOARD (recipes, par levels, seasonal, provenance)
+# ============================================================================
+
+try:
+    import chef as _chef
+    _CHEF_AVAILABLE = True
+except Exception as _chef_err:
+    print(f"[API] saige.chef import failed: {_chef_err}")
+    _CHEF_AVAILABLE = False
+
+
+class ChefRecipeItemPayload(BaseModel):
+    ingredient: str
+    qty: float = 0.0
+    unit: str = ""
+    preferred_business_id: Optional[int] = None
+
+
+class ChefRecipeCreatePayload(BaseModel):
+    business_id: int
+    name: str
+    items: List[ChefRecipeItemPayload] = []
+    portion_yield: int = 1
+    menu_price: Optional[float] = None
+
+
+class ChefParUpsertPayload(BaseModel):
+    business_id: int
+    ingredient_name: str
+    unit: str = ""
+    on_hand: float = 0.0
+    par_level: float = 0.0
+    reorder_at: float = 0.0
+    preferred_business_id: Optional[int] = None
+
+
+@app.get("/chef/recipes")
+async def chef_recipes_list(
+    business_id: int,
+    people_id: str = Depends(get_current_user),
+):
+    if not _CHEF_AVAILABLE:
+        return {"status": "unavailable", "recipes": []}
+    recipes = _chef.list_recipes_for_business(int(business_id))
+    return {"status": "ok", "recipes": recipes}
+
+
+@app.post("/chef/recipes")
+async def chef_recipes_create(
+    body: ChefRecipeCreatePayload,
+    people_id: str = Depends(get_current_user),
+):
+    if not _CHEF_AVAILABLE:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    items_json = json.dumps([i.model_dump() for i in body.items])
+    result = _chef.save_recipe_tool.invoke({
+        "name":          body.name,
+        "items_json":    items_json,
+        "portion_yield": int(body.portion_yield or 1),
+        "menu_price":    float(body.menu_price or 0),
+        "business_id":   int(body.business_id),
+    })
+    return {"status": "ok", "message": result}
+
+
+@app.get("/chef/recipes/{recipe_id}/items")
+async def chef_recipe_items(
+    recipe_id: int,
+    people_id: str = Depends(get_current_user),
+):
+    if not _CHEF_AVAILABLE:
+        return {"status": "unavailable", "items": []}
+    return {"status": "ok", "items": _chef.list_recipe_items(int(recipe_id))}
+
+
+@app.get("/chef/recipes/{recipe_id}/cost")
+async def chef_recipe_cost(
+    recipe_id: int,
+    business_id: int,
+    people_id: str = Depends(get_current_user),
+):
+    if not _CHEF_AVAILABLE:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    recipes = _chef.list_recipes_for_business(int(business_id))
+    target = next((r for r in recipes if int(r.get("recipeid") or 0) == int(recipe_id)), None)
+    if not target:
+        return JSONResponse({"status": "not_found"}, status_code=404)
+    result = _chef.cost_recipe_tool.invoke({
+        "recipe_name": target.get("name") or "",
+        "business_id": int(business_id),
+    })
+    return {"status": "ok", "report": result}
+
+
+@app.delete("/chef/recipes/{recipe_id}")
+async def chef_recipe_delete(
+    recipe_id: int,
+    business_id: int,
+    people_id: str = Depends(get_current_user),
+):
+    if not _CHEF_AVAILABLE:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    ok = _chef.delete_recipe(int(recipe_id), int(business_id))
+    if not ok:
+        return JSONResponse({"status": "not_found"}, status_code=404)
+    return {"status": "ok"}
+
+
+@app.get("/chef/par")
+async def chef_par_list(
+    business_id: int,
+    people_id: str = Depends(get_current_user),
+):
+    if not _CHEF_AVAILABLE:
+        return {"status": "unavailable", "par": []}
+    return {"status": "ok", "par": _chef.list_par_for_business(int(business_id))}
+
+
+@app.post("/chef/par")
+async def chef_par_upsert(
+    body: ChefParUpsertPayload,
+    people_id: str = Depends(get_current_user),
+):
+    if not _CHEF_AVAILABLE:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    msg = _chef.set_par_tool.invoke({
+        "ingredient_name":       body.ingredient_name,
+        "unit":                  body.unit or "",
+        "on_hand":               float(body.on_hand or 0),
+        "par_level":             float(body.par_level or 0),
+        "reorder_at":            float(body.reorder_at or 0),
+        "preferred_business_id": int(body.preferred_business_id or 0),
+        "business_id":           int(body.business_id),
+    })
+    return {"status": "ok", "message": msg}
+
+
+@app.delete("/chef/par/{par_id}")
+async def chef_par_delete(
+    par_id: int,
+    business_id: int,
+    people_id: str = Depends(get_current_user),
+):
+    if not _CHEF_AVAILABLE:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    ok = _chef.delete_par(int(par_id), int(business_id))
+    if not ok:
+        return JSONResponse({"status": "not_found"}, status_code=404)
+    return {"status": "ok"}
+
+
+@app.get("/chef/seasonal")
+async def chef_seasonal(
+    state: str = "",
+    category: str = "",
+    business_id: int = 0,
+    limit: int = 20,
+    people_id: str = Depends(get_current_user),
+):
+    if not _CHEF_AVAILABLE:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    report = _chef.seasonal_menu_tool.invoke({
+        "state":       state or "",
+        "category":    category or "",
+        "business_id": int(business_id or 0),
+        "limit":       int(limit or 20),
+    })
+    return {"status": "ok", "report": report}
+
+
+@app.get("/chef/provenance")
+async def chef_provenance(
+    ingredients: str,
+    people_id: str = Depends(get_current_user),
+):
+    if not _CHEF_AVAILABLE:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    cards = _chef.provenance_cards_tool.invoke({
+        "ingredient_names": ingredients or "",
+    })
+    return {"status": "ok", "cards": cards}
+
+
+@app.post("/chef/restock-draft")
+async def chef_restock_draft(
+    business_id: int,
+    people_id: str = Depends(get_current_user),
+):
+    if not _CHEF_AVAILABLE:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    report = _chef.draft_restock_order_tool.invoke({
+        "business_id": int(business_id),
+    })
+    return {"status": "ok", "report": report}
+
+
+# ============================================================================
+# PAIRSLEY — food-service agent (restaurants / chefs / kitchens)
+# ============================================================================
+
+try:
+    import pairsley as _pairsley
+    _PAIRSLEY_AVAILABLE = True
+except Exception as _pairsley_err:
+    print(f"[API] pairsley import failed: {_pairsley_err}")
+    _PAIRSLEY_AVAILABLE = False
+
+
+class PairsleyChatRequest(BaseModel):
+    user_input: str = Field(..., min_length=1, max_length=MAX_MESSAGE_CHARS)
+    thread_id: str = Field(..., min_length=1, max_length=128)
+    business_id: Optional[int] = None
+
+    @field_validator("user_input")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("user_input must not be empty")
+        return v
+
+
+@app.post("/pairsley/chat")
+async def pairsley_chat(
+    request: PairsleyChatRequest,
+    people_id: str = Depends(get_current_user),
+):
+    """One chat turn with Pairsley. Rate-limited per thread (same policy as Saige)."""
+    if not _PAIRSLEY_AVAILABLE:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    allowed, req_count = _check_rate_limit(request.thread_id)
+    if not allowed:
+        return JSONResponse(
+            status_code=429,
+            content={"status": "error", "message": f"Too many requests ({req_count}/{RATE_LIMIT_MAX_REQUESTS} in {RATE_LIMIT_WINDOW_SECONDS}s)."},
+        )
+    result = _pairsley.respond(
+        user_input=request.user_input,
+        thread_id=request.thread_id,
+        user_id=people_id,
+        business_id=request.business_id,
+    )
+    return result
+
+
+@app.get("/pairsley/threads")
+async def pairsley_threads(
+    people_id: str = Depends(get_current_user),
+    limit: int = Query(default=20, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None),
+):
+    if not _PAIRSLEY_AVAILABLE:
+        return {"threads": [], "next_cursor": None}
+    threads, next_cursor = _pairsley.list_threads(people_id, limit=limit, cursor=cursor)
+    return {"threads": threads, "next_cursor": next_cursor}
+
+
+@app.get("/pairsley/threads/{thread_id}/messages")
+async def pairsley_thread_messages(
+    thread_id: str,
+    people_id: str = Depends(get_current_user),
+    limit: int = Query(default=50, ge=1, le=200),
+    cursor: Optional[str] = Query(default=None),
+):
+    if not _PAIRSLEY_AVAILABLE:
+        return {"thread_id": thread_id, "messages": [], "next_cursor": None}
+    messages, next_cursor = _pairsley.get_messages(people_id, thread_id, limit=limit, cursor=cursor)
+    if not messages and cursor is None:
+        return JSONResponse(status_code=404, content={"error": "Thread not found"})
+    return {"thread_id": thread_id, "messages": messages, "next_cursor": next_cursor}
+
+
+@app.delete("/pairsley/threads/{thread_id}")
+async def pairsley_thread_delete(
+    thread_id: str,
+    people_id: str = Depends(get_current_user),
+):
+    if not _PAIRSLEY_AVAILABLE:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    ok = _pairsley.delete_thread(people_id, thread_id)
+    if not ok:
+        return JSONResponse(status_code=404, content={"error": "Thread not found"})
+    return {"status": "deleted", "thread_id": thread_id}
 
 
 # ============================================================================
