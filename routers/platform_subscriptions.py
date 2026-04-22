@@ -41,6 +41,13 @@ def _stripe(db: Session):
     return stripe, cfg
 
 
+def _mode_from_cfg(cfg: dict) -> str:
+    # OFNPlatformSettings stores StripeTestMode as a bit; treat missing as test.
+    raw = cfg.get("StripeTestMode")
+    is_test = True if raw is None else bool(raw)
+    return "test" if is_test else "live"
+
+
 def _require_business_access(db: Session, people_id: str, business_id: int):
     row = db.execute(
         text("SELECT 1 FROM BusinessAccess WHERE PeopleID = :pid AND BusinessID = :bid AND Active = 1"),
@@ -66,7 +73,7 @@ def list_plans(country_id: Optional[int] = None, db: Session = Depends(get_db)):
     mode are returned as selectable; the rest are returned with
     selectable=False so the UI can show them as coming-soon."""
     _, cfg = _stripe(db)
-    mode = (cfg.get("StripeMode") or "test").lower()
+    mode = _mode_from_cfg(cfg)
 
     sql = "SELECT * FROM SubscriptionLevels WHERE 1=1"
     params = {}
@@ -134,7 +141,7 @@ def start_checkout(
     _require_business_access(db, people_id, business_id)
 
     stripe, cfg = _stripe(db)
-    mode = (cfg.get("StripeMode") or "test").lower()
+    mode = _mode_from_cfg(cfg)
 
     level_row = db.execute(
         text("SELECT * FROM SubscriptionLevels WHERE SubscriptionID = :id"),
@@ -193,6 +200,147 @@ def start_checkout(
         cancel_url=cancel_url,
     )
     return {"checkout_url": session.url, "session_id": session.id}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SUBSCRIPTION PACKAGES — canonical plan list managed via the oatmeal_main
+# admin UI (http://localhost:8080/app/admin/subscriptions). Writes go to the
+# shared SubscriptionPackage table.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@platform_subscriptions_router.get("/packages")
+def list_packages(
+    business_type_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """Active subscription packages from the SubscriptionPackage table.
+    Optionally filter to packages matching a specific BusinessTypeID; packages
+    with a NULL BusinessTypeID are always included (they apply to all types).
+    Returns the current payment mode so the frontend can gate the pay step."""
+    cfg = get_stripe_config(db)
+    mode = _mode_from_cfg(cfg)
+
+    sql = """
+        SELECT p.PackageID, p.PackageName, p.Description, p.BusinessTypeID,
+               p.MonthlyPrice, p.YearlyPrice, p.SortOrder,
+               bt.BusinessType
+        FROM SubscriptionPackage p
+        LEFT JOIN BusinessTypeLookup bt ON p.BusinessTypeID = bt.BusinessTypeID
+        WHERE p.IsActive = 1
+    """
+    params = {}
+    if business_type_id is not None:
+        sql += " AND (p.BusinessTypeID = :btid OR p.BusinessTypeID IS NULL)"
+        params["btid"] = business_type_id
+    sql += " ORDER BY p.SortOrder, p.PackageName"
+
+    rows = db.execute(text(sql), params).mappings().fetchall()
+    packages = []
+    for r in rows:
+        pkg = dict(r)
+        for k in ("MonthlyPrice", "YearlyPrice"):
+            if pkg.get(k) is not None:
+                pkg[k] = float(pkg[k])
+        packages.append(pkg)
+    return {"mode": mode, "packages": packages}
+
+
+class AssignPackageRequest(BaseModel):
+    package_id: int
+    billing_cycle: Optional[str] = "monthly"  # "monthly" | "yearly"
+
+
+@platform_subscriptions_router.post("/assign-package/{business_id}")
+def assign_package(
+    business_id: int,
+    req: AssignPackageRequest,
+    db: Session = Depends(get_db),
+    people_id: str = Depends(get_current_user),
+):
+    """Assign a SubscriptionPackage to a Business without Stripe — mirrors the
+    oatmeal_main admin endpoint. Only permitted in test mode so a real
+    production signup can't silently skip payment; when the admin flips
+    StripeTestMode off, this route refuses and the UI must run a live flow."""
+    _require_business_access(db, people_id, business_id)
+
+    cfg = get_stripe_config(db)
+    if _mode_from_cfg(cfg) != "test":
+        raise HTTPException(400, "Test mode is not enabled. A live payment flow is required.")
+
+    pkg = db.execute(
+        text("""
+            SELECT PackageID, PackageName, MonthlyPrice, YearlyPrice
+            FROM SubscriptionPackage
+            WHERE PackageID = :pid AND IsActive = 1
+        """),
+        {"pid": req.package_id},
+    ).mappings().fetchone()
+    if not pkg:
+        raise HTTPException(404, "Package not found or inactive.")
+
+    import datetime
+    days = 365 if (req.billing_cycle or "").lower() == "yearly" else 30
+    start_dt = datetime.datetime.utcnow()
+    end_dt = start_dt + datetime.timedelta(days=days)
+
+    db.execute(
+        text("""
+            UPDATE Business
+            SET SubscriptionTier = :tier,
+                SubscriptionStatus = 'active',
+                SubscriptionstartDate = :start,
+                SubscriptionEndDate = :eod
+            WHERE BusinessID = :bid
+        """),
+        {"tier": pkg["PackageName"], "start": start_dt, "eod": end_dt, "bid": business_id},
+    )
+    db.commit()
+    return {
+        "ok": True,
+        "test_mode": True,
+        "package_id": req.package_id,
+        "package_name": pkg["PackageName"],
+        "billing_cycle": (req.billing_cycle or "monthly").lower(),
+    }
+
+
+@platform_subscriptions_router.post("/activate-test/{business_id}")
+def activate_test_subscription(
+    business_id: int,
+    req: CheckoutRequest,
+    db: Session = Depends(get_db),
+    people_id: str = Depends(get_current_user),
+):
+    """Activate a plan directly without Stripe. Only permitted when the admin
+    has enabled StripeTestMode; live installs must go through /checkout."""
+    _require_business_access(db, people_id, business_id)
+
+    cfg = get_stripe_config(db)
+    if _mode_from_cfg(cfg) != "test":
+        raise HTTPException(400, "Test mode is not enabled. Use /checkout for live payments.")
+
+    level = db.execute(
+        text("SELECT SubscriptionID, SubscriptionTitle FROM SubscriptionLevels WHERE SubscriptionID = :id"),
+        {"id": req.subscription_id},
+    ).mappings().fetchone()
+    if not level:
+        raise HTTPException(404, "Plan not found")
+
+    import datetime
+    end_dt = datetime.datetime.utcnow() + datetime.timedelta(days=30)
+    db.execute(
+        text("""
+            UPDATE Business
+            SET SubscriptionLevel = :lvl,
+                SubscriptionStatus = 'active',
+                SubscriptionstartDate = COALESCE(SubscriptionstartDate, GETDATE()),
+                SubscriptionEndDate = :eod
+            WHERE BusinessID = :bid
+        """),
+        {"lvl": req.subscription_id, "eod": end_dt, "bid": business_id},
+    )
+    db.commit()
+    return {"ok": True, "test_mode": True, "subscription_level_id": req.subscription_id}
 
 
 @platform_subscriptions_router.post("/portal/{business_id}")
