@@ -1891,6 +1891,95 @@ async def pairsley_thread_delete(
 
 
 # ============================================================================
+# ROSEMARIE — artisan-producer agent (mills / bakers / cheesemakers / etc.)
+# ============================================================================
+
+try:
+    import rosemarie as _rosemarie
+    _ROSEMARIE_AVAILABLE = True
+except Exception as _rosemarie_err:
+    print(f"[API] rosemarie import failed: {_rosemarie_err}")
+    _ROSEMARIE_AVAILABLE = False
+
+
+class RosemarieChatRequest(BaseModel):
+    user_input: str = Field(..., min_length=1, max_length=MAX_MESSAGE_CHARS)
+    thread_id: str = Field(..., min_length=1, max_length=128)
+    business_id: Optional[int] = None
+
+    @field_validator("user_input")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("user_input must not be empty")
+        return v
+
+
+@app.post("/rosemarie/chat")
+async def rosemarie_chat(
+    request: RosemarieChatRequest,
+    people_id: str = Depends(get_current_user),
+):
+    """One chat turn with Rosemarie. Rate-limited per thread."""
+    if not _ROSEMARIE_AVAILABLE:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    allowed, req_count = _check_rate_limit(request.thread_id)
+    if not allowed:
+        return JSONResponse(
+            status_code=429,
+            content={"status": "error", "message": f"Too many requests ({req_count}/{RATE_LIMIT_MAX_REQUESTS} in {RATE_LIMIT_WINDOW_SECONDS}s)."},
+        )
+    result = _rosemarie.respond(
+        user_input=request.user_input,
+        thread_id=request.thread_id,
+        user_id=people_id,
+        business_id=request.business_id,
+    )
+    return result
+
+
+@app.get("/rosemarie/threads")
+async def rosemarie_threads(
+    people_id: str = Depends(get_current_user),
+    limit: int = Query(default=20, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None),
+):
+    if not _ROSEMARIE_AVAILABLE:
+        return {"threads": [], "next_cursor": None}
+    threads, next_cursor = _rosemarie.list_threads(people_id, limit=limit, cursor=cursor)
+    return {"threads": threads, "next_cursor": next_cursor}
+
+
+@app.get("/rosemarie/threads/{thread_id}/messages")
+async def rosemarie_thread_messages(
+    thread_id: str,
+    people_id: str = Depends(get_current_user),
+    limit: int = Query(default=50, ge=1, le=200),
+    cursor: Optional[str] = Query(default=None),
+):
+    if not _ROSEMARIE_AVAILABLE:
+        return {"thread_id": thread_id, "messages": [], "next_cursor": None}
+    messages, next_cursor = _rosemarie.get_messages(people_id, thread_id, limit=limit, cursor=cursor)
+    if not messages and cursor is None:
+        return JSONResponse(status_code=404, content={"error": "Thread not found"})
+    return {"thread_id": thread_id, "messages": messages, "next_cursor": next_cursor}
+
+
+@app.delete("/rosemarie/threads/{thread_id}")
+async def rosemarie_thread_delete(
+    thread_id: str,
+    people_id: str = Depends(get_current_user),
+):
+    if not _ROSEMARIE_AVAILABLE:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    ok = _rosemarie.delete_thread(people_id, thread_id)
+    if not ok:
+        return JSONResponse(status_code=404, content={"error": "Thread not found"})
+    return {"status": "deleted", "thread_id": thread_id}
+
+
+# ============================================================================
 # MAIN
 # ============================================================================
 

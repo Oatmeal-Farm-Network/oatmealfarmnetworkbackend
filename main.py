@@ -51,6 +51,7 @@ from routers import accounting
 from routers import animals
 from routers import platform_settings
 from routers import platform_subscriptions
+from routers import platform_services
 from routers import event_registration_cart
 from routers import event_meals
 from routers import event_exports
@@ -233,6 +234,7 @@ app.include_router(accounting.router)
 app.include_router(animals.router)
 app.include_router(platform_settings.router)
 app.include_router(platform_subscriptions.platform_subscriptions_router)
+app.include_router(platform_services.router)
 app.include_router(event_registration_cart.router)
 app.include_router(event_meals.router)
 app.include_router(event_exports.router)

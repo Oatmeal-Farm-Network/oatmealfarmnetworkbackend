@@ -6,6 +6,32 @@ from database import get_db
 
 router = APIRouter(prefix="/api/company", tags=["company"])
 
+# Canonical feature registry — any key used by the frontend must appear here
+# so /app/admin/site-management (which reads CompanySiteManagement) can toggle
+# it and subscription packages can reference it. Ordering controls display
+# order in the admin UI.
+DEFAULT_FEATURES = [
+    ("precision_ag",         "Precision Ag",              0.0,   0.0,  1),
+    ("blog",                 "Blog",                      0.0,   0.0,  2),
+    ("farm_2_table",         "Farm 2 Table",              0.0,   0.0,  3),
+    ("livestock",            "Livestock",                 0.0,   0.0,  4),
+    ("products",             "Products",                  0.0,   0.0,  5),
+    ("services",             "Services",                  0.0,   0.0,  6),
+    ("events",               "Events",                    0.0,   0.0,  7),
+    ("properties",           "Properties",                0.0,   0.0,  8),
+    ("associations",         "Associations",              0.0,   0.0,  9),
+    ("my_website",           "My Website",               25.0, 200.0, 10),
+    ("audio_settings",       "Audio Settings",            0.0,   0.0, 11),
+    ("accounting",           "Accounting",                0.0,   0.0, 12),
+    ("testimonials",         "Testimonials",              0.0,   0.0, 13),
+    ("provenance",           "Sourced-From Cards",        0.0,   0.0, 14),
+    ("chef_dashboard",       "Chef Dashboard",            0.0,   0.0, 15),
+    ("pairsley",             "Pairsley AI (Restaurants)", 0.0,   0.0, 16),
+    ("rosemarie",            "Rosemarie AI (Artisans)",   0.0,   0.0, 17),
+    ("business_directory",   "Business Directory",        0.0,   0.0, 98),
+    ("food_system_newsfeed", "Food System Newsfeed",      0.0,   0.0, 99),
+]
+
 
 @router.get("/features")
 def get_features(
@@ -82,3 +108,33 @@ def get_features(
         }
         for r in rows
     ]
+
+
+@router.post("/features/register-defaults")
+def register_default_features(db: Session = Depends(get_db)):
+    """Idempotently insert any missing DEFAULT_FEATURES into CompanySiteManagement.
+
+    Safe to call repeatedly. Existing rows are left untouched — admins may have
+    adjusted names, prices, IsEnabled, or SortOrder via /app/admin/site-management.
+    Only brand-new feature keys are inserted.
+    """
+    existing = {
+        r[0] for r in db.execute(text("SELECT FeatureKey FROM CompanySiteManagement")).fetchall()
+    }
+    inserted = []
+    for key, name, monthly, yearly, sort_order in DEFAULT_FEATURES:
+        if key in existing:
+            continue
+        db.execute(
+            text(
+                """
+                INSERT INTO CompanySiteManagement
+                    (FeatureKey, FeatureName, IsEnabled, MonthlyPrice, YearlyPrice, SortOrder)
+                VALUES (:k, :n, 1, :m, :y, :s)
+                """
+            ),
+            {"k": key, "n": name, "m": monthly, "y": yearly, "s": sort_order},
+        )
+        inserted.append(key)
+    db.commit()
+    return {"inserted": inserted, "already_present": sorted(existing)}
