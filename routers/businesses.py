@@ -82,17 +82,15 @@ def build_logo_url(logo):
 def get_countries(business_type_id: str = None, db: Session = Depends(get_db)):
     try:
         if business_type_id:
-            rows = (
-                db.query(models.Business.AddressCountry)
-                .filter(
-                    models.Business.BusinessTypeID == int(business_type_id),
-                    models.Business.AddressCountry.isnot(None),
-                    models.Business.AddressCountry != '',
-                )
-                .distinct()
-                .order_by(models.Business.AddressCountry)
-                .all()
-            )
+            rows = db.execute(text("""
+                SELECT DISTINCT c.name
+                FROM Business b
+                JOIN Address a ON b.AddressID = a.AddressID
+                JOIN country c ON a.country_id = c.country_id
+                WHERE b.BusinessTypeID = :btype
+                  AND c.name IS NOT NULL AND c.name <> ''
+                ORDER BY c.name
+            """), {"btype": int(business_type_id)}).fetchall()
             return [r[0] for r in rows if r[0]]
         countries = db.query(models.Country.name).order_by(models.Country.name).all()
         return [c[0] for c in countries if c[0]]
