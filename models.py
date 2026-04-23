@@ -581,6 +581,9 @@ class BusinessWebsite(Base):
     HeaderBannerBgColor = Column(String(20))
     HeaderHeight    = Column(Integer, default=120)
     ShowSiteName    = Column(Boolean, default=True)
+    # Layout: 'banner_top' (default — logo banner above nav) or 'nav_top'
+    # (slim nav above a larger centered-logo band, reference: oregonqha.com)
+    HeaderLayout   = Column(String(20), default='banner_top')
     # Nav bar
     NavBgImageURL   = Column(String(1000))
     # Favicon

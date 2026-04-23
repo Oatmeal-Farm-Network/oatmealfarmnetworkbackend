@@ -46,6 +46,7 @@ from routers import my_registrations
 from routers import event_analytics
 from routers import event_features
 from routers import company_features
+from routers import associations
 from routers import blog
 from routers import accounting
 from routers import animals
@@ -188,6 +189,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 app.add_middleware(DynamicCORSMiddleware)
 
 app.include_router(auth.router)
+app.include_router(associations.router)
 app.include_router(businesses.router)
 app.include_router(precision_ag.router)
 app.include_router(plant_knowledgebase.router)

@@ -28,6 +28,7 @@ DEFAULT_FEATURES = [
     ("chef_dashboard",       "Chef Dashboard",            0.0,   0.0, 15),
     ("pairsley",             "Pairsley AI (Restaurants)", 0.0,   0.0, 16),
     ("rosemarie",            "Rosemarie AI (Artisans)",   0.0,   0.0, 17),
+    ("restaurant_sourcing",  "Restaurant Sourcing",       0.0,   0.0, 18),
     ("business_directory",   "Business Directory",        0.0,   0.0, 98),
     ("food_system_newsfeed", "Food System Newsfeed",      0.0,   0.0, 99),
 ]
