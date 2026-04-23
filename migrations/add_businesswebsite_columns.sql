@@ -127,4 +127,10 @@ IF COL_LENGTH('BusinessWebsite', 'OgImageURL')    IS NULL ALTER TABLE BusinessWe
 IF COL_LENGTH('BusinessWebsite', 'SeoExtrasJSON') IS NULL ALTER TABLE BusinessWebsite ADD SeoExtrasJSON NVARCHAR(MAX)  NULL;
 IF COL_LENGTH('BusinessWebsite', 'MenuStyleJSON') IS NULL ALTER TABLE BusinessWebsite ADD MenuStyleJSON NVARCHAR(MAX)  NULL;
 
+-- BusinessWebPage columns that may be new
+IF COL_LENGTH('BusinessWebPage', 'ParentPageID') IS NULL ALTER TABLE BusinessWebPage ADD ParentPageID INT          NULL;
+IF COL_LENGTH('BusinessWebPage', 'IsNavHeading') IS NULL ALTER TABLE BusinessWebPage ADD IsNavHeading BIT          NULL DEFAULT 0;
+IF COL_LENGTH('BusinessWebPage', 'LinkURL')      IS NULL ALTER TABLE BusinessWebPage ADD LinkURL      NVARCHAR(500) NULL;
+IF COL_LENGTH('BusinessWebPage', 'UpdatedAt')    IS NULL ALTER TABLE BusinessWebPage ADD UpdatedAt    DATETIME      NULL;
+
 PRINT 'Migration complete.';
