@@ -620,6 +620,18 @@ class BusinessWebBlock(Base):
     UpdatedAt   = Column(DateTime)
 
 
+class WebsiteCustomDomain(Base):
+    """Indexed lookup table: one row per custom domain pointing to a WebsiteID.
+    Populated automatically when CanonicalURL is saved and used for fast
+    O(log n) domain resolution instead of a full-table LIKE scan."""
+    __tablename__ = "WebsiteCustomDomain"
+    DomainID  = Column(Integer, primary_key=True, autoincrement=True)
+    WebsiteID = Column(Integer, nullable=False, index=True)
+    Domain    = Column(String(255), nullable=False, unique=True)
+    IsActive  = Column(Boolean, default=True)
+    CreatedAt = Column(DateTime)
+
+
 # ── SITE SETTINGS (single-row control table) ─────────────────────
 class SiteSettings(Base):
     __tablename__ = "SiteSettings"
