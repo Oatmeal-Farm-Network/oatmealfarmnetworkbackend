@@ -1481,6 +1481,11 @@ def delete_site(website_id: int, db: Session = Depends(get_db)):
     ).first()
     if not site:
         raise HTTPException(status_code=404, detail="Site not found")
+    # Free the slug in its own commit BEFORE the cascade delete. Slug has a
+    # unique index, so if a child-table FK ever blocks the row delete, the
+    # slug is already released and the user can recreate without a collision.
+    site.Slug = None
+    db.commit()
     # Delete all child data first
     page_ids = [p.PageID for p in db.query(models.BusinessWebPage).filter(
         models.BusinessWebPage.WebsiteID == website_id
@@ -1493,6 +1498,7 @@ def delete_site(website_id: int, db: Session = Depends(get_db)):
         models.BusinessWebPage.WebsiteID == website_id
     ).delete(synchronize_session=False)
     db.execute(text("DELETE FROM WebsiteHeaderImages WHERE WebsiteID=:wid"), {"wid": website_id})
+    db.execute(text("DELETE FROM WebsiteVersionHistory WHERE WebsiteID=:wid"), {"wid": website_id})
     db.delete(site)
     db.commit()
     return {"ok": True}

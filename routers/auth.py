@@ -1181,7 +1181,7 @@ def update_business_member(business_access_id: int, payload: BusinessMemberUpdat
 
 
 @router.delete("/business-members/{business_access_id}")
-def remove_business_member(business_access_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+def remove_business_member(business_access_id: int, hard: bool = False, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     import datetime
     access = db.query(models.BusinessAccess).filter(
         models.BusinessAccess.BusinessAccessID == business_access_id
@@ -1192,6 +1192,11 @@ def remove_business_member(business_access_id: int, db: Session = Depends(get_db
 
     if access.PeopleID == current_user.PeopleID:
         raise HTTPException(status_code=400, detail="You can't remove yourself. Ask another owner to do it.")
+
+    if hard:
+        db.delete(access)
+        db.commit()
+        return {"message": "Team member permanently deleted", "BusinessAccessID": business_access_id}
 
     access.Active = 0
     access.RevokedAt = datetime.datetime.utcnow()
