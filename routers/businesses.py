@@ -224,11 +224,35 @@ def debug_businesses(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/subcategories")
+def get_subcategories(BusinessTypeID: int = None, db: Session = Depends(get_db)):
+    """Return distinct SpeciesCategory names for businesses of a given type."""
+    try:
+        if not BusinessTypeID:
+            return []
+        rows = db.execute(text("""
+            SELECT DISTINCT sc.SpeciesCategory
+            FROM Business b
+            JOIN Animals a ON a.BusinessID = b.BusinessID
+            JOIN speciescategory sc ON a.SpeciesCategoryID = sc.SpeciesCategoryID
+            WHERE b.BusinessTypeID = :btype
+              AND sc.SpeciesCategory IS NOT NULL
+              AND sc.SpeciesCategory <> ''
+            ORDER BY sc.SpeciesCategory
+        """), {"btype": BusinessTypeID}).fetchall()
+        return [r.SpeciesCategory for r in rows]
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/")
 def get_businesses(
     country: str = None,
     BusinessTypeID: int = None,
     state: str = None,
+    species_category: str = None,
     db: Session = Depends(get_db)
 ):
     try:
@@ -246,6 +270,14 @@ def get_businesses(
         if state:
             conditions.append("sp.name = :state")
             params["state"] = state
+        if species_category:
+            conditions.append("""EXISTS (
+                SELECT 1 FROM Animals a2
+                JOIN speciescategory sc2 ON a2.SpeciesCategoryID = sc2.SpeciesCategoryID
+                WHERE a2.BusinessID = b.BusinessID
+                  AND sc2.SpeciesCategory = :species_category
+            )""")
+            params["species_category"] = species_category
 
         where_clause = " AND ".join(conditions)
 
