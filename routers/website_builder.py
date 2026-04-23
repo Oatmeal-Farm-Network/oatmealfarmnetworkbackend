@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 from database import get_db, engine, Base
 from datetime import datetime, date
 from typing import Optional, List
@@ -78,7 +79,78 @@ with engine.connect() as _conn:
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterBottomRadius') ALTER TABLE BusinessWebsite ADD FooterBottomRadius INT DEFAULT 0",
     ]:
         _conn.execute(text(col_ddl))
+
+    # ── WebsiteCustomDomain — indexed custom-domain lookup table ──────────────
+    # One row per bare domain (e.g. "alpacasontheweb.com").  Replaces the slow
+    # LIKE '%domain%' full-table scan on CanonicalURL that times out on cold starts.
+    _conn.execute(text("""
+        IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'WebsiteCustomDomain')
+        BEGIN
+            CREATE TABLE WebsiteCustomDomain (
+                DomainID  INT IDENTITY(1,1) PRIMARY KEY,
+                WebsiteID INT NOT NULL,
+                Domain    NVARCHAR(255) NOT NULL,
+                IsActive  BIT NOT NULL DEFAULT 1,
+                CreatedAt DATETIME DEFAULT GETDATE(),
+                CONSTRAINT UQ_WebsiteCustomDomain_Domain UNIQUE (Domain)
+            );
+            CREATE INDEX IX_WebsiteCustomDomain_WebsiteID ON WebsiteCustomDomain(WebsiteID);
+        END
+    """))
+
+    # Back-fill from existing CanonicalURL values (idempotent — skips conflicts).
+    _conn.execute(text("""
+        INSERT INTO WebsiteCustomDomain (WebsiteID, Domain)
+        SELECT WebsiteID,
+               LOWER(
+                 LTRIM(RTRIM(
+                   REPLACE(REPLACE(REPLACE(REPLACE(CanonicalURL,
+                     'https://', ''), 'http://', ''), 'www.', ''), '/', '')
+                 ))
+               )
+        FROM BusinessWebsite
+        WHERE CanonicalURL IS NOT NULL AND LEN(LTRIM(RTRIM(CanonicalURL))) > 0
+        AND LOWER(LTRIM(RTRIM(REPLACE(REPLACE(REPLACE(REPLACE(CanonicalURL,
+              'https://', ''), 'http://', ''), 'www.', ''), '/', '')))) NOT IN (
+            SELECT Domain FROM WebsiteCustomDomain
+        )
+    """))
+
     _conn.commit()
+
+
+def _normalize_domain(raw: str) -> str:
+    """Return a bare lowercase domain: strips protocol, www., and trailing slashes."""
+    d = raw.lower().strip()
+    for prefix in ("https://", "http://"):
+        if d.startswith(prefix):
+            d = d[len(prefix):]
+    d = d.rstrip("/")
+    if d.startswith("www."):
+        d = d[4:]
+    return d
+
+
+def _upsert_custom_domain(db: Session, website_id: int, canonical_url: str | None) -> None:
+    """Register or update the custom domain for a site (called on create/update)."""
+    if not canonical_url:
+        return
+    bare = _normalize_domain(canonical_url)
+    if not bare:
+        return
+    try:
+        db.execute(text("""
+            MERGE WebsiteCustomDomain AS target
+            USING (SELECT :wid AS WebsiteID, :dom AS Domain) AS src
+            ON target.Domain = src.Domain
+            WHEN MATCHED THEN UPDATE SET WebsiteID = src.WebsiteID, IsActive = 1
+            WHEN NOT MATCHED THEN INSERT (WebsiteID, Domain, IsActive, CreatedAt)
+                                  VALUES (src.WebsiteID, src.Domain, 1, GETDATE());
+        """), {"wid": website_id, "dom": bare})
+        db.commit()
+    except Exception:
+        db.rollback()
+
 
 # ── Pydantic models ──────────────────────────────────────────────
 
@@ -568,6 +640,7 @@ def create_site(body: SiteCreate, db: Session = Depends(get_db)):
         CreatedAt=datetime.utcnow(), UpdatedAt=datetime.utcnow()
     )
     db.add(site); db.commit(); db.refresh(site)
+    _upsert_custom_domain(db, site.WebsiteID, body.canonical_url)
     return _ser_site(site)
 
 @router.put("/site/{website_id}")
@@ -711,6 +784,8 @@ def update_site(website_id: int, body: SiteUpdate, db: Session = Depends(get_db)
     if body.bg_gradient is not None: site.BgGradient = body.bg_gradient
     site.UpdatedAt = datetime.utcnow()
     db.commit(); db.refresh(site)
+    if body.canonical_url is not None:
+        _upsert_custom_domain(db, site.WebsiteID, body.canonical_url)
     return _ser_site(site)
 
 
@@ -1388,38 +1463,68 @@ def get_site_bundle(slug: str, db: Session = Depends(get_db)):
 
 @router.get("/bundle-by-domain")
 def get_site_bundle_by_domain(domain: str, db: Session = Depends(get_db)):
-    """Looks up a site by canonical URL / custom domain and returns its full bundle.
-    Strips protocol and trailing slashes before matching so 'yourfarm.com',
-    'https://yourfarm.com', and 'https://yourfarm.com/' all resolve the same site.
+    """Fast domain → site bundle lookup.
+
+    Resolution order:
+      1. WebsiteCustomDomain table (indexed — O(log n), handles all variants)
+      2. Fallback LIKE scan on CanonicalURL (old sites not yet in the index)
+         — auto-registers the match so subsequent calls use the fast path.
+
+    Retries once on transient DB connection errors (Cloud Run cold-start races).
     """
     import traceback
-    # Normalise: strip protocol and trailing slash
-    clean = domain.lower().replace("https://", "").replace("http://", "").rstrip("/")
-    if not clean:
+
+    bare = _normalize_domain(domain)
+    if not bare:
         raise HTTPException(status_code=400, detail="domain parameter is required")
 
-    try:
-        site = db.query(models.BusinessWebsite).filter(
-            models.BusinessWebsite.CanonicalURL.ilike(f"%{clean}%")
-        ).first()
-        # If not found and domain has www., try the bare domain (and vice versa)
-        if not site and clean.startswith("www."):
-            bare = clean[4:]
-            site = db.query(models.BusinessWebsite).filter(
-                models.BusinessWebsite.CanonicalURL.ilike(f"%{bare}%")
+    # Build all candidates to search: bare and www. variant
+    candidates = [bare, f"www.{bare}"]
+
+    for attempt in range(2):
+        try:
+            # ── 1. Fast indexed lookup ────────────────────────────────────────
+            row = db.execute(
+                text("SELECT TOP 1 WebsiteID FROM WebsiteCustomDomain WHERE Domain IN :doms AND IsActive = 1"),
+                {"doms": tuple(candidates)},
             ).first()
-        elif not site and not clean.startswith("www."):
-            site = db.query(models.BusinessWebsite).filter(
-                models.BusinessWebsite.CanonicalURL.ilike(f"%www.{clean}%")
-            ).first()
-        if not site:
-            raise HTTPException(status_code=404, detail="No site found for this domain")
-        return _build_bundle(site, db)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"bundle-by-domain failed: {exc}")
+
+            if row:
+                site = db.query(models.BusinessWebsite).filter(
+                    models.BusinessWebsite.WebsiteID == row.WebsiteID
+                ).first()
+            else:
+                # ── 2. Fallback: LIKE scan (back-compat for old entries) ──────
+                site = None
+                for candidate in candidates:
+                    site = db.query(models.BusinessWebsite).filter(
+                        models.BusinessWebsite.CanonicalURL.ilike(f"%{candidate}%")
+                    ).first()
+                    if site:
+                        # Auto-register so next request hits the fast path
+                        _upsert_custom_domain(db, site.WebsiteID, site.CanonicalURL)
+                        break
+
+            if not site:
+                raise HTTPException(status_code=404, detail="No site found for this domain")
+
+            return _build_bundle(site, db)
+
+        except HTTPException:
+            raise
+        except OperationalError as exc:
+            # Transient connection error (stale pool, cold-start race) — retry once
+            if attempt == 0:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                continue
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"bundle-by-domain failed: {exc}")
+        except Exception as exc:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"bundle-by-domain failed: {exc}")
 
 
 # ── Contact form submission ───────────────────────────────────────
