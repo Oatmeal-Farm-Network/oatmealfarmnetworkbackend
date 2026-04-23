@@ -1351,23 +1351,28 @@ def check_content(business_id: int, db: Session = Depends(get_db)):
 
 def _build_bundle(site: models.BusinessWebsite, db) -> dict:
     """Shared helper: serialise site + published pages + blocks."""
-    pages = db.query(models.BusinessWebPage).filter(
-        models.BusinessWebPage.WebsiteID == site.WebsiteID,
-        models.BusinessWebPage.IsPublished == True
-    ).order_by(models.BusinessWebPage.SortOrder).all()
+    import traceback
+    try:
+        pages = db.query(models.BusinessWebPage).filter(
+            models.BusinessWebPage.WebsiteID == site.WebsiteID,
+            models.BusinessWebPage.IsPublished == True
+        ).order_by(models.BusinessWebPage.SortOrder).all()
 
-    result_pages = []
-    for page in pages:
-        blocks = db.query(models.BusinessWebBlock).filter(
-            models.BusinessWebBlock.PageID == page.PageID
-        ).order_by(models.BusinessWebBlock.SortOrder).all()
-        p = _ser_page(page)
-        p["blocks"] = [_ser_block(b) for b in blocks]
-        result_pages.append(p)
+        result_pages = []
+        for page in pages:
+            blocks = db.query(models.BusinessWebBlock).filter(
+                models.BusinessWebBlock.PageID == page.PageID
+            ).order_by(models.BusinessWebBlock.SortOrder).all()
+            p = _ser_page(page)
+            p["blocks"] = [_ser_block(b) for b in blocks]
+            result_pages.append(p)
 
-    site_data = _ser_site(site)
-    site_data["pages"] = result_pages
-    return site_data
+        site_data = _ser_site(site)
+        site_data["pages"] = result_pages
+        return site_data
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"bundle build failed: {exc}")
 
 
 @router.get("/bundle/{slug}")
