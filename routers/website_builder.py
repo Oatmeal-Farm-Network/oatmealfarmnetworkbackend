@@ -1351,23 +1351,28 @@ def check_content(business_id: int, db: Session = Depends(get_db)):
 
 def _build_bundle(site: models.BusinessWebsite, db) -> dict:
     """Shared helper: serialise site + published pages + blocks."""
-    pages = db.query(models.BusinessWebPage).filter(
-        models.BusinessWebPage.WebsiteID == site.WebsiteID,
-        models.BusinessWebPage.IsPublished == True
-    ).order_by(models.BusinessWebPage.SortOrder).all()
+    import traceback
+    try:
+        pages = db.query(models.BusinessWebPage).filter(
+            models.BusinessWebPage.WebsiteID == site.WebsiteID,
+            models.BusinessWebPage.IsPublished == True
+        ).order_by(models.BusinessWebPage.SortOrder).all()
 
-    result_pages = []
-    for page in pages:
-        blocks = db.query(models.BusinessWebBlock).filter(
-            models.BusinessWebBlock.PageID == page.PageID
-        ).order_by(models.BusinessWebBlock.SortOrder).all()
-        p = _ser_page(page)
-        p["blocks"] = [_ser_block(b) for b in blocks]
-        result_pages.append(p)
+        result_pages = []
+        for page in pages:
+            blocks = db.query(models.BusinessWebBlock).filter(
+                models.BusinessWebBlock.PageID == page.PageID
+            ).order_by(models.BusinessWebBlock.SortOrder).all()
+            p = _ser_page(page)
+            p["blocks"] = [_ser_block(b) for b in blocks]
+            result_pages.append(p)
 
-    site_data = _ser_site(site)
-    site_data["pages"] = result_pages
-    return site_data
+        site_data = _ser_site(site)
+        site_data["pages"] = result_pages
+        return site_data
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"bundle build failed: {exc}")
 
 
 @router.get("/bundle/{slug}")
@@ -1387,27 +1392,34 @@ def get_site_bundle_by_domain(domain: str, db: Session = Depends(get_db)):
     Strips protocol and trailing slashes before matching so 'yourfarm.com',
     'https://yourfarm.com', and 'https://yourfarm.com/' all resolve the same site.
     """
+    import traceback
     # Normalise: strip protocol and trailing slash
     clean = domain.lower().replace("https://", "").replace("http://", "").rstrip("/")
     if not clean:
         raise HTTPException(status_code=400, detail="domain parameter is required")
 
-    site = db.query(models.BusinessWebsite).filter(
-        models.BusinessWebsite.CanonicalURL.ilike(f"%{clean}%")
-    ).first()
-    # If not found and domain has www., try the bare domain (and vice versa)
-    if not site and clean.startswith("www."):
-        bare = clean[4:]
+    try:
         site = db.query(models.BusinessWebsite).filter(
-            models.BusinessWebsite.CanonicalURL.ilike(f"%{bare}%")
+            models.BusinessWebsite.CanonicalURL.ilike(f"%{clean}%")
         ).first()
-    elif not site and not clean.startswith("www."):
-        site = db.query(models.BusinessWebsite).filter(
-            models.BusinessWebsite.CanonicalURL.ilike(f"%www.{clean}%")
-        ).first()
-    if not site:
-        raise HTTPException(status_code=404, detail="No site found for this domain")
-    return _build_bundle(site, db)
+        # If not found and domain has www., try the bare domain (and vice versa)
+        if not site and clean.startswith("www."):
+            bare = clean[4:]
+            site = db.query(models.BusinessWebsite).filter(
+                models.BusinessWebsite.CanonicalURL.ilike(f"%{bare}%")
+            ).first()
+        elif not site and not clean.startswith("www."):
+            site = db.query(models.BusinessWebsite).filter(
+                models.BusinessWebsite.CanonicalURL.ilike(f"%www.{clean}%")
+            ).first()
+        if not site:
+            raise HTTPException(status_code=404, detail="No site found for this domain")
+        return _build_bundle(site, db)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"bundle-by-domain failed: {exc}")
 
 
 # ── Contact form submission ───────────────────────────────────────
