@@ -1617,76 +1617,170 @@ def _run_scrape(url: str, *, deep: bool = False) -> dict:
         return {"error": f"Scrape failed: {e}"}
 
 
-def _build_footer_html(footer: dict) -> str:
-    """Compose a clean HTML block from structured footer data returned by the
-    scraper. Output is meant for BusinessWebsite.FooterHTML, which is rendered
-    via dangerouslySetInnerHTML inside the site's footer band."""
+# Contact-row icons via Iconify CDN. Inline <svg> is stripped by the WYSIWYG
+# footer editor (contentEditable round-trip), but <img> tags survive. White
+# monochrome so they read on any footer_bg_color/image the site may carry.
+_FOOTER_ICONS = {
+    "pin":   "https://api.iconify.design/mdi/map-marker.svg?color=white",
+    "phone": "https://api.iconify.design/mdi/phone.svg?color=white",
+    "mail":  "https://api.iconify.design/mdi/email.svg?color=white",
+}
+
+# Brand icons via simpleicons.org CDN (white SVG hosted as image, so the
+# WYSIWYG editor preserves them as <img>).
+_SOCIAL_BRANDS = [
+    ("facebook.com",  "facebook",  "#1877F2"),
+    ("fb.com",        "facebook",  "#1877F2"),
+    ("instagram.com", "instagram", "linear-gradient(135deg,#f09433,#e6683c,#dc2743,#cc2366,#bc1888)"),
+    ("twitter.com",   "x",         "#000000"),
+    ("x.com",         "x",         "#000000"),
+    ("youtube.com",   "youtube",   "#FF0000"),
+    ("youtu.be",      "youtube",   "#FF0000"),
+    ("linkedin.com",  "linkedin",  "#0A66C2"),
+    ("tiktok.com",    "tiktok",    "#000000"),
+]
+
+
+def _social_style(href: str, label: str):
+    h = (href or "").lower()
+    l = (label or "").lower()
+    for needle, slug, bg in _SOCIAL_BRANDS:
+        if needle in h or needle.split(".")[0] in l:
+            return slug, bg
+    return "link", "rgba(255,255,255,0.18)"
+
+
+def _build_footer_html(footer: dict, business_name: str = "", description: str = "") -> str:
+    """Compose a polished two-column footer block from structured scraper data.
+    Output is rendered via dangerouslySetInnerHTML inside the site's footer
+    band, on top of footer_bg_color (or footer_bg_image_url). Uses rgba white
+    accents so the look works on any background color."""
     from html import escape
     if not footer:
         return ""
-    emails = footer.get("emails") or []
-    phones = footer.get("phones") or []
-    social = footer.get("social") or []
+    emails  = footer.get("emails")  or []
+    phones  = footer.get("phones")  or []
+    social  = footer.get("social")  or []
     address = footer.get("address") or ""
-    copyright_line = footer.get("copyright") or ""
+    membership = footer.get("membership") or {}
+    # Note: copyright is intentionally NOT rendered here — the public-site
+    # footer has its own dedicated copyright bar (driven by Site.CopyrightText)
+    # which sits as a sibling block below this band. Including it here would
+    # double-print the line.
 
-    cols: list[str] = []
+    if not (emails or phones or social or address or description or membership):
+        return ""
 
-    # Contact column — only when we found something contactable
-    contact_bits: list[str] = []
+    def pill(text: str, mb: str = "1.25rem") -> str:
+        return (
+            "<div style=\"background:rgba(255,255,255,0.18);color:#fff;"
+            "text-align:center;font-weight:500;letter-spacing:0.05em;"
+            "text-transform:uppercase;padding:0.75rem 1rem;border-radius:0;"
+            f"margin-bottom:{mb};font-size:0.95rem;width:100%;box-sizing:border-box;\">"
+            f"{escape(text)}</div>"
+        )
+
+    def row(icon_key: str, inner_html: str) -> str:
+        icon_url = _FOOTER_ICONS.get(icon_key, "")
+        icon_img = (
+            f"<img src=\"{icon_url}\" alt=\"\" aria-hidden=\"true\" "
+            f"style=\"width:1.25rem;height:1.25rem;display:block;border:0;\" />"
+            if icon_url else ""
+        )
+        return (
+            "<div style=\"display:flex;align-items:center;gap:0.75rem;"
+            "margin:0.65rem 0;color:#fff;font-size:1rem;line-height:1.4;\">"
+            f"<span style=\"flex-shrink:0;display:inline-flex;width:1.25rem;"
+            f"height:1.25rem;align-items:center;justify-content:center;\">{icon_img}</span>"
+            f"<span>{inner_html}</span></div>"
+        )
+
+    # ── Right column: Contact Us ─────────────────────────────────────
+    contact_rows: list[str] = []
     if address:
-        contact_bits.append(f"<p style='margin:0 0 0.4rem 0;'>{escape(address)}</p>")
+        contact_rows.append(row("pin", escape(address)))
     for p in phones:
         digits = "".join(ch for ch in p if ch.isdigit() or ch == "+")
         href = f"tel:{digits}" if digits else "#"
-        contact_bits.append(
-            f"<p style='margin:0 0 0.25rem 0;'><a href='{escape(href)}' "
-            f"style='color:inherit;'>{escape(p)}</a></p>"
-        )
+        contact_rows.append(row("phone",
+            f"<a href=\"{escape(href)}\" style=\"color:inherit;text-decoration:none;\">Call: {escape(p)}</a>"
+        ))
     for e in emails:
-        contact_bits.append(
-            f"<p style='margin:0 0 0.25rem 0;'><a href='mailto:{escape(e)}' "
-            f"style='color:inherit;'>{escape(e)}</a></p>"
-        )
-    if contact_bits:
-        cols.append(
-            "<div>"
-            "<h3 style='font-size:0.95rem;font-weight:700;margin:0 0 0.6rem 0;"
-            "text-transform:uppercase;letter-spacing:0.05em;'>Contact</h3>"
-            + "".join(contact_bits) + "</div>"
+        contact_rows.append(row("mail",
+            f"<a href=\"mailto:{escape(e)}\" style=\"color:inherit;text-decoration:none;\">{escape(e)}</a>"
+        ))
+    contact_col = ""
+    if contact_rows:
+        contact_col = (
+            "<div>" + pill("Contact Us") + "".join(contact_rows) + "</div>"
         )
 
-    # Social column
+    # ── Left column: Membership CTA (optional) + About + social ─────
+    about_bits: list[str] = []
+    if membership.get("href") and membership.get("label"):
+        m_title = (membership.get("title") or "Membership").strip()
+        m_label = membership["label"].strip()
+        m_href  = membership["href"].strip()
+        about_bits.append(pill(m_title, mb="0"))
+        about_bits.append(
+            "<div style=\"text-align:center;padding:1rem 0 1.5rem;\">"
+            f"<a href=\"{escape(m_href)}\" "
+            "style=\"color:#fff;font-size:1.05rem;font-weight:400;"
+            "text-decoration:none;letter-spacing:0.03em;\">"
+            f"{escape(m_label)}</a></div>"
+        )
+
+    about_title = (business_name or "").strip()
+    if about_title and description:
+        about_bits.append(pill(f"About {about_title}", mb="0"))
+    elif description:
+        about_bits.append(pill("About", mb="0"))
+    if description:
+        about_bits.append(
+            "<p style=\"color:#fff;line-height:1.6;font-size:0.95rem;"
+            "margin:1.1rem 0 1.2rem 0;\">"
+            f"{escape(description)}</p>"
+        )
+
     if social:
-        links_html = "".join(
-            f"<a href='{escape(s.get('href',''))}' target='_blank' rel='noopener' "
-            f"style='color:inherit;margin-right:0.9rem;text-decoration:underline;'>"
-            f"{escape(s.get('label','Link'))}</a>"
-            for s in social
-        )
-        cols.append(
-            "<div>"
-            "<h3 style='font-size:0.95rem;font-weight:700;margin:0 0 0.6rem 0;"
-            "text-transform:uppercase;letter-spacing:0.05em;'>Follow Us</h3>"
-            f"<div>{links_html}</div>"
-            "</div>"
+        icons_html = []
+        for s in social:
+            href = s.get("href", "") or "#"
+            label = s.get("label", "")
+            slug, bg = _social_style(href, label)
+            alt = escape(label or slug.title())
+            icons_html.append(
+                f"<a href=\"{escape(href)}\" target=\"_blank\" rel=\"noopener\" "
+                f"aria-label=\"{alt}\" "
+                f"style=\"display:inline-flex;width:2.5rem;height:2.5rem;border-radius:0;"
+                f"align-items:center;justify-content:center;background:{bg};"
+                f"text-decoration:none;\">"
+                f"<img src=\"https://cdn.simpleicons.org/{slug}/white\" alt=\"{alt}\" "
+                f"style=\"width:1.4rem;height:1.4rem;display:block;border:0;\" />"
+                "</a>"
+            )
+        about_bits.append(
+            "<div style=\"display:flex;gap:0.6rem;flex-wrap:wrap;\">"
+            + "".join(icons_html) + "</div>"
         )
 
+    about_col = ("<div>" + "".join(about_bits) + "</div>") if about_bits else ""
+
+    cols = [c for c in (about_col, contact_col) if c]
     if not cols:
         return ""
 
+    # Two-column when we have both, single-column when only one survived.
+    # Full-width (no max-width) so the footer fills the host band/background.
+    grid_cols = "1fr 1fr" if len(cols) == 2 else "1fr"
     grid = (
-        "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));"
-        "gap:2rem;padding:2rem 1.5rem 1rem;'>" + "".join(cols) + "</div>"
+        f"<div style=\"display:grid;grid-template-columns:{grid_cols};"
+        "gap:3rem;padding:2.5rem 3rem 1.5rem;width:100%;max-width:none;"
+        "margin:0 auto;box-sizing:border-box;\">"
+        + "".join(cols) + "</div>"
     )
-    credit = ""
-    if copyright_line:
-        credit = (
-            "<div style='text-align:center;padding:0.75rem 1.5rem 1rem;"
-            "font-size:0.8rem;opacity:0.85;'>"
-            f"{escape(copyright_line)}</div>"
-        )
-    return grid + credit
+
+    return grid
 
 
 def _fetch_pages_content_parallel(urls: list[str], *, timeout: float = 8.0) -> dict:
@@ -1701,7 +1795,10 @@ def _fetch_pages_content_parallel(urls: list[str], *, timeout: float = 8.0) -> d
     try:
         import httpx
         from scrapers.lavendir_scraper import (
-            _extract_content, UA, BeautifulSoup,
+            _extract_content, _extract_page_banner,
+            _extract_faq, _extract_map_embed, _extract_hours,
+            _extract_team_members, _extract_pricing_table, _extract_page_cta,
+            UA, BeautifulSoup,
         )
     except Exception as e:
         _diag(f"per-page fetch unavailable: {e}")
@@ -1716,11 +1813,33 @@ def _fetch_pages_content_parallel(urls: list[str], *, timeout: float = 8.0) -> d
                     return
                 soup = BeautifulSoup(r.text, "html.parser")
                 content = _extract_content(soup, u)
+                banner = {}
+                try:
+                    banner = _extract_page_banner(soup, u) or {}
+                except Exception:
+                    banner = {}
+                faq_items     = _extract_faq(soup)
+                map_embed     = _extract_map_embed(soup)
+                hours_rows    = _extract_hours(soup)
+                team_members  = _extract_team_members(soup, u)
+                pricing_table = _extract_pricing_table(soup)
+                page_cta      = _extract_page_cta(soup, u)
                 out[u] = {
-                    "headings": content.get("headings") or [],
-                    "bodies":   content.get("bodyText") or [],
-                    "images":   content.get("images") or [],
-                    "links":    content.get("links")   or [],
+                    "headings":        content.get("headings") or [],
+                    "bodies":          content.get("bodyText") or [],
+                    "bodies_html":     content.get("bodyHtml") or [],
+                    "body_ordered":    content.get("bodyOrdered") or "",
+                    "images":          content.get("images") or [],
+                    "links":           content.get("links")   or [],
+                    "banner":          banner,
+                    "meta_title":      content.get("pageTitle") or "",
+                    "meta_description":content.get("metaDescription") or "",
+                    "faq_items":       faq_items,
+                    "map_embed":       map_embed,
+                    "hours_rows":      hours_rows,
+                    "team_members":    team_members,
+                    "pricing_table":   pricing_table,
+                    "page_cta":        page_cta,
                 }
             except Exception as _e:
                 return
@@ -1742,6 +1861,189 @@ def _fetch_pages_content_parallel(urls: list[str], *, timeout: float = 8.0) -> d
             loop.close()
     except Exception as e:
         _diag(f"per-page fetch error: {e}")
+        return {}
+
+
+def _pick_hero_image(images: list, *, min_w: int = 600, min_h: int = 200) -> str:
+    """Pick the first hero-worthy image from a scraped images list.
+    Strategy:
+      1. Prefer images whose declared width AND height meet the min thresholds.
+      2. Fall back to the first non-svg image (whatever width/height we have).
+    Avoids logos / sponsor thumbnails / icons that happen to appear before the
+    real hero in DOM order.
+    """
+    def _coerce_dim(v):
+        if v is None:
+            return None
+        try:
+            return int(re.match(r"\s*(\d+)", str(v)).group(1))
+        except Exception:
+            return None
+    def _src(img):
+        if isinstance(img, dict):
+            return (img.get("url") or img.get("src") or "").strip()
+        if isinstance(img, str):
+            return img.strip()
+        return ""
+    if not images:
+        return ""
+    # Pass 1: meets size thresholds
+    for img in images:
+        src = _src(img)
+        if not src or src.lower().endswith(".svg"):
+            continue
+        if not isinstance(img, dict):
+            continue
+        w = _coerce_dim(img.get("width"))
+        h = _coerce_dim(img.get("height"))
+        if w is not None and h is not None and w >= min_w and h >= min_h:
+            return src
+    # Pass 2: first non-svg, non-logo-ish src — same behavior as before but
+    # at least skip obvious thumbnails (sub-200px when known).
+    for img in images:
+        src = _src(img)
+        if not src or src.lower().endswith(".svg"):
+            continue
+        if isinstance(img, dict):
+            w = _coerce_dim(img.get("width"))
+            h = _coerce_dim(img.get("height"))
+            # Skip when we know it's clearly tiny
+            if (w is not None and w < 200) or (h is not None and h < 100):
+                continue
+        return src
+    return ""
+
+
+_REHOST_BUCKET = "oatmeal-farm-network-images"
+_REHOST_PREFIX = "website-images"
+_REHOST_MAX_BYTES = 8 * 1024 * 1024  # 8 MB hard cap per image
+
+def _rehost_remote_image(url: str, *, timeout: float = 12.0) -> str:
+    """Download a remote image and re-upload to our GCS bucket. Returns the
+    new public URL, or the original `url` on any failure (the import
+    shouldn't fail just because we couldn't rehost).
+
+    Skips:
+      - Empty URLs
+      - URLs already on our own GCS bucket
+      - Non-HTTP(S) schemes (data:, blob:, etc.)
+      - Responses missing/non-image content-type
+      - Responses larger than _REHOST_MAX_BYTES
+    """
+    if not url:
+        return url
+    u = url.strip()
+    if not u or not u.lower().startswith(("http://", "https://")):
+        return url
+    if _REHOST_BUCKET in u:
+        return url  # already ours
+    try:
+        import httpx, uuid as _uuid
+        from google.cloud import storage as _gcs
+    except Exception as e:
+        _diag(f"rehost: imports unavailable ({e}); keeping source URL")
+        return url
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True,
+                           headers={"User-Agent": "Mozilla/5.0 (LavendirImporter)"}) as client:
+            r = client.get(u)
+            if r.status_code >= 400:
+                _diag(f"rehost: status {r.status_code} for {u[:100]}")
+                return url
+            ctype = (r.headers.get("content-type") or "").lower().split(";")[0].strip()
+            if not ctype.startswith("image/"):
+                _diag(f"rehost: skip non-image content-type {ctype!r} for {u[:100]}")
+                return url
+            data = r.content
+            if not data or len(data) > _REHOST_MAX_BYTES:
+                _diag(f"rehost: skip oversize ({len(data) if data else 0} bytes) for {u[:100]}")
+                return url
+        # Pick extension from content-type, falling back to URL path
+        ext_map = {
+            "image/jpeg": "jpg", "image/jpg": "jpg",
+            "image/png":  "png", "image/webp": "webp",
+            "image/gif":  "gif", "image/svg+xml": "svg",
+        }
+        ext = ext_map.get(ctype, "")
+        if not ext:
+            from urllib.parse import urlparse
+            path = urlparse(u).path.lower()
+            for cand in ("jpg", "jpeg", "png", "webp", "gif", "svg"):
+                if path.endswith("." + cand):
+                    ext = "jpeg" if cand == "jpeg" else cand
+                    break
+        if not ext:
+            ext = "jpg"
+        filename = f"{_REHOST_PREFIX}/imported/{_uuid.uuid4().hex}.{ext}"
+        client = _gcs.Client()
+        bucket = client.bucket(_REHOST_BUCKET)
+        blob = bucket.blob(filename)
+        blob.upload_from_string(data, content_type=ctype)
+        new_url = f"https://storage.googleapis.com/{_REHOST_BUCKET}/{filename}"
+        _diag(f"rehost: {u[:80]} -> {new_url}")
+        return new_url
+    except Exception as e:
+        _diag(f"rehost failed for {u[:100]}: {e}")
+        return url
+
+
+_INLINE_IMG_SRC_RE = re.compile(r'<img\b[^>]*\bsrc=["\']([^"\']+)["\']', re.IGNORECASE)
+
+def _rehost_inline_images(html: str, *, max_images: int = 12) -> str:
+    """Find <img src="..."> in a body HTML string and rehost each remote image
+    to our GCS bucket so imported pages don't break when source CDNs change.
+    Caps the total number rehosted per body (max_images) to avoid runaway
+    downloads on link-heavy pages. Same-bucket and data: URLs are skipped by
+    `_rehost_remote_image` itself."""
+    if not html or "<img" not in html.lower():
+        return html
+    seen: dict[str, str] = {}
+    count = 0
+    def _sub(m):
+        nonlocal count
+        src = m.group(1).strip()
+        if not src:
+            return m.group(0)
+        if src in seen:
+            new = seen[src]
+        else:
+            if count >= max_images:
+                return m.group(0)
+            new = _rehost_remote_image(src)
+            seen[src] = new
+            count += 1
+        if new == src:
+            return m.group(0)
+        return m.group(0).replace(src, new, 1)
+    return _INLINE_IMG_SRC_RE.sub(_sub, html)
+
+
+def _fetch_pages_content_playwright(urls: list[str]) -> dict:
+    """Playwright fallback for per-page content. Slower (renders JS) but works
+    on Elementor/Divi/React pages where httpx sees an empty shell. Runs a
+    single browser with bounded page concurrency. Returns same shape as
+    `_fetch_pages_content_parallel`."""
+    if not urls:
+        return {}
+    try:
+        from scrapers.lavendir_scraper import _fetch_pages_content_playwright as _pw
+    except Exception as e:
+        _diag(f"playwright per-page unavailable: {e}")
+        return {}
+
+    async def _run():
+        return await _pw(urls)
+
+    try:
+        return asyncio.run(_run())
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(_run())
+        finally:
+            loop.close()
+    except Exception as e:
+        _diag(f"playwright per-page error: {e}")
         return {}
 
 
@@ -1963,6 +2265,14 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
     images     = data.get("images") or []
     nav_tree   = data.get("navTree") or []
     hero_url   = (data.get("heroImageUrl") or "").strip()
+    home_banner = data.get("homepageBanner") or {}
+    # If the source homepage has a true banner section (CSS bg + height on a
+    # specific wrapper), prefer that over the generic "biggest <img>" hero.
+    banner_bg_home = (home_banner.get("background_url") or "").strip()
+    banner_h_home  = int(home_banner.get("height") or 0)
+    banner_overlay_home = home_banner.get("overlay_color") or ""
+    if banner_bg_home:
+        hero_url = banner_bg_home
     logo_url   = (data.get("logoUrl") or "").strip()
     slideshow  = [u for u in (data.get("slideshowImages") or []) if u]
     added: list[str] = []
@@ -1976,6 +2286,8 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
         page_bg = (tokens.get("pageBgColor") or "").lower().strip()
         if nav_bg:  site_row.PrimaryColor  = nav_bg
         if tokens.get("accentColor"):  site_row.AccentColor    = tokens["accentColor"]
+        if tokens.get("secondaryColor"):
+            site_row.SecondaryColor = tokens["secondaryColor"]
         # Don't let page bg duplicate nav bg — that indicates the extractor
         # couldn't distinguish them (common on sites where <body> is transparent
         # and the walker fell through to the header). Keep the existing bg in
@@ -1983,7 +2295,66 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
         if page_bg and page_bg != nav_bg:
             site_row.BgColor = page_bg
         if tokens.get("navTextColor"): site_row.NavTextColor   = tokens["navTextColor"]
+        if tokens.get("textColor"):    site_row.TextColor      = tokens["textColor"]
+        if tokens.get("linkColor"):    site_row.LinkColor      = tokens["linkColor"]
         if tokens.get("bodyFont"):     site_row.FontFamily     = tokens["bodyFont"]
+        # Nav menu typography (font weight, etc.) — captured by the scraper
+        # via Playwright computed styles or shallow CSS regex. Persist into
+        # MenuStyleJSON so the public renderer can match the source site's
+        # nav weight instead of falling back to a generic default.
+        nav_typo_in = data.get("navTypo") or {}
+        if isinstance(nav_typo_in, dict) and nav_typo_in:
+            try:
+                existing_menu = json.loads(site_row.MenuStyleJSON) if site_row.MenuStyleJSON else {}
+                if not isinstance(existing_menu, dict):
+                    existing_menu = {}
+            except Exception:
+                existing_menu = {}
+            fw_raw = str(nav_typo_in.get("fontWeight") or "").strip().lower()
+            # Normalize: "bold" → 700, "normal" → 400, numeric stays as-is
+            if fw_raw == "bold":
+                fw_norm = "700"
+            elif fw_raw == "normal":
+                fw_norm = "400"
+            elif fw_raw.isdigit():
+                fw_norm = fw_raw
+            else:
+                fw_norm = ""
+            if fw_norm:
+                existing_menu["fontWeight"] = fw_norm
+            tt = (nav_typo_in.get("textTransform") or "").strip().lower()
+            if tt and tt not in ("none",):
+                existing_menu["textTransform"] = tt
+            ls = (nav_typo_in.get("letterSpacing") or "").strip()
+            if ls and ls not in ("normal", "0px", "0"):
+                existing_menu["letterSpacing"] = ls
+            if existing_menu:
+                site_row.MenuStyleJSON = json.dumps(existing_menu)
+                _diag(f"menu style imported: {existing_menu}")
+        # Footer band: only persist a footer-specific color when it actually
+        # differs from the nav color — otherwise leave FooterBgColor NULL so
+        # the read-side keeps it in sync with PrimaryColor automatically.
+        footer_color = (tokens.get("footerBgColor") or "").lower().strip()
+        if footer_color and footer_color != nav_bg:
+            site_row.FooterBgColor = tokens["footerBgColor"]
+        if tokens.get("footerBgImage"):
+            site_row.FooterBgImageURL = tokens["footerBgImage"]
+        # OG image: write to site if not already set
+        og_img = (tokens.get("ogImage") or "").strip()
+        if og_img and not site_row.OgImageURL:
+            site_row.OgImageURL = og_img
+        # Google Fonts: persist URL into SeoExtrasJSON so the renderer can
+        # inject a <link> into <head> and actually load the scraped typeface.
+        gf_url = (tokens.get("googleFontsUrl") or "").strip()
+        if gf_url:
+            try:
+                sej = json.loads(site_row.SeoExtrasJSON) if site_row.SeoExtrasJSON else {}
+                if not isinstance(sej, dict):
+                    sej = {}
+            except Exception:
+                sej = {}
+            sej["google_fonts_url"] = gf_url
+            site_row.SeoExtrasJSON = json.dumps(sej)
         if logo_url:
             site_row.LogoURL = logo_url
             # Sites with a proper logo almost never also want the site-name text
@@ -2000,7 +2371,40 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
             site_row.HeaderHeight = 180
         site_row.UpdatedAt = dt_now.utcnow()
         added.append("design palette" + (" + logo" if logo_url else ""))
-    _diag(f"design tokens applied: navBg={tokens.get('navBgColor')!r} pageBg={tokens.get('pageBgColor')!r} accent={tokens.get('accentColor')!r} logo={logo_url[:80]!r}")
+    _diag(f"design tokens applied: navBg={tokens.get('navBgColor')!r} pageBg={tokens.get('pageBgColor')!r} accent={tokens.get('accentColor')!r} footerImg={(tokens.get('footerBgImage') or '')[:80]!r} logo={logo_url[:80]!r}")
+
+    # ── Social links ───────────────────────────────────────────────────
+    social_links = data.get("socialLinks") or {}
+    if "design" in include and social_links and site_row:
+        _PLATFORM_COLS = {
+            "facebook":  "FacebookURL",
+            "instagram": "InstagramURL",
+            "twitter":   "TwitterURL",
+        }
+        _EXTRA_SOCIAL = {"youtube", "linkedin", "tiktok", "pinterest"}
+        social_added = []
+        for platform, href in social_links.items():
+            if not href:
+                continue
+            col = _PLATFORM_COLS.get(platform)
+            if col:
+                if not getattr(site_row, col, None):
+                    setattr(site_row, col, href)
+                    social_added.append(platform)
+            elif platform in _EXTRA_SOCIAL:
+                # Store in FooterJSON under a "social" sub-key
+                try:
+                    fj = json.loads(site_row.FooterJSON) if site_row.FooterJSON else {}
+                    if not isinstance(fj, dict):
+                        fj = {}
+                except Exception:
+                    fj = {}
+                fj.setdefault("social", {})[platform] = href
+                site_row.FooterJSON = json.dumps(fj)
+                social_added.append(platform)
+        if social_added:
+            site_row.UpdatedAt = dt_now.utcnow()
+            added.append(f"social links ({', '.join(social_added)})")
 
     # ── Footer import ──────────────────────────────────────────────────
     footer_data = data.get("footer") or {}
@@ -2010,10 +2414,40 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
         or footer_data.get("social")
         or footer_data.get("address")
         or footer_data.get("copyright")
+        or footer_data.get("membership")
     ):
-        built = _build_footer_html(footer_data)
+        # Pull a short description for the About column from the home-page body.
+        # First paragraph of reasonable length tends to be the site's tagline.
+        description = ""
+        for b in (bodies or []):
+            txt = (b if isinstance(b, str) else (b.get("text") or "")).strip()
+            if 40 <= len(txt) <= 280:
+                description = txt
+                break
+        biz_name = ""
+        try:
+            biz = db.query(models.Business).filter(models.Business.BusinessID == business_id).first()
+            biz_name = (biz.BusinessName or "") if biz else ""
+        except Exception:
+            biz_name = ""
+        built = _build_footer_html(footer_data, business_name=biz_name, description=description)
         if built:
             site_row.FooterHTML = built
+            # Copyright lives on its own bar (renderer-side), driven by this column.
+            scraped_copy = (footer_data.get("copyright") or "").strip()
+            if scraped_copy:
+                site_row.CopyrightText = scraped_copy
+            # Structured contact fields — only write if the site_row column is
+            # currently empty so we don't clobber user-edited contact info.
+            phones = footer_data.get("phones") or []
+            if phones and not site_row.Phone:
+                site_row.Phone = str(phones[0])[:50]
+            emails = footer_data.get("emails") or []
+            if emails and not site_row.Email:
+                site_row.Email = str(emails[0])[:255]
+            addr = (footer_data.get("address") or "").strip()
+            if addr and not site_row.Address:
+                site_row.Address = addr[:500]
             site_row.UpdatedAt = dt_now.utcnow()
             added.append("footer")
             _diag(
@@ -2057,11 +2491,11 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
             headline = headings[0].get("text") if isinstance(headings[0], dict) else str(headings[0])
         hero_image = hero_url
         if not hero_image:
-            for img in images:
-                src = img.get("src") if isinstance(img, dict) else None
-                if src and not src.endswith(".svg"):
-                    hero_image = src
-                    break
+            hero_image = _pick_hero_image(images)
+        # Rehost the hero image so the imported page doesn't break if the
+        # source site renames/removes the asset.
+        if hero_image:
+            hero_image = _rehost_remote_image(hero_image)
 
         # If the source site has a real slideshow (2+ slide images), replace
         # the existing hero with a slideshow block. The setup wizard always
@@ -2127,12 +2561,20 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
                     # Sites like oregonqha.com render a plain image hero with no text.
                     existing_headline = (current.get("headline") or "").strip()
                     is_default_welcome = existing_headline.lower().startswith("welcome to ")
-                    if is_default_welcome or not existing_headline:
+                    home_banner_title = (home_banner.get("title") or "").strip()
+                    home_banner_subtext = (home_banner.get("subtext") or "").strip()
+                    if home_banner_title and (is_default_welcome or not existing_headline):
+                        current["headline"] = home_banner_title
+                    elif is_default_welcome or not existing_headline:
                         current["headline"] = ""
-                    current["subtext"] = ""
+                    current["subtext"] = home_banner_subtext
                     current["cta_text"] = ""
                     current["cta_link"] = ""
-                    current["overlay"] = False
+                    current["overlay"] = bool(banner_overlay_home)
+                    if banner_overlay_home:
+                        current["overlay_color"] = banner_overlay_home
+                    if banner_h_home:
+                        current["min_height_px"] = max(220, min(banner_h_home, 900))
                 else:
                     # No image — only clear the known stock defaults.
                     if current.get("subtext", "").strip() in (
@@ -2155,6 +2597,10 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
                     "cta_text": "", "cta_link": "",
                     "overlay": True, "align": "center",
                 }
+                if banner_overlay_home:
+                    block_data["overlay_color"] = banner_overlay_home
+                if banner_h_home:
+                    block_data["min_height_px"] = max(220, min(banner_h_home, 900))
                 sort += 10
                 db.add(models.BusinessWebBlock(
                     PageID=page_id, BlockType="hero",
@@ -2162,6 +2608,53 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
                     CreatedAt=dt_now.utcnow(), UpdatedAt=dt_now.utcnow(),
                 ))
                 added.append("hero block")
+
+    # ── CTA banners (call-to-action bars) ──────────────────────────
+    # Source order: place the first CTA above the about block, the rest
+    # below it. Mirrors the common pattern (CTA → heading/about → CTA).
+    raw_ctas = data.get("ctas") or []
+    ctas_clean: list = []
+    if "design" in include and isinstance(raw_ctas, list):
+        for c in raw_ctas:
+            if not isinstance(c, dict):
+                continue
+            head = (c.get("headline") or "").strip()
+            btn  = (c.get("button_text") or "").strip()
+            if head and btn:
+                ctas_clean.append(c)
+    if ctas_clean:
+        for _old in db.query(models.BusinessWebBlock).filter(
+            models.BusinessWebBlock.PageID == page_id,
+            models.BusinessWebBlock.BlockType == "cta",
+        ).all():
+            db.delete(_old)
+    ctas_before_about = ctas_clean[:1]
+    ctas_after_about  = ctas_clean[1:]
+
+    def _insert_cta_block(c: dict):
+        nonlocal sort
+        sort += 10
+        payload = {
+            "headline":          (c.get("headline") or "").strip(),
+            "body":              "",
+            "button_text":       (c.get("button_text") or "").strip(),
+            "button_link":       (c.get("button_link") or "").strip() or "#",
+            "bg_color":          (c.get("bg_color") or "").strip() or "#1a1a1a",
+            "text_color":        "#ffffff",
+            "button_bg_color":   "",
+            "button_text_color": "#ffffff",
+            "align":             "split",
+        }
+        db.add(models.BusinessWebBlock(
+            PageID=page_id, BlockType="cta",
+            BlockData=json.dumps(payload),
+            SortOrder=sort,
+            CreatedAt=dt_now.utcnow(), UpdatedAt=dt_now.utcnow(),
+        ))
+        added.append(f"CTA bar ({payload['headline'][:40]})")
+
+    for _c in ctas_before_about:
+        _insert_cta_block(_c)
 
     if "about" in include:
         body = "\n\n".join(bodies[1:4]) if len(bodies) > 1 else (bodies[0] if bodies else "")
@@ -2202,6 +2695,9 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
                 ))
                 added.append("about block")
 
+    for _c in ctas_after_about:
+        _insert_cta_block(_c)
+
     if "gallery" in include and len(images) >= 3:
         srcs = []
         for img in images[:12]:
@@ -2220,6 +2716,119 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
                 CreatedAt=dt_now.utcnow(), UpdatedAt=dt_now.utcnow(),
             ))
             added.append("gallery block")
+
+    # ── Sponsors block ─────────────────────────────────────────────
+    sponsors_data = data.get("sponsors") or []
+    if "design" in include and isinstance(sponsors_data, list) and len(sponsors_data) >= 2:
+        # Replace any existing sponsors block so re-runs don't stack duplicates
+        existing_sponsors = db.query(models.BusinessWebBlock).filter(
+            models.BusinessWebBlock.PageID == page_id,
+            models.BusinessWebBlock.BlockType == "sponsors",
+        ).all()
+        sponsor_sort = None
+        for old in existing_sponsors:
+            if sponsor_sort is None:
+                sponsor_sort = old.SortOrder
+            db.delete(old)
+        if sponsor_sort is None:
+            sort += 10
+            sponsor_sort = sort
+        # Pick column count from the source list size (cap 4 wide for readability)
+        col_count = 4 if len(sponsors_data) >= 4 else max(2, len(sponsors_data))
+        clean_sponsors = []
+        for s in sponsors_data:
+            if not isinstance(s, dict):
+                continue
+            logo = (s.get("logo_url") or "").strip()
+            if not logo:
+                continue
+            clean_sponsors.append({
+                "name":     (s.get("name") or "").strip(),
+                "logo_url": logo,
+                "url":      (s.get("url") or "").strip(),
+            })
+        if clean_sponsors:
+            db.add(models.BusinessWebBlock(
+                PageID=page_id, BlockType="sponsors",
+                BlockData=json.dumps({
+                    "heading":     "Our Sponsors",
+                    "intro_body":  "",
+                    "columns":     col_count,
+                    "logo_height": 80,
+                    "show_names":  True,
+                    "sponsors":    clean_sponsors,
+                }),
+                SortOrder=sponsor_sort,
+                CreatedAt=dt_now.utcnow(), UpdatedAt=dt_now.utcnow(),
+            ))
+            added.append(f"sponsors block ({len(clean_sponsors)} logos)")
+            _diag(f"sponsors imported: {len(clean_sponsors)} logos at sort={sponsor_sort}")
+
+    # ── Testimonials import ────────────────────────────────────────
+    raw_testimonials = data.get("testimonials") or []
+    if "design" in include and isinstance(raw_testimonials, list) and raw_testimonials:
+        # Only import scraped testimonials when the business has none yet —
+        # avoids duplicate stacking on re-imports and respects user-entered
+        # testimonials added through the CMS.
+        existing_testi_count = db.execute(
+            text("SELECT COUNT(*) FROM Testimonials WHERE CustID = :bid"),
+            {"bid": business_id},
+        ).scalar() or 0
+        if existing_testi_count == 0:
+            for i, t in enumerate(raw_testimonials[:8]):
+                content_t = (t.get("content") or "").strip()
+                author_t  = (t.get("author")  or "").strip()
+                rating_t  = t.get("rating")
+                if not content_t:
+                    continue
+                db.execute(
+                    text("""INSERT INTO Testimonials
+                        (CustID, CustomerName, Testimonial, Rating, testimonialsOrder)
+                        VALUES (:bid, :name, :content, :rating, :sort)"""),
+                    {
+                        "bid":     business_id,
+                        "name":    author_t[:100] if author_t else "Customer",
+                        "content": content_t[:1000],
+                        "rating":  int(rating_t) if rating_t else None,
+                        "sort":    i,
+                    },
+                )
+            # Add a testimonials block on the home page so they're visible
+            home_has_testi = db.query(models.BusinessWebBlock).filter(
+                models.BusinessWebBlock.PageID == page_id,
+                models.BusinessWebBlock.BlockType.in_(("testimonials", "testimonial_random")),
+            ).first()
+            if not home_has_testi:
+                sort += 10
+                db.add(models.BusinessWebBlock(
+                    PageID=page_id, BlockType="testimonials",
+                    BlockData=json.dumps({"heading": "What People Are Saying"}),
+                    SortOrder=sort,
+                    CreatedAt=dt_now.utcnow(), UpdatedAt=dt_now.utcnow(),
+                ))
+            added.append(f"{len(raw_testimonials)} testimonial(s) imported")
+            _diag(f"testimonials imported: {len(raw_testimonials)}")
+
+    # ── Features/services grid import ──────────────────────────────
+    raw_features = data.get("featuresGrid") or []
+    if "design" in include and isinstance(raw_features, list) and len(raw_features) >= 3:
+        home_has_features = db.query(models.BusinessWebBlock).filter(
+            models.BusinessWebBlock.PageID == page_id,
+            models.BusinessWebBlock.BlockType == "features",
+        ).first()
+        if not home_has_features:
+            sort += 10
+            db.add(models.BusinessWebBlock(
+                PageID=page_id, BlockType="features",
+                BlockData=json.dumps({
+                    "heading": "",
+                    "items": raw_features[:9],
+                }),
+                SortOrder=sort,
+                CreatedAt=dt_now.utcnow(), UpdatedAt=dt_now.utcnow(),
+            ))
+            added.append(f"features grid ({len(raw_features[:9])} items)")
+            _diag(f"features grid imported: {len(raw_features)} items")
 
     # ── Per-page content population ────────────────────────────────
     # For every non-heading nav page we just created that had a source URL,
@@ -2307,6 +2916,38 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
                 break
         return items
 
+    # Page-type patterns — checked against URL path and page name.
+    _PT = {
+        "contact":  re.compile(r"contact|reach.us|get.in.touch|connect|inquiry|enquiry", re.I),
+        "location": re.compile(r"location|directions?|find.us|where.we.are|our.location|map", re.I),
+        "hours":    re.compile(r"\bhours?\b|schedule|open|times|when.we.open", re.I),
+        "gallery":  re.compile(r"gallery|photos?|images?|pictures?|portfolio|media", re.I),
+        "faq":      re.compile(r"\bfaq\b|faqs|frequently.asked|questions?|help|support", re.I),
+        "team":     re.compile(r"\bteam\b|\bstaff\b|board|directors?|leadership|officers?", re.I),
+        "pricing":  re.compile(r"pricing|prices?|plans?|packages?|rates?|membership[-_]?fee", re.I),
+        "blog":     re.compile(r"\bblog\b|\bnews\b|\barticles?\b|\bposts?\b|\bjournal\b|\bstories?\b", re.I),
+    }
+
+    def _detect_page_type(href: str, name: str, pdata: dict) -> str:
+        """Return coarse page type from URL, name, and extracted content signals."""
+        combined = f"{href} {name}".lower()
+        # Content signals override URL pattern (most reliable)
+        if pdata.get("map_embed"):
+            return "location"
+        if len(pdata.get("hours_rows") or []) >= 3:
+            return "hours"
+        if len(pdata.get("faq_items") or []) >= 3:
+            return "faq"
+        if len(pdata.get("team_members") or []) >= 2:
+            return "team"
+        if len(pdata.get("pricing_table") or []) >= 1:
+            return "pricing"
+        # URL / name pattern
+        for ptype, rx in _PT.items():
+            if rx.search(combined):
+                return ptype
+        return "content"
+
     def _is_stock_only(pid: int) -> bool:
         blks = db.query(models.BusinessWebBlock).filter(
             models.BusinessWebBlock.PageID == pid
@@ -2356,24 +2997,90 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
             _diag(f"per-page content: fetching {len(empty_pages)} pages")
             urls_to_fetch = [u for _, _, u in empty_pages]
             per_page = _fetch_pages_content_parallel(urls_to_fetch)
+            # Playwright fallback: pages where httpx returned no body (often
+            # Elementor/Divi/React shells that paint content client-side) get
+            # re-rendered with a headless browser. Cap the fallback to avoid
+            # burning 20+ browser tabs on sites where httpx worked fine.
+            missing = []
+            for pid, pname, phref in empty_pages:
+                pd = per_page.get(phref) or {}
+                no_body   = not (pd.get("bodies") or [])
+                no_banner = not (pd.get("banner") or {}).get("background_url")
+                if no_body or no_banner:
+                    missing.append(phref)
+            if missing:
+                _diag(f"per-page content: playwright fallback for {len(missing)} pages")
+                pw_results = _fetch_pages_content_playwright(missing[:15])
+                for u, pd in pw_results.items():
+                    if pd.get("bodies") or pd.get("links") or pd.get("headings"):
+                        per_page[u] = pd
             populated = 0
             resource = 0
             minimal = 0
+            blog_index_urls: list[str] = []
             for pid, pname, phref in empty_pages:
                 page_data = per_page.get(phref) or {}
-                p_heads  = page_data.get("headings") or []
-                p_bodies = page_data.get("bodies")   or []
-                p_images = page_data.get("images")   or []
-                p_links  = page_data.get("links")    or []
-                # Find first non-svg image for a hero
-                p_hero = ""
-                for img in p_images:
-                    src = img.get("src") if isinstance(img, dict) else None
-                    if src and not src.endswith(".svg"):
-                        p_hero = src
-                        break
+                p_heads        = page_data.get("headings") or []
+                p_bodies       = page_data.get("bodies")      or []
+                p_bodies_html  = page_data.get("bodies_html") or []
+                p_body_ordered = (page_data.get("body_ordered") or "").strip()
+                p_images       = page_data.get("images")   or []
+                p_links        = page_data.get("links")    or []
+                p_banner       = page_data.get("banner")   or {}
+                p_meta_title   = (page_data.get("meta_title") or "").strip()
+                p_meta_desc    = (page_data.get("meta_description") or "").strip()
+                p_faq_items    = page_data.get("faq_items") or []
+                p_map_embed    = page_data.get("map_embed") or {}
+                p_hours_rows   = page_data.get("hours_rows") or []
+                p_team_members = page_data.get("team_members") or []
+                p_pricing_table= page_data.get("pricing_table") or []
+                p_page_cta     = page_data.get("page_cta") or {}
+                page_type      = _detect_page_type(phref, pname, page_data)
+                # Prefer the source page's banner section background — that's
+                # the proper hero image, not just whatever image happened to
+                # appear first in the body. Fall back to the first <img>.
+                banner_bg     = (p_banner.get("background_url") or "").strip()
+                banner_height = int(p_banner.get("height") or 0)
+                p_hero = banner_bg
+                if not p_hero:
+                    p_hero = _pick_hero_image(p_images)
+                if p_hero:
+                    p_hero = _rehost_remote_image(p_hero)
                 body_text = "\n\n".join(p_bodies[:6]).strip()
-                resource_items = [] if body_text else _build_resource_items(p_links, phref)
+                # Build a rich-HTML body from the per-paragraph fragments,
+                # collapsing consecutive <li>s into a single <ul> so they
+                # render as a list rather than orphan items. Falls back to
+                # the plain-text body when no HTML was captured.
+                body_html_parts: list[str] = []
+                cur_li: list[str] = []
+                def _flush_li():
+                    if cur_li:
+                        body_html_parts.append("<ul>" + "".join(cur_li) + "</ul>")
+                        cur_li.clear()
+                for frag in p_bodies_html[:8]:
+                    if not isinstance(frag, str) or not frag.strip():
+                        continue
+                    if frag.startswith("<li"):
+                        cur_li.append(frag)
+                    else:
+                        _flush_li()
+                        body_html_parts.append(frag)
+                _flush_li()
+                body_html = "".join(body_html_parts).strip()
+                has_body = bool(body_text or p_body_ordered or body_html)
+                resource_items = [] if has_body else _build_resource_items(p_links, phref)
+                # Write per-page SEO meta if scraped and page row is still blank.
+                if p_meta_title or p_meta_desc:
+                    page_row = db.query(models.BusinessWebPage).filter(
+                        models.BusinessWebPage.PageID == pid
+                    ).first()
+                    if page_row:
+                        if p_meta_title and not (page_row.PageTitle or "").strip():
+                            page_row.PageTitle = p_meta_title[:255]
+                        if p_meta_desc and not (page_row.MetaDescription or "").strip():
+                            page_row.MetaDescription = p_meta_desc[:500]
+                        page_row.UpdatedAt = dt_now.utcnow()
+
                 # Wipe any pre-existing stock blocks on this page before we
                 # write new content — _is_stock_only already confirmed
                 # nothing here is user-edited. We wipe even when the fetch
@@ -2388,62 +3095,223 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
                 # Hero block with the page name as headline (and page's first
                 # image when available). Keep overlay=True so the headline is
                 # readable against the image.
+                banner_overlay = (p_banner.get("overlay_color") or "").strip()
+                banner_subtext = (p_banner.get("subtext") or "").strip()
+                hero_payload = {
+                    "headline": (p_banner.get("title") or pname),
+                    "subtext": banner_subtext,
+                    "image_url": p_hero,
+                    "cta_text": "", "cta_link": "",
+                    "overlay": bool(p_hero) or bool(banner_overlay),
+                    "align": "center",
+                }
+                # Preserve the source banner's height (clamped) so interior
+                # pages aren't all forced to the homepage 70vh default.
+                if banner_height:
+                    hero_payload["min_height_px"] = max(220, min(banner_height, 900))
+                if banner_overlay:
+                    hero_payload["overlay_color"] = banner_overlay
                 db.add(models.BusinessWebBlock(
                     PageID=pid, BlockType="hero",
-                    BlockData=json.dumps({
-                        "headline": pname,
-                        "subtext": "",
-                        "image_url": p_hero,
-                        "cta_text": "", "cta_link": "",
-                        "overlay": bool(p_hero), "align": "center",
-                    }),
+                    BlockData=json.dumps(hero_payload),
                     SortOrder=psort,
                     CreatedAt=dt_now.utcnow(), UpdatedAt=dt_now.utcnow(),
                 ))
                 psort += 10
-                # Content block: grab the first 3-6 body paragraphs. Use the
-                # first heading as the section title when available.
-                if body_text:
-                    head_text = ""
-                    if p_heads:
-                        first = p_heads[0]
-                        head_text = first.get("text") if isinstance(first, dict) else str(first)
+                # ── Page-type-aware block dispatch ──────────────────
+                # Each page type gets a tailored set of blocks rather than
+                # the same hero + content for every page.
+                def _add_block(btype: str, bdata: dict) -> None:
+                    nonlocal psort
                     db.add(models.BusinessWebBlock(
-                        PageID=pid, BlockType="content",
-                        BlockData=json.dumps({
-                            "heading": head_text or pname,
-                            "body": body_text[:2000],
-                            "image_url": "", "images": [], "image_position": "none",
-                        }),
+                        PageID=pid, BlockType=btype,
+                        BlockData=json.dumps(bdata),
                         SortOrder=psort,
                         CreatedAt=dt_now.utcnow(), UpdatedAt=dt_now.utcnow(),
                     ))
+                    psort += 10
+
+                if page_type == "contact":
+                    _add_block("contact", {
+                        "heading": "Get In Touch",
+                        "sub_heading": "",
+                        "show_form": True,
+                        "contact_email": "",
+                    })
+                    # Also add map + hours if detected on this page
+                    if p_map_embed.get("embed_url"):
+                        addr = p_map_embed.get("address") or (site_row.Address or "")
+                        _add_block("map_location", {
+                            "heading": "Find Us",
+                            "embed_url": p_map_embed["embed_url"],
+                            "address": addr,
+                            "height": 340,
+                        })
+                    if p_hours_rows:
+                        _add_block("hours_of_operation", {
+                            "heading": "Hours",
+                            "hours": p_hours_rows,
+                        })
                     populated += 1
-                elif len(resource_items) >= 2:
-                    # Page has no paragraph body but has useful link list
-                    # (common for Divi/Elementor resource-index pages). Build
-                    # a Resources block using the existing `links` widget.
-                    db.add(models.BusinessWebBlock(
-                        PageID=pid, BlockType="links",
-                        BlockData=json.dumps({
+
+                elif page_type == "location":
+                    addr = p_map_embed.get("address") or (site_row.Address or "")
+                    _add_block("map_location", {
+                        "heading": "Find Us",
+                        "embed_url": p_map_embed.get("embed_url") or "",
+                        "address": addr,
+                        "height": 400,
+                    })
+                    if p_hours_rows:
+                        _add_block("hours_of_operation", {
+                            "heading": "Hours",
+                            "hours": p_hours_rows,
+                        })
+                    if body_text or p_body_ordered:
+                        body_field = (_rehost_inline_images(p_body_ordered) if p_body_ordered
+                                      else body_text)[:3000]
+                        _add_block("content", {"heading": "", "body": body_field,
+                                               "image_url": "", "images": [], "image_position": "none"})
+                    populated += 1
+
+                elif page_type == "hours":
+                    _add_block("hours_of_operation", {
+                        "heading": "Hours",
+                        "hours": p_hours_rows,
+                    })
+                    if body_text:
+                        _add_block("content", {"heading": "", "body": body_text[:2000],
+                                               "image_url": "", "images": [], "image_position": "none"})
+                    populated += 1
+
+                elif page_type == "faq":
+                    _add_block("faq", {
+                        "heading": pname,
+                        "items": p_faq_items,
+                    })
+                    populated += 1
+
+                elif page_type == "team":
+                    # Rehost each member's photo to GCS
+                    rehosted_members = []
+                    for m in p_team_members:
+                        photo = m.get("photo_url") or ""
+                        if photo:
+                            try:
+                                photo = _rehost_remote_image(photo) or photo
+                            except Exception:
+                                pass
+                        rehosted_members.append({**m, "photo_url": photo})
+                    _add_block("team", {
+                        "heading": pname,
+                        "members": rehosted_members,
+                    })
+                    if body_text:
+                        _add_block("content", {"heading": "", "body": body_text[:2000],
+                                               "image_url": "", "images": [], "image_position": "none"})
+                    populated += 1
+
+                elif page_type == "pricing":
+                    _add_block("pricing", {
+                        "heading": pname,
+                        "intro_body": "",
+                        "tiers": p_pricing_table,
+                    })
+                    if body_text and not p_pricing_table:
+                        _add_block("content", {"heading": pname, "body": body_text[:3000],
+                                               "image_url": "", "images": [], "image_position": "none"})
+                    populated += 1
+
+                elif page_type == "blog":
+                    # Blog index page — add a blog block pointing at our blog widget
+                    _add_block("blog", {"heading": pname, "max_posts": 6})
+                    blog_index_urls.append(phref)
+                    populated += 1
+
+                elif page_type == "gallery":
+                    srcs = [
+                        (img.get("src") if isinstance(img, dict) else None)
+                        for img in p_images
+                        if (img.get("src") if isinstance(img, dict) else None)
+                        and not (img.get("src") if isinstance(img, dict) else "").endswith(".svg")
+                    ]
+                    if srcs:
+                        _add_block("gallery", {
                             "heading": pname,
-                            "columns": 2,
-                            "groups": [{
-                                "heading": "Resources",
-                                "items": resource_items,
-                            }],
-                        }),
-                        SortOrder=psort,
-                        CreatedAt=dt_now.utcnow(), UpdatedAt=dt_now.utcnow(),
-                    ))
-                    resource += 1
-                    _diag(f"per-page resources: {pname!r} <- {phref} ({len(resource_items)} items)")
+                            "images": srcs[:20],
+                            "max_items": min(len(srcs), 20),
+                        })
+                        populated += 1
+                    elif body_text or p_body_ordered:
+                        head_text = (p_heads[0].get("text") if p_heads and isinstance(p_heads[0], dict)
+                                     else (str(p_heads[0]) if p_heads else ""))
+                        body_field = (_rehost_inline_images(p_body_ordered) if p_body_ordered
+                                      else _rehost_inline_images(body_html) if body_html
+                                      else body_text[:2000])[:8000]
+                        _add_block("content", {"heading": head_text or pname, "body": body_field,
+                                               "image_url": "", "images": [], "image_position": "none"})
+                        populated += 1
+                    else:
+                        minimal += 1
+
                 else:
-                    # No usable body content (dead URL or empty page). We've
-                    # still cleaned up the stock blocks and left a page-name
-                    # hero so the page reads as a real section header.
-                    minimal += 1
-                    _diag(f"per-page minimal: {pname!r} <- {phref} (no body)")
+                    # Default: content block with rich body
+                    if body_text or p_body_ordered or body_html:
+                        head_text = (p_heads[0].get("text") if p_heads and isinstance(p_heads[0], dict)
+                                     else (str(p_heads[0]) if p_heads else ""))
+                        if p_body_ordered:
+                            body_field = _rehost_inline_images(p_body_ordered)[:8000]
+                        elif body_html:
+                            body_field = _rehost_inline_images(body_html)[:6000]
+                        else:
+                            body_field = body_text[:2000]
+                        _add_block("content", {
+                            "heading": head_text or pname,
+                            "body": body_field,
+                            "image_url": "", "images": [], "image_position": "none",
+                        })
+                        # Append FAQ / map / hours as bonus blocks when detected
+                        if p_faq_items:
+                            _add_block("faq", {"heading": "FAQ", "items": p_faq_items})
+                        if p_map_embed.get("embed_url"):
+                            _add_block("map_location", {
+                                "heading": "Find Us",
+                                "embed_url": p_map_embed["embed_url"],
+                                "address": p_map_embed.get("address") or "",
+                                "height": 320,
+                            })
+                        if p_hours_rows:
+                            _add_block("hours_of_operation", {"heading": "Hours", "hours": p_hours_rows})
+                        # Append interior CTA when detected (skip if headline matches page name)
+                        if (p_page_cta.get("headline") and
+                                p_page_cta["headline"].lower().strip() != pname.lower().strip()):
+                            _add_block("cta", {
+                                "headline": p_page_cta["headline"],
+                                "subtext": p_page_cta.get("subtext") or "",
+                                "button_text": p_page_cta.get("button_text") or "Learn More",
+                                "button_link": p_page_cta.get("button_link") or "#",
+                                "bg_color": p_page_cta.get("bg_color") or "#1a1a1a",
+                                "text_color": "#ffffff",
+                                "button_bg_color": "",
+                                "button_text_color": "#ffffff",
+                                "align": "center",
+                            })
+                        populated += 1
+                    elif len(resource_items) >= 2 or any(
+                        (it.get("url") or "").lower().endswith(
+                            (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx")
+                        )
+                        for it in resource_items
+                    ):
+                        _add_block("links", {
+                            "heading": pname, "columns": 2,
+                            "groups": [{"heading": "Resources", "items": resource_items}],
+                        })
+                        resource += 1
+                        _diag(f"per-page resources: {pname!r} <- {phref} ({len(resource_items)} items)")
+                    else:
+                        minimal += 1
+                        _diag(f"per-page minimal: {pname!r} <- {phref} (no body)")
             if populated:
                 added.append(f"{populated} page{'s' if populated != 1 else ''} populated")
             if resource:
@@ -2451,6 +3319,65 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
             if minimal:
                 added.append(f"{minimal} page{'s' if minimal != 1 else ''} cleaned")
             _diag(f"per-page content: populated={populated}, resources={resource}, minimal={minimal}, total={len(empty_pages)}")
+
+            # Auto-import blog posts from detected blog index pages.
+            # Only runs when the business has no existing posts (idempotency).
+            if blog_index_urls:
+                try:
+                    existing_post_count = db.execute(
+                        text("SELECT COUNT(*) FROM blog WHERE BusinessID=:bid"),
+                        {"bid": business_id},
+                    ).fetchone()[0]
+                    if existing_post_count == 0:
+                        blog_imported = 0
+                        for bidx_url in blog_index_urls[:2]:  # cap at 2 index pages
+                            # Use already-fetched page data if available
+                            idx_data = per_page.get(bidx_url) or {}
+                            article_urls = _discover_blog_article_urls(idx_data, bidx_url, 6)
+                            if not article_urls:
+                                # Index may be JS-rendered — do a quick extra scrape
+                                try:
+                                    idx_fresh = _run_scrape(bidx_url, deep=True)
+                                    article_urls = _discover_blog_article_urls(idx_fresh, bidx_url, 6)
+                                except Exception:
+                                    pass
+                            for art_url in article_urls:
+                                try:
+                                    art_data = _run_scrape(art_url, deep=True)
+                                    if art_data.get("error"):
+                                        continue
+                                    post = _article_to_blog_post(art_data)
+                                    if not post["title"] or len(post.get("content") or "") < 120:
+                                        continue
+                                    now_ts = dt_now.utcnow()
+                                    db.execute(text("""
+                                        INSERT INTO blog
+                                            (BusinessID, Title, Slug, CoverImage, Content,
+                                             IsPublished, IsFeatured, ShowOnDirectory, ShowOnWebsite,
+                                             PublishedAt, CreatedAt, UpdatedAt)
+                                        VALUES
+                                            (:bid, :title, :slug, :cover, :content,
+                                             0, 0, 1, 1, NULL, :now, :now)
+                                    """), {
+                                        "bid":     business_id,
+                                        "title":   post["title"][:500],
+                                        "slug":    _slugify(post["title"])[:500],
+                                        "cover":   post["cover"][:500] if post.get("cover") else None,
+                                        "content": post["content"],
+                                        "now":     now_ts,
+                                    })
+                                    blog_imported += 1
+                                    if blog_imported >= 5:
+                                        break
+                                except Exception as _be:
+                                    _diag(f"auto blog import skipped {art_url}: {_be}")
+                            if blog_imported >= 5:
+                                break
+                        if blog_imported:
+                            added.append(f"{blog_imported} draft blog post{'s' if blog_imported != 1 else ''}")
+                            _diag(f"auto blog import: {blog_imported} posts")
+                except Exception as _bex:
+                    _diag(f"auto blog import error: {_bex}")
 
     db.commit()
     if not added:

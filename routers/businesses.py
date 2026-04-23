@@ -79,8 +79,21 @@ def build_logo_url(logo):
 
 
 @router.get("/countries")
-def get_countries(db: Session = Depends(get_db)):
+def get_countries(business_type_id: str = None, db: Session = Depends(get_db)):
     try:
+        if business_type_id:
+            rows = (
+                db.query(models.Business.AddressCountry)
+                .filter(
+                    models.Business.BusinessTypeID == int(business_type_id),
+                    models.Business.AddressCountry.isnot(None),
+                    models.Business.AddressCountry != '',
+                )
+                .distinct()
+                .order_by(models.Business.AddressCountry)
+                .all()
+            )
+            return [r[0] for r in rows if r[0]]
         countries = db.query(models.Country.name).order_by(models.Country.name).all()
         return [c[0] for c in countries if c[0]]
     except Exception as e:
@@ -162,11 +175,13 @@ def create_account(payload: dict, db: Session = Depends(get_db)):
         db.add(business)
         db.flush()
 
-        # 4. Create BusinessAccess record linking user to business
+        # 4. Create BusinessAccess record linking user to business.
+        # Creator gets AccessLevelID=3 (admin) so they can manage their own team
+        # via /auth/business-members, which requires level >= 3.
         access = models.BusinessAccess(
             BusinessID    = business.BusinessID,
             PeopleID      = int(people_id),
-            AccessLevelID = 1,
+            AccessLevelID = 3,
             Active        = 1,
             CreatedAt     = datetime.datetime.utcnow(),
             Role          = "Owner",
