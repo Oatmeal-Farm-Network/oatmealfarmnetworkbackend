@@ -197,6 +197,7 @@ class SiteCreate(BaseModel):
     header_banner_url: Optional[str] = None
     header_height: Optional[int] = 120
     show_site_name: Optional[bool] = True
+    header_layout: Optional[str] = 'banner_top'
     # Nav bar
     nav_bg_image_url: Optional[str] = None
     # Footer
@@ -304,6 +305,7 @@ class SiteUpdate(SiteCreate):
     footer_bottom_radius: Optional[int] = None
     copyright_bar_bg_color: Optional[str] = None
     show_site_name: Optional[bool] = None
+    header_layout: Optional[str] = None
     is_published: Optional[bool] = None
 
 class PageCreate(BaseModel):
@@ -467,6 +469,7 @@ def _ser_site(s: models.BusinessWebsite) -> dict:
         "header_banner_bg_color": s.HeaderBannerBgColor or '',
         "header_height":         s.HeaderHeight or 120,
         "show_site_name":        bool(s.ShowSiteName) if s.ShowSiteName is not None else True,
+        "header_layout":         s.HeaderLayout or 'banner_top',
         # Nav bar
         "nav_bg_image_url":   s.NavBgImageURL or '',
         # Footer
@@ -695,6 +698,7 @@ def update_site(website_id: int, body: SiteUpdate, db: Session = Depends(get_db)
     if body.header_banner_bg_color is not None: site.HeaderBannerBgColor = body.header_banner_bg_color
     if body.header_height is not None: site.HeaderHeight = body.header_height
     if body.show_site_name is not None: site.ShowSiteName = body.show_site_name
+    if body.header_layout is not None: site.HeaderLayout = body.header_layout
     # Nav bar
     if body.nav_bg_image_url is not None: site.NavBgImageURL = body.nav_bg_image_url
     # Footer

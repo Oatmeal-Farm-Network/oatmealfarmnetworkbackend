@@ -427,6 +427,247 @@ def _detect_layout_patterns(soup: "BeautifulSoup") -> Dict[str, Any]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Navigation-tree extraction (with dropdown/submenu children)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Sentinel for items whose href exists but is a non-navigable placeholder
+# ("#", "javascript:void(0)"). Public renderer treats these as "heading only".
+_NAV_PLACEHOLDER_HREFS = {"#", "/#", "javascript:void(0)", "javascript:;"}
+
+
+def _nav_item_from_li(li, base_url: str, depth: int = 0) -> Optional[Dict[str, Any]]:
+    """Turn an <li> into a {text, href, children} node. Handles the common
+    pattern of <li><a>Label</a><ul><li>...</li></ul></li> used by most CMS
+    themes (WordPress, Squarespace, Wix, hand-rolled Bootstrap, etc.).
+    Depth cap of 2 since dropdown-of-dropdown is rare and usually noise."""
+    if depth > 2:
+        return None
+    # First <a> inside the li that isn't itself nested in a sub-<ul>
+    anchor = None
+    for a in li.find_all("a", recursive=False):
+        anchor = a
+        break
+    if anchor is None:
+        for a in li.find_all("a"):
+            if a.find_parent("ul") is li.find("ul"):
+                continue
+            anchor = a
+            break
+    text = ""
+    href = ""
+    if anchor is not None:
+        text = _clean(anchor.get_text())
+        href = (anchor.get("href") or "").strip()
+    if not text:
+        # Sometimes the label is a <span> sibling (e.g. "heading-only" menu parents)
+        span = li.find(["span", "button"], recursive=False)
+        if span:
+            text = _clean(span.get_text())
+    if not text or len(text) > 80:
+        return None
+
+    children: List[Dict[str, Any]] = []
+    for sub_ul in li.find_all("ul", recursive=False):
+        for sub_li in sub_ul.find_all("li", recursive=False):
+            child = _nav_item_from_li(sub_li, base_url, depth + 1)
+            if child:
+                children.append(child)
+
+    resolved = _resolve(base_url, href) if href else None
+    is_placeholder = href in _NAV_PLACEHOLDER_HREFS
+    return {
+        "text": text,
+        "href": "" if is_placeholder else (resolved or ""),
+        "children": children[:10],
+    }
+
+
+def _extract_nav_tree(soup: "BeautifulSoup", base_url: str) -> List[Dict[str, Any]]:
+    """Find the primary site nav and return a nested tree of items.
+    Falls back to the flat-link list if we can't find a usable <ul> root."""
+    # Try nav containers in priority order; pick the one with the most
+    # top-level <li> direct children (strongest signal of a real menu).
+    candidates: List[Any] = []
+    for sel in ("header nav", "nav[role='navigation']", "nav.main-navigation",
+                "nav.primary-menu", "nav.menu", "[role='navigation']",
+                "header [class*='menu']", "header [class*='nav']", "nav"):
+        try:
+            for node in soup.select(sel):
+                candidates.append(node)
+        except Exception:
+            continue
+
+    def top_level_count(root) -> int:
+        uls = root.find_all("ul", recursive=True, limit=3)
+        return max((len(ul.find_all("li", recursive=False)) for ul in uls), default=0)
+
+    candidates = [c for c in candidates if top_level_count(c) >= 2]
+    candidates.sort(key=top_level_count, reverse=True)
+
+    for root in candidates[:5]:
+        uls = root.find_all("ul", recursive=True)
+        # Use the first <ul> that has at least 2 direct <li> children
+        target = next((u for u in uls if len(u.find_all("li", recursive=False)) >= 2), None)
+        if not target:
+            continue
+        items: List[Dict[str, Any]] = []
+        for li in target.find_all("li", recursive=False):
+            node = _nav_item_from_li(li, base_url)
+            if node:
+                items.append(node)
+        if len(items) >= 2:
+            return items[:12]
+
+    # Fallback: flat anchor list inside the first nav-like container
+    for sel in ("header nav a", "nav a[href]", "[role='navigation'] a"):
+        try:
+            anchors = soup.select(sel)
+        except Exception:
+            continue
+        flat: List[Dict[str, Any]] = []
+        seen: set = set()
+        for a in anchors[:20]:
+            t = _clean(a.get_text())
+            if not t or len(t) > 80 or t in seen:
+                continue
+            href = (a.get("href") or "").strip()
+            seen.add(t)
+            flat.append({
+                "text": t,
+                "href": "" if href in _NAV_PLACEHOLDER_HREFS else (_resolve(base_url, href) or ""),
+                "children": [],
+            })
+        if flat:
+            return flat[:12]
+    return []
+
+
+def _extract_logo_url(soup: "BeautifulSoup", base_url: str) -> Optional[str]:
+    """Find the site logo. Prefers images whose filename/alt/class mention 'logo',
+    scoped to <header>/.site-header first, then falling back to any <img> match.
+    Returns absolute URL or None."""
+    def _score_img(img) -> int:
+        score = 0
+        src = (img.get("src") or img.get("data-src") or "").lower()
+        alt = (img.get("alt") or "").lower()
+        cls = " ".join(img.get("class") or []).lower()
+        parent_cls = " ".join((img.parent.get("class") if img.parent and img.parent.get("class") else []) or []).lower()
+        for key, weight in (("logo", 10), ("brand", 5), ("site-title", 5)):
+            if key in src: score += weight
+            if key in alt: score += weight
+            if key in cls: score += weight
+            if key in parent_cls: score += weight
+        return score
+
+    # Search inside header/branding containers first.
+    candidates: List = []
+    for scope_sel in ("header", ".site-header", ".site-branding", "#site-header",
+                      ".header", "#header", ".logo", "#logo", ".site-logo", ".custom-logo-link"):
+        try:
+            for el in soup.select(scope_sel):
+                candidates.extend(el.find_all("img"))
+        except Exception:
+            pass
+    # If nothing found in header scope, widen to the whole page — but still score.
+    if not candidates:
+        candidates = list(soup.find_all("img"))
+
+    best = None
+    best_score = 0
+    for img in candidates:
+        src = img.get("src") or img.get("data-src") or ""
+        if not src:
+            continue
+        s = _score_img(img)
+        if s > best_score:
+            best_score = s
+            best = src
+    if best and best_score > 0:
+        return _resolve(base_url, best)
+    return None
+
+
+def _extract_slideshow_images(soup: "BeautifulSoup", base_url: str) -> List[str]:
+    """Find images inside common slideshow/carousel containers (MetaSlider,
+    Smart Slider, Swiper, Slick, WP block slideshow, hero sliders, etc).
+
+    Returns a deduped list of absolute URLs, in document order. Skips SVGs
+    (those are usually nav icons, not slide content). Returns [] if nothing
+    looks like a slideshow — single hero images go through
+    _extract_hero_image_url instead.
+    """
+    selectors = [
+        # MetaSlider (very common WP plugin)
+        ".metaslider img", ".ml-slide img", ".ml-slider img",
+        # Smart Slider 3
+        ".n2-ss-slider img", ".n2-ss-slide img",
+        # Swiper
+        ".swiper-slide img", ".swiper-container img",
+        # Slick
+        ".slick-slide img", ".slick-slider img",
+        # Revolution slider
+        ".rev_slider img", ".rev-slider img", "rs-slide img",
+        # Generic
+        "[class*='slideshow'] img", "[class*='slider'] img", "[class*='carousel'] img",
+        ".wp-block-cover img",
+    ]
+    seen: set[str] = set()
+    urls: List[str] = []
+    for sel in selectors:
+        try:
+            nodes = soup.select(sel)
+        except Exception:
+            continue
+        for img in nodes:
+            src = (img.get("src") or img.get("data-src") or
+                   img.get("data-lazy-src") or img.get("data-original") or "")
+            # MetaSlider often uses srcset — grab the widest candidate
+            if not src:
+                srcset = img.get("srcset") or img.get("data-srcset") or ""
+                if srcset:
+                    cands = [c.strip().split(" ")[0] for c in srcset.split(",") if c.strip()]
+                    src = cands[-1] if cands else ""
+            if not src or src.lower().endswith(".svg"):
+                continue
+            absolute = _resolve(base_url, src)
+            # Filter query-string noise so the same image at different sizes
+            # isn't counted twice
+            key = absolute.split("?")[0]
+            if key in seen:
+                continue
+            seen.add(key)
+            urls.append(absolute)
+        # Stop at the first selector that found multiple images — we've
+        # located the actual slideshow container
+        if len(urls) >= 2:
+            break
+    # Require at least 2 distinct slide images; otherwise it's just a hero.
+    return urls if len(urls) >= 2 else []
+
+
+def _extract_hero_image_url(soup: "BeautifulSoup", base_url: str) -> Optional[str]:
+    """Return an absolute URL for the largest above-the-fold banner image.
+    Prefers explicit hero containers, falls back to the first sizable <img>."""
+    for sel in ("[class*='hero'] img", "[class*='banner'] img", "[class*='slider'] img",
+                "[class*='carousel'] img", "header + section img", "main img"):
+        try:
+            img = soup.select_one(sel)
+        except Exception:
+            continue
+        if not img:
+            continue
+        src = img.get("src") or img.get("data-src") or ""
+        if src and not src.lower().endswith(".svg"):
+            return _resolve(base_url, src)
+    # Last resort: first non-svg image on the page
+    for img in soup.find_all("img"):
+        src = img.get("src") or img.get("data-src") or ""
+        if src and not src.lower().endswith(".svg"):
+            return _resolve(base_url, src)
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Core content extraction (text/images/links)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -572,6 +813,137 @@ def _extract_content(soup: "BeautifulSoup", base_url: str) -> Dict[str, Any]:
         "bodyText":        body_text,
         "images":          images,
         "links":           links[:500],
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Footer extraction — pulls contact info, social links, and copyright from the
+# source site's <footer> element and returns a structured payload that the
+# importer can render into the site's footer_html field.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SOCIAL_DOMAINS = {
+    "facebook.com":   "Facebook",
+    "instagram.com":  "Instagram",
+    "twitter.com":    "Twitter",
+    "x.com":          "X",
+    "youtube.com":    "YouTube",
+    "linkedin.com":   "LinkedIn",
+    "tiktok.com":     "TikTok",
+    "pinterest.com":  "Pinterest",
+    "vimeo.com":      "Vimeo",
+    "threads.net":    "Threads",
+}
+
+_WEB_BUILDER_CREDIT = re.compile(
+    r"(websites? by|powered by|site by|built by|designed by|created by)\s*:?",
+    re.IGNORECASE,
+)
+
+
+def _extract_footer(raw_html: str, base_url: str) -> Optional[Dict[str, Any]]:
+    """Find the source site's <footer> and return structured pieces.
+    Returns None if no footer is present."""
+    if not raw_html:
+        return None
+    soup = BeautifulSoup(raw_html, "html.parser")
+    footer = soup.find("footer")
+    if footer is None:
+        # Some themes don't use a <footer> tag — look for the common classes.
+        for sel in ("[class*='site-footer']", "[id*='footer']", "[class*='footer-widget']"):
+            try:
+                el = soup.select_one(sel)
+            except Exception:
+                el = None
+            if el:
+                footer = el
+                break
+    if footer is None:
+        return None
+
+    # Strip noise we never want to carry over
+    for el in footer.select("script, style, noscript, iframe, form, [class*='widget-title']"):
+        el.decompose()
+
+    # Resolve relative URLs so the footer works when rendered on our domain
+    for a in footer.find_all("a", href=True):
+        a["href"] = _resolve(base_url, a.get("href"))
+
+    # Collect + classify links
+    emails: List[str] = []
+    phones: List[str] = []
+    social: List[Dict[str, str]] = []
+    other_links: List[Dict[str, str]] = []
+    seen_href: set = set()
+    for a in footer.find_all("a", href=True):
+        href = (a.get("href") or "").strip()
+        text = _clean(a.get_text())
+        if not href:
+            continue
+        low_href = href.lower()
+        if low_href.startswith("mailto:"):
+            em = href.split(":", 1)[1].split("?", 1)[0].strip().lstrip("%20").strip()
+            if em and em not in emails:
+                emails.append(em)
+            continue
+        if low_href.startswith("tel:"):
+            ph = href.split(":", 1)[1].strip()
+            if ph and ph not in phones:
+                phones.append(ph)
+            continue
+        if low_href.startswith("javascript:") or low_href == "#":
+            continue
+        # Social?
+        try:
+            from urllib.parse import urlparse
+            host = (urlparse(href).netloc or "").lower().lstrip("www.")
+        except Exception:
+            host = ""
+        social_label = None
+        for dom, label in _SOCIAL_DOMAINS.items():
+            if host == dom or host.endswith("." + dom):
+                social_label = label
+                break
+        if social_label:
+            if href not in seen_href:
+                seen_href.add(href)
+                social.append({"label": social_label, "href": href})
+            continue
+        # Otherwise regular footer link (quick-nav, legal, etc.)
+        if text and href not in seen_href and not _WEB_BUILDER_CREDIT.search(text):
+            seen_href.add(href)
+            other_links.append({"text": text[:80], "href": href})
+
+    # Address: look for a paragraph/li that contains a US state + ZIP pattern.
+    # Fallback: any short line that contains "PO Box" or a street-style token.
+    address = ""
+    for el in footer.find_all(["p", "li", "div", "address"]):
+        t = _clean(el.get_text(" "))
+        if not t or len(t) > 200:
+            continue
+        if re.search(r"\b(PO Box|P\.O\. Box)\b", t) or \
+           re.search(r"\b[A-Z]{2}\s*\d{5}\b", t):
+            address = t
+            break
+
+    # Copyright
+    copyright_line = ""
+    full_text = _clean(footer.get_text(" "))
+    m = re.search(r"(?:©|\(c\)|copyright)[^|]{0,180}", full_text, re.IGNORECASE)
+    if m:
+        copyright_line = m.group(0).strip(" -|").strip()
+        # Trim web-builder credit tail ("| Websites By: prime42")
+        copyright_line = re.split(r"\s*\|\s*", copyright_line)[0].strip()
+
+    return {
+        "emails":      emails,
+        "phones":      phones,
+        "social":      social,
+        "links":       other_links,
+        "address":     address,
+        "copyright":   copyright_line,
+        "text":        full_text[:2000],
     }
 
 
@@ -956,21 +1328,77 @@ async def _capture_page_styles(url: str, timeout_ms: int = 25000) -> Dict[str, A
                 return {"available": True, "botBlocked": True}
 
             styles = await page.evaluate("""() => {
-                function rgb2hex(rgb) {
+                function rgb2hex(rgb, allowNearWhiteBlack) {
                   if (!rgb || rgb === 'rgba(0, 0, 0, 0)' || rgb === 'transparent') return null;
-                  const m = rgb.match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/);
+                  const m = rgb.match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)(?:,\\s*([0-9.]+))?/);
                   if (!m) return null;
                   const r = +m[1], g = +m[2], b = +m[3];
-                  if (r>240&&g>240&&b>240) return null;
-                  if (r<15&&g<15&&b<15) return null;
+                  const a = m[4] === undefined ? 1 : parseFloat(m[4]);
+                  if (a < 0.15) return null;
+                  if (!allowNearWhiteBlack) {
+                    if (r>240&&g>240&&b>240) return null;
+                    if (r<15&&g<15&&b<15) return null;
+                  }
                   return '#' + [r,g,b].map(x => x.toString(16).padStart(2,'0')).join('');
                 }
-                function bg(sels){for (const s of sels){try{const el=document.querySelector(s);if(!el) continue;const h=rgb2hex(getComputedStyle(el).backgroundColor);if(h) return h;}catch{}}return null;}
-                function col(sels){for (const s of sels){try{const el=document.querySelector(s);if(!el) continue;const h=rgb2hex(getComputedStyle(el).color);if(h) return h;}catch{}}return null;}
+                // Walk an element + its descendants to find the first non-transparent bg.
+                function firstSolidBg(root){
+                  if (!root) return null;
+                  const stack = [root];
+                  let guard = 0;
+                  while (stack.length && guard < 400) {
+                    guard++;
+                    const el = stack.shift();
+                    const cs = getComputedStyle(el);
+                    const h = rgb2hex(cs.backgroundColor, false);
+                    if (h) return h;
+                    // Also consider background-image gradients → pluck first color stop
+                    const bi = cs.backgroundImage || '';
+                    const gm = bi.match(/rgba?\\([^)]+\\)/);
+                    if (gm) { const gh = rgb2hex(gm[0], false); if (gh) return gh; }
+                    for (const c of el.children) stack.push(c);
+                  }
+                  return null;
+                }
+                function bg(sels, descend){
+                  for (const s of sels){
+                    try{
+                      const el=document.querySelector(s);
+                      if(!el) continue;
+                      const self = rgb2hex(getComputedStyle(el).backgroundColor, false);
+                      if (self) return self;
+                      if (descend) {
+                        const nested = firstSolidBg(el);
+                        if (nested) return nested;
+                      }
+                    }catch{}
+                  }
+                  return null;
+                }
+                function col(sels){for (const s of sels){try{const el=document.querySelector(s);if(!el) continue;const h=rgb2hex(getComputedStyle(el).color, true);if(h) return h;}catch{}}return null;}
+                // Fallback: scan all elements in the top 400px, pick the widest
+                // element whose computed bg is solid and whose area is largest.
+                function topBannerBg(){
+                  const candidates = [];
+                  document.querySelectorAll('*').forEach(el=>{
+                    try{
+                      const r = el.getBoundingClientRect();
+                      if (r.top > 400 || r.bottom < 0) return;
+                      if (r.width < 400 || r.height < 20) return;
+                      const cs = getComputedStyle(el);
+                      const h = rgb2hex(cs.backgroundColor, false);
+                      if (!h) return;
+                      candidates.push({h, area: r.width * Math.min(r.height, 200), top: r.top});
+                    }catch{}
+                  });
+                  if (!candidates.length) return null;
+                  candidates.sort((a,b)=>b.area-a.area);
+                  return candidates[0].h;
+                }
                 return {
-                  navBgColor:   bg(['nav','header','#header','#nav','.navbar','.nav','.site-header','.top-nav','[role=\"navigation\"]']),
-                  pageBgColor:  bg(['body','#wrapper','#page','main','.site-body','#container']),
-                  accentColor:  bg(['a.button','button[type=\"submit\"]','.btn','.cta','input[type=\"submit\"]','.button']),
+                  navBgColor:   bg(['nav','header','#header','#nav','.navbar','.nav','.site-header','.top-nav','[role=\"navigation\"]'], true) || topBannerBg(),
+                  pageBgColor:  bg(['html','body','#wrapper','#page','.site-body','#container'], false),
+                  accentColor:  bg(['a.button','button[type=\"submit\"]','.btn','.cta','input[type=\"submit\"]','.button'], true),
                   navTextColor: col(['nav a','header a','.navbar a','.nav a','#menu a'])
                 };
             }""")
@@ -1084,9 +1512,46 @@ async def scrape(url: str, *, use_playwright: bool = False,
     platform = await detect_platform(html, url=url) if learn else {"platform_key": "_generic"}
     platform_key = platform.get("platform_key") or "_generic"
 
+    # ── Fetch external stylesheets so design-token analysis sees CSS that WP/
+    # theme-based sites keep in separate files. Inject as inline <style> blocks
+    # before token extraction. Capped to keep scrapes fast.
+    try:
+        stylesheet_hrefs: List[str] = []
+        for link in soup.find_all("link", rel=True):
+            rel = " ".join(link.get("rel") or []).lower()
+            if "stylesheet" not in rel:
+                continue
+            href = link.get("href") or ""
+            if not href:
+                continue
+            stylesheet_hrefs.append(_resolve(url, href))
+            if len(stylesheet_hrefs) >= 8:
+                break
+        if stylesheet_hrefs:
+            async with httpx.AsyncClient(timeout=5.0, follow_redirects=True,
+                                         headers={"User-Agent": UA}) as css_client:
+                async def _fetch_one(h):
+                    try:
+                        r = await css_client.get(h)
+                        return r.text if r.status_code < 400 else ""
+                    except Exception:
+                        return ""
+                css_texts = await asyncio.gather(*[_fetch_one(h) for h in stylesheet_hrefs])
+            merged_css = "\n".join(t for t in css_texts if t)
+            if merged_css:
+                synthetic = soup.new_tag("style")
+                synthetic.string = merged_css
+                (soup.head or soup).append(synthetic)
+    except Exception as _css_ex:
+        print(f"[lavendir_scraper] external css fetch skipped: {_css_ex}")
+
     # ── Extract design DNA BEFORE we strip <style> tags ──
     design_tokens  = _extract_design_tokens(soup)
     layout_patterns = _detect_layout_patterns(soup)
+    nav_tree       = _extract_nav_tree(soup, url)
+    slideshow_urls = _extract_slideshow_images(soup, url)
+    hero_image_url = _extract_hero_image_url(soup, url)
+    logo_url       = _extract_logo_url(soup, url)
 
     # ── Platform-aware field probing (learning flywheel) ──
     probed: Dict[str, Any] = {}
@@ -1100,6 +1565,8 @@ async def scrape(url: str, *, use_playwright: bool = False,
     # Re-parse so the structural tags are back for content extraction paths
     soup_for_content = BeautifulSoup(html, "html.parser")
     content = _extract_content(soup_for_content, url)
+    # Extract the source <footer> from raw HTML (before any decomposition).
+    footer_data = _extract_footer(html, url)
 
     # ── Optional Playwright layer ──
     capture: Dict[str, Any] = {"available": False}
@@ -1117,6 +1584,11 @@ async def scrape(url: str, *, use_playwright: bool = False,
         "platform":        platform,
         "designTokens":    design_tokens,
         "layoutPatterns":  layout_patterns,
+        "navTree":         nav_tree,
+        "heroImageUrl":    hero_image_url or "",
+        "slideshowImages": slideshow_urls,
+        "logoUrl":         logo_url or "",
+        "footer":          footer_data or {},
         "probed_fields":   probed,
         "capture":         capture,
         "fetch_method":    fetch_method,

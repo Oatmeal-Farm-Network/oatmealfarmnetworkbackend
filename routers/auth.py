@@ -282,8 +282,31 @@ def GetMyBusinesses(PeopleID: int, Db: Session = Depends(get_db)):
         )
         .all()
     )
-    return [
-        {
+
+    # Prefer a favorite scoped to (PeopleID, BusinessID); fall back to the
+    # PeopleID-level favorite (BusinessID IS NULL) so older rows still surface.
+    fav_rows = Db.execute(
+        text("""
+            SELECT am.BusinessID, am.AssociationID, a.AssociationName
+            FROM associationmembers am
+            LEFT JOIN associations a ON a.AssociationID = am.AssociationID
+            WHERE am.PeopleID = :pid AND am.Favorite = 1
+        """),
+        {"pid": PeopleID},
+    ).mappings().all()
+
+    fav_by_biz = {}
+    fav_global = None
+    for fr in fav_rows:
+        if fr["BusinessID"] is not None:
+            fav_by_biz[fr["BusinessID"]] = (fr["AssociationID"], fr["AssociationName"])
+        elif fav_global is None:
+            fav_global = (fr["AssociationID"], fr["AssociationName"])
+
+    result = []
+    for B, A, BT in rows:
+        fav = fav_by_biz.get(B.BusinessID) or fav_global
+        result.append({
             "BusinessID": B.BusinessID,
             "BusinessName": B.BusinessName,
             "BusinessTypeID": B.BusinessTypeID,
@@ -292,9 +315,10 @@ def GetMyBusinesses(PeopleID: int, Db: Session = Depends(get_db)):
             "AddressState":   A.AddressState   if A else None,
             "AddressZip":     A.AddressZip     if A else None,
             "AddressCountry": A.AddressCountry if A else None,
-        }
-        for B, A, BT in rows
-    ]
+            "FavoriteAssociationID":   fav[0] if fav else None,
+            "FavoriteAssociationName": fav[1] if fav else None,
+        })
+    return result
 
 
 # -------------------------

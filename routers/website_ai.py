@@ -15,6 +15,22 @@ router = APIRouter(prefix="/api/lavendir", tags=["lavendir-ai"])
 
 AGENT_NAME = "Lavendir"
 
+# ── Diagnostic logger ────────────────────────────────────────────
+# Writes to a fixed file regardless of where uvicorn's stdout goes.
+# Used to trace import_from_website / scrape failures without relying
+# on the terminal session that launched the backend being visible.
+_DIAG_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_lavendir_diag.log")
+
+def _diag(msg: str) -> None:
+    try:
+        stamp = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        line = f"{stamp} [Lavendir] {msg}\n"
+        with open(_DIAG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(line)
+        print(line.rstrip())  # also emit to stdout if it's captured
+    except Exception:
+        pass
+
 # ── GCP / Firestore config ────────────────────────────────────────
 GCP_PROJECT   = "animated-flare-421518"
 GCP_CREDS     = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
@@ -702,13 +718,13 @@ TOOLS = [
     },
     {
         "name": "import_from_website",
-        "description": "Scrape another website and import its hero headline, about copy, design colors, and gallery images onto one of the user's pages. Use when the user says things like 'pull in content from my old site' or 'import from this URL'. Requires user confirmation before writing.",
+        "description": "Scrape another website and import its hero headline, hero image, about copy, design colors, gallery images, AND top-bar menu structure (including dropdown submenus) onto the user's site. Use when the user says things like 'pull in content from my old site', 'import from this URL', 'copy the menu from this site', or 'scrape and set up the top bar menu and header image'. Requires user confirmation before writing.",
         "parameters": {
             "type": "object",
             "properties": {
                 "url":       {"type": "string", "description": "Source URL to import from."},
                 "page_name": {"type": "string", "description": "Which page on the user's site to import into. Defaults to the homepage."},
-                "include":   {"type": "string", "description": "Comma-separated subset of 'hero,about,gallery,design'. Default 'hero,about,design'."},
+                "include":   {"type": "string", "description": "Comma-separated subset of 'hero,about,gallery,design,nav'. 'nav' creates pages with parent/child hierarchy from the source site's menu. Default 'hero,about,design,nav'."},
             },
             "required": ["url"]
         }
@@ -1601,6 +1617,134 @@ def _run_scrape(url: str, *, deep: bool = False) -> dict:
         return {"error": f"Scrape failed: {e}"}
 
 
+def _build_footer_html(footer: dict) -> str:
+    """Compose a clean HTML block from structured footer data returned by the
+    scraper. Output is meant for BusinessWebsite.FooterHTML, which is rendered
+    via dangerouslySetInnerHTML inside the site's footer band."""
+    from html import escape
+    if not footer:
+        return ""
+    emails = footer.get("emails") or []
+    phones = footer.get("phones") or []
+    social = footer.get("social") or []
+    address = footer.get("address") or ""
+    copyright_line = footer.get("copyright") or ""
+
+    cols: list[str] = []
+
+    # Contact column — only when we found something contactable
+    contact_bits: list[str] = []
+    if address:
+        contact_bits.append(f"<p style='margin:0 0 0.4rem 0;'>{escape(address)}</p>")
+    for p in phones:
+        digits = "".join(ch for ch in p if ch.isdigit() or ch == "+")
+        href = f"tel:{digits}" if digits else "#"
+        contact_bits.append(
+            f"<p style='margin:0 0 0.25rem 0;'><a href='{escape(href)}' "
+            f"style='color:inherit;'>{escape(p)}</a></p>"
+        )
+    for e in emails:
+        contact_bits.append(
+            f"<p style='margin:0 0 0.25rem 0;'><a href='mailto:{escape(e)}' "
+            f"style='color:inherit;'>{escape(e)}</a></p>"
+        )
+    if contact_bits:
+        cols.append(
+            "<div>"
+            "<h3 style='font-size:0.95rem;font-weight:700;margin:0 0 0.6rem 0;"
+            "text-transform:uppercase;letter-spacing:0.05em;'>Contact</h3>"
+            + "".join(contact_bits) + "</div>"
+        )
+
+    # Social column
+    if social:
+        links_html = "".join(
+            f"<a href='{escape(s.get('href',''))}' target='_blank' rel='noopener' "
+            f"style='color:inherit;margin-right:0.9rem;text-decoration:underline;'>"
+            f"{escape(s.get('label','Link'))}</a>"
+            for s in social
+        )
+        cols.append(
+            "<div>"
+            "<h3 style='font-size:0.95rem;font-weight:700;margin:0 0 0.6rem 0;"
+            "text-transform:uppercase;letter-spacing:0.05em;'>Follow Us</h3>"
+            f"<div>{links_html}</div>"
+            "</div>"
+        )
+
+    if not cols:
+        return ""
+
+    grid = (
+        "<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));"
+        "gap:2rem;padding:2rem 1.5rem 1rem;'>" + "".join(cols) + "</div>"
+    )
+    credit = ""
+    if copyright_line:
+        credit = (
+            "<div style='text-align:center;padding:0.75rem 1.5rem 1rem;"
+            "font-size:0.8rem;opacity:0.85;'>"
+            f"{escape(copyright_line)}</div>"
+        )
+    return grid + credit
+
+
+def _fetch_pages_content_parallel(urls: list[str], *, timeout: float = 8.0) -> dict:
+    """Lightweight per-page content fetch. httpx only (no Playwright) so the
+    whole pass completes in a few seconds even for 20-30 nav pages.
+
+    Returns {url: {"headings": [...], "bodies": [...], "images": [...]}} for
+    every URL that fetched successfully. Failed URLs are simply omitted.
+    """
+    if not urls:
+        return {}
+    try:
+        import httpx
+        from scrapers.lavendir_scraper import (
+            _extract_content, UA, BeautifulSoup,
+        )
+    except Exception as e:
+        _diag(f"per-page fetch unavailable: {e}")
+        return {}
+
+    async def _run():
+        out: dict = {}
+        async def _one(client, u):
+            try:
+                r = await client.get(u)
+                if r.status_code >= 400 or not r.text:
+                    return
+                soup = BeautifulSoup(r.text, "html.parser")
+                content = _extract_content(soup, u)
+                out[u] = {
+                    "headings": content.get("headings") or [],
+                    "bodies":   content.get("bodyText") or [],
+                    "images":   content.get("images") or [],
+                    "links":    content.get("links")   or [],
+                }
+            except Exception as _e:
+                return
+        async with httpx.AsyncClient(
+            timeout=timeout, follow_redirects=True,
+            headers={"User-Agent": UA},
+            limits=httpx.Limits(max_connections=6, max_keepalive_connections=4),
+        ) as client:
+            await asyncio.gather(*[_one(client, u) for u in urls])
+        return out
+
+    try:
+        return asyncio.run(_run())
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(_run())
+        finally:
+            loop.close()
+    except Exception as e:
+        _diag(f"per-page fetch error: {e}")
+        return {}
+
+
 def _summarize_scrape(data: dict, *, competitor: bool = False) -> str:
     if not data or data.get("error"):
         return f"I couldn't scrape that site — {data.get('error', 'unknown error')}"
@@ -1641,21 +1785,156 @@ def _summarize_scrape(data: dict, *, competitor: bool = False) -> str:
     return "\n".join(lines)
 
 
+def _create_pages_from_nav_tree(nav_tree: list, website_id: int, business_id: int, db: Session):
+    """Create BusinessWebPage rows from a scraped [{text, href, children}] tree.
+
+    Top-level items with children become IsNavHeading=1 parents (no content,
+    just labels for dropdowns). Children become regular pages with ParentPageID
+    pointing at the parent. Existing pages with the same slug are reused, not
+    duplicated, so re-running the import is idempotent.
+
+    Returns (created_count, page_sources) where page_sources is a list of
+    (page_id, page_name, source_href) tuples — only for non-heading pages
+    that had a scraped href. Used by the caller to do a per-page content
+    import afterwards.
+    """
+    import models
+    from datetime import datetime as dt_now
+
+    if not nav_tree:
+        return 0
+
+    def _slug(text: str) -> str:
+        s = re.sub(r'[^a-z0-9-]+', '-', (text or '').lower()).strip('-')
+        return s or "page"
+
+    # Canonical form treats "About" ≡ "About Us", "Contact" ≡ "Contact Us",
+    # "Home Page" ≡ "Home" so the scraped nav merges with setup-wizard defaults
+    # instead of duplicating them side-by-side.
+    def _canonical(name: str) -> str:
+        s = (name or "").strip().lower()
+        for suffix in (" us", " page"):
+            if s.endswith(suffix):
+                s = s[: -len(suffix)].rstrip()
+        return s
+
+    last = db.query(models.BusinessWebPage).filter(
+        models.BusinessWebPage.WebsiteID == website_id
+    ).order_by(models.BusinessWebPage.SortOrder.desc()).first()
+    next_order = (last.SortOrder + 1) if last and last.SortOrder is not None else 10
+
+    def _upsert_page(name: str, link_url: str, is_heading: bool, parent_id: int | None) -> int:
+        nonlocal next_order
+        canonical = _canonical(name)
+
+        # First pass: reuse any existing page whose canonical name matches
+        # (handles "About" vs "About Us", "Contact" vs "Contact Us", etc.).
+        for ex in db.query(models.BusinessWebPage).filter(
+            models.BusinessWebPage.WebsiteID == website_id
+        ).all():
+            if _canonical(ex.PageName) == canonical:
+                changed = False
+                if is_heading and not ex.IsNavHeading:
+                    ex.IsNavHeading = True
+                    changed = True
+                if parent_id is not None and ex.ParentPageID != parent_id:
+                    ex.ParentPageID = parent_id
+                    changed = True
+                if changed:
+                    ex.UpdatedAt = dt_now.utcnow()
+                return ex.PageID
+
+        # Otherwise allocate a fresh slug and create a new page.
+        base = _slug(name)
+        slug = base
+        i = 2
+        while db.query(models.BusinessWebPage).filter(
+            models.BusinessWebPage.WebsiteID == website_id,
+            models.BusinessWebPage.Slug == slug,
+        ).first():
+            slug = f"{base}-{i}"
+            i += 1
+        page = models.BusinessWebPage(
+            WebsiteID=website_id, BusinessID=business_id,
+            PageName=name, Slug=slug,
+            SortOrder=next_order, IsPublished=True, IsHomePage=False,
+            IsNavHeading=bool(is_heading), ParentPageID=parent_id,
+            LinkURL=(link_url or None),
+            CreatedAt=dt_now.utcnow(), UpdatedAt=dt_now.utcnow(),
+        )
+        db.add(page); db.flush()
+        next_order += 10
+        return page.PageID
+
+    created = 0
+    page_sources: list[tuple[int, str, str]] = []
+    for top in nav_tree:
+        text_label = (top.get("text") or "").strip()
+        if not text_label:
+            continue
+        # Skip a duplicate "Home" since the site already has an IsHomePage page
+        if text_label.lower() in ("home", "home page"):
+            continue
+        children = top.get("children") or []
+        is_heading = bool(children)
+        # Scraped hrefs point at the SOURCE site. Don't store them as LinkURL —
+        # the user wants an empty page they can fill in, not a link back to the
+        # site we just scraped. LinkURL can be set manually later in the builder.
+        parent_href = (top.get("href") or "").strip()
+        parent_id = _upsert_page(
+            name=text_label,
+            link_url="",
+            is_heading=is_heading,
+            parent_id=None,
+        )
+        created += 1
+        # Include heading pages too — many WP menus link the parent to a real
+        # aggregated page (e.g. /about/ with its own content above the dropdown
+        # children). We want to populate that content.
+        if parent_href:
+            page_sources.append((parent_id, text_label, parent_href))
+        for child in children:
+            c_label = (child.get("text") or "").strip()
+            if not c_label:
+                continue
+            c_href = (child.get("href") or "").strip()
+            child_id = _upsert_page(
+                name=c_label,
+                link_url="",
+                is_heading=False,
+                parent_id=parent_id,
+            )
+            created += 1
+            if c_href:
+                page_sources.append((child_id, c_label, c_href))
+
+    db.commit()
+    return created, page_sources
+
+
 def _execute_import_from_website(params: dict, website_id: int, business_id: int, db: Session) -> str:
-    """Scrape a URL and drop hero/about/gallery/design onto the user's page."""
+    """Scrape a URL and drop hero/about/gallery/design/nav onto the user's page."""
     import models
     from datetime import datetime as dt_now
 
     url = (params.get("url") or "").strip()
     if not url:
         return "I need a URL to import from."
-    include_raw = (params.get("include") or "hero,about,design").lower()
+    include_raw = (params.get("include") or "hero,about,design,nav").lower()
     include = {s.strip() for s in include_raw.split(",") if s.strip()}
     page_name = params.get("page_name")
 
-    data = _run_scrape(url, deep=False)
+    _diag(f"url={url!r} include={sorted(include)} website={website_id} page_name={page_name!r}")
+    # deep=True → Playwright computes real nav/page/accent colors from live
+    # CSS (the regex-based token extraction can't follow WordPress theme CSS
+    # variables). Costs ~15-20s per scrape but the colors matter.
+    data = _run_scrape(url, deep=True)
     if data.get("error"):
+        _diag(f"scrape error: {data['error']}")
         return f"Import failed — {data['error']}"
+    cap = data.get("capture") or {}
+    cap_styles = cap.get("styles") or {}
+    _diag(f"scrape ok — navTree={len(data.get('navTree') or [])} items, heroImageUrl={(data.get('heroImageUrl') or '')[:120]!r}, headings={len(data.get('headings') or [])}, bodies={len(data.get('bodyText') or [])}, playwright_available={cap.get('available')}, playwright_styles={cap_styles}")
 
     page_row = None
     if page_name:
@@ -1678,62 +1957,250 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
     ).fetchone()[0]
     sort = int(max_sort)
 
-    tokens    = data.get("designTokens") or {}
-    headings  = data.get("headings") or []
-    bodies    = data.get("bodyText") or []
-    images    = data.get("images") or []
+    tokens     = data.get("designTokens") or {}
+    headings   = data.get("headings") or []
+    bodies     = data.get("bodyText") or []
+    images     = data.get("images") or []
+    nav_tree   = data.get("navTree") or []
+    hero_url   = (data.get("heroImageUrl") or "").strip()
+    logo_url   = (data.get("logoUrl") or "").strip()
+    slideshow  = [u for u in (data.get("slideshowImages") or []) if u]
     added: list[str] = []
 
-    if "design" in include:
-        site = db.query(models.BusinessWebsite).filter(
-            models.BusinessWebsite.WebsiteID == website_id
-        ).first()
-        if site:
-            if tokens.get("navBgColor"):   site.PrimaryColor   = tokens["navBgColor"]
-            if tokens.get("accentColor"):  site.AccentColor    = tokens["accentColor"]
-            if tokens.get("pageBgColor"):  site.BgColor        = tokens["pageBgColor"]
-            if tokens.get("navTextColor"): site.NavTextColor   = tokens["navTextColor"]
-            if tokens.get("bodyFont"):     site.FontFamily     = tokens["bodyFont"]
-            site.UpdatedAt = dt_now.utcnow()
-            added.append("design palette")
+    site_row = db.query(models.BusinessWebsite).filter(
+        models.BusinessWebsite.WebsiteID == website_id
+    ).first()
 
-    if "hero" in include and headings:
-        headline = headings[0].get("text") if isinstance(headings[0], dict) else str(headings[0])
-        hero_image = ""
-        for img in images:
-            src = img.get("src") if isinstance(img, dict) else None
-            if src and not src.endswith(".svg"):
-                hero_image = src
-                break
-        block_data = {
-            "headline": headline or "Welcome",
-            "subtext": (bodies[0] if bodies else "")[:240],
-            "image_url": hero_image,
-            "cta_text": "Learn More", "cta_link": "#about",
-            "overlay": True, "align": "center",
-        }
-        sort += 10
-        db.add(models.BusinessWebBlock(
-            PageID=page_id, BlockType="hero",
-            BlockData=json.dumps(block_data), SortOrder=sort,
-            CreatedAt=dt_now.utcnow(), UpdatedAt=dt_now.utcnow(),
-        ))
-        added.append("hero block")
+    if "design" in include and site_row:
+        nav_bg  = (tokens.get("navBgColor")  or "").lower().strip()
+        page_bg = (tokens.get("pageBgColor") or "").lower().strip()
+        if nav_bg:  site_row.PrimaryColor  = nav_bg
+        if tokens.get("accentColor"):  site_row.AccentColor    = tokens["accentColor"]
+        # Don't let page bg duplicate nav bg — that indicates the extractor
+        # couldn't distinguish them (common on sites where <body> is transparent
+        # and the walker fell through to the header). Keep the existing bg in
+        # that case so the user's off-white page background is preserved.
+        if page_bg and page_bg != nav_bg:
+            site_row.BgColor = page_bg
+        if tokens.get("navTextColor"): site_row.NavTextColor   = tokens["navTextColor"]
+        if tokens.get("bodyFont"):     site_row.FontFamily     = tokens["bodyFont"]
+        if logo_url:
+            site_row.LogoURL = logo_url
+            # Sites with a proper logo almost never also want the site-name text
+            # printed next to it — that's the default setup-wizard state, not
+            # what a scraped site looks like.
+            site_row.ShowSiteName = False
+            # Professional sites (associations, clubs, farm businesses with real
+            # branding) usually put the nav bar on top and feature the logo
+            # centered on a light background below it. Default to that layout
+            # whenever we imported a proper logo — the user can still flip back
+            # in the Builder.
+            site_row.HeaderLayout = 'nav_top'
+            site_row.HeaderBannerBgColor = '#ffffff'
+            site_row.HeaderHeight = 180
+        site_row.UpdatedAt = dt_now.utcnow()
+        added.append("design palette" + (" + logo" if logo_url else ""))
+    _diag(f"design tokens applied: navBg={tokens.get('navBgColor')!r} pageBg={tokens.get('pageBgColor')!r} accent={tokens.get('accentColor')!r} logo={logo_url[:80]!r}")
+
+    # ── Footer import ──────────────────────────────────────────────────
+    footer_data = data.get("footer") or {}
+    if "design" in include and footer_data and (
+        footer_data.get("emails")
+        or footer_data.get("phones")
+        or footer_data.get("social")
+        or footer_data.get("address")
+        or footer_data.get("copyright")
+    ):
+        built = _build_footer_html(footer_data)
+        if built:
+            site_row.FooterHTML = built
+            site_row.UpdatedAt = dt_now.utcnow()
+            added.append("footer")
+            _diag(
+                "footer imported: emails=%d phones=%d social=%d addr=%s copy=%s" % (
+                    len(footer_data.get("emails") or []),
+                    len(footer_data.get("phones") or []),
+                    len(footer_data.get("social") or []),
+                    bool(footer_data.get("address")),
+                    bool(footer_data.get("copyright")),
+                )
+            )
+
+    page_sources: list[tuple[int, str, str]] = []
+    if "nav" in include and nav_tree:
+        created, page_sources = _create_pages_from_nav_tree(nav_tree, website_id, business_id, db)
+        if created:
+            added.append(f"{created} nav page{'s' if created != 1 else ''}")
+
+    # Remove the setup-wizard's generic farm placeholder content block before
+    # we layer scraped content on top — otherwise the user sees "We are a local
+    # farm dedicated to…" next to imported content about a horse association,
+    # brewery, etc. The string match is exact so we only target the stock text.
+    _placeholder_bodies = {
+        "We are a local farm dedicated to bringing you the finest quality produce, livestock, and products.",
+    }
+    for blk in db.query(models.BusinessWebBlock).filter(
+        models.BusinessWebBlock.PageID == page_id,
+        models.BusinessWebBlock.BlockType.in_(("content", "about")),
+    ).all():
+        try:
+            d = json.loads(blk.BlockData) if blk.BlockData else {}
+        except Exception:
+            continue
+        body = (d.get("body") or "").strip()
+        if body in _placeholder_bodies:
+            db.delete(blk)
+
+    if "hero" in include:
+        headline = None
+        if headings:
+            headline = headings[0].get("text") if isinstance(headings[0], dict) else str(headings[0])
+        hero_image = hero_url
+        if not hero_image:
+            for img in images:
+                src = img.get("src") if isinstance(img, dict) else None
+                if src and not src.endswith(".svg"):
+                    hero_image = src
+                    break
+
+        # If the source site has a real slideshow (2+ slide images), replace
+        # the existing hero with a slideshow block. The setup wizard always
+        # put a hero on the home page, so we delete that and insert a slideshow
+        # at the same sort position.
+        if slideshow and len(slideshow) >= 2:
+            # Replace any existing hero and any existing slideshow so re-runs
+            # don't stack duplicates. Reuse the sort order of whichever we
+            # found first so the block keeps its position on the page.
+            existing_hero = db.query(models.BusinessWebBlock).filter(
+                models.BusinessWebBlock.PageID == page_id,
+                models.BusinessWebBlock.BlockType == "hero",
+            ).order_by(models.BusinessWebBlock.SortOrder.asc()).first()
+            existing_slide = db.query(models.BusinessWebBlock).filter(
+                models.BusinessWebBlock.PageID == page_id,
+                models.BusinessWebBlock.BlockType == "slideshow",
+            ).order_by(models.BusinessWebBlock.SortOrder.asc()).first()
+            anchor = existing_hero or existing_slide
+            hero_sort = anchor.SortOrder if anchor else (sort + 10)
+            for old in (existing_hero, existing_slide):
+                if old is not None:
+                    db.delete(old)
+            # Also drop any extra slideshow dupes beyond the first
+            for extra in db.query(models.BusinessWebBlock).filter(
+                models.BusinessWebBlock.PageID == page_id,
+                models.BusinessWebBlock.BlockType == "slideshow",
+                models.BusinessWebBlock.BlockID != (existing_slide.BlockID if existing_slide else -1),
+            ).all():
+                db.delete(extra)
+            db.flush()
+            slide_data = {
+                "images": [{"url": u, "caption": ""} for u in slideshow[:12]],
+                "interval_ms": 5000,
+                "show_dots": True,
+            }
+            db.add(models.BusinessWebBlock(
+                PageID=page_id, BlockType="slideshow",
+                BlockData=json.dumps(slide_data), SortOrder=hero_sort,
+                CreatedAt=dt_now.utcnow(), UpdatedAt=dt_now.utcnow(),
+            ))
+            added.append(f"slideshow ({len(slideshow[:12])} slides)")
+            _diag(f"slideshow created with {len(slideshow)} images, first={slideshow[0][:80]!r}")
+        elif hero_image or headline:
+            # If a hero block already exists on the target page (setup wizard
+            # always creates one), update it in place rather than appending a
+            # second hero. Clear the known stock subtitle/CTA so the imported
+            # page doesn't keep "Fresh, local, and sustainably grown." / "Learn
+            # More" from the farm template.
+            existing_hero = db.query(models.BusinessWebBlock).filter(
+                models.BusinessWebBlock.PageID == page_id,
+                models.BusinessWebBlock.BlockType == "hero",
+            ).order_by(models.BusinessWebBlock.SortOrder.asc()).first()
+            if existing_hero:
+                try:
+                    current = json.loads(existing_hero.BlockData) if existing_hero.BlockData else {}
+                except Exception:
+                    current = {}
+                if hero_image:
+                    current["image_url"] = hero_image
+                    # When we have a real hero image from the source site, wipe the
+                    # setup-wizard's "Welcome to {site_name}" headline + CTA unless
+                    # the scrape gave us meaningful hero text to replace it with.
+                    # Sites like oregonqha.com render a plain image hero with no text.
+                    existing_headline = (current.get("headline") or "").strip()
+                    is_default_welcome = existing_headline.lower().startswith("welcome to ")
+                    if is_default_welcome or not existing_headline:
+                        current["headline"] = ""
+                    current["subtext"] = ""
+                    current["cta_text"] = ""
+                    current["cta_link"] = ""
+                    current["overlay"] = False
+                else:
+                    # No image — only clear the known stock defaults.
+                    if current.get("subtext", "").strip() in (
+                        "Fresh, local, and sustainably grown.",
+                        "Fresh, local, sustainably grown.",
+                    ):
+                        current["subtext"] = ""
+                    if current.get("cta_text", "").strip() == "Learn More" and \
+                       current.get("cta_link", "").strip() in ("#about", "/about"):
+                        current["cta_text"] = ""
+                        current["cta_link"] = ""
+                existing_hero.BlockData = json.dumps(current)
+                existing_hero.UpdatedAt = dt_now.utcnow()
+                added.append("hero image" if hero_image else "hero")
+            else:
+                block_data = {
+                    "headline": headline or "Welcome",
+                    "subtext": "",
+                    "image_url": hero_image or "",
+                    "cta_text": "", "cta_link": "",
+                    "overlay": True, "align": "center",
+                }
+                sort += 10
+                db.add(models.BusinessWebBlock(
+                    PageID=page_id, BlockType="hero",
+                    BlockData=json.dumps(block_data), SortOrder=sort,
+                    CreatedAt=dt_now.utcnow(), UpdatedAt=dt_now.utcnow(),
+                ))
+                added.append("hero block")
 
     if "about" in include:
         body = "\n\n".join(bodies[1:4]) if len(bodies) > 1 else (bodies[0] if bodies else "")
         if body:
-            sort += 10
-            db.add(models.BusinessWebBlock(
-                PageID=page_id, BlockType="about",
-                BlockData=json.dumps({
-                    "heading": "About Us", "body": body[:1200],
-                    "image_url": "", "image_position": "right",
-                }),
-                SortOrder=sort,
-                CreatedAt=dt_now.utcnow(), UpdatedAt=dt_now.utcnow(),
-            ))
-            added.append("about block")
+            # Reuse the existing about block if there is one, so re-running the
+            # import doesn't stack multiple copies of the same content. The
+            # setup wizard creates the first about block; subsequent imports
+            # should update it in place.
+            existing_about = db.query(models.BusinessWebBlock).filter(
+                models.BusinessWebBlock.PageID == page_id,
+                models.BusinessWebBlock.BlockType == "about",
+            ).order_by(models.BusinessWebBlock.SortOrder.asc()).first()
+            payload = {
+                "heading": "About Us", "body": body[:1200],
+                "image_url": "", "image_position": "right",
+            }
+            if existing_about:
+                existing_about.BlockData = json.dumps(payload)
+                existing_about.UpdatedAt = dt_now.utcnow()
+                # Also drop any extra duplicate about blocks past the first —
+                # these accumulate from prior import runs before the dedup
+                # guard existed.
+                extras = db.query(models.BusinessWebBlock).filter(
+                    models.BusinessWebBlock.PageID == page_id,
+                    models.BusinessWebBlock.BlockType == "about",
+                    models.BusinessWebBlock.BlockID != existing_about.BlockID,
+                ).all()
+                for dup in extras:
+                    db.delete(dup)
+                added.append("about block" + (f" (+removed {len(extras)} dupe(s))" if extras else ""))
+            else:
+                sort += 10
+                db.add(models.BusinessWebBlock(
+                    PageID=page_id, BlockType="about",
+                    BlockData=json.dumps(payload),
+                    SortOrder=sort,
+                    CreatedAt=dt_now.utcnow(), UpdatedAt=dt_now.utcnow(),
+                ))
+                added.append("about block")
 
     if "gallery" in include and len(images) >= 3:
         srcs = []
@@ -1753,6 +2220,237 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
                 CreatedAt=dt_now.utcnow(), UpdatedAt=dt_now.utcnow(),
             ))
             added.append("gallery block")
+
+    # ── Per-page content population ────────────────────────────────
+    # For every non-heading nav page we just created that had a source URL,
+    # fetch that page, extract headings + bodies + hero image, and drop a
+    # hero + content block on it. Skip pages the user has meaningfully
+    # edited, but freely replace setup-wizard stock blocks — those are
+    # placeholders the import should improve on.
+    _STOCK_SUBTEXTS = {
+        "Fresh, local, and sustainably grown.",
+        "Fresh, local, sustainably grown.",
+        "We'd love to hear from you.",
+        "Browse our available animals.",
+        "Premium breeding genetics available.",
+        "Farm-fresh fruits and vegetables.",
+        "Pasture-raised, humanely harvested.",
+        "Handcrafted goods from our farm.",
+        "See what we offer.",
+        "All of our listings in one place.",
+        "Learn more about",  # prefix for "Learn more about {site_name}"
+    }
+    _STOCK_BODIES = {
+        "We are a local farm dedicated to bringing you the finest quality produce, livestock, and products.",
+        "Tell visitors who you are, where you are located, and what makes your farm special.",
+    }
+
+    # Junk link patterns we never want in a Resources block. These are
+    # boilerplate site-wide links that appear on every page.
+    _LINK_JUNK_SUBSTR = (
+        "/privacy", "/terms", "/cookie", "/disclaimer", "/accessibility",
+        "/login", "/register", "/signup", "/sign-up", "/sign-in",
+        "/cart", "/checkout", "/account", "/my-account",
+        "/wp-admin", "/wp-login", "/feed", "/rss",
+        "mailto:", "tel:", "javascript:",
+    )
+    _LINK_JUNK_LABELS = {
+        "home", "menu", "close", "search", "read more", "more", "next",
+        "previous", "back", "top", "skip to content", "toggle navigation",
+    }
+
+    def _build_resource_items(raw_links: list, page_href: str) -> list[dict]:
+        """Pick useful resource-style links for a page and return items in
+        the shape the `links` block expects: [{label, url, description}]."""
+        if not raw_links:
+            return []
+        from urllib.parse import urlparse
+        try:
+            page_path = urlparse(page_href).path.rstrip("/").lower()
+        except Exception:
+            page_path = ""
+        items: list[dict] = []
+        seen: set[str] = set()
+        for a in raw_links:
+            if not isinstance(a, dict):
+                continue
+            href = (a.get("href") or "").strip()
+            text = (a.get("text") or "").strip()
+            if not href or not text:
+                continue
+            low_href = href.lower()
+            low_text = text.lower()
+            if any(j in low_href for j in _LINK_JUNK_SUBSTR):
+                continue
+            if low_text in _LINK_JUNK_LABELS or len(text) < 3:
+                continue
+            # Skip in-page anchors and links back to this same page
+            try:
+                p = urlparse(href)
+                if p.scheme not in ("http", "https"):
+                    continue
+                link_path = (p.path or "").rstrip("/").lower()
+                if page_path and link_path == page_path:
+                    continue
+            except Exception:
+                continue
+            if href in seen:
+                continue
+            seen.add(href)
+            items.append({
+                "icon_url": "",
+                "label": text[:120],
+                "url": href,
+                "description": "",
+            })
+            if len(items) >= 24:
+                break
+        return items
+
+    def _is_stock_only(pid: int) -> bool:
+        blks = db.query(models.BusinessWebBlock).filter(
+            models.BusinessWebBlock.PageID == pid
+        ).all()
+        if not blks:
+            return True
+        for b in blks:
+            try:
+                bd = json.loads(b.BlockData) if b.BlockData else {}
+            except Exception:
+                return False
+            if b.BlockType == "hero":
+                sub = (bd.get("subtext") or "").strip()
+                head = (bd.get("headline") or "").strip()
+                img = (bd.get("image_url") or "").strip()
+                if img:
+                    return False
+                if sub and not any(sub.startswith(s) for s in _STOCK_SUBTEXTS):
+                    return False
+                # Stock hero headlines are the page's own name; anything else
+                # means the user changed something.
+                if head and head.lower().startswith("welcome to "):
+                    continue
+            elif b.BlockType in ("about", "content"):
+                body = (bd.get("body") or "").strip()
+                if body and body not in _STOCK_BODIES:
+                    return False
+            else:
+                # Non-stock block types (contact form, livestock grid, etc.)
+                # mean the user/setup wired something real.
+                if b.BlockType == "contact" and not bd.get("custom_message"):
+                    continue
+                return False
+        return True
+
+    if "nav" in include and page_sources:
+        empty_pages: list[tuple[int, str, str]] = []
+        skipped = []
+        for pid, pname, phref in page_sources:
+            if _is_stock_only(pid):
+                empty_pages.append((pid, pname, phref))
+            else:
+                skipped.append(pname)
+        _diag(f"per-page gating: {len(page_sources)} sources, {len(empty_pages)} to fetch, skipped={skipped}")
+
+        if empty_pages:
+            _diag(f"per-page content: fetching {len(empty_pages)} pages")
+            urls_to_fetch = [u for _, _, u in empty_pages]
+            per_page = _fetch_pages_content_parallel(urls_to_fetch)
+            populated = 0
+            resource = 0
+            minimal = 0
+            for pid, pname, phref in empty_pages:
+                page_data = per_page.get(phref) or {}
+                p_heads  = page_data.get("headings") or []
+                p_bodies = page_data.get("bodies")   or []
+                p_images = page_data.get("images")   or []
+                p_links  = page_data.get("links")    or []
+                # Find first non-svg image for a hero
+                p_hero = ""
+                for img in p_images:
+                    src = img.get("src") if isinstance(img, dict) else None
+                    if src and not src.endswith(".svg"):
+                        p_hero = src
+                        break
+                body_text = "\n\n".join(p_bodies[:6]).strip()
+                resource_items = [] if body_text else _build_resource_items(p_links, phref)
+                # Wipe any pre-existing stock blocks on this page before we
+                # write new content — _is_stock_only already confirmed
+                # nothing here is user-edited. We wipe even when the fetch
+                # returned nothing (dead URL, 404, blocked) so the page no
+                # longer shows misleading setup-wizard farm placeholders.
+                for old in db.query(models.BusinessWebBlock).filter(
+                    models.BusinessWebBlock.PageID == pid
+                ).all():
+                    db.delete(old)
+                db.flush()
+                psort = 0
+                # Hero block with the page name as headline (and page's first
+                # image when available). Keep overlay=True so the headline is
+                # readable against the image.
+                db.add(models.BusinessWebBlock(
+                    PageID=pid, BlockType="hero",
+                    BlockData=json.dumps({
+                        "headline": pname,
+                        "subtext": "",
+                        "image_url": p_hero,
+                        "cta_text": "", "cta_link": "",
+                        "overlay": bool(p_hero), "align": "center",
+                    }),
+                    SortOrder=psort,
+                    CreatedAt=dt_now.utcnow(), UpdatedAt=dt_now.utcnow(),
+                ))
+                psort += 10
+                # Content block: grab the first 3-6 body paragraphs. Use the
+                # first heading as the section title when available.
+                if body_text:
+                    head_text = ""
+                    if p_heads:
+                        first = p_heads[0]
+                        head_text = first.get("text") if isinstance(first, dict) else str(first)
+                    db.add(models.BusinessWebBlock(
+                        PageID=pid, BlockType="content",
+                        BlockData=json.dumps({
+                            "heading": head_text or pname,
+                            "body": body_text[:2000],
+                            "image_url": "", "images": [], "image_position": "none",
+                        }),
+                        SortOrder=psort,
+                        CreatedAt=dt_now.utcnow(), UpdatedAt=dt_now.utcnow(),
+                    ))
+                    populated += 1
+                elif len(resource_items) >= 2:
+                    # Page has no paragraph body but has useful link list
+                    # (common for Divi/Elementor resource-index pages). Build
+                    # a Resources block using the existing `links` widget.
+                    db.add(models.BusinessWebBlock(
+                        PageID=pid, BlockType="links",
+                        BlockData=json.dumps({
+                            "heading": pname,
+                            "columns": 2,
+                            "groups": [{
+                                "heading": "Resources",
+                                "items": resource_items,
+                            }],
+                        }),
+                        SortOrder=psort,
+                        CreatedAt=dt_now.utcnow(), UpdatedAt=dt_now.utcnow(),
+                    ))
+                    resource += 1
+                    _diag(f"per-page resources: {pname!r} <- {phref} ({len(resource_items)} items)")
+                else:
+                    # No usable body content (dead URL or empty page). We've
+                    # still cleaned up the stock blocks and left a page-name
+                    # hero so the page reads as a real section header.
+                    minimal += 1
+                    _diag(f"per-page minimal: {pname!r} <- {phref} (no body)")
+            if populated:
+                added.append(f"{populated} page{'s' if populated != 1 else ''} populated")
+            if resource:
+                added.append(f"{resource} resources block{'s' if resource != 1 else ''}")
+            if minimal:
+                added.append(f"{minimal} page{'s' if minimal != 1 else ''} cleaned")
+            _diag(f"per-page content: populated={populated}, resources={resource}, minimal={minimal}, total={len(empty_pages)}")
 
     db.commit()
     if not added:
@@ -2372,7 +3070,7 @@ GENERATING VISUAL DESIGNS:
 WEB SCRAPING & COMPETITIVE RESEARCH:
 - When the user pastes a URL or asks about "their old site", a competitor, or a design they like, use `scrape_website(url)` to fetch and report what you found (platform, colors, fonts, layout, images). Runs inline.
 - Use `review_competitor_site(url)` instead when the intent is comparison or inspiration — you'll get design takeaways phrased for coaching.
-- To actually pull content in, use `import_from_website(url, page_name, include)` — this writes blocks to their page and requires confirmation. `include` is a comma-separated subset of "hero,about,gallery,design".
+- To actually pull content in, use `import_from_website(url, page_name, include)` — this writes blocks to their page and requires confirmation. `include` is a comma-separated subset of "hero,about,gallery,design,nav". Use `nav` when the user asks to set up / recreate the top-bar menu from another site — it creates pages for each top-level nav item and, when a top-level has a dropdown, marks it as a nav heading with its dropdown items as child pages (so the public site renders a proper dropdown). Default includes hero, about, design, and nav together so a single call can stand up the menu + hero on the home page.
 - To pull BLOG ARTICLES from another site's blog index, use `import_blog_posts(url, limit, category)`. It discovers individual article links on the index page, scrapes each article, and creates DRAFT BusinessBlogPost rows (the user reviews + publishes in Manage Blog). Use this whenever the user says "add these blog articles to my blog", "import the posts from this blog", "pull my old blog over", etc. Requires confirmation.
 - If the user gives you a URL to a SINGLE page (one article, one event, one news story — NOT a blog index) and asks to add it / scrape it / turn it into a blog post, use `import_blog_post_from_url(url, category?, publish?)` instead. It scrapes that one page and creates exactly one draft. Never refuse a single-page URL — this tool handles it. Requires confirmation.
 - You have full CRUD over the user's OWN blog: `list_blog_posts` (inline, no confirmation — use for "what posts do I have?"), `read_blog_post(post_id)` (inline), `create_blog_post(title, content, excerpt?, category?, cover_image?, publish?)`, `update_blog_post(post_id, …fields)`, `delete_blog_post(post_id)`, and `publish_blog_post(post_id, publish)`. Creates/updates/deletes/publish require confirmation. When the user asks you to write a post, draft the full HTML body yourself and pass it as `content`; default to `publish=false` so it lands as a draft unless they explicitly say "publish it now".
@@ -2567,8 +3265,9 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
 
     # Build context
     print(f"[Lavendir] incoming request: website_id={body.website_id} business_id={body.business_id}")
-    site_context = _get_site_context(body.website_id, body.business_id, db)
     last_user_msg = next((m.content for m in reversed(body.messages) if m.role == "user"), "")
+    _diag(f"/chat website={body.website_id} business={body.business_id} last_user_msg={last_user_msg[:200]!r}")
+    site_context = _get_site_context(body.website_id, body.business_id, db)
     rag_context   = _rag_search(last_user_msg) if last_user_msg else ""
     recent_scrape = _format_last_scrape(_load_last_scrape(body.website_id) or {})
     system_prompt = _build_system_prompt(site_context, rag_context, recent_scrape)
@@ -2721,6 +3420,7 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
                 action = fc.name
                 params = dict(fc.args)
                 print(f"[Lavendir] tool_call action={action} params={dict(params)}")
+                _diag(f"/chat tool_call action={action} params={dict(params)}")
 
                 # Read-only actions: run inline, return results in the reply
                 if action in ("list_blog_posts", "read_blog_post"):
@@ -2963,6 +3663,35 @@ def lavendir_preview(token: str):
     if payload.get("kind") == "design":
         return HTMLResponse(_render_design_preview_html(payload))
     return PlainTextResponse("Unknown preview type.", status_code=400)
+
+
+# ── Test-import endpoint (bypasses Gemini) ───────────────────────
+# Lets us verify the import pipeline end-to-end without relying on the
+# agent picking the right tool. Hit:
+#   POST /api/lavendir/test-import?website_id=X&business_id=Y&url=Z
+# It runs _execute_import_from_website directly and returns the result.
+@router.post("/test-import")
+def lavendir_test_import(
+    website_id: int,
+    business_id: int,
+    url: str,
+    include: str = "hero,about,design,nav",
+    page_name: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    _diag(f"/test-import called website={website_id} business={business_id} url={url!r} include={include!r}")
+    try:
+        result = _execute_import_from_website(
+            {"url": url, "include": include, "page_name": page_name},
+            website_id, business_id, db,
+        )
+        _diag(f"/test-import result: {result}")
+        return {"ok": True, "result": result, "diag_log": _DIAG_LOG_PATH}
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        _diag(f"/test-import exception: {e}\n{tb}")
+        return {"ok": False, "error": str(e), "traceback": tb}
 
 
 # ── Last-scrape chip endpoints ───────────────────────────────────
