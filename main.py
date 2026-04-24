@@ -62,6 +62,7 @@ from routers import event_promo_codes
 from routers import event_waitlist
 from routers import event_testimonials
 from routers import stripe_payments
+from routers import news
 
 from routers.marketplace import marketplace_router
 from marketplace_stripe import stripe_router
@@ -247,6 +248,7 @@ app.include_router(event_promo_codes.router)
 app.include_router(event_waitlist.router)
 app.include_router(event_testimonials.router)
 app.include_router(stripe_payments.router)
+app.include_router(news.router)
 
 
 # ── Public testimonials endpoint (used by website blocks) ─────────
