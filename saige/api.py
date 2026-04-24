@@ -145,6 +145,14 @@ app_kwargs["lifespan"] = app_lifespan
 
 app = FastAPI(**app_kwargs)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # ============================================================================
 # GLOBAL EXCEPTION HANDLER
