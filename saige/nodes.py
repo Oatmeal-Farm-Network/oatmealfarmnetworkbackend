@@ -6,7 +6,7 @@ from langgraph.types import interrupt
 from config import RAG_AVAILABLE, WEATHER_AVAILABLE, MAX_QUESTIONS
 from models import FarmState, AssessmentDecision, QueryClassification, QueryTypeClassification, WeatherQueryParsed, FollowUpEntityExtraction
 from llm import llm
-from rag import rag_livestock, rag_plant, rag_bakasura, rag_news
+from rag import rag_livestock, rag_plant, rag_bakasura, rag_news, rag_hitl_charlie
 from weather import weather_service, get_weather_tool, weather_tools
 try:
     from companion_planting import companion_tools, companion_planting_tool, check_companion_pair_tool
@@ -104,6 +104,18 @@ try:
         get_field_analysis_tool,
         get_field_history_tool,
         get_field_alerts_tool,
+        get_field_soil_samples_tool,
+        get_field_scouting_tool,
+        add_scout_observation_tool,
+        get_field_activity_log_tool,
+        log_field_activity_tool,
+        add_soil_sample_tool,
+        get_field_gdd_tool,
+        get_field_irrigation_tool,
+        get_field_yield_forecast_tool,
+        get_field_carbon_tool,
+        get_farm_benchmark_tool,
+        get_field_weather_tool,
     )
     PRECISION_AG_AVAILABLE = True
 except Exception as _e:
@@ -113,6 +125,18 @@ except Exception as _e:
     get_field_analysis_tool = None
     get_field_history_tool = None
     get_field_alerts_tool = None
+    get_field_soil_samples_tool = None
+    get_field_scouting_tool = None
+    add_scout_observation_tool = None
+    get_field_activity_log_tool = None
+    log_field_activity_tool = None
+    add_soil_sample_tool = None
+    get_field_gdd_tool = None
+    get_field_irrigation_tool = None
+    get_field_yield_forecast_tool = None
+    get_field_carbon_tool = None
+    get_farm_benchmark_tool = None
+    get_field_weather_tool = None
     PRECISION_AG_AVAILABLE = False
 
 try:
@@ -130,6 +154,26 @@ except Exception as _e:
     list_my_listings_tool = None
     count_my_animals_tool = None
     FARM_DATA_AVAILABLE = False
+
+try:
+    from knowledge_base import (
+        knowledge_base_tools,
+        search_plants_tool,
+        get_plant_detail_tool,
+        search_ingredients_tool,
+        get_ingredient_detail_tool,
+        get_animal_detail_tool,
+    )
+    KNOWLEDGE_BASE_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] knowledge_base unavailable: {_e}")
+    knowledge_base_tools = []
+    search_plants_tool = None
+    get_plant_detail_tool = None
+    search_ingredients_tool = None
+    get_ingredient_detail_tool = None
+    get_animal_detail_tool = None
+    KNOWLEDGE_BASE_AVAILABLE = False
 
 try:
     from actions import (
@@ -305,6 +349,47 @@ def _options_are_consistent(question_text: str, options: List[str], answer_slot:
 # ============================================================================
 # ASSESSMENT NODE
 # ============================================================================
+
+_DIRECTIVE_KEYWORDS = (
+    "field", "ndvi", "evi", "savi", "yield", "forecast", "irrigat",
+    "soil", "scouting", "pest", "weather", "rain", "gdd", "carbon",
+    "benchmark", "alert", "harvest", "plant", "market", "listing",
+    "recipe", "par", "breed", "livestock", "animal", "cattle",
+    "inventory", "sample",
+)
+_DIRECTIVE_STARTERS = (
+    "look at", "show me", "tell me", "give me", "check", "analyze", "analyse",
+    "what is", "what's", "whats", "how is", "how's", "how are",
+    "can you", "could you", "please", "pull up", "open",
+)
+
+
+def _looks_like_directive(text: str) -> bool:
+    """Detect if a user's quiz response is actually a new request, not an answer."""
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    if "?" in t:
+        return True
+    if t.startswith(_DIRECTIVE_STARTERS):
+        return True
+    words = t.split()
+    if len(words) >= 4 and any(k in t for k in _DIRECTIVE_KEYWORDS):
+        return True
+    return False
+
+
+def _infer_directive_advisory_type(text: str) -> str:
+    """Rough routing hint for directive responses — mixed is a safe default."""
+    t = (text or "").lower()
+    if any(k in t for k in ("weather", "rain", "forecast", "temperature", "climate")):
+        return "weather"
+    if any(k in t for k in ("cattle", "cow", "sheep", "goat", "pig", "chicken", "livestock", "breed")):
+        return "livestock"
+    if any(k in t for k in ("field", "ndvi", "evi", "savi", "yield", "irrigat", "soil", "scouting", "gdd", "harvest", "plant", "crop")):
+        return "crops"
+    return "mixed"
+
 
 def assessment_node(state: FarmState):
     """User-driven assessment: starts with open question, then contextual follow-ups."""
@@ -548,6 +633,18 @@ Set is_complete=True when you have:
         ui_schema = {"type": "quiz", "question": res.question, "options": options}
         user_response = interrupt(ui_schema)
 
+        # Escape hatch: if the user ignored the quiz and asked something new,
+        # treat the response as a fresh directive and break out of assessment.
+        if _looks_like_directive(user_response):
+            advisory_type = _infer_directive_advisory_type(user_response)
+            print(f"[Assessment] Directive detected on resume → routing to {advisory_type}")
+            return {
+                "history": history + [f"AI: {res.question}", f"User: {user_response}"],
+                "current_issues": [user_response],
+                "assessment_summary": f"Farmer asks: {user_response}",
+                "advisory_type": advisory_type,
+            }
+
         updates = {"history": history + [f"AI: {res.question}", f"User: {user_response}"]}
 
         # Preserve any issue already inferred from the first user message.
@@ -748,7 +845,43 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
     # 3. Construct Full Prompt
     rag_section = f"RELEVANT KNOWLEDGE BASE:\n{rag_context}" if rag_context else ""
 
+    _people_id_ctx = state.get("people_id") or ""
+    _business_id_ctx = state.get("business_id") or ""
+    identity_section = (
+        f"AUTHENTICATED IDENTITY (already known — do NOT ask the user for these):\n"
+        f"- PeopleID: {_people_id_ctx or 'unknown'}\n"
+        f"- BusinessID: {_business_id_ctx or 'unknown'}\n"
+        "Every tool that needs people_id or business_id receives them automatically from "
+        "this session. Call the tool directly — never ask the user to 'link their account' "
+        "or provide these IDs. If a tool returns no data, say so plainly; do not blame "
+        "missing authentication."
+    )
+
+    ltm = state.get("long_term_memory") or {}
+    memory_section = ""
+    if ltm and any(ltm.values()):
+        parts = ["LONG-TERM MEMORY (facts from prior conversations with this farmer):"]
+        if ltm.get("locations"):
+            parts.append(f"- Known locations: {', '.join(ltm['locations'][:5])}")
+        if ltm.get("crops"):
+            parts.append(f"- Previously discussed crops/livestock: {', '.join(ltm['crops'][:10])}")
+        if ltm.get("farm_sizes"):
+            parts.append(f"- Farm size(s) shared: {', '.join(ltm['farm_sizes'][:3])}")
+        if ltm.get("recent_topics"):
+            parts.append("- Recent concerns they've raised:")
+            for t in ltm["recent_topics"]:
+                parts.append(f"  • {(t or '')[:140]}")
+        parts.append(
+            "Use these facts naturally — don't re-ask for location/crops you already know. "
+            "If the current message references something previously discussed, carry it forward."
+        )
+        memory_section = "\n".join(parts)
+
     full_prompt = f"""{role_prompt}
+
+{identity_section}
+
+{memory_section}
 
 Farmer's latest message: {latest_user_message}
 Farmer's tracked issues: {', '.join(issues) if issues else 'General inquiry'}
@@ -778,20 +911,55 @@ Additional tools available:
 - price_forecast_tool(commodity, months_ahead): short-horizon US commodity price forecast (corn/soy/wheat/cotton/rice/cattle/hog/milk/egg/hay/etc.). Use for marketing, selling-timing, or revenue planning questions.
 - subsidies_tool(category, keyword): US federal farm subsidy / cost-share / grant / loan programs (EQIP, CSP, CRP, ARC/PLC, WFRP, BFRDP, VAPG, REAP, SARE). Use when user asks about government funding or assistance.
 - insurance_tool(crop): US federal crop-insurance products (RP/YP/APH/WFRP/MP/PRF/LRP/LGM/DRP/NAP) for a specific crop or livestock class. Use when user asks about insurance or risk management.
-- list_my_fields_tool(): list the current user's satellite-monitored fields (field ID, name, crop, size, planting date). Call this whenever the user says "my fields / my farm / my plots" so you can reference them by ID.
-- get_field_analysis_tool(field_id): latest NDVI/EVI/SAVI vegetation indices + trend vs. previous pass. Use for "how is field X doing", "is my crop healthy".
-- get_field_history_tool(field_id, months): NDVI/EVI time series over last N months. Use for trend questions.
-- get_field_alerts_tool(field_id): open precision-ag alerts (pass field_id=0 for all fields). Use for "any issues", "what needs attention".
+PRECISION AG — Field Data (always start with list_my_fields_tool if field_id is unknown):
+- list_my_fields_tool(): list satellite-monitored fields (field ID, name, crop, size, planting date). ALWAYS call this first when the user mentions "my fields", "my farm", or any field question without a specific ID.
+- get_field_analysis_tool(field_id): latest NDVI/EVI/SAVI vegetation indices + trend. Use for "how is field X doing", "is my crop healthy", NDVI questions.
+- get_field_history_tool(field_id, months): NDVI time series over last N months. Use for trend, improvement/decline questions.
+- get_field_alerts_tool(field_id): precision-ag alerts across fields (field_id=0 = all fields). Use for "any issues", "what needs attention", "are there problems".
+- get_field_soil_samples_tool(field_id): soil test results — pH, organic matter, NPK with deficiency/excess flags and amendment recommendations. Use for "soil health", "fertilizer", "what nutrients does my field need", soil questions.
+- get_field_scouting_tool(field_id): in-field scout observations — pests, disease, weeds, nutrient deficiency symptoms with severity. Use for "what's been found in the field", "any pest issues", "scouting reports".
+- add_scout_observation_tool(field_id, category, severity, notes): LOG a new scouting observation on behalf of the user. Use when the user tells you they found something in the field and wants it recorded. Confirm before calling.
+- get_field_activity_log_tool(field_id): recent field operations — sprays, fertilizer, tillage, irrigation, harvest. Use for "what was applied", "field operation history", before giving input recommendations to avoid double-applying.
+- log_field_activity_tool(field_id, activity_type, activity_date, product, rate, rate_unit, notes): LOG a new field operation. Use when user says they did something and wants it recorded. Confirm with user before calling.
+- add_soil_sample_tool(field_id, sample_label, ph, organic_matter, nitrogen, phosphorus, potassium, sample_date): SAVE soil test results the user provides. Use when user shares soil test numbers. Confirm before calling.
+- get_field_gdd_tool(field_id, days): accumulated Growing Degree Days + current crop development stage. Use for "what growth stage is my crop", "how many GDD", "when will it flower/mature", stage-specific advice.
+- get_field_irrigation_tool(field_id, days): irrigation recommendation from ET₀ vs precipitation — "irrigate now / soon / not needed" + water deficit in inches. Use for "should I irrigate", "when to water", "water stress", irrigation scheduling.
+- get_field_yield_forecast_tool(field_id): NDVI-based yield estimate vs crop-type baseline with trend. Use for "expected yield", "will this be a good harvest", "am I above or below average yield".
+- get_field_carbon_tool(field_id): soil OM trends, SOC stock estimates, cover crop history, rotation diversity, sustainability score. Use for "carbon sequestration", "soil health trend", "regenerative ag score", "how sustainable is my farm".
+- get_farm_benchmark_tool(): compare all fields by NDVI/health/trend — ranks best-to-worst. Use for "which field is doing best", "farm overview", "compare my fields", "which field needs most attention".
+- get_field_weather_tool(field_id, days): recent temp/precipitation/ET₀ at the field location. Use for "recent weather on my farm", "how much rain", when weather context helps agronomic advice.
+
+WHEN GIVING PRECISION AG ADVICE: Always interpret the numbers, don't just report them. Examples:
+- NDVI 0.72 = "your canopy is dense and healthy — likely at or near peak biomass"
+- NDVI 0.35 = "moderate stress — could be drought, nutrient deficiency, or disease pressure"
+- pH 5.4 = "too acidic for most crops — apply lime at 2–3 tons/ac to raise to 6.0–6.5"
+- Irrigation urgency high = "apply 1–1.5 inches of water within 24–48 hours to prevent yield loss"
+- GDD 850 (corn) = "your corn is at or approaching silking — critical period, protect from stress"
+After fetching data, always give a SPECIFIC, ACTIONABLE recommendation — never just report the number.
 - list_my_animals_tool(studs_only): animals on the current business (for-sale by default; set studs_only=true for stud listings). Use for "my animals", "what's for sale on my ranch".
 - list_my_listings_tool(): unified marketplace inventory (produce + meat + processed food) for the current business. Use for "my inventory", "my marketplace listings".
 - count_my_animals_tool(): quick count of for-sale vs at-stud animals on the current business. Use for "how many animals do I have".
+- get_animal_detail_tool(animal_id): FULL animal profile — name, breed/category, sex, DOB, colors, sale/stud price, embryo/semen price, registration numbers, fiber stats (micron, CV, comfort factor), co-owners. Use when the user asks about a SPECIFIC animal by ID: "tell me about animal #42", "what's the stud fee for that alpaca", "show me the fiber data". Access-controlled to the user's business.
+
+PLANT & INGREDIENT KNOWLEDGE BASE — agronomic reference data for 3,000+ plant varieties and all food ingredient groups:
+- search_plants_tool(query, plant_type): find plants by name or type (Vegetable/Herb/Fruit/Legume/Nut/Grain/Mushroom/Root/Tubers/Leafy Green). Returns plant IDs + variety counts. Use first when the user asks about a plant type or specific plant name: "what tomato varieties are in the system", "show me all grain plants", "find herb plants named basil".
+- get_plant_detail_tool(plant_id): FULL agronomic profile for all varieties of one plant — ideal soil texture, pH range (e.g., "6.1–6.5 Slightly Acidic"), organic matter level, salinity tolerance, USDA hardiness zone with temperature range, humidity classification, water requirement in inches/week, and primary nutrient need. Use for growing-condition questions: "what soil does kale need", "what's the water requirement for corn", "what pH does garlic prefer", "is this plant cold-hardy in my zone", "what nutrient is most important for this crop".
+- search_ingredients_tool(query, category): find food ingredients by name or category (Vegetable/Fruit/Herb/Meat/Grain/Dairy/Legume/Nut/Mushroom/Seafood/etc.). Returns ingredient IDs + variety counts. Use when user asks about the ingredient catalog: "what vegetable ingredients are in the system", "find garlic as an ingredient", "what meat categories do you have".
+- get_ingredient_detail_tool(ingredient_id): FULL ingredient profile — all varieties and their descriptions, nutrient associations. Use after search to get varieties: "what varieties of heirloom tomato do you have", "list the varieties of black angus in the ingredient system".
+
+WHEN GIVING PLANT/INGREDIENT ADVICE: Always translate lookup data into practical guidance. Examples:
+- pH range "6.1–6.5 Slightly Acidic" = "ideal for most crops — if your soil test shows 5.8, apply 1–2 tons lime/ac before planting"
+- Salinity "Non-Saline (< 2 dS/m)" = "this crop is salt-sensitive — avoid fields with irrigation water above 1.5 dS/m"
+- Hardiness Zone 7A (0°F to 5°F) = "this variety can handle light frost but will die below 0°F — plant after last frost in spring"
+- Water need 1.0–1.5 in/week with NDVI stress = "this crop wants more water than it's getting — match irrigation to the GDD stage"
+- Organic matter "Moderate (2–4%)" = "your field's OM is adequate; adding cover crops can push it toward the High range and improve yields"
 - draft_produce_listing_tool(ingredient_name, quantity, measurement, retail_price, wholesale_price, available_date): DRAFT a new produce listing — saves a pending draft for the farmer to approve, never publishes directly. Use for "list my tomatoes at $3/lb", "put 10 dozen eggs on the marketplace". Always confirm the draft with the user before calling.
 - draft_event_tool(event_name, description, start_date, end_date, location_name, city, state, is_free, registration_required): DRAFT a new farm event. Use for "plan a farm tour", "create an open-ranch day". Saves pending — does not publish.
 - draft_blog_post_tool(title, content, category): DRAFT a new blog post for the business. Use for "write a blog post about…", "draft an article". Saves pending — does not publish.
 - planting_calendar_tool(crop, zone, lat, lon): when/how to plant a specific crop (earliest safe plant-out date, soil-temp target, seed depth, direct-sow vs transplant, days to maturity). Use for "when should I plant X", "is it too early for Y".
 - irrigation_schedule_tool(crop, stage, soil_type, climate, days_since_rain): how much and how often to water. stage='initial'|'mid'|'late'; soil_type sandy/loam/clay/silty; climate tropical/subtropical/temperate/continental/mediterranean/arid/highland/boreal. Use for "how often do I water X", "am I overwatering".
 - manure_pairing_tool(crop, available_manures): rank manures for a given crop by N-P-K fit + composting caveats. available_manures is an optional comma list (e.g., "goat,chicken") to restrict to what's on hand. Use for "what manure works best for X", "can I use my goat manure on tomatoes".
-- save_recipe_tool(name, items_json, portion_yield, menu_price): save a kitchen recipe so it can be costed later. items_json is a JSON array like [{"ingredient":"ground beef","qty":0.33,"unit":"lb"}]. Use for "save my summer salad recipe", "let me track the burger plate".
+- save_recipe_tool(name, items_json, portion_yield, menu_price): save a kitchen recipe so it can be costed later. items_json is a JSON array like [{{"ingredient":"ground beef","qty":0.33,"unit":"lb"}}]. Use for "save my summer salad recipe", "let me track the burger plate".
 - cost_recipe_tool(recipe_name): live plate-cost calculation for a saved recipe using current OFN marketplace prices. Use for "cost my burger", "what does the salad run now", "update my plate costs".
 - seasonal_menu_tool(state, category): what's actively in season on OFN right now in the chef's state (defaults to the chef's own state). Use for "what's local right now", "seasonal menu ideas", "what's in season near me". category optional (Vegetable/Fruit/Herb/Meat).
 - set_par_tool(ingredient_name, unit, on_hand, par_level, reorder_at, preferred_business_id): set or update a par level for an ingredient in the restaurant's inventory. Use for "set par for ground beef at 20 lb", "reorder tomatoes at 5 lb".
@@ -835,6 +1003,8 @@ Write like you're talking to a friend."""
         bound_tools.extend(precision_ag_tools)
     if FARM_DATA_AVAILABLE:
         bound_tools.extend(farm_data_tools)
+    if KNOWLEDGE_BASE_AVAILABLE:
+        bound_tools.extend(knowledge_base_tools)
     if ACTIONS_AVAILABLE:
         bound_tools.extend(actions_tools)
     if AGRONOMY_AVAILABLE:
@@ -857,6 +1027,7 @@ Write like you're talking to a friend."""
     events_context = ""
     precision_ag_context = ""
     farm_data_context = ""
+    knowledge_base_context = ""
     actions_context = ""
     agronomy_context = ""
     chef_context = ""
@@ -896,6 +1067,8 @@ Write like you're talking to a friend."""
                 current_input += f"\n\n[Precision Ag]: {precision_ag_context}"
             if farm_data_context:
                 current_input += f"\n\n[Farm Data]: {farm_data_context}"
+            if knowledge_base_context:
+                current_input += f"\n\n[Knowledge Base]: {knowledge_base_context}"
             if actions_context:
                 current_input += f"\n\n[Draft Saved]: {actions_context}"
             if agronomy_context:
@@ -1030,6 +1203,96 @@ Write like you're talking to a friend."""
                             "people_id": people_id_for_tools,
                         })
                         precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'get_field_soil_samples_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Get Soil Samples: field_id={fid}")
+                        tool_result = get_field_soil_samples_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'get_field_scouting_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Get Scouting: field_id={fid}")
+                        tool_result = get_field_scouting_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'add_scout_observation_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Add Scout Observation: field_id={fid}")
+                        tool_result = add_scout_observation_tool.invoke({
+                            "field_id":  fid,
+                            "category":  tc_args.get('category', 'General'),
+                            "severity":  tc_args.get('severity', 'Low'),
+                            "notes":     tc_args.get('notes', ''),
+                            "people_id": people_id_for_tools,
+                        })
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'get_field_activity_log_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Get Activity Log: field_id={fid}")
+                        tool_result = get_field_activity_log_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'log_field_activity_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Log Field Activity: field_id={fid}")
+                        tool_result = log_field_activity_tool.invoke({
+                            "field_id":       fid,
+                            "activity_type":  tc_args.get('activity_type', 'Other'),
+                            "activity_date":  tc_args.get('activity_date', ''),
+                            "product":        tc_args.get('product', ''),
+                            "rate":           float(tc_args.get('rate', 0) or 0) or None,
+                            "rate_unit":      tc_args.get('rate_unit', ''),
+                            "operator_name":  tc_args.get('operator_name', ''),
+                            "notes":          tc_args.get('notes', ''),
+                            "people_id":      people_id_for_tools,
+                        })
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'add_soil_sample_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Add Soil Sample: field_id={fid}")
+                        tool_result = add_soil_sample_tool.invoke({
+                            "field_id":       fid,
+                            "sample_label":   tc_args.get('sample_label', 'Sample'),
+                            "ph":             float(tc_args.get('ph', 0) or 0) or None,
+                            "organic_matter": float(tc_args.get('organic_matter', 0) or 0) or None,
+                            "nitrogen":       float(tc_args.get('nitrogen', 0) or 0) or None,
+                            "phosphorus":     float(tc_args.get('phosphorus', 0) or 0) or None,
+                            "potassium":      float(tc_args.get('potassium', 0) or 0) or None,
+                            "sample_date":    tc_args.get('sample_date', ''),
+                            "depth_cm":       int(tc_args.get('depth_cm', 30) or 30),
+                            "notes":          tc_args.get('notes', ''),
+                            "people_id":      people_id_for_tools,
+                        })
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'get_field_gdd_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        days = int(tc_args.get('days', 180) or 180)
+                        print(f"[Advisory Agent] Executing Get GDD: field_id={fid}, days={days}")
+                        tool_result = get_field_gdd_tool.invoke({"field_id": fid, "days": days, "people_id": people_id_for_tools})
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'get_field_irrigation_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        days = int(tc_args.get('days', 30) or 30)
+                        print(f"[Advisory Agent] Executing Get Irrigation: field_id={fid}, days={days}")
+                        tool_result = get_field_irrigation_tool.invoke({"field_id": fid, "days": days, "people_id": people_id_for_tools})
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'get_field_yield_forecast_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Get Yield Forecast: field_id={fid}")
+                        tool_result = get_field_yield_forecast_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'get_field_carbon_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Get Carbon: field_id={fid}")
+                        tool_result = get_field_carbon_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'get_farm_benchmark_tool' and PRECISION_AG_AVAILABLE:
+                        print(f"[Advisory Agent] Executing Farm Benchmark")
+                        tool_result = get_farm_benchmark_tool.invoke({"people_id": people_id_for_tools})
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'get_field_weather_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        days = int(tc_args.get('days', 14) or 14)
+                        print(f"[Advisory Agent] Executing Get Field Weather: field_id={fid}, days={days}")
+                        tool_result = get_field_weather_tool.invoke({"field_id": fid, "days": days, "people_id": people_id_for_tools})
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
                     elif tc_name == 'list_my_animals_tool' and FARM_DATA_AVAILABLE:
                         bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
                         studs_only = bool(tc_args.get('studs_only', False))
@@ -1050,6 +1313,36 @@ Write like you're talking to a friend."""
                         bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
                         print(f"[Advisory Agent] Executing Count My Animals Tool: business_id={bid}")
                         tool_result = count_my_animals_tool.invoke({"business_id": bid})
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'search_plants_tool' and KNOWLEDGE_BASE_AVAILABLE:
+                        query = tc_args.get('query', '')
+                        ptype = tc_args.get('plant_type', '')
+                        print(f"[Advisory Agent] Executing Search Plants: query='{query}', type='{ptype}'")
+                        tool_result = search_plants_tool.invoke({"query": query, "plant_type": ptype})
+                        knowledge_base_context = (knowledge_base_context + "\n\n" if knowledge_base_context else "") + tool_result
+                    elif tc_name == 'get_plant_detail_tool' and KNOWLEDGE_BASE_AVAILABLE:
+                        pid = int(tc_args.get('plant_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Get Plant Detail: plant_id={pid}")
+                        tool_result = get_plant_detail_tool.invoke({"plant_id": pid})
+                        knowledge_base_context = (knowledge_base_context + "\n\n" if knowledge_base_context else "") + tool_result
+                    elif tc_name == 'search_ingredients_tool' and KNOWLEDGE_BASE_AVAILABLE:
+                        query = tc_args.get('query', '')
+                        cat = tc_args.get('category', '')
+                        print(f"[Advisory Agent] Executing Search Ingredients: query='{query}', category='{cat}'")
+                        tool_result = search_ingredients_tool.invoke({"query": query, "category": cat})
+                        knowledge_base_context = (knowledge_base_context + "\n\n" if knowledge_base_context else "") + tool_result
+                    elif tc_name == 'get_ingredient_detail_tool' and KNOWLEDGE_BASE_AVAILABLE:
+                        iid = int(tc_args.get('ingredient_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Get Ingredient Detail: ingredient_id={iid}")
+                        tool_result = get_ingredient_detail_tool.invoke({"ingredient_id": iid})
+                        knowledge_base_context = (knowledge_base_context + "\n\n" if knowledge_base_context else "") + tool_result
+                    elif tc_name == 'get_animal_detail_tool' and KNOWLEDGE_BASE_AVAILABLE:
+                        aid = int(tc_args.get('animal_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Get Animal Detail: animal_id={aid}")
+                        tool_result = get_animal_detail_tool.invoke({
+                            "animal_id": aid,
+                            "people_id": people_id_for_tools,
+                        })
                         farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
                     elif tc_name == 'draft_produce_listing_tool' and ACTIONS_AVAILABLE:
                         bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
@@ -1261,7 +1554,7 @@ def mixed_advisory_node(state: FarmState):
     return run_advisory_agent(
         state,
         role_prompt="You are an integrated farming systems expert specializing in permaculture, mixed farming, and sustainable agricultural practices.",
-        rag_systems=[rag_livestock, rag_plant, rag_bakasura]
+        rag_systems=[rag_livestock, rag_plant, rag_bakasura, rag_hitl_charlie]
     )
 
 

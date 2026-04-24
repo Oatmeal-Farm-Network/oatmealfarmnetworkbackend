@@ -146,19 +146,6 @@ app_kwargs["lifespan"] = app_lifespan
 app = FastAPI(**app_kwargs)
 
 
-@app.options("/{rest_of_path:path}")
-async def options_handler(rest_of_path: str):
-    """Handle all CORS preflight requests without auth."""
-    return JSONResponse(
-        content={},
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-            "Access-Control-Allow-Headers": "Authorization, Content-Type, Accept",
-            "Access-Control-Max-Age": "86400",
-        },
-    )
-
 # ============================================================================
 # GLOBAL EXCEPTION HANDLER
 # ============================================================================
@@ -171,7 +158,12 @@ async def global_exception_handler(request: Request, exc: Exception):
         content={
             "status": "error",
             "message": "An internal error occurred. Please try again later.",
-        }
+        },
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Allow-Methods": "*",
+        },
     )
 
 # ============================================================================
@@ -192,7 +184,20 @@ async def cors_and_logging_middleware(request: Request, call_next):
             },
         )
     start_time = time.time()
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        duration = time.time() - start_time
+        logger.error(f"{request.method} {request.url.path} unhandled_error={exc!r} duration={duration:.3f}s")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error"},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Allow-Methods": "*",
+            },
+        )
     duration = time.time() - start_time
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Headers"] = "*"
@@ -434,7 +439,7 @@ async def chat(
 
     if state.next:
         print(f"[API] Resuming conversation for thread {request.thread_id}")
-        events = safe_graph_stream({"history": initial_history, "people_id": user_id}, config, stream_mode="values")
+        events = safe_graph_stream(Command(resume=request.user_input), config, stream_mode="values")
     else:
         existing_state = state.values if state.values else {}
         has_completed_conversation = existing_state.get("assessment_summary") and not state.next
@@ -531,24 +536,36 @@ Examples:
 
             events = safe_graph_stream(update, config, stream_mode="values")
         else:
-            # New conversation — seed people_id and business_id into graph state
+            # New conversation — seed people_id, business_id, and long-term memory
             print(f"[API] Starting new conversation for thread {request.thread_id}")
             print(f"[API] people_id={people_id}, business_id={business_id}")
             initial_history = (short_term_history + [f"User: {request.user_input}"])[-SHORT_TERM_N:] if short_term_history else [f"User: {request.user_input}"]
+            long_term_memory = chat_history.get_user_memory(user_id) if user_id else {}
+            if long_term_memory and any(long_term_memory.values()):
+                print(f"[API] Loaded long-term memory: locations={len(long_term_memory.get('locations', []))}, crops={len(long_term_memory.get('crops', []))}, topics={len(long_term_memory.get('recent_topics', []))}")
             events = safe_graph_stream(
                 {
                     "history": initial_history,
                     "people_id": people_id,
                     "business_id": business_id,
+                    "long_term_memory": long_term_memory,
                 },
                 config,
                 stream_mode="values",
             )
 
     events_list = []
-    for event in events:
-        events_list.append(event)
-        print(f"[API] Event keys: {list(event.keys())}")
+    try:
+        for event in events:
+            events_list.append(event)
+            print(f"[API] Event keys: {list(event.keys())}")
+    except Exception as stream_err:
+        logger.error(f"[API] Graph stream error: {stream_err}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": "Saige encountered an error processing your request. Please try again."},
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
 
     try:
         final_state = graph.get_state(config)
@@ -654,14 +671,6 @@ Examples:
 # ============================================================================
 # THREAD MANAGEMENT ENDPOINTS
 # ============================================================================
-
-@app.options("/threads")
-async def threads_options():
-    return JSONResponse(content={}, headers={
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Access-Control-Allow-Headers": "Authorization, Content-Type",
-    })
 
 @app.get("/threads")
 async def list_threads(
@@ -1281,6 +1290,111 @@ async def precision_ag_alerts(
         "status": "ok",
         "summary": _pa_field_alerts.invoke({"field_id": int(field_id or 0), "people_id": people_id}),
     }
+
+
+@app.get("/precision-ag/dashboard")
+async def precision_ag_dashboard(people_id: str = Depends(get_current_user)):
+    """Structured dashboard summary: fields with latest NDVI, alert counts by severity,
+    and irrigation urgency for the best-performing field."""
+    if not _PA_AVAILABLE:
+        return {"status": "unavailable", "fields": [], "alerts": {}, "irrigation_urgency": None}
+    try:
+        from precision_ag import _business_ids_for_people, _query, _BACKEND_URL
+        import requests as _req
+
+        biz_ids = _business_ids_for_people(people_id)
+        if not biz_ids:
+            return {"status": "ok", "fields": [], "alerts": {}, "irrigation_urgency": None}
+
+        placeholders = ",".join(["%s"] * len(biz_ids))
+
+        # Fields with their latest NDVI via the most recent Analysis + VegetationIndex
+        field_rows = _query(
+            f"SELECT f.FieldID, f.Name, f.CropType, f.FieldSizeHectares, f.MonitoringEnabled "
+            f"FROM dbo.Field f "
+            f"WHERE f.BusinessID IN ({placeholders}) AND f.DeletedAt IS NULL "
+            f"ORDER BY f.Name",
+            tuple(biz_ids),
+        )
+
+        fields_out = []
+        best_field_id = None
+        best_ndvi = None
+
+        for fld in field_rows:
+            fid = fld["fieldid"]
+            # Latest analysis for this field
+            an_rows = _query(
+                "SELECT TOP 1 a.AnalysisID FROM dbo.Analysis a "
+                "WHERE a.FieldID = %s ORDER BY a.AnalysisDate DESC",
+                (fid,),
+            )
+            ndvi = None
+            if an_rows:
+                aid = an_rows[0]["analysisid"]
+                vi_rows = _query(
+                    "SELECT MeanValue FROM dbo.VegetationIndex "
+                    "WHERE AnalysisID = %s AND IndexType = 'NDVI'",
+                    (aid,),
+                )
+                if vi_rows and vi_rows[0].get("meanvalue") is not None:
+                    try:
+                        ndvi = round(float(vi_rows[0]["meanvalue"]), 3)
+                    except (TypeError, ValueError):
+                        pass
+
+            entry = {
+                "field_id": fid,
+                "name": fld.get("name") or "Unnamed",
+                "crop_type": fld.get("croptype") or None,
+                "size_ha": float(fld["fieldsizehectares"]) if fld.get("fieldsizehectares") else None,
+                "monitoring_enabled": bool(fld.get("monitoringenabled")),
+                "ndvi": ndvi,
+            }
+            fields_out.append(entry)
+
+            if ndvi is not None and (best_ndvi is None or ndvi > best_ndvi):
+                best_ndvi = ndvi
+                best_field_id = fid
+
+        # Alert counts by severity (active/open only)
+        sev_rows = _query(
+            f"SELECT a.Severity, COUNT(*) AS cnt "
+            f"FROM dbo.Alert a "
+            f"JOIN dbo.Field f ON f.FieldID = a.FieldID "
+            f"WHERE f.BusinessID IN ({placeholders}) "
+            f"  AND (a.Status IS NULL OR a.Status <> 'resolved') "
+            f"GROUP BY a.Severity",
+            tuple(biz_ids),
+        )
+        alerts_by_sev: dict = {}
+        for r in sev_rows:
+            sev = (r.get("severity") or "unknown").lower()
+            alerts_by_sev[sev] = int(r.get("cnt") or 0)
+
+        # Irrigation urgency for the best field (calls OFN backend)
+        irrigation_urgency = None
+        if best_field_id:
+            try:
+                resp = _req.get(
+                    f"{_BACKEND_URL}/api/fields/{best_field_id}/irrigation?days=7",
+                    timeout=5,
+                )
+                if resp.ok:
+                    irrigation_urgency = resp.json().get("urgency")
+            except Exception:
+                pass
+
+        return {
+            "status": "ok",
+            "fields": fields_out,
+            "alerts": alerts_by_sev,
+            "irrigation_urgency": irrigation_urgency,
+            "best_field_id": best_field_id,
+        }
+    except Exception as exc:
+        print(f"[API] /precision-ag/dashboard error: {exc}")
+        return {"status": "error", "fields": [], "alerts": {}, "irrigation_urgency": None}
 
 
 # ============================================================================

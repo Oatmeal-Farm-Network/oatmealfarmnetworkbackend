@@ -284,6 +284,51 @@ class ChatHistory:
             logger.error("[ChatHistory] Get threads error: %s", e)
             return [], None
 
+    def get_user_memory(self, user_id: str, max_threads: int = 10) -> Dict[str, Any]:
+        """Aggregate farm_context from this user's recent completed threads.
+
+        Returns a lightweight profile Saige can inject into prompts so she
+        remembers locations, crops/livestock, farm size, and recent concerns
+        across conversations. Safe to call on every turn — bounded query.
+        """
+        if self.threads_col is None:
+            return {}
+        try:
+            query = (
+                self.threads_col.where("user_id", "==", user_id)
+                .where("status", "==", "complete")
+                .order_by("updated_at", direction=firestore.Query.DESCENDING)
+                .limit(max_threads)
+            )
+            locations: List[str] = []
+            crops: List[str] = []
+            farm_sizes: List[str] = []
+            recent_topics: List[str] = []
+            seen_loc, seen_crop, seen_size = set(), set(), set()
+            for doc in query.stream():
+                ctx = (doc.to_dict() or {}).get("farm_context") or {}
+                loc = ctx.get("location")
+                if loc and loc not in seen_loc:
+                    locations.append(loc); seen_loc.add(loc)
+                for c in (ctx.get("crops") or []):
+                    if c not in seen_crop:
+                        crops.append(c); seen_crop.add(c)
+                fs = ctx.get("farm_size")
+                if fs and fs not in seen_size:
+                    farm_sizes.append(fs); seen_size.add(fs)
+                summary = ctx.get("assessment_summary")
+                if summary:
+                    recent_topics.append(summary)
+            return {
+                "locations": locations,
+                "crops": crops,
+                "farm_sizes": farm_sizes,
+                "recent_topics": recent_topics[:5],
+            }
+        except Exception as e:
+            logger.error("[ChatHistory] get_user_memory error: %s", e)
+            return {}
+
     def get_messages(
         self,
         user_id: str,

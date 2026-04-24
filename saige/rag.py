@@ -8,6 +8,7 @@ from config import (
     PLANT_KNOWLEDGE_COLLECTION,
     BAKASURA_DOCS_COLLECTION,
     NEWS_ARTICLES_COLLECTION,
+    HITL_CHARLIE_COLLECTION,
     RAG_AVAILABLE
 )
 
@@ -133,6 +134,7 @@ rag_livestock = RAGSystem(LIVESTOCK_KNOWLEDGE_COLLECTION, label="livestock_knowl
 rag_plant = RAGSystem(PLANT_KNOWLEDGE_COLLECTION, label="plant_knowledge")
 rag_bakasura = RAGSystem(BAKASURA_DOCS_COLLECTION, label="bakasura-docs")
 rag_news = RAGSystem(NEWS_ARTICLES_COLLECTION, label="news_articles")
+rag_hitl_charlie = RAGSystem(HITL_CHARLIE_COLLECTION, label="hitl-charlie")
 
 # Backward-compatible alias
 rag = rag_livestock
