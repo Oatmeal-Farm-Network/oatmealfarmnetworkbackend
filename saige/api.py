@@ -145,6 +145,14 @@ app_kwargs["lifespan"] = app_lifespan
 
 app = FastAPI(**app_kwargs)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.options("/{rest_of_path:path}")
 async def options_handler(rest_of_path: str):
@@ -192,7 +200,20 @@ async def cors_and_logging_middleware(request: Request, call_next):
             },
         )
     start_time = time.time()
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        duration = time.time() - start_time
+        logger.error(f"{request.method} {request.url.path} unhandled_error={exc!r} duration={duration:.3f}s")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error"},
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Allow-Methods": "*",
+            },
+        )
     duration = time.time() - start_time
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Headers"] = "*"

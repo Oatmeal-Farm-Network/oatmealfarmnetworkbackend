@@ -413,6 +413,78 @@ class CropRotationEntry(Base):
     CreatedAt    = Column(DateTime)
     UpdatedAt    = Column(DateTime)
 
+# ── FIELD SCOUTING ───────────────────────────────────────────────
+class FieldScout(Base):
+    __tablename__ = "FieldScout"
+    ScoutID    = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    FieldID    = Column(Integer, index=True)
+    BusinessID = Column(Integer, index=True)
+    PeopleID   = Column(Integer)
+    ObservedAt = Column(DateTime)
+    Category   = Column(String(50))
+    Severity   = Column(String(20))
+    Notes      = Column(Text)
+    Latitude   = Column(Decimal(10, 7))
+    Longitude  = Column(Decimal(10, 7))
+    ImageUrl   = Column(String(1000))
+    CreatedAt  = Column(DateTime)
+
+# ── SOIL SAMPLES ─────────────────────────────────────────────────
+class FieldSoilSample(Base):
+    __tablename__ = "FieldSoilSample"
+    SampleID      = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    FieldID       = Column(Integer, index=True)
+    BusinessID    = Column(Integer, index=True)
+    SampleDate    = Column(Date)
+    SampleLabel   = Column(String(100))
+    Latitude      = Column(Decimal(10, 7))
+    Longitude     = Column(Decimal(10, 7))
+    Depth_cm      = Column(Integer)
+    pH            = Column(Decimal(4, 2))
+    OrganicMatter = Column(Decimal(5, 2))
+    Nitrogen      = Column(Decimal(8, 2))
+    Phosphorus    = Column(Decimal(8, 2))
+    Potassium     = Column(Decimal(8, 2))
+    Sulfur        = Column(Decimal(8, 2))
+    Calcium       = Column(Decimal(8, 2))
+    Magnesium     = Column(Decimal(8, 2))
+    CEC           = Column(Decimal(6, 2))
+    Notes         = Column(Text)
+    CreatedAt     = Column(DateTime)
+
+# ── PRESCRIPTIONS ─────────────────────────────────────────────────
+class FieldPrescription(Base):
+    __tablename__ = "FieldPrescription"
+    PrescriptionID = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    FieldID        = Column(Integer, index=True)
+    BusinessID     = Column(Integer, index=True)
+    Name           = Column(String(255))
+    Product        = Column(String(255))
+    Unit           = Column(String(50))
+    IndexKey       = Column(String(20))
+    ZoneMethod     = Column(String(50))
+    NumZones       = Column(Integer)
+    ZoneRatesJSON  = Column(Text)
+    AnalysisDate   = Column(Date)
+    Notes          = Column(Text)
+    CreatedAt      = Column(DateTime)
+
+# ── FIELD ACTIVITY LOG ───────────────────────────────────────────
+class FieldActivityLog(Base):
+    __tablename__ = "FieldActivityLog"
+    ActivityID   = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    FieldID      = Column(Integer, index=True)
+    BusinessID   = Column(Integer, index=True)
+    PeopleID     = Column(Integer)
+    ActivityDate = Column(Date)
+    ActivityType = Column(String(50))
+    Product      = Column(String(255))
+    Rate         = Column(Decimal(10, 2))
+    RateUnit     = Column(String(50))
+    OperatorName = Column(String(255))
+    Notes        = Column(Text)
+    CreatedAt    = Column(DateTime)
+
 # ── BUSINESS ACCESS ──────────────────────────────────────────────
 class BusinessAccess(Base):
     __tablename__ = "BusinessAccess"

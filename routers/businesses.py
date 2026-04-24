@@ -83,17 +83,20 @@ def get_countries(business_type_id: str = None, db: Session = Depends(get_db)):
     try:
         if business_type_id:
             rows = db.execute(text("""
-                SELECT DISTINCT c.name
+                SELECT DISTINCT a.AddressCountry
                 FROM Business b
                 JOIN Address a ON b.AddressID = a.AddressID
-                JOIN country c ON a.country_id = c.country_id
                 WHERE b.BusinessTypeID = :btype
-                  AND c.name IS NOT NULL AND c.name <> ''
-                ORDER BY c.name
+                  AND a.AddressCountry IS NOT NULL AND a.AddressCountry <> ''
+                ORDER BY a.AddressCountry
             """), {"btype": int(business_type_id)}).fetchall()
             return [r[0] for r in rows if r[0]]
-        countries = db.query(models.Country.name).order_by(models.Country.name).all()
-        return [c[0] for c in countries if c[0]]
+        rows = db.execute(text("""
+            SELECT DISTINCT AddressCountry FROM Address
+            WHERE AddressCountry IS NOT NULL AND AddressCountry <> ''
+            ORDER BY AddressCountry
+        """)).fetchall()
+        return [r[0] for r in rows if r[0]]
     except Exception as e:
         import traceback
         traceback.print_exc()

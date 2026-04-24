@@ -13,9 +13,11 @@ from typing import Optional
 
 router = APIRouter(prefix="/api", tags=["precision-ag"])
 
-BIOMASS_ESTIMATOR_URL = os.getenv(
-    "BIOMASS_ESTIMATOR_URL",
-    "https://biomass-estimator-802455386518.us-central1.run.app",
+CROP_MONITOR_URL = os.getenv(
+    "CROP_MONITOR_URL",
+    "https://oatmealfarmnetworkcropmonitorbackend-git-802455386518.us-central1.run.app"
+    if os.getenv("GAE_ENV") or os.getenv("K_SERVICE")
+    else "http://127.0.0.1:8002",
 )
 BIOMASS_GCS_BUCKET = os.getenv("BIOMASS_GCS_BUCKET", "oatmeal-farm-network-images")
 BIOMASS_GCS_PREFIX = os.getenv("BIOMASS_GCS_PREFIX", "biomass-uploads")
@@ -224,31 +226,40 @@ def _serialize_biomass_row(row: "models.FieldBiomassAnalysis") -> dict:
     }
 
 
-def _call_estimator_url(image_url: str, source: str, field_id: int) -> dict:
+def _ndvi_to_biomass(ndvi: float, crop_type: str = None) -> dict:
+    """
+    Convert NDVI mean to dry-matter biomass estimate.
+    Formula: linear ramp from 0 at NDVI=0.1 (bare soil) to 10,000 kg DM/ha at NDVI=1.0.
+    Confidence is proportional to how green the canopy is (higher NDVI = more reliable).
+    """
+    biomass = max(0.0, (ndvi - 0.1) / 0.9 * 10000.0)
+    confidence = min(1.0, max(0.1, (ndvi - 0.1) / 0.7))
+    return {
+        "biomass_kg_per_ha": round(biomass, 1),
+        "confidence": round(confidence, 3),
+        "model_version": "ndvi-linear-v1",
+        "features": {"ndvi": round(ndvi, 4), "formula": "max(0,(ndvi-0.1)/0.9*10000)"},
+    }
+
+
+def _fetch_latest_crop_analysis(field_id: int) -> dict | None:
+    """Pull the most recent stored analysis from the crop monitoring backend."""
     try:
-        r = requests.post(
-            f"{BIOMASS_ESTIMATOR_URL}/predict/url",
-            json={"image_url": image_url, "source": source, "field_id": field_id},
-            timeout=60,
+        r = requests.get(
+            f"{CROP_MONITOR_URL}/api/fields/{field_id}/analyses?limit=1",
+            timeout=15,
         )
-        r.raise_for_status()
-        return r.json()
-    except requests.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"Biomass estimator unreachable: {e}")
+        if not r.ok:
+            return None
+        data = r.json()
+        analyses = data.get("analyses") or []
+        return analyses[0] if analyses else None
+    except requests.RequestException:
+        return None
 
 
 def _call_estimator_upload(image_bytes: bytes, filename: str, content_type: str, source: str, field_id: int) -> dict:
-    try:
-        r = requests.post(
-            f"{BIOMASS_ESTIMATOR_URL}/predict/upload",
-            files={"file": (filename, image_bytes, content_type)},
-            data={"source": source, "field_id": str(field_id)},
-            timeout=90,
-        )
-        r.raise_for_status()
-        return r.json()
-    except requests.RequestException as e:
-        raise HTTPException(status_code=502, detail=f"Biomass estimator unreachable: {e}")
+    raise HTTPException(status_code=501, detail="Upload-based biomass estimation not yet implemented")
 
 
 @router.get("/fields/{field_id}/biomass")
@@ -296,50 +307,45 @@ def get_biomass(field_id: int, db: Session = Depends(get_db)):
 
 @router.post("/fields/{field_id}/biomass/satellite")
 def analyze_satellite(field_id: int, db: Session = Depends(get_db)):
-    """Fetch recent Sentinel-2 imagery via GEE and run biomass estimator."""
-    import sys
-    print(f"\n===== [biomass/satellite] field_id={field_id} =====", flush=True)
-    sys.stdout.flush()
-
+    """
+    Compute biomass from the latest Sentinel-2 NDVI analysis stored by the
+    crop monitoring backend.  No GEE or external ML service required — the
+    crop monitoring backend already pulls real satellite data on its own schedule.
+    """
     field = db.query(models.Field).filter(models.Field.FieldID == field_id).first()
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
 
-    print(f"[biomass/satellite] field lat={field.Latitude} lon={field.Longitude} has_boundary={bool(field.BoundaryGeoJSON)}", flush=True)
-
-    try:
-        from gee_helper import get_sentinel2_thumbnail_url, is_available, last_init_error
-        print("[biomass/satellite] gee_helper imported OK", flush=True)
-    except ImportError as e:
-        print(f"[biomass/satellite] gee_helper IMPORT FAILED: {e}", flush=True)
-        raise HTTPException(status_code=503, detail=f"GEE helper unavailable: {e}")
-
-    if not is_available():
-        err = last_init_error() or "unknown reason"
-        print(f"[biomass/satellite] GEE not initialized: {err}", flush=True)
+    analysis = _fetch_latest_crop_analysis(field_id)
+    if not analysis:
         raise HTTPException(
             status_code=503,
-            detail=f"Satellite imagery service is not configured: {err}",
+            detail="No satellite analysis available yet for this field. "
+                   "Run an analysis from the Crop Monitor dashboard first.",
         )
 
-    sat = get_sentinel2_thumbnail_url(
-        latitude=float(field.Latitude) if field.Latitude is not None else None,
-        longitude=float(field.Longitude) if field.Longitude is not None else None,
-        boundary_geojson=field.BoundaryGeoJSON,
-    )
-    print(f"[biomass/satellite] gee returned: {sat}", flush=True)
-    if not sat:
+    # Find NDVI in vegetation_indices list
+    indices = analysis.get("vegetation_indices") or []
+    ndvi_entry = next((i for i in indices if (i.get("index_type") or "").upper() == "NDVI"), None)
+    if not ndvi_entry or ndvi_entry.get("mean") is None:
         raise HTTPException(
             status_code=503,
-            detail="No recent cloud-free satellite imagery available for this field",
+            detail="Latest analysis has no NDVI data. Re-run analysis from Crop Monitor.",
         )
 
-    prediction = _call_estimator_url(sat["url"], source="satellite", field_id=field_id)
+    ndvi_mean = float(ndvi_entry["mean"])
+    prediction = _ndvi_to_biomass(ndvi_mean, crop_type=field.CropType)
 
+    # Use the analysis date as the satellite capture date
     try:
-        captured = datetime.fromisoformat(sat["captured_at"].replace("Z", ""))
+        captured = datetime.fromisoformat(
+            (analysis.get("satellite_acquired_at") or analysis.get("analysis_date") or "").replace("Z", "")
+        )
     except Exception:
         captured = datetime.utcnow()
+
+    # NDVI heatmap URL from crop monitoring backend
+    image_url = f"{CROP_MONITOR_URL}/api/fields/{field_id}/heatmap/ndvi"
 
     row = models.FieldBiomassAnalysis(
         FieldID=      field_id,
@@ -347,7 +353,7 @@ def analyze_satellite(field_id: int, db: Session = Depends(get_db)):
         Source=       "satellite",
         BiomassKgHa=  prediction.get("biomass_kg_per_ha"),
         Confidence=   prediction.get("confidence"),
-        ImageUrl=     sat["url"],
+        ImageUrl=     image_url,
         CapturedAt=   captured,
         ModelVersion= prediction.get("model_version"),
         FeaturesJSON= json.dumps(prediction.get("features") or {}),
