@@ -217,6 +217,58 @@ def send_registration_confirmation(
     return _send(to_email, subject, html)
 
 
+def send_sponsor_confirmation(to_email: str, sponsor_name: str,
+                              event: dict, tier_name: str, amount: float | None,
+                              benefits_html: str | None = None) -> bool:
+    """Welcome email when a sponsor's status flips to confirmed. Confirms tier
+    + amount + lists their benefits. Encourages logo upload + COI submission."""
+    if not to_email:
+        return False
+    name    = sponsor_name or "there"
+    ev_name = event.get('EventName') or 'the event'
+    biz_id  = event.get('BusinessID')
+    ev_id   = event.get('EventID')
+    sponsor_dash = f"{OFN_BASE_URL}/events/{ev_id}/admin/sponsorship"
+    if biz_id:
+        sponsor_dash += f"?BusinessID={biz_id}"
+    amt = f" (${amount:,.2f})" if amount else ""
+    subject = f"You're confirmed as a {tier_name} sponsor of {ev_name}"
+    html = f"""<!doctype html><html><body style="margin:0;background:#f5f5f2;font-family:system-ui,-apple-system,Segoe UI,sans-serif">
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f5f5f2;padding:20px 0">
+<tr><td align="center">
+<table role="presentation" width="560" cellspacing="0" cellpadding="0"
+       style="background:#fff;border-radius:12px;padding:28px;max-width:92vw">
+  <tr><td>
+    <h2 style="margin:0 0 8px;color:#3D6B34">Welcome aboard, {name}!</h2>
+    <p style="font-size:14px;color:#555;margin:0 0 14px">
+      You're confirmed as a <strong>{tier_name} sponsor</strong> of
+      <strong>{ev_name}</strong>{amt}. Thank you for supporting the event.
+    </p>
+    {('<div style="background:#fff7e6;border-left:4px solid #f59e0b;padding:12px 14px;margin:14px 0;border-radius:4px"><strong>Your benefits:</strong>' + benefits_html + '</div>') if benefits_html else ''}
+    <p style="font-size:14px;color:#555;margin:14px 0">Next steps:</p>
+    <ul style="font-size:14px;color:#555;margin:0 0 18px;padding-left:20px">
+      <li>Send us your logo (PNG/SVG, transparent background) for the website + signage</li>
+      <li>Submit a Certificate of Insurance naming the event host as additional insured</li>
+      <li>Confirm any sponsored sessions or table giveaways</li>
+    </ul>
+    <div style="text-align:center;margin:22px 0">
+      <a href="{sponsor_dash}"
+         style="display:inline-block;background:#3D6B34;color:#fff;padding:12px 22px;
+                border-radius:6px;text-decoration:none;font-size:14px;font-weight:600">
+        Sponsor dashboard →
+      </a>
+    </div>
+    <p style="font-size:12px;color:#999;margin:16px 0 0">
+      Questions? Reply to this email and we'll connect you with the organizer.
+    </p>
+  </td></tr>
+</table>
+</td></tr>
+</table>
+</body></html>"""
+    return _send(to_email, subject, html)
+
+
 def send_event_testimonial_request(to_email: str, attendee_name: str,
                                    event: dict) -> bool:
     """Post-event email asking the attendee to share a quick testimonial.

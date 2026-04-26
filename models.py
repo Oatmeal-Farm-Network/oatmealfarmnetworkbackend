@@ -376,6 +376,10 @@ class FieldNote(Base):
     Category   = Column(String(100))
     Title      = Column(String(500))
     Content    = Column(Text)
+    Severity   = Column(String(20))           # Low/Medium/High/Critical (scouting-style notes)
+    Latitude   = Column(Decimal(10, 7))       # optional GPS pin
+    Longitude  = Column(Decimal(10, 7))
+    ImageUrl   = Column(String(1000))         # optional photo URL
     CreatedAt  = Column(DateTime)
     UpdatedAt  = Column(DateTime)
 
@@ -394,6 +398,69 @@ class FieldBiomassAnalysis(Base):
     FeaturesJSON      = Column(Text)                # raw feature payload from estimator
     CreatedByPeopleID = Column(Integer)
     CreatedAt         = Column(DateTime)
+
+# ── MATURITY SAMPLES ─────────────────────────────────────────────
+# Ground-truth ripeness/quality readings from refractometer, NIR, lab, etc.
+# Used by the Maturity Engine to fit a per-field curve and predict the
+# peak-antioxidant harvest date.
+class FieldMaturitySample(Base):
+    __tablename__ = "FieldMaturitySample"
+    SampleID             = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    FieldID              = Column(Integer, index=True)
+    BusinessID           = Column(Integer, index=True)
+    PeopleID             = Column(Integer)
+    SampleDate           = Column(Date)
+    Cultivar             = Column(String(100))
+    SampleSize           = Column(Integer)
+    LabName              = Column(String(200))
+    BrixDegrees          = Column(Decimal(5, 2))
+    FirmnessKgF          = Column(Decimal(5, 2))
+    AnthocyaninMgG       = Column(Decimal(7, 3))
+    PH                   = Column(Decimal(4, 2))
+    TitratableAcidityPct = Column(Decimal(5, 2))
+    ColorScoreL          = Column(Decimal(6, 2))
+    ColorScoreA          = Column(Decimal(6, 2))
+    ColorScoreB          = Column(Decimal(6, 2))
+    DryMatterPct         = Column(Decimal(5, 2))
+    Notes                = Column(Text)
+    ImageUrl             = Column(String(1000))
+    CreatedAt            = Column(DateTime)
+    UpdatedAt            = Column(DateTime)
+
+
+class FieldHarvestTarget(Base):
+    __tablename__ = "FieldHarvestTarget"
+    TargetID         = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    FieldID          = Column(Integer, index=True)
+    BusinessID       = Column(Integer, index=True)
+    DestinationLabel = Column(String(200))
+    DestinationMiles = Column(Decimal(7, 1))    # one-way road miles farm → DC
+    ReceivingLagDays = Column(Integer)
+    ShelfTargetDate  = Column(Date)
+    Notes            = Column(Text)
+    CreatedAt        = Column(DateTime)
+    UpdatedAt        = Column(DateTime)
+
+
+# ── FIELD ASSESSMENT REPORTS ─────────────────────────────────────
+# Persisted Saige-authored consultant reports. ReportJSON is the parsed
+# structured payload the UI renders; RawText is the raw LLM output kept for
+# audit; ContextJSON is the input data snapshot so we can replay or RAG it.
+class FieldAssessmentReport(Base):
+    __tablename__ = "FieldAssessmentReport"
+    ReportID      = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    FieldID       = Column(Integer, index=True)
+    BusinessID    = Column(Integer, index=True)
+    PeopleID      = Column(Integer)
+    GeneratedAt   = Column(DateTime)
+    Headline      = Column(String(500))
+    OverallHealth = Column(String(20))
+    Confidence    = Column(String(20))
+    ReportJSON    = Column(Text)
+    RawText       = Column(Text)
+    ContextJSON   = Column(Text)
+    DeletedAt     = Column(DateTime)
+
 
 # ── CROP ROTATION ────────────────────────────────────────────────
 class CropRotationEntry(Base):

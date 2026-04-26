@@ -10,6 +10,7 @@ import models
 import requests
 from pydantic import BaseModel, validator
 from typing import Optional
+from geo_utils import polygon_area_hectares
 
 router = APIRouter(prefix="/api", tags=["precision-ag"])
 
@@ -112,6 +113,12 @@ def create_field(field: FieldCreate, db: Session = Depends(get_db)):
             except ValueError:
                 planting_date = None
 
+        # Derive size from the drawn boundary when one is provided — the
+        # polygon is the source of truth, so it overrides any user-entered
+        # number. Falls back to the user value when no boundary was drawn.
+        computed_size = polygon_area_hectares(field.boundary_geojson)
+        size_hectares = computed_size if computed_size is not None else field.field_size_hectares
+
         new_field = models.Field(
             BusinessID=             field.business_id,
             Name=                   field.name,
@@ -119,7 +126,7 @@ def create_field(field: FieldCreate, db: Session = Depends(get_db)):
             CropType=               field.crop_type,
             Latitude=               field.latitude,
             Longitude=              field.longitude,
-            FieldSizeHectares=      field.field_size_hectares,
+            FieldSizeHectares=      size_hectares,
             PlantingDate=           planting_date,
             BoundaryGeoJSON=        field.boundary_geojson,
             MonitoringIntervalDays= field.monitoring_interval_days,
@@ -150,12 +157,15 @@ def update_field(field_id: int, field: FieldCreate, db: Session = Depends(get_db
                 planting_date = date.fromisoformat(field.planting_date)
             except ValueError:
                 planting_date = None
+        computed_size = polygon_area_hectares(field.boundary_geojson)
         existing.Name                   = field.name
         existing.Address                = field.address
         existing.CropType               = field.crop_type
         existing.Latitude               = field.latitude
         existing.Longitude              = field.longitude
-        existing.FieldSizeHectares      = field.field_size_hectares
+        existing.FieldSizeHectares      = (
+            computed_size if computed_size is not None else field.field_size_hectares
+        )
         existing.PlantingDate           = planting_date
         existing.BoundaryGeoJSON        = field.boundary_geojson
         existing.MonitoringIntervalDays = field.monitoring_interval_days
@@ -305,13 +315,9 @@ def get_biomass(field_id: int, db: Session = Depends(get_db)):
         return empty
 
 
-@router.post("/fields/{field_id}/biomass/satellite")
-def analyze_satellite(field_id: int, db: Session = Depends(get_db)):
-    """
-    Compute biomass from the latest Sentinel-2 NDVI analysis stored by the
-    crop monitoring backend.  No GEE or external ML service required — the
-    crop monitoring backend already pulls real satellite data on its own schedule.
-    """
+def _run_satellite_biomass(field_id: int, db: Session) -> "models.FieldBiomassAnalysis":
+    """Pull the latest NDVI analysis, convert to biomass, persist, and return the row.
+    Shared by the manual-trigger satellite endpoint and the auto-resolver endpoint."""
     field = db.query(models.Field).filter(models.Field.FieldID == field_id).first()
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
@@ -324,7 +330,6 @@ def analyze_satellite(field_id: int, db: Session = Depends(get_db)):
                    "Run an analysis from the Crop Monitor dashboard first.",
         )
 
-    # Find NDVI in vegetation_indices list
     indices = analysis.get("vegetation_indices") or []
     ndvi_entry = next((i for i in indices if (i.get("index_type") or "").upper() == "NDVI"), None)
     if not ndvi_entry or ndvi_entry.get("mean") is None:
@@ -336,7 +341,6 @@ def analyze_satellite(field_id: int, db: Session = Depends(get_db)):
     ndvi_mean = float(ndvi_entry["mean"])
     prediction = _ndvi_to_biomass(ndvi_mean, crop_type=field.CropType)
 
-    # Use the analysis date as the satellite capture date
     try:
         captured = datetime.fromisoformat(
             (analysis.get("satellite_acquired_at") or analysis.get("analysis_date") or "").replace("Z", "")
@@ -344,7 +348,6 @@ def analyze_satellite(field_id: int, db: Session = Depends(get_db)):
     except Exception:
         captured = datetime.utcnow()
 
-    # NDVI heatmap URL from crop monitoring backend
     image_url = f"{CROP_MONITOR_URL}/api/fields/{field_id}/heatmap/ndvi"
 
     row = models.FieldBiomassAnalysis(
@@ -362,7 +365,60 @@ def analyze_satellite(field_id: int, db: Session = Depends(get_db)):
     db.add(row)
     db.commit()
     db.refresh(row)
+    return row
+
+
+@router.post("/fields/{field_id}/biomass/satellite")
+def analyze_satellite(field_id: int, db: Session = Depends(get_db)):
+    """
+    Compute biomass from the latest Sentinel-2 NDVI analysis stored by the
+    crop monitoring backend.  No GEE or external ML service required — the
+    crop monitoring backend already pulls real satellite data on its own schedule.
+    """
+    row = _run_satellite_biomass(field_id, db)
     return _serialize_biomass_row(row)
+
+
+@router.post("/fields/{field_id}/biomass/resolve")
+def resolve_biomass(field_id: int, db: Session = Depends(get_db)):
+    """
+    Improve biomass-estimate confidence by averaging a fresh satellite run
+    with up to 4 prior recent satellite runs. Returns the combined estimate
+    plus per-sample detail so the caller can show how the average was reached.
+    """
+    fresh = _run_satellite_biomass(field_id, db)
+
+    samples = (
+        db.query(models.FieldBiomassAnalysis)
+        .filter(
+            models.FieldBiomassAnalysis.FieldID == field_id,
+            models.FieldBiomassAnalysis.Source == "satellite",
+        )
+        .order_by(desc(models.FieldBiomassAnalysis.CapturedAt))
+        .limit(5)
+        .all()
+    )
+
+    biomass_vals   = [float(s.BiomassKgHa) for s in samples if s.BiomassKgHa is not None]
+    conf_vals      = [float(s.Confidence)  for s in samples if s.Confidence  is not None]
+    avg_biomass    = round(sum(biomass_vals) / len(biomass_vals), 1) if biomass_vals else None
+    # Averaging N independent samples reduces noise by ~sqrt(N), so confidence
+    # in the combined estimate scales the same way (capped at 0.95).
+    if conf_vals:
+        n = len(conf_vals)
+        boost = min(0.95, (sum(conf_vals) / n) * (n ** 0.5))
+        avg_confidence = round(boost, 3)
+    else:
+        avg_confidence = None
+
+    return {
+        "field_id":         field_id,
+        "fresh_sample":     _serialize_biomass_row(fresh),
+        "samples":          [_serialize_biomass_row(s) for s in samples],
+        "n_samples":        len(samples),
+        "averaged_biomass_kg_per_ha": avg_biomass,
+        "averaged_confidence":        avg_confidence,
+    }
 
 
 @router.post("/fields/{field_id}/biomass/upload")

@@ -116,11 +116,21 @@ try:
         get_field_carbon_tool,
         get_farm_benchmark_tool,
         get_field_weather_tool,
+        get_field_biomass_tool,
+        improve_field_biomass_confidence_tool,
+        get_field_maturity_tool,
+        log_maturity_sample_tool,
+        get_field_climate_forecast_tool,
+        get_field_water_use_tool,
+        get_field_agronomy_tool,
+        get_field_zones_tool,
+        get_field_assessment_history_tool,
     )
     PRECISION_AG_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] precision_ag unavailable: {_e}")
     precision_ag_tools = []
+    get_field_zones_tool = None
     list_my_fields_tool = None
     get_field_analysis_tool = None
     get_field_history_tool = None
@@ -137,7 +147,23 @@ except Exception as _e:
     get_field_carbon_tool = None
     get_farm_benchmark_tool = None
     get_field_weather_tool = None
+    get_field_biomass_tool = None
+    improve_field_biomass_confidence_tool = None
+    get_field_maturity_tool = None
+    log_maturity_sample_tool = None
+    get_field_climate_forecast_tool = None
+    get_field_water_use_tool = None
+    get_field_agronomy_tool = None
+    get_field_assessment_history_tool = None
     PRECISION_AG_AVAILABLE = False
+
+try:
+    from business_ops import business_ops_tools
+    BUSINESS_OPS_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] business_ops unavailable: {_e}")
+    business_ops_tools = []
+    BUSINESS_OPS_AVAILABLE = False
 
 try:
     from farm_data import (
@@ -793,7 +819,14 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
             _answer = f"Your BusinessID is {_bid}." if _bid else "No BusinessID is set in this session. Try opening Saige from your business page."
         else:
             try:
-                _resp = llm.invoke(f"You are Saige, a friendly assistant. Answer directly: {_msg}")
+                _resp = llm.invoke(
+                    "You are Saige, a farm assistant. The user is mid-conversation. "
+                    "Answer the question directly and concisely. "
+                    "Do NOT introduce yourself, do NOT greet the user, and do NOT open with phrases like "
+                    "'Hello there', 'Hi', 'I'm Saige', or 'your friendly assistant'. "
+                    "Skip the preamble — start with the answer.\n\n"
+                    f"Question: {_msg}"
+                )
                 _answer = _resp.content if hasattr(_resp, "content") else str(_resp)
             except Exception as _e:
                 _answer = "I am here to help! Could you rephrase your question?"
@@ -928,6 +961,29 @@ PRECISION AG — Field Data (always start with list_my_fields_tool if field_id i
 - get_field_carbon_tool(field_id): soil OM trends, SOC stock estimates, cover crop history, rotation diversity, sustainability score. Use for "carbon sequestration", "soil health trend", "regenerative ag score", "how sustainable is my farm".
 - get_farm_benchmark_tool(): compare all fields by NDVI/health/trend — ranks best-to-worst. Use for "which field is doing best", "farm overview", "compare my fields", "which field needs most attention".
 - get_field_weather_tool(field_id, days): recent temp/precipitation/ET₀ at the field location. Use for "recent weather on my farm", "how much rain", when weather context helps agronomic advice.
+- get_field_biomass_tool(field_id): current dry-matter biomass estimate (kg DM/ha) for a field with confidence and capture date. If confidence is low, the response automatically explains WHY and how to fix it. Use for "what's my biomass", "how much forage", "what does this biomass number mean", or any biomass / dry-matter question. ALSO use whenever the user asks why biomass confidence is low.
+- improve_field_biomass_confidence_tool(field_id): trigger a fresh satellite biomass run and average it with recent passes to raise confidence. Use when the user asks to "improve confidence", "fix the biomass confidence", "average the biomass passes", or follows up on a low-confidence biomass result. PROACTIVELY OFFER this any time get_field_biomass_tool returns confidence < 0.4.
+- get_field_maturity_tool(field_id): peak-antioxidant harvest prediction for berry/fruit fields. Returns the latest Brix/anthocyanin/firmness sample, the trend fit, the predicted peak date with confidence, and (when set) the buyer's shelf-target alignment. Use for "when should I harvest", "when is peak ripeness", "is my fruit ready", "when do I pick", or any harvest-timing question on a fruit/berry field. If the response says "no samples logged yet", proactively offer log_maturity_sample_tool.
+- log_maturity_sample_tool(field_id, sample_date, brix, anthocyanin_mg_g, firmness_kgf, notes): log a new ripeness/quality reading the user just took. Use when the user says "I measured Brix on the blueberries", "log a sample", "record an anthocyanin reading", or shares a refractometer/NIR/penetrometer number. Always confirm the field and number before calling. Each new sample sharpens the maturity prediction.
+- get_field_climate_forecast_tool(field_id, hours): predictive 72h+ climate-stress forecast — detects upcoming heatwaves, frost, high-VPD drought stress, saturating rainfall, and damaging wind BEFORE they hit, with concrete mitigation actions tailored to the crop (open tunnel side-walls, schedule pre-cool irrigation, fire frost sprinklers, secure plastic, emergency pick before fruit-split rain, etc.). Use when the user asks "what's the forecast", "is there a heatwave coming", "should I worry about frost tonight", "do I need to ventilate the tunnel", or any forward-looking weather/crop-stress question. Default hours=72, max 168 (7 days).
+- get_field_assessment_history_tool(field_id, limit): your own previously-generated Field Assessment Reports — past consultant snapshots with executive summary, overall health, confidence, and open recommendations. Use when the user asks "what did the last assessment say", "have we written a report on this field", "compare to the previous assessment", "what was your recommendation last time", or whenever you want to reference your prior advice instead of repeating it. Default limit=3, max 10.
+- get_field_water_use_tool(field_id): real-world crop water use (actual evapotranspiration, ETa) from FAO WaPOR / OpenET satellite data — latest snapshot plus a 12-period series. Use for "how much water is my crop actually using", "is ET matching what I'm irrigating", or "is water use normal for the season". Pair with get_field_irrigation_tool to compare actual ET to the modeled deficit.
+- get_field_agronomy_tool(field_id): full per-field snapshot from the satellite crop-monitoring service — current weather + 7-day forecast + GDD + predicted growth stage + latest vegetation indices + irrigation signal + per-product spray decision (herbicide/fungicide/insecticide) + crop-specific named pest & disease alerts (Gray Leaf Spot, Fusarium Head Blight, European Corn Borer, etc.) + concrete operational recommendations. Use for "should I spray today", "any disease pressure", "give me the full picture on this field", "what should I do this week".
+- get_field_zones_tool(field_id, num_zones, index): k-means stress zones for a field — clusters the latest vegetation-index raster into 2–6 management zones (default 4) sorted lowest=stress to highest=best, with per-zone area % + mean. Use for "where are the stressed parts", "show me management zones", "is this field uniform", "should I do variable-rate".
+BUSINESS OPS — Accounting + Event hosting (only call when business_id is known or list_my_fields_tool exposed it; otherwise ask):
+- get_accounting_snapshot_tool(business_id): AR/AP, customer/vendor counts, last-30-day revenue + spend, recent invoices. Use for "how are the books", "money summary", "what's outstanding".
+- list_open_invoices_tool(business_id, limit): unpaid invoices sorted by due date. Use for "what's overdue", "who hasn't paid".
+- find_customer_tool(business_id, query): search customers by name/company/email substring (contact info masked). Use for "find a customer", "look up John Doe".
+- get_recent_payments_tool(business_id, days): payments received in last N days with totals. Use for "recent payments", "what came in this month", "cash flow".
+- get_event_registrations_tool(event_id): host-side roster for an event the user owns — registrations, payment status, masked attendee contact. Use for "who's registered", "event roster", "how many paid for event 42".
+- get_event_sponsorship_summary_tool(event_id): sponsorship revenue + per-tier breakdown (slots taken, revenue collected). Use for "how are sponsorship tiers selling", "how much in sponsorship revenue", "is my Gold tier full".
+- list_event_sponsors_tool(event_id, status?): list of sponsors for an event with tier + paid status. Optional status filter (pending/confirmed/declined). Use for "who are my sponsors", "any unpaid sponsors", "show me confirmed sponsors".
+- get_my_event_leads_summary_tool(event_id, business_id): exhibitor's lead-capture summary at a specific event — total scans + by-status + by-rating. Use for "how many leads did I get at event X", "what's my lead pipeline".
+- list_my_event_leads_tool(event_id, business_id, status?, rating_min?): list of my exhibitor lead scans with masked contact info. Use for "show me my hot leads", "qualified leads from event 12", "who haven't I followed up with".
+- get_event_floor_plan_summary_tool(event_id): floor plan booth-sales status — total booths, available count, by-status (available/reserved/sold/blocked), by-tier. Use for "how many booths sold", "is the floor plan filling up", "what's left for vendors".
+- get_event_booth_services_revenue_tool(event_id): booth services revenue from à la carte add-ons (electrical/water/internet/AV/etc). Use for "how much in services revenue", "what add-ons are selling", "is anyone ordering electrical".
+- get_event_coi_summary_tool(event_id): Certificate of Insurance status counts (pending/approved/rejected/expired) + count expiring in next 30 days. Use for "any COIs to review", "are sponsors compliant", "any insurance expiring".
+- list_event_pending_cois_tool(event_id): COI review queue — list of pending and recently expired uploads needing organizer attention.
 
 WHEN GIVING PRECISION AG ADVICE: Always interpret the numbers, don't just report them. Examples:
 - NDVI 0.72 = "your canopy is dense and healthy — likely at or near peak biomass"
@@ -1001,6 +1057,8 @@ Write like you're talking to a friend."""
         bound_tools.extend(event_tools)
     if PRECISION_AG_AVAILABLE:
         bound_tools.extend(precision_ag_tools)
+    if BUSINESS_OPS_AVAILABLE:
+        bound_tools.extend(business_ops_tools)
     if FARM_DATA_AVAILABLE:
         bound_tools.extend(farm_data_tools)
     if KNOWLEDGE_BASE_AVAILABLE:
@@ -1292,6 +1350,70 @@ Write like you're talking to a friend."""
                         days = int(tc_args.get('days', 14) or 14)
                         print(f"[Advisory Agent] Executing Get Field Weather: field_id={fid}, days={days}")
                         tool_result = get_field_weather_tool.invoke({"field_id": fid, "days": days, "people_id": people_id_for_tools})
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'get_field_biomass_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Get Field Biomass: field_id={fid}")
+                        tool_result = get_field_biomass_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'improve_field_biomass_confidence_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Improve Biomass Confidence: field_id={fid}")
+                        tool_result = improve_field_biomass_confidence_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'get_field_maturity_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Get Field Maturity: field_id={fid}")
+                        tool_result = get_field_maturity_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'log_maturity_sample_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Log Maturity Sample: field_id={fid}")
+                        tool_result = log_maturity_sample_tool.invoke({
+                            "field_id":         fid,
+                            "sample_date":      str(tc_args.get('sample_date', '') or ''),
+                            "brix":             tc_args.get('brix'),
+                            "anthocyanin_mg_g": tc_args.get('anthocyanin_mg_g'),
+                            "firmness_kgf":     tc_args.get('firmness_kgf'),
+                            "notes":            str(tc_args.get('notes', '') or ''),
+                            "people_id":        people_id_for_tools,
+                        })
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'get_field_climate_forecast_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        hrs = int(tc_args.get('hours', 72) or 72)
+                        print(f"[Advisory Agent] Executing Get Climate Forecast: field_id={fid}, hours={hrs}")
+                        tool_result = get_field_climate_forecast_tool.invoke({
+                            "field_id":  fid,
+                            "hours":     hrs,
+                            "people_id": people_id_for_tools,
+                        })
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'get_field_water_use_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Get Water Use: field_id={fid}")
+                        tool_result = get_field_water_use_tool.invoke({
+                            "field_id":  fid,
+                            "people_id": people_id_for_tools,
+                        })
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'get_field_agronomy_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Get Agronomy Snapshot: field_id={fid}")
+                        tool_result = get_field_agronomy_tool.invoke({
+                            "field_id":  fid,
+                            "people_id": people_id_for_tools,
+                        })
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'get_field_assessment_history_tool' and PRECISION_AG_AVAILABLE:
+                        fid = int(tc_args.get('field_id', 0) or 0)
+                        lim = int(tc_args.get('limit', 3) or 3)
+                        print(f"[Advisory Agent] Executing Get Assessment History: field_id={fid}, limit={lim}")
+                        tool_result = get_field_assessment_history_tool.invoke({
+                            "field_id":  fid,
+                            "limit":     lim,
+                            "people_id": people_id_for_tools,
+                        })
                         precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
                     elif tc_name == 'list_my_animals_tool' and FARM_DATA_AVAILABLE:
                         bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)

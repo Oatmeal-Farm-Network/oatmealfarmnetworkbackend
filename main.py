@@ -12,6 +12,10 @@ from dotenv import load_dotenv
 from routers import businesses
 from routers import precision_ag
 from routers import precision_ag_features
+from routers import field_maturity
+from routers import climate_forecast
+from routers import field_assessment_report
+from routers import crop_monitor_proxy
 from routers import plant_knowledgebase
 from routers import crop_summary
 from routers import ingredient_knowledgebase
@@ -61,8 +65,14 @@ from routers import event_mailing_list
 from routers import event_promo_codes
 from routers import event_waitlist
 from routers import event_testimonials
+from routers import event_sponsorship
+from routers import event_leads
+from routers import event_floor_plan
+from routers import event_booth_services
+from routers import event_coi
 from routers import stripe_payments
 from routers import news
+from routers import thaiyme
 
 from routers.marketplace import marketplace_router
 from marketplace_stripe import stripe_router
@@ -195,6 +205,10 @@ app.include_router(associations.router)
 app.include_router(businesses.router)
 app.include_router(precision_ag.router)
 app.include_router(precision_ag_features.router)
+app.include_router(field_maturity.router)
+app.include_router(climate_forecast.router)
+app.include_router(field_assessment_report.router)
+app.include_router(crop_monitor_proxy.router)
 app.include_router(plant_knowledgebase.router)
 app.include_router(crop_summary.router)
 app.include_router(ingredient_knowledgebase.router)
@@ -247,8 +261,14 @@ app.include_router(event_mailing_list.router)
 app.include_router(event_promo_codes.router)
 app.include_router(event_waitlist.router)
 app.include_router(event_testimonials.router)
+app.include_router(event_sponsorship.router)
+app.include_router(event_leads.router)
+app.include_router(event_floor_plan.router)
+app.include_router(event_booth_services.router)
+app.include_router(event_coi.router)
 app.include_router(stripe_payments.router)
 app.include_router(news.router)
+app.include_router(thaiyme.router)
 
 
 # ── Public testimonials endpoint (used by website blocks) ─────────

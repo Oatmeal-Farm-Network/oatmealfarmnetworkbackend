@@ -19,13 +19,33 @@ from fastapi import FastAPI
 
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "..", ".."))
+# CURRENT_DIR = .../Backend/oatmealfarmnetworkbackend/saige  →  walk up 3 to repo root
+REPO_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, "..", "..", ".."))
 CROP_DIR = os.path.join(REPO_ROOT, "CropMonitoringBackend")
+if not os.path.isdir(CROP_DIR):
+    raise RuntimeError(
+        f"CropMonitoringBackend not found at {CROP_DIR}. "
+        f"Set CROP_MONITOR_PATH env var to override or check the repo layout."
+    )
+CROP_DIR = os.getenv("CROP_MONITOR_PATH", CROP_DIR)
 
 # Load both .env files explicitly (cwd-based lookup is unreliable after chdir).
 # Saige's .env takes priority for overlapping keys — it has the LLM/Redis/Firestore creds.
+# Saige's .env historically lives at Backend/saige/.env (sibling of oatmealfarmnetworkbackend/),
+# not next to this file — try both locations.
 load_dotenv(os.path.join(CROP_DIR, ".env"))
-load_dotenv(os.path.join(CURRENT_DIR, ".env"), override=True)
+SAIGE_ENV_CANDIDATES = [
+    os.path.join(CURRENT_DIR, ".env"),
+    os.path.abspath(os.path.join(CURRENT_DIR, "..", "..", "saige", ".env")),  # Backend/saige/.env
+    os.path.abspath(os.path.join(CURRENT_DIR, "..", "saige", ".env")),         # extra fallback
+]
+for _env in SAIGE_ENV_CANDIDATES:
+    if os.path.isfile(_env):
+        load_dotenv(_env, override=True)
+        print(f"[combined_backend] loaded saige env from {_env}")
+        break
+else:
+    print(f"[combined_backend] WARNING: no saige .env found in {SAIGE_ENV_CANDIDATES}")
 
 sys.path.insert(0, CURRENT_DIR)
 sys.path.insert(0, CROP_DIR)
