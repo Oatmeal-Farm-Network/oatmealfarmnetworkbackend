@@ -367,6 +367,101 @@ def export_prescription_csv(field_id: int, rx_id: int, db: Session = Depends(get
 # WEATHER  (Open-Meteo — free, no key required)
 # ═══════════════════════════════════════════════════════════════════
 
+@router.get("/fields/{field_id}/wind")
+def get_field_wind(field_id: int, days: int = 30, db: Session = Depends(get_db)):
+    """Hourly wind direction + speed from Open-Meteo, aggregated into 8 compass
+    sectors for a wind-rose plot. Drives spray-record drift documentation +
+    disease-pressure modelling."""
+    field = _field_or_404(field_id, db)
+    lat = float(field.Latitude)  if field.Latitude  is not None else None
+    lon = float(field.Longitude) if field.Longitude is not None else None
+    if lat is None or lon is None:
+        raise HTTPException(status_code=400, detail="Field has no coordinates")
+    days = max(7, min(days, 90))
+
+    try:
+        r = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude":         lat,
+                "longitude":        lon,
+                "hourly":           "wind_speed_10m,wind_direction_10m",
+                "wind_speed_unit":  "kmh",
+                "timezone":         "auto",
+                "past_days":        days,
+                "forecast_days":    1,
+            },
+            timeout=15,
+        )
+        r.raise_for_status()
+        hourly = r.json().get("hourly", {})
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Weather service error: {e}")
+
+    times = hourly.get("time", []) or []
+    speeds = hourly.get("wind_speed_10m", []) or []
+    dirs   = hourly.get("wind_direction_10m", []) or []
+
+    # 8 compass sectors centered on N, NE, E, ..., NW. Each sector spans 45°.
+    sector_labels = ["N","NE","E","SE","S","SW","W","NW"]
+    sectors = [
+        {"label": lbl, "count": 0, "speed_sum": 0.0, "speed_max": 0.0}
+        for lbl in sector_labels
+    ]
+    speed_bins = [0, 5, 10, 15, 20, 30]   # km/h thresholds → 6 buckets
+    bin_labels = ["calm <5", "5-10", "10-15", "15-20", "20-30", "30+"]
+    matrix = [[0]*len(bin_labels) for _ in range(8)]   # [sector][bin] frequency
+
+    total = 0
+    for i in range(min(len(speeds), len(dirs), len(times))):
+        sp  = speeds[i]
+        dr  = dirs[i]
+        if sp is None or dr is None:
+            continue
+        # Sector index — N spans -22.5°..22.5°, so shift by 22.5° before /45.
+        sector_idx = int(((dr % 360) + 22.5) // 45) % 8
+        s = sectors[sector_idx]
+        s["count"]     += 1
+        s["speed_sum"] += sp
+        s["speed_max"]  = max(s["speed_max"], sp)
+        # Speed bucket
+        bin_idx = 0
+        for b, thr in enumerate(speed_bins[1:], start=1):
+            if sp >= thr:
+                bin_idx = b
+        matrix[sector_idx][bin_idx] += 1
+        total += 1
+
+    if total == 0:
+        return {"field_id": field_id, "days": days, "samples": 0, "sectors": [], "matrix": [], "bin_labels": bin_labels}
+
+    out_sectors = []
+    for s in sectors:
+        n = s["count"]
+        out_sectors.append({
+            "label":         s["label"],
+            "count":         n,
+            "frequency_pct": round(100.0 * n / total, 1),
+            "mean_speed":    round(s["speed_sum"] / n, 1) if n else 0.0,
+            "max_speed":     round(s["speed_max"], 1),
+        })
+
+    # Predominant direction = sector with highest count
+    pred_idx = max(range(8), key=lambda i: sectors[i]["count"])
+    return {
+        "field_id":         field_id,
+        "days":             days,
+        "samples":          total,
+        "predominant":      sector_labels[pred_idx],
+        "predominant_pct":  round(100.0 * sectors[pred_idx]["count"] / total, 1),
+        "calm_pct":         round(100.0 * sum(matrix[i][0] for i in range(8)) / total, 1),
+        "sectors":          out_sectors,
+        "matrix":           matrix,
+        "bin_labels":       bin_labels,
+        "speed_unit":       "kph",
+    }
+
+
 @router.get("/fields/{field_id}/weather")
 def get_field_weather(field_id: int, days: int = 30, db: Session = Depends(get_db)):
     field = _field_or_404(field_id, db)
@@ -666,22 +761,33 @@ def get_gdd(
     effective_base = base_temp_f if base_temp_f != 50.0 else crop_info["gdd_base_f"]
 
     days = max(30, min(days, 365))
+    # Open-Meteo's /v1/forecast caps past_days at 92, so use the historical
+    # archive endpoint for windows beyond a week. The archive trails real-time
+    # by a few days; that's fine for a GDD-accumulation chart.
+    from datetime import date as _date, timedelta as _td
+    end_date   = _date.today()
+    start_date = end_date - _td(days=days)
     try:
         r = requests.get(
-            "https://api.open-meteo.com/v1/forecast",
+            "https://archive-api.open-meteo.com/v1/archive",
             params={
-                "latitude":  lat,
-                "longitude": lon,
-                "daily": "temperature_2m_max,temperature_2m_min",
+                "latitude":         lat,
+                "longitude":        lon,
+                "start_date":       start_date.isoformat(),
+                "end_date":         end_date.isoformat(),
+                "daily":            "temperature_2m_max,temperature_2m_min",
                 "temperature_unit": "fahrenheit",
-                "timezone": "auto",
-                "past_days": days,
-                "forecast_days": 0,
+                "timezone":         "auto",
             },
-            timeout=10,
+            timeout=15,
         )
-        r.raise_for_status()
-        daily = r.json().get("daily", {})
+        if not r.ok:
+            try:
+                err_detail = r.json().get("reason") or r.text[:200]
+            except Exception:
+                err_detail = r.text[:200]
+            raise HTTPException(status_code=502, detail=f"Weather archive error ({r.status_code}): {err_detail}")
+        daily = r.json().get("daily", {}) or {}
     except requests.RequestException as e:
         raise HTTPException(status_code=502, detail=f"Weather service error: {e}")
 

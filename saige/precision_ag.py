@@ -459,12 +459,18 @@ def get_field_soil_samples_tool(field_id: int, people_id: str = "") -> str:
 # SCOUTING
 # ---------------------------------------------------------------------------
 
+# Scouting and journal entries are unified under the FieldNote table — these
+# scouting tools read / write Notes filtered to the scouting-style categories.
+_SCOUTING_CATEGORIES = ("Scouting", "Pest", "Disease", "Weed", "Nutrient", "Irrigation", "Weather", "General")
+
+
 @tool
 def get_field_scouting_tool(field_id: int, people_id: str = "") -> str:
     """Get recent field scouting observations — pest sightings, disease, weed
-    pressure, nutrient deficiency symptoms, irrigation issues. Each observation
-    has a category and severity (Low/Medium/High/Critical). Use when the user
-    asks "what scouting issues are on my field", "any pests found", "what's been
+    pressure, nutrient deficiency symptoms, irrigation issues. Backed by the
+    Field Journal (Notes) table; observations with a Severity set or a
+    scouting-style category are returned. Use when the user asks "what
+    scouting issues are on my field", "any pests found", "what's been
     observed in the field", or wants to understand in-field conditions beyond
     satellite data. people_id is injected from session state."""
     biz_ids = _business_ids_for_people(people_id)
@@ -473,15 +479,20 @@ def get_field_scouting_tool(field_id: int, people_id: str = "") -> str:
     field = _field_accessible(int(field_id), biz_ids)
     if not field:
         return f"Field {field_id} is not accessible on your account."
+    placeholders = ",".join(["%s"] * len(_SCOUTING_CATEGORIES))
     rows = _query(
-        "SELECT TOP 20 ScoutID, ObservedAt, Category, Severity, Notes "
-        "FROM dbo.FieldScout WHERE FieldID = %s ORDER BY ObservedAt DESC",
-        (int(field_id),),
+        f"SELECT TOP 20 NoteID, NoteDate, Category, Severity, Title, Content, "
+        f"       Latitude, Longitude, ImageUrl "
+        f"FROM dbo.FieldNote "
+        f"WHERE FieldID = %s "
+        f"  AND (Severity IS NOT NULL OR Category IN ({placeholders})) "
+        f"ORDER BY NoteDate DESC, CreatedAt DESC",
+        (int(field_id), *_SCOUTING_CATEGORIES),
     )
     if not rows:
         return (f"No scouting observations logged for field #{field_id} "
                 f"({field.get('name') or 'Unnamed'}). "
-                "Add observations in Precision Ag → Scouting.")
+                "Add observations in OatSense → Notes (use a scouting category like Pest/Disease/Weed).")
     lines = [f"Scouting log for field #{field_id} ({field.get('name') or 'Unnamed'}) — {len(rows)} observation(s):"]
     critical_high = [r for r in rows if str(r.get("severity") or "").lower() in ("critical", "high")]
     if critical_high:
@@ -489,12 +500,14 @@ def get_field_scouting_tool(field_id: int, people_id: str = "") -> str:
     for r in rows:
         sev = r.get("severity") or "—"
         cat = r.get("category") or "General"
-        notes = (r.get("notes") or "").strip()
-        date  = _fmt_date(r.get("observedat"))
+        title = (r.get("title") or "").strip()
+        body  = (r.get("content") or "").strip()
+        date  = _fmt_date(r.get("notedate"))
         icon  = {"critical": "🚨", "high": "⚠️", "medium": "⚡", "low": "ℹ️"}.get(sev.lower(), "•")
-        line  = f"  {icon} [{sev.upper()}] {cat} — {date}"
-        if notes:
-            line += f": {notes[:120]}"
+        line  = f"  {icon} [{(sev or '').upper()}] {cat} — {date}"
+        snippet = title or body
+        if snippet:
+            line += f": {snippet[:120]}"
         lines.append(line)
     return "\n".join(lines)
 
@@ -507,27 +520,34 @@ def add_scout_observation_tool(
     notes: str,
     people_id: str = "",
 ) -> str:
-    """Log a new scouting observation for a field on behalf of the user. Use when
-    the user tells you they found a pest, disease, weed issue, or any in-field
-    observation and wants it recorded. Category options: General, Pest, Disease,
-    Weed, Irrigation, Nutrient, Weather. Severity: Low, Medium, High, Critical.
-    people_id is injected from session state."""
+    """Log a new scouting observation for a field on behalf of the user. Saved
+    as a Field Journal (Notes) entry with the given scouting category and
+    severity. Use when the user tells you they found a pest, disease, weed
+    issue, or any in-field observation and wants it recorded. Category options:
+    Scouting, Pest, Disease, Weed, Irrigation, Nutrient, Weather, General.
+    Severity: Low, Medium, High, Critical. people_id is injected from session state."""
     biz_ids = _business_ids_for_people(people_id)
     if not biz_ids:
         return "Cannot log scouting — account not linked to any business."
     field = _field_accessible(int(field_id), biz_ids)
     if not field:
         return f"Field {field_id} is not accessible on your account."
+    import datetime
+    title = f"{category} observation" + (f" ({severity})" if severity else "")
     body = {
-        "category": category,
-        "severity": severity,
-        "notes": notes,
-        "people_id": int(people_id) if people_id and str(people_id).isdigit() else None,
+        "field_id":    int(field_id),
+        "business_id": int(field.get("businessid") or 0),
+        "people_id":   int(people_id) if people_id and str(people_id).isdigit() else None,
+        "note_date":   datetime.date.today().isoformat(),
+        "category":    category or "Scouting",
+        "title":       title,
+        "content":     notes,
+        "severity":    severity or None,
     }
-    result = _api_post(f"/api/fields/{field_id}/scouts", body)
-    if result and result.get("scout_id"):
+    result = _api_post("/api/notes", body)
+    if result and result.get("note_id"):
         return (f"✓ Scouting observation logged for field #{field_id} "
-                f"({field.get('name') or 'Unnamed'}): [{severity.upper()}] {category} — {notes[:80]}")
+                f"({field.get('name') or 'Unnamed'}): [{(severity or '').upper()}] {category} — {notes[:80]}")
     return "Failed to save the scouting observation. Please try again."
 
 
@@ -954,6 +974,629 @@ def get_field_weather_tool(field_id: int, days: int = 14, people_id: str = "") -
 
 
 # ---------------------------------------------------------------------------
+# BIOMASS — current estimate + auto-resolver for low confidence
+# ---------------------------------------------------------------------------
+
+def _confidence_advice(conf: float) -> str:
+    """Plain-language explanation of why a satellite biomass confidence is low,
+    with concrete steps the farmer can take to improve it."""
+    return (
+        "Confidence is low because the NDVI signal driving the estimate is weak — "
+        "usually the canopy is sparse, the field has just emerged, or the most recent "
+        "cloud-free pass was suboptimal. To improve it: "
+        "(a) wait until canopy closure and re-run, "
+        "(b) average several recent satellite passes to cancel noise, or "
+        "(c) take a ground biomass clipping to calibrate. "
+        "I can do (b) right now — just say "
+        "\"improve confidence on field X\" and I'll average the recent passes for you."
+    )
+
+
+@tool
+def get_field_biomass_tool(field_id: int, people_id: str = "") -> str:
+    """Get the current dry-matter biomass estimate (kg DM/ha) for a field, with
+    confidence and capture date. If confidence is low (<40%) the response also
+    explains *why* and tells the user how to improve it (including offering the
+    auto-resolver tool). Use when the user asks "what's my biomass", "how much
+    forage do I have", "what does the biomass number mean", or asks why the
+    confidence is low. people_id is injected from session state."""
+    biz_ids = _business_ids_for_people(people_id)
+    if not biz_ids:
+        return "Cannot fetch biomass — account not linked to any business."
+    field = _field_accessible(int(field_id), biz_ids)
+    if not field:
+        return f"Field {field_id} is not accessible on your account."
+    data = _api_get(f"/api/fields/{field_id}/biomass")
+    if not data:
+        return (f"Could not retrieve biomass data for field #{field_id}. "
+                "Try running a satellite analysis first.")
+
+    sat = data.get("satellite")
+    upl = data.get("upload")
+    if not sat and not upl:
+        return (f"No biomass analysis on record for field #{field_id} "
+                f"({field.get('name') or 'Unnamed'}). "
+                "Run an analysis from the Precision Ag dashboard.")
+
+    lines = [f"Biomass — field #{field_id} ({field.get('name') or 'Unnamed'})"]
+    if sat:
+        bm   = sat.get("biomass_kg_per_ha")
+        conf = sat.get("confidence")
+        cap  = _fmt_date(sat.get("captured_at"))
+        ver  = sat.get("model_version") or "—"
+        bm_s = f"{bm:,.0f}" if bm is not None else "—"
+        conf_s = f"{conf*100:.0f}%" if conf is not None else "—"
+        lines.append(f"Satellite estimate: {bm_s} kg DM/ha · confidence {conf_s} · {cap} · model {ver}")
+        if conf is not None and conf < 0.4:
+            lines.append("")
+            lines.append(f"⚠ Low confidence ({conf_s}). {_confidence_advice(conf)}")
+    if upl:
+        bm   = upl.get("biomass_kg_per_ha")
+        conf = upl.get("confidence")
+        cap  = _fmt_date(upl.get("captured_at"))
+        bm_s = f"{bm:,.0f}" if bm is not None else "—"
+        conf_s = f"{conf*100:.0f}%" if conf is not None else "—"
+        lines.append(f"Upload estimate: {bm_s} kg DM/ha · confidence {conf_s} · {cap}")
+    return "\n".join(lines)
+
+
+@tool
+def improve_field_biomass_confidence_tool(field_id: int, people_id: str = "") -> str:
+    """Run a fresh satellite biomass analysis and average it with the most recent
+    prior passes to produce a higher-confidence combined estimate. Use when the
+    user asks to "improve confidence", "fix the biomass confidence", "average the
+    biomass", or follows up after seeing a low-confidence biomass number and
+    wants Saige to resolve it. people_id is injected from session state."""
+    biz_ids = _business_ids_for_people(people_id)
+    if not biz_ids:
+        return "Cannot improve biomass — account not linked to any business."
+    field = _field_accessible(int(field_id), biz_ids)
+    if not field:
+        return f"Field {field_id} is not accessible on your account."
+    result = _api_post(f"/api/fields/{field_id}/biomass/resolve", {})
+    if not result:
+        return ("Could not improve biomass confidence — the satellite endpoint "
+                "did not respond. Make sure a recent NDVI analysis exists for this "
+                "field, then try again.")
+
+    n     = result.get("n_samples") or 0
+    fresh = result.get("fresh_sample") or {}
+    avg_bm   = result.get("averaged_biomass_kg_per_ha")
+    avg_conf = result.get("averaged_confidence")
+    fresh_conf = fresh.get("confidence")
+
+    avg_bm_s   = f"{avg_bm:,.0f}" if avg_bm is not None else "—"
+    avg_conf_s = f"{avg_conf*100:.0f}%" if avg_conf is not None else "—"
+    fresh_conf_s = f"{fresh_conf*100:.0f}%" if fresh_conf is not None else "—"
+
+    lines = [
+        f"✓ Improved biomass estimate for field #{field_id} ({field.get('name') or 'Unnamed'})",
+        f"Averaged across {n} satellite pass(es).",
+        f"Combined biomass: {avg_bm_s} kg DM/ha",
+        f"Combined confidence: {avg_conf_s} (single-pass was {fresh_conf_s})",
+    ]
+    if avg_conf is not None and avg_conf < 0.4:
+        lines.append("")
+        lines.append(
+            "Confidence is still low even after averaging. The underlying canopy "
+            "signal is weak — wait for more growth and re-run, or take a ground "
+            "biomass clipping to calibrate."
+        )
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# MATURITY ENGINE — peak-antioxidant harvest prediction
+# ---------------------------------------------------------------------------
+
+@tool
+def get_field_maturity_tool(field_id: int, people_id: str = "") -> str:
+    """Get the current ripeness/maturity status for a field, including the
+    predicted peak-antioxidant harvest date when enough samples have been
+    logged. Returns the most recent Brix / anthocyanin / firmness readings,
+    a published cultivar reference for context, the trend fit, and (when set)
+    the buyer's shelf-target alignment. Use when the user asks "when should I
+    harvest", "when is my fruit at peak", "what's the maturity on my berries",
+    "is my field ripe yet", or any harvest-timing question.
+    people_id is injected from session state."""
+    biz_ids = _business_ids_for_people(people_id)
+    if not biz_ids:
+        return "Cannot fetch maturity — account not linked to any business."
+    field = _field_accessible(int(field_id), biz_ids)
+    if not field:
+        return f"Field {field_id} is not accessible on your account."
+    data = _api_get(f"/api/fields/{field_id}/maturity")
+    if not data:
+        return (f"Could not retrieve maturity data for field #{field_id}. "
+                "The maturity endpoint did not respond.")
+
+    name = field.get("name") or "Unnamed"
+    crop = data.get("crop_type") or "Unknown crop"
+    samples = data.get("samples") or []
+    pred = data.get("prediction") or {}
+    arrival = data.get("arrival")
+    ref = data.get("cultivar_reference")
+
+    lines = [f"Maturity — field #{field_id} ({name}) · {crop}"]
+    lines.append(f"Samples on record: {len(samples)}")
+
+    if samples:
+        s = samples[-1]
+        bits = []
+        if s.get("brix_degrees")     is not None: bits.append(f"Brix {s['brix_degrees']:.1f}°Bx")
+        if s.get("anthocyanin_mg_g") is not None: bits.append(f"Anthocyanin {s['anthocyanin_mg_g']:.2f} mg/g")
+        if s.get("firmness_kgf")     is not None: bits.append(f"Firmness {s['firmness_kgf']:.2f} kgf")
+        if bits:
+            lines.append(f"Latest sample ({s.get('sample_date')}): " + " · ".join(bits))
+
+    status = pred.get("status")
+    if status == "no_data":
+        lines.append("")
+        lines.append("⚠ No prediction yet — log your first refractometer or NIR reading to start.")
+    elif status == "insufficient_metric":
+        lines.append("")
+        lines.append("⚠ Samples on file don't include Brix, anthocyanin, or color — those drive the projection.")
+    else:
+        peak = pred.get("predicted_peak_date")
+        conf = pred.get("confidence")
+        method = pred.get("method") or "—"
+        conf_s = f"{conf*100:.0f}%" if conf is not None else "—"
+        if peak:
+            lines.append(f"Predicted peak: {peak} · confidence {conf_s} · method {method}")
+        if pred.get("progress_pct") is not None:
+            lines.append(f"Progress to ripe: {pred['progress_pct']:.0f}% (metric: {pred.get('metric')})")
+        if pred.get("r_squared") is not None:
+            lines.append(f"Trend fit R²: {pred['r_squared']}")
+        if pred.get("message"):
+            lines.append(pred["message"])
+
+    if ref:
+        lines.append("")
+        lines.append(
+            f"Cultivar reference: ripe ≈ {ref.get('brix_ripe')}°Bx, "
+            f"peak anthocyanin ≈ {ref.get('anthocyanin_peak_mg_g')} mg/g."
+        )
+
+    if arrival:
+        lines.append("")
+        lines.append("— Ready-on-shelf plan —")
+        if arrival.get("destination_label"):
+            lines.append(f"Destination: {arrival['destination_label']}")
+        if arrival.get("status") == "incomplete_destination":
+            lines.append(arrival.get("message") or "Destination incomplete.")
+        else:
+            if arrival.get("projected_shelf_date"):
+                lines.append(f"Projected shelf date (from peak): {arrival['projected_shelf_date']}")
+            if arrival.get("shelf_target_date"):
+                lines.append(f"Buyer shelf target: {arrival['shelf_target_date']}")
+            if arrival.get("latest_pick_date"):
+                lines.append(f"Latest pick to hit target: {arrival['latest_pick_date']}")
+            if arrival.get("alignment_message"):
+                lines.append(arrival["alignment_message"])
+
+    return "\n".join(lines)
+
+
+@tool
+def log_maturity_sample_tool(
+    field_id: int,
+    sample_date: str = "",
+    brix: float = None,
+    anthocyanin_mg_g: float = None,
+    firmness_kgf: float = None,
+    notes: str = "",
+    people_id: str = "",
+) -> str:
+    """Log a ripeness/quality sample for a field — refractometer Brix, handheld
+    NIR anthocyanin, and/or penetrometer firmness. The sample feeds directly
+    into the maturity-curve fit and improves the peak-harvest prediction. Use
+    when the user says "log a sample", "I just measured Brix on my berries",
+    "record an anthocyanin reading", or similar. sample_date is YYYY-MM-DD
+    (defaults to today). people_id is injected from session state."""
+    biz_ids = _business_ids_for_people(people_id)
+    if not biz_ids:
+        return "Cannot log sample — account not linked to any business."
+    field = _field_accessible(int(field_id), biz_ids)
+    if not field:
+        return f"Field {field_id} is not accessible on your account."
+
+    if brix is None and anthocyanin_mg_g is None and firmness_kgf is None:
+        return ("Need at least one measurement (Brix, anthocyanin, or firmness) "
+                "to log a maturity sample.")
+
+    body = {
+        "field_id":         int(field_id),
+        "business_id":      int(field.get("businessid")),
+        "sample_date":      sample_date or "",
+        "brix_degrees":     brix,
+        "anthocyanin_mg_g": anthocyanin_mg_g,
+        "firmness_kgf":     firmness_kgf,
+        "notes":            notes,
+    }
+    result = _api_post(f"/api/fields/{field_id}/maturity/samples", body)
+    if not result:
+        return "Could not save the sample — the maturity endpoint did not accept the payload."
+
+    bits = []
+    if result.get("brix_degrees")     is not None: bits.append(f"Brix {result['brix_degrees']:.1f}°Bx")
+    if result.get("anthocyanin_mg_g") is not None: bits.append(f"Anthocyanin {result['anthocyanin_mg_g']:.2f} mg/g")
+    if result.get("firmness_kgf")     is not None: bits.append(f"Firmness {result['firmness_kgf']:.2f} kgf")
+    return (f"✓ Logged sample on {result.get('sample_date')}: " + " · ".join(bits) +
+            ". Ask 'when should I harvest field {0}?' to see the updated prediction.".format(field_id))
+
+
+# ---------------------------------------------------------------------------
+# CLIMATE FORECAST — predictive 72h+ stress detection with mitigation advice
+# ---------------------------------------------------------------------------
+
+@tool
+def get_field_climate_forecast_tool(field_id: int, hours: int = 72, people_id: str = "") -> str:
+    """Predictive climate-stress forecast for a field over the next `hours` (default 72,
+    max 168 = 7 days). Detects upcoming heatwaves, frost, high-VPD drought stress,
+    saturating rainfall, and damaging wind BEFORE they hit, with concrete mitigation
+    actions tailored to the crop (open tunnel side-walls, schedule pre-cool irrigation,
+    fire frost sprinklers, secure plastic, emergency pick before fruit-split rain, etc.).
+    Use when the user asks "what's the forecast", "is there a heatwave coming",
+    "should I worry about frost tonight", "do I need to ventilate the tunnel",
+    or any forward-looking weather/crop-stress question. people_id is injected from
+    session state."""
+    biz_ids = _business_ids_for_people(people_id)
+    if not biz_ids:
+        return "Cannot fetch climate forecast — account not linked to any business."
+    field = _field_accessible(int(field_id), biz_ids)
+    if not field:
+        return f"Field {field_id} is not accessible on your account."
+
+    h = max(24, min(int(hours or 72), 168))
+    data = _api_get(f"/api/fields/{field_id}/climate-forecast?hours={h}")
+    if not data:
+        return (f"Could not fetch the climate forecast for field #{field_id}. "
+                "Ensure the field has GPS coordinates set and Open-Meteo is reachable.")
+
+    summary = data.get("summary") or {}
+    events  = data.get("events")  or []
+    field_name = data.get("field_name") or f"field #{field_id}"
+    crop = data.get("crop_type") or "unknown crop"
+
+    lines = [
+        f"Climate-stress forecast — {field_name} ({crop}), next {h}h",
+        f"  Highs/lows: {summary.get('max_temp_f', '—')}°F / {summary.get('min_temp_f', '—')}°F",
+        f"  Peak VPD:   {summary.get('max_vpd_kpa', '—')} kPa",
+        f"  Peak wind:  {summary.get('max_wind_mph', '—')} mph",
+        f"  Total rain: {summary.get('total_precip_in', '—')} in",
+    ]
+    if not events:
+        lines.append("\nNo crop-stress events detected in the forecast window. Routine operations OK.")
+        return "\n".join(lines)
+
+    lines.append(f"\n{len(events)} event(s) detected — listed by severity, then onset:")
+    for ev in events:
+        lines.append(
+            f"\n• {ev['kind'].upper()} ({ev['severity']}) — onset in {ev['onset_hours_out']}h, "
+            f"duration {ev['duration_hours']}h, peak {ev['peak_value']} {ev['units']}"
+        )
+        lines.append(f"  Why: {ev['reason']}")
+        for i, action in enumerate(ev.get("recommended_actions") or [], 1):
+            lines.append(f"  Action {i}: {action}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# WATER USE — WaPOR/OpenET evapotranspiration
+# ---------------------------------------------------------------------------
+
+@tool
+def get_field_water_use_tool(field_id: int, people_id: str = "") -> str:
+    """Crop water-use snapshot for a field — actual evapotranspiration (ETa)
+    plus a 12-period series — sourced from FAO WaPOR / OpenET via the crop
+    monitoring service. Use this for "how much water is my crop actually
+    using", "is the field consuming water normally for the season", "is ET
+    matching the irrigation I'm putting on", or any question about
+    real-world (not just modeled) water use. Pair with
+    get_field_irrigation_tool to compare actual ET to the deficit model."""
+    biz_ids = _business_ids_for_people(people_id)
+    if not biz_ids:
+        return "Cannot fetch water use — account not linked to any business."
+    field = _field_accessible(int(field_id), biz_ids)
+    if not field:
+        return f"Field {field_id} is not accessible on your account."
+
+    field_name = field.get("name") or field.get("fieldname") or f"field #{field_id}"
+    snap   = _api_get(f"/api/fields/{field_id}/water-use")
+    series = _api_get(f"/api/fields/{field_id}/water-use/series?limit=12")
+
+    if not snap and not series:
+        return (f"No WaPOR/OpenET water-use data is available for {field_name}. "
+                "The field may be outside the WaPOR coverage area, or the satellite "
+                "service is currently unreachable.")
+
+    lines = [f"Crop water use — {field_name}"]
+    snap_data = (snap or {}).get("wapor") or {}
+    if isinstance(snap_data, dict):
+        eta = snap_data.get("eta_mm") or snap_data.get("value") or snap_data.get("mean")
+        units = snap_data.get("units") or "mm"
+        when  = snap_data.get("date") or snap_data.get("acquired_at")
+        if eta is not None:
+            lines.append(f"  Latest actual ET: {eta} {units}" + (f" ({when})" if when else ""))
+
+    series_rows = ((series or {}).get("wapor") or {}).get("series") or []
+    if isinstance(series_rows, list) and series_rows:
+        recent = series_rows[-6:]
+        lines.append("  Recent series (most recent last):")
+        for r in recent:
+            d = r.get("date") or r.get("period") or "?"
+            v = r.get("eta_mm") or r.get("value") or r.get("mean")
+            if v is not None:
+                lines.append(f"    {d}: {v} mm")
+
+    if len(lines) == 1:
+        lines.append("  No values returned (the field may be outside coverage).")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# AGRONOMY — CropMonitor's full per-field snapshot + recommendations
+# ---------------------------------------------------------------------------
+
+@tool
+def get_field_agronomy_tool(field_id: int, people_id: str = "") -> str:
+    """Composite agronomy snapshot from the satellite crop-monitoring service:
+    current weather + 7-day forecast + GDD + predicted growth stage + latest
+    vegetation indices + irrigation signal + per-product spray decision
+    (herbicide/fungicide/insecticide) + crop-specific named pest & disease
+    alerts (e.g. Gray Leaf Spot, Fusarium Head Blight, European Corn Borer)
+    + concrete operational recommendations driven off the field's health
+    score and NDVI. Use for "give me the full picture on this field", "what
+    should I do this week", "what's the model recommending", "should I spray
+    today", "any disease pressure?", or as a fast pre-flight before writing
+    a Field Assessment Report. Cheap to call (cached server-side)."""
+    biz_ids = _business_ids_for_people(people_id)
+    if not biz_ids:
+        return "Cannot fetch agronomy snapshot — account not linked to any business."
+    field = _field_accessible(int(field_id), biz_ids)
+    if not field:
+        return f"Field {field_id} is not accessible on your account."
+
+    field_name = field.get("name") or field.get("fieldname") or f"field #{field_id}"
+    agro = _api_get(f"/api/fields/{field_id}/agronomy") or {}
+    recs = _api_get(f"/api/fields/{field_id}/recommendations") or {}
+
+    if not agro and not recs:
+        return (f"CropMonitor returned no agronomy data for {field_name}. "
+                "Ensure the field has GPS coordinates and a recent satellite analysis.")
+
+    lines = [f"Agronomy snapshot — {field_name}"]
+
+    weather = agro.get("weather") or {}
+    if weather:
+        t = weather.get("temperature_c") or weather.get("temperature")
+        rh = weather.get("humidity") or weather.get("relative_humidity")
+        wind = weather.get("wind_speed") or weather.get("wind")
+        cond = weather.get("conditions")
+        bits = [f"temp={t}°C", f"RH={rh}%", f"wind={wind}kph"]
+        if cond: bits.append(cond)
+        lines.append(f"  Weather now: {', '.join(str(b) for b in bits if b)}")
+
+    fcs = agro.get("forecast_summary") or []
+    if fcs:
+        lines.append(f"  Next {len(fcs)} days:")
+        for f in fcs[:3]:
+            d = f.get("date"); mx = f.get("max_c"); mn = f.get("min_c")
+            p  = f.get("precip_mm"); w = f.get("max_wind_kph"); rh = f.get("humidity")
+            cond = f.get("conditions")
+            lines.append(f"    {d}: {mn}-{mx}°C, precip {p}mm, wind {w}kph, RH {rh}%{(', ' + cond) if cond else ''}")
+
+    gdd = agro.get("gdd") or {}
+    if isinstance(gdd, dict) and gdd.get("gdd") is not None:
+        lines.append(f"  GDD accumulated: {gdd.get('gdd')} (base {gdd.get('base_temp_c')}°C since {gdd.get('start_date')})")
+    if agro.get("growth_stage"):
+        lines.append(f"  Predicted growth stage: {agro['growth_stage']}")
+
+    indices = agro.get("indices") or {}
+    if isinstance(indices, dict) and indices:
+        bits = []
+        for k in ("NDVI", "NDRE", "NDMI", "EVI", "SAVI"):
+            v = indices.get(k)
+            if isinstance(v, dict): v = v.get("mean")
+            if v is not None: bits.append(f"{k}={v:.2f}" if isinstance(v, (int, float)) else f"{k}={v}")
+        if bits:
+            lines.append(f"  Latest indices: {', '.join(bits)}")
+
+    irr = agro.get("irrigation_advice") or agro.get("irrigation") or {}
+    if isinstance(irr, dict) and (irr.get("recommendation") or irr.get("status")):
+        lines.append(f"  Irrigation signal: {irr.get('recommendation') or irr.get('status')}")
+
+    # Per-product spray decisions (herbicide / fungicide / insecticide)
+    sbp = agro.get("spray_by_product") or {}
+    if isinstance(sbp, dict) and any(k in sbp for k in ("herbicide", "fungicide", "insecticide")):
+        lines.append("  Spray decision today:")
+        for k in ("herbicide", "fungicide", "insecticide"):
+            v = sbp.get(k) or {}
+            dec = v.get("decision")
+            if not dec: continue
+            fails = ", ".join(f"{r.get('field')}>{r.get('threshold')}" for r in (v.get("reasons") or []))
+            warns = ", ".join(f"{r.get('field')}>{r.get('threshold')}" for r in (v.get("warnings") or []))
+            extra = f" (fails: {fails})" if fails else (f" (watch: {warns})" if warns else "")
+            lines.append(f"    {k.title()}: {dec}{extra}")
+
+    # Crop-specific named pest/disease alerts (from rule table)
+    pda = agro.get("pest_disease_alerts") or []
+    if isinstance(pda, list) and pda:
+        lines.append(f"  Pest & disease alerts ({len(pda)}):")
+        for a in pda[:5]:
+            sev = a.get("severity", "?"); name = a.get("name", "?")
+            atype = a.get("type", "?"); why = a.get("why", "")
+            lines.append(f"    [{sev}] {name} ({atype}): {a.get('action', '')}")
+            if why:
+                lines.append(f"        why: {why}")
+
+    # Provider visibility — flag when running on fallback so Saige can caveat
+    wps = agro.get("weather_provider_status") or {}
+    if isinstance(wps, dict) and wps.get("provider") and wps.get("provider") != "weatherapi":
+        lines.append(f"  (weather served by fallback: {wps.get('provider')})")
+
+    # Generic disease_risk only matters when no specific alert fired
+    if not pda:
+        dis = agro.get("disease_risk") or {}
+        if isinstance(dis, dict) and (dis.get("risk") or dis.get("level")):
+            lines.append(f"  Disease risk (generic): {dis.get('risk') or dis.get('level')}")
+
+    rec_list = recs.get("recommendations") if isinstance(recs, dict) else None
+    if isinstance(rec_list, list) and rec_list:
+        hs = recs.get("health_score")
+        if hs is not None:
+            lines.append(f"\nHealth score: {hs}")
+        lines.append("Operational recommendations:")
+        for i, r in enumerate(rec_list[:6], 1):
+            if isinstance(r, dict):
+                txt = r.get("action") or r.get("text") or r.get("title") or str(r)
+                lines.append(f"  {i}. {txt}")
+            else:
+                lines.append(f"  {i}. {r}")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# STRESS ZONES — k-means clustering on the latest vegetation-index raster
+# ---------------------------------------------------------------------------
+
+@tool
+def get_field_zones_tool(field_id: int, num_zones: int = 4, index: str = "NDVI", people_id: str = "") -> str:
+    """K-means stress zones for a field — clusters the latest Sentinel-2
+    vegetation-index raster into N management zones (default 4) sorted from
+    lowest = stress to highest = best. Returns per-zone area % + mean index
+    + a one-line read of the spread. Use when the user asks "where are the
+    stressed parts of this field", "show me management zones", "is this
+    field uniform", or anything about variable-rate prescriptions or in-
+    field variability. `index` defaults to NDVI but can be NDRE, EVI,
+    GNDVI, NDWI. `num_zones` accepts 2-6."""
+    biz_ids = _business_ids_for_people(people_id)
+    if not biz_ids:
+        return "Cannot fetch zones — account not linked to any business."
+    field = _field_accessible(int(field_id), biz_ids)
+    if not field:
+        return f"Field {field_id} is not accessible on your account."
+
+    idx = (index or "NDVI").strip().upper()
+    if idx not in {"NDVI", "NDRE", "EVI", "GNDVI", "NDWI"}:
+        return f"Unknown index '{index}'. Use one of NDVI, NDRE, EVI, GNDVI, NDWI."
+    nz = max(2, min(int(num_zones or 4), 6))
+
+    field_name = field.get("name") or field.get("fieldname") or f"field #{field_id}"
+    payload = _api_get(f"/api/fields/{field_id}/zones?index={idx}&num_zones={nz}&grid=48")
+    if not payload or not payload.get("zones"):
+        return (f"No {idx} zones available for {field_name}. "
+                "Likely cause: no clear-sky Sentinel-2 scene in the last 30 days.")
+
+    zones = payload.get("zones") or []
+    raster = payload.get("raster") or {}
+    image_date = payload.get("image_date")
+    cached = (payload.get("_meta") or {}).get("cached")
+
+    lines = [
+        f"{idx} stress zones — {field_name}"
+        + (f" (scene {image_date})" if image_date else "")
+        + (" [cached]" if cached else "")
+    ]
+    lines.append(f"  Raster: {raster.get('valid_pixels')} valid pixels, "
+                 f"{idx} range {raster.get('min')}–{raster.get('max')} (mean {raster.get('mean')})")
+    lines.append(f"  {nz} zones (zone 1 = lowest = most stressed):")
+    for z in zones:
+        z1 = (z.get("zone") or 0) + 1
+        lines.append(
+            f"    Zone {z1}: {z.get('area_pct')}% of field, "
+            f"mean {idx} {z.get('mean')}, centroid {z.get('centroid')}, "
+            f"{z.get('pixel_count')} px"
+        )
+
+    # Quick read for the LLM
+    if zones:
+        worst = zones[0]
+        best  = zones[-1]
+        spread = (best.get("mean") or 0) - (worst.get("mean") or 0)
+        if spread > 0.20:
+            lines.append(f"  Read: high in-field variability (spread {spread:.2f}). VRT prescriptions likely worth the effort.")
+        elif spread > 0.10:
+            lines.append(f"  Read: moderate variability (spread {spread:.2f}). Worth scouting the lowest zone.")
+        else:
+            lines.append(f"  Read: field is fairly uniform (spread {spread:.2f}). Treat as a single zone for now.")
+        if (worst.get("area_pct") or 0) >= 10:
+            lines.append(f"  Stressed zone (#{(worst.get('zone') or 0) + 1}) covers ≥{worst.get('area_pct'):.0f}% — scout that area.")
+
+    lines.append("  Variable-rate Rx export: `/api/fields/{id}/zones/prescription?fmt=geojson` (or fmt=csv).".replace("{id}", str(field_id)))
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# FIELD ASSESSMENT REPORTS — historical consultant snapshots (RAG)
+# ---------------------------------------------------------------------------
+
+@tool
+def get_field_assessment_history_tool(field_id: int, limit: int = 3, people_id: str = "") -> str:
+    """Retrieve previously-generated Field Assessment Reports for a field — Saige's
+    own past consultant snapshots. Returns the latest report's executive summary
+    plus headlines from prior reports so Saige can reference what she said before
+    ("last month I flagged early bloom, now…"), compare trajectories, and avoid
+    repeating advice that's already been given. Use when the user asks
+    "what did the last assessment say", "have we written a report on this field",
+    "compare to the previous assessment", or any reference to prior reports.
+    `limit` caps how many historical headlines to include (default 3, max 10).
+    people_id is injected from session state."""
+    biz_ids = _business_ids_for_people(people_id)
+    if not biz_ids:
+        return "Cannot fetch assessment history — account not linked to any business."
+    field = _field_accessible(int(field_id), biz_ids)
+    if not field:
+        return f"Field {field_id} is not accessible on your account."
+
+    n = max(1, min(int(limit or 3), 10))
+    field_name = field.get("name") or field.get("fieldname") or f"field #{field_id}"
+
+    latest  = _api_get(f"/api/fields/{field_id}/assessment-report/latest") or {}
+    history = _api_get(f"/api/fields/{field_id}/assessment-report/history?limit={n}") or {}
+    items   = (history.get("items") or []) if isinstance(history, dict) else []
+
+    if not latest.get("report_id") and not items:
+        return (f"No assessment reports have been generated for {field_name} yet. "
+                "Suggest the user open the Assessment Report page and click Generate.")
+
+    lines = [f"Assessment report history — {field_name}"]
+
+    if latest.get("report_id"):
+        report = latest.get("report") or {}
+        lines.append(
+            f"\nLatest (#{latest.get('report_id')} · {latest.get('generated_at', '')[:10]})"
+        )
+        cs = report.get("current_status") or {}
+        if cs.get("overall_health"):
+            lines.append(f"  Overall health: {cs['overall_health']}")
+        if report.get("confidence_overall"):
+            lines.append(f"  Confidence:     {report['confidence_overall']}")
+        exec_summary = report.get("executive_summary")
+        if exec_summary:
+            lines.append(f"  Summary: {exec_summary}")
+        treatments = report.get("treatment_recommendations") or []
+        if treatments:
+            lines.append("  Open recommendations:")
+            for t in treatments[:3]:
+                title = t.get("title") or t.get("action") or "(untitled)"
+                priority = t.get("priority") or ""
+                lines.append(f"    • [{priority}] {title}")
+
+    prior = [it for it in items if it.get("report_id") != latest.get("report_id")]
+    if prior:
+        lines.append(f"\nPrior reports ({len(prior)}):")
+        for it in prior:
+            when = (it.get("generated_at") or "")[:10]
+            health = it.get("overall_health") or "—"
+            head = it.get("headline") or "(no headline)"
+            lines.append(f"  • {when} · {health} · {head}")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # TOOL REGISTRY
 # ---------------------------------------------------------------------------
 
@@ -974,4 +1617,13 @@ precision_ag_tools = [
     get_field_carbon_tool,
     get_farm_benchmark_tool,
     get_field_weather_tool,
+    get_field_biomass_tool,
+    improve_field_biomass_confidence_tool,
+    get_field_maturity_tool,
+    log_maturity_sample_tool,
+    get_field_climate_forecast_tool,
+    get_field_water_use_tool,
+    get_field_agronomy_tool,
+    get_field_zones_tool,
+    get_field_assessment_history_tool,
 ]
