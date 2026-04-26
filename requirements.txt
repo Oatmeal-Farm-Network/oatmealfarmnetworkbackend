@@ -107,6 +107,9 @@ sendgrid>=6.0.0
 # Payment processing
 stripe>=7.0.0
 
+# Web Push (used by saige.push_notifications for AppNotifications → phone push)
+pywebpush>=1.14.0
+
 
 # =========================================================
 # Security / Authentication

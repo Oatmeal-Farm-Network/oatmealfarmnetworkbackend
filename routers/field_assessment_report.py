@@ -37,7 +37,13 @@ from external_apis import (
     nominatim_reverse_state,
     usda_nass_crop_progress,
 )
-from saige.llm import llm
+# NOTE: saige.llm initializes a Gemini/Vertex client at import time and
+# raises ValueError if GOOGLE_API_KEY/GOOGLE_CLOUD_PROJECT isn't set. That
+# would crash the whole backend at startup whenever those env vars aren't
+# configured (e.g. on a Cloud Run service that doesn't run Saige). Defer
+# the import to call time so the backend starts even without LLM creds —
+# the assessment-report endpoint will still 502 if the user hits it without
+# creds, which is the correct behavior.
 
 # Reuse the climate forecast helpers so the report uses the same numbers as
 # the Climate Forecast tab — never a divergent calculation.
@@ -605,6 +611,7 @@ def generate_field_assessment_report(
     prompt = _build_prompt(field_block, context)
 
     try:
+        from saige.llm import llm  # lazy import — see note at top of file
         result = llm.invoke(prompt)
         raw = getattr(result, "content", None) or str(result)
     except Exception as e:
