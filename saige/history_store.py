@@ -106,3 +106,81 @@ def delete_entry(user_id: str, entry_id: str) -> bool:
         if hit:
             _save(user_id or "anon", data)
         return hit
+
+
+# ──────────────────────────────────────────────────────────────────
+# LLM tool — recall a user's past Saige feature outputs (soil, price,
+# pest, etc.). Pest detection already has its own dedicated tool with
+# nicer formatting; this one is the catch-all for "what did the AI tell
+# me last week about my soil / prices / etc.".
+# ──────────────────────────────────────────────────────────────────
+from langchain_core.tools import tool
+
+
+def _format_one(rec: Dict) -> str:
+    p = rec.get("payload") or {}
+    when = (rec.get("created_at") or "")[:10]
+    t = rec.get("type") or "entry"
+    if t == "soil":
+        crop = p.get("crop") or p.get("crop_identified") or ""
+        recs = p.get("recommendations") or p.get("summary") or ""
+        head = f"{when} — soil assessment"
+        if crop:
+            head += f" ({crop})"
+        line = head
+        if recs:
+            line += f": {str(recs)[:160]}"
+        return line
+    if t == "price":
+        commodity = p.get("commodity") or p.get("crop") or ""
+        forecast = p.get("forecast") or p.get("trend") or p.get("summary") or ""
+        head = f"{when} — price forecast"
+        if commodity:
+            head += f" ({commodity})"
+        if forecast:
+            head += f": {str(forecast)[:160]}"
+        return head
+    if t == "pest":
+        diag = p.get("diagnosis") or "unknown"
+        conf = p.get("confidence") or "uncertain"
+        return f"{when} — pest detection: {diag} ({conf} confidence)"
+    summary = p.get("summary") or p.get("notes") or ""
+    head = f"{when} — {t}"
+    if summary:
+        head += f": {str(summary)[:160]}"
+    return head
+
+
+@tool
+def get_my_recent_history_tool(entry_type: str = "", limit: int = 5,
+                                people_id: str = "") -> str:
+    """Look up the user's recent Saige feature history (soil assessments,
+    price forecasts, etc.). Use when the user asks "what did Saige tell
+    me last time about my soil / prices?", "what was my last forecast",
+    "show me my past assessments". For pest-photo follow-ups prefer
+    `get_recent_pest_detections_tool` instead — it has richer formatting.
+    entry_type: optional filter — "soil", "price", "pest", or empty for
+    all types interleaved.
+    limit: 1 to 20 (default 5).
+    people_id is injected from session state — do not guess it."""
+    if not people_id:
+        return ("I can't pull your history without knowing who you are. "
+                "Sign in and try again.")
+    n = max(1, min(int(limit or 5), 20))
+    et = (entry_type or "").strip().lower() or None
+    rows = list_for_user(str(people_id), entry_type=et, limit=n)
+    if not rows:
+        if et:
+            return (f"No {et} history yet. Use the {et} feature in the "
+                    f"OFN app and Saige can read back past results.")
+        return ("No saved Saige history yet. Run a feature like soil "
+                "assessment, price forecast, or pest detection and I "
+                "can recall results later.")
+    label = f"your {et}" if et else "your Saige"
+    out = [f"Your {len(rows)} most recent {label} record(s):"]
+    for r in rows:
+        out.append(f"  • {_format_one(r)}")
+    return "\n".join(out)
+
+
+history_tools = [get_my_recent_history_tool]

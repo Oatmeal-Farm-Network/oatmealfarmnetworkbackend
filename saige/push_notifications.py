@@ -188,3 +188,53 @@ def _broadcast(subs: List[Dict], title: str, body: str,
         results["pruned"] = len(to_prune)
 
     return results
+
+
+# ──────────────────────────────────────────────────────────────────
+# LLM tool (Saige can ask the user to be notified about something)
+# ──────────────────────────────────────────────────────────────────
+from langchain_core.tools import tool
+
+
+@tool
+def send_push_notification_tool(
+    title: str,
+    body: str,
+    url: str = "/",
+    people_id: str = "",
+) -> str:
+    """Send a web push notification to the current user's subscribed
+    browsers / devices. Use ONLY when the user explicitly asks to be
+    notified ("ping me when…", "send me a notification when…", "remind
+    me about…") or when an immediate, time-sensitive alert clearly
+    benefits them (frost overnight, irrigation overdue). Always confirm
+    the wording with the user before calling.
+
+    title: short notification title (≤ 60 chars).
+    body:  one-line message body (≤ 160 chars).
+    url:   path to deep-link the user to when they click (e.g. "/saige").
+    people_id is injected from session state — do not guess it."""
+    if not is_configured():
+        return ("Push notifications aren't configured on this server "
+                "(missing VAPID keys), so I can't send one right now.")
+    if not people_id:
+        return ("I can't send a push without knowing who you are. Sign "
+                "in and try again.")
+    subs = list_subscriptions(user_id=str(people_id))
+    if not subs:
+        return ("You haven't enabled push notifications on any device "
+                "yet. Open the OFN web app and click 'Enable notifications' "
+                "first, then ask me again.")
+    title = (title or "Saige").strip()[:60]
+    body = (body or "").strip()[:160] or "(no message)"
+    url = (url or "/").strip() or "/"
+    result = send_to(str(people_id), title=title, body=body, url=url)
+    sent = result.get("sent", 0)
+    failed = result.get("failed", 0)
+    if sent:
+        return f"Sent push to {sent} of your device(s). Title: \"{title}\"."
+    return (f"Couldn't deliver the push. {failed} delivery attempts failed "
+            f"({result.get('errors', [{}])[0].get('error', 'unknown error')}).")
+
+
+push_notification_tools = [send_push_notification_tool]

@@ -161,6 +161,57 @@ def format_for_llm(image_b64: str, notes: str = "") -> str:
     return "\n".join(lines)
 
 
-# No @tool wrapper: image data is too large to pass through the ReAct
-# loop as a function argument. Saige invokes this via REST endpoint and
-# the result is fed back as conversation context instead.
+# detect_from_base64 has NO @tool wrapper: image data is too large to pass
+# through the ReAct loop as a function argument. The frontend posts to
+# /pest/detect directly and the result is persisted to history_store with
+# entry_type="pest". Saige reaches detection results via the tool below,
+# which reads back the most recent diagnoses.
+
+from langchain_core.tools import tool
+
+try:
+    import history_store as _history
+    _HISTORY_AVAILABLE = True
+except Exception as _e:
+    _history = None
+    _HISTORY_AVAILABLE = False
+    print(f"[pest_detection] history_store unavailable: {_e}")
+
+
+@tool
+def get_recent_pest_detections_tool(limit: int = 3, people_id: str = "") -> str:
+    """Look up the user's most recent pest / disease / nutrient-deficiency
+    detections from photos they uploaded via the Pest Detection page. Use
+    when the user asks "what did my last photo show", "what was that pest
+    you found in my field", "what did the AI say about my plant photo",
+    or any follow-up about a recent diagnosis. Returns up to `limit`
+    diagnoses (default 3, max 10) with confidence and crop. people_id is
+    injected from session state — do not guess it."""
+    if not _HISTORY_AVAILABLE:
+        return "Pest detection history is unavailable on this server."
+    if not people_id:
+        return ("I can't pull your pest detections without knowing who "
+                "you are. Sign in and try again.")
+    n = max(1, min(int(limit or 3), 10))
+    rows = _history.list_for_user(str(people_id), entry_type="pest", limit=n)
+    if not rows:
+        return ("No pest detections yet. Upload a crop photo from the "
+                "Pest Detection page and I can read back the diagnosis.")
+    out = [f"Your last {len(rows)} pest detection(s):"]
+    for r in rows:
+        p = r.get("payload") or {}
+        when = (r.get("created_at") or "")[:10]
+        diag = p.get("diagnosis") or "unknown"
+        conf = p.get("confidence") or "uncertain"
+        cat = p.get("category") or "unknown"
+        crop = p.get("crop_identified") or ""
+        line = f"  • {when} — {diag} ({cat}, {conf} confidence)"
+        if crop and crop != "unknown":
+            line += f" on {crop}"
+        out.append(line)
+        if p.get("notes"):
+            out.append(f"      note: {p['notes'][:160]}")
+    return "\n".join(out)
+
+
+pest_detection_tools = [get_recent_pest_detections_tool]

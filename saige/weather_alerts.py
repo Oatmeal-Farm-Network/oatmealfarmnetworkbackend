@@ -200,3 +200,58 @@ def run(dry_run: bool = False, days_ahead: int = 2,
         "dry_run": dry_run,
         "messages": messages,
     }
+
+
+# ──────────────────────────────────────────────────────────────────
+# LLM tool — let Saige tell the user what hazards are in their forecast
+# ──────────────────────────────────────────────────────────────────
+from langchain_core.tools import tool
+
+
+@tool
+def check_my_weather_alerts_tool(days_ahead: int = 2, people_id: str = "") -> str:
+    """Check the user's saved push-notification locations against the
+    weather forecast and report any hazards (frost, hard freeze, heat
+    stress, heavy rain / flood, hail, high wind, wildfire smoke) in the
+    next `days_ahead` days. Use when the user asks "what's the weather
+    risk this week?", "any frost coming?", "should I worry about
+    weather?", or any preventive-planning question that depends on
+    upcoming hazards. Read-only — does NOT actually send a push.
+    days_ahead: 1 to 5 (default 2). people_id is injected from session
+    state — do not guess it."""
+    if not _WEATHER_AVAILABLE:
+        return "Weather service isn't configured on this server."
+    if push is None:
+        return "Push subscription store isn't configured on this server."
+    if not people_id:
+        return ("I can't check your forecast without knowing who you "
+                "are. Sign in and try again.")
+    n = max(1, min(int(days_ahead or 2), 5))
+    result = run(dry_run=True, days_ahead=n, user_id=str(people_id))
+    if result.get("status") != "ok":
+        return f"Weather alert check failed: {result.get('message', 'unknown error')}"
+    if result.get("scanned", 0) == 0:
+        return ("You haven't saved any locations to your push "
+                "notifications yet, so I can't check a local forecast. "
+                "Open the OFN web app, enable notifications, and add a "
+                "farm location.")
+    msgs = result.get("messages") or []
+    if not msgs:
+        return (f"No hazards in the next {n} day(s) for your "
+                f"{result.get('locations', 0)} saved location(s). "
+                f"Looks clear.")
+    by_date: Dict[str, List[str]] = {}
+    for m in msgs:
+        date = m.get("date") or "soon"
+        by_date.setdefault(date, []).append(
+            f"{m.get('title')} — {m.get('body')}"
+        )
+    out = [f"Weather hazards in the next {n} day(s):"]
+    for date in sorted(by_date.keys()):
+        out.append(f"  {date}:")
+        for line in by_date[date]:
+            out.append(f"    • {line}")
+    return "\n".join(out)
+
+
+weather_alert_tools = [check_my_weather_alerts_tool]

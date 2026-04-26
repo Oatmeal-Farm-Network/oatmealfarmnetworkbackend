@@ -231,7 +231,43 @@ except Exception as _e:
     provenance_cards_tool = None
     CHEF_AVAILABLE = False
 
-VALID_ADVISORY_TYPES = {"weather", "livestock", "crops", "mixed"}
+try:
+    from pest_detection import pest_detection_tools, get_recent_pest_detections_tool
+    PEST_DETECTION_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] pest_detection unavailable: {_e}")
+    pest_detection_tools = []
+    get_recent_pest_detections_tool = None
+    PEST_DETECTION_AVAILABLE = False
+
+try:
+    from push_notifications import push_notification_tools, send_push_notification_tool
+    PUSH_NOTIFICATIONS_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] push_notifications unavailable: {_e}")
+    push_notification_tools = []
+    send_push_notification_tool = None
+    PUSH_NOTIFICATIONS_AVAILABLE = False
+
+try:
+    from weather_alerts import weather_alert_tools, check_my_weather_alerts_tool
+    WEATHER_ALERTS_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] weather_alerts unavailable: {_e}")
+    weather_alert_tools = []
+    check_my_weather_alerts_tool = None
+    WEATHER_ALERTS_AVAILABLE = False
+
+try:
+    from history_store import history_tools, get_my_recent_history_tool
+    HISTORY_STORE_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] history_store unavailable: {_e}")
+    history_tools = []
+    get_my_recent_history_tool = None
+    HISTORY_STORE_AVAILABLE = False
+
+VALID_ADVISORY_TYPES = {"weather", "livestock", "crops", "mixed", "news", "bakasura"}
 ADVISORY_TYPE_ALIASES = {
     "crop": "crops",
     "crops": "crops",
@@ -240,6 +276,15 @@ ADVISORY_TYPE_ALIASES = {
     "animals": "livestock",
     "weather": "weather",
     "mixed": "mixed",
+    "news": "news",
+    "market": "news",
+    "market news": "news",
+    "headline": "news",
+    "headlines": "news",
+    "current events": "news",
+    "bakasura": "bakasura",
+    "bakasura-docs": "bakasura",
+    "docs": "bakasura",
 }
 
 
@@ -967,6 +1012,12 @@ WHEN GIVING PLANT/INGREDIENT ADVICE: Always translate lookup data into practical
 - draft_restock_order_tool(): build a multi-farm restock cart from below-par items, with live OFN pricing and totals, grouped by farm. Use for "draft my order", "restock what's low", "what should I buy this week".
 - provenance_cards_tool(ingredient_names): "meet your farmers" provenance cards (markdown) for a comma-separated ingredient list — farm name, location, slogan, description. Use for "make provenance cards for my menu", "who grew these tomatoes".
 
+PERSONAL HISTORY & ALERTS — read-only / opt-in helpers tied to the user's account:
+- get_recent_pest_detections_tool(limit): the user's last `limit` pest/disease/deficiency diagnoses from photos they uploaded (default 3, max 10). Use for "what did my last photo show", "what was that pest you found", "remind me what the AI said about my plant photo".
+- get_my_recent_history_tool(entry_type, limit): broader recall of past Saige features. entry_type optional — "soil", "price", or empty for all types interleaved (default 5, max 20). Use for "what did Saige tell me last time about my soil/prices", "show my past assessments". For pest photos prefer the dedicated tool above.
+- check_my_weather_alerts_tool(days_ahead): scan the user's saved push-notification locations against the next 1–5 day forecast (default 2) and return any hazards (frost, hard freeze, heat, flood, hail, wind, wildfire smoke). Read-only — does NOT send a push. Use for "any weather risks coming", "is frost in the forecast for my farm", "should I worry about weather this week".
+- send_push_notification_tool(title, body, url): send a real push notification to the user's subscribed devices. Use ONLY when the user explicitly asks to be pinged ("notify me when…", "remind me about…") or for an immediate, time-sensitive alert (incoming frost, irrigation overdue). ALWAYS confirm wording before calling. title ≤60 chars, body ≤160 chars, url is the in-app deep link.
+
 Prioritize the latest user message and any newly provided measurements over older generic context.
 If soil-test values are present, reference them explicitly and avoid repeating unchanged advice.
 
@@ -1011,6 +1062,14 @@ Write like you're talking to a friend."""
         bound_tools.extend(agronomy_tools)
     if CHEF_AVAILABLE:
         bound_tools.extend(chef_tools)
+    if PEST_DETECTION_AVAILABLE:
+        bound_tools.extend(pest_detection_tools)
+    if PUSH_NOTIFICATIONS_AVAILABLE:
+        bound_tools.extend(push_notification_tools)
+    if WEATHER_ALERTS_AVAILABLE:
+        bound_tools.extend(weather_alert_tools)
+    if HISTORY_STORE_AVAILABLE:
+        bound_tools.extend(history_tools)
     llm_with_tools = llm.bind_tools(bound_tools) if bound_tools else llm
 
     # 5. Tool Execution Loop (ReAct Pattern)
@@ -1031,6 +1090,10 @@ Write like you're talking to a friend."""
     actions_context = ""
     agronomy_context = ""
     chef_context = ""
+    pest_history_context = ""
+    push_context = ""
+    weather_alerts_context = ""
+    history_context = ""
     max_iterations = 3
     final_response = ""
     people_id_for_tools = state.get("people_id") or ""
@@ -1075,6 +1138,14 @@ Write like you're talking to a friend."""
                 current_input += f"\n\n[Agronomy]: {agronomy_context}"
             if chef_context:
                 current_input += f"\n\n[Chef]: {chef_context}"
+            if pest_history_context:
+                current_input += f"\n\n[Pest Detection History]: {pest_history_context}"
+            if push_context:
+                current_input += f"\n\n[Push Notification]: {push_context}"
+            if weather_alerts_context:
+                current_input += f"\n\n[Weather Alerts]: {weather_alerts_context}"
+            if history_context:
+                current_input += f"\n\n[Saige History]: {history_context}"
             response = llm_with_tools.invoke(current_input)
 
             # Check for tool calls
@@ -1474,6 +1545,41 @@ Write like you're talking to a friend."""
                             "ingredient_names": tc_args.get('ingredient_names', ''),
                         })
                         chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
+                    elif tc_name == 'get_recent_pest_detections_tool' and PEST_DETECTION_AVAILABLE:
+                        limit = int(tc_args.get('limit', 3) or 3)
+                        print(f"[Advisory Agent] Executing Recent Pest Detections: limit={limit}")
+                        tool_result = get_recent_pest_detections_tool.invoke({
+                            "limit": limit,
+                            "people_id": str(people_id_for_tools or ""),
+                        })
+                        pest_history_context = (pest_history_context + "\n\n" if pest_history_context else "") + tool_result
+                    elif tc_name == 'send_push_notification_tool' and PUSH_NOTIFICATIONS_AVAILABLE:
+                        print(f"[Advisory Agent] Executing Send Push: title={tc_args.get('title', '')[:40]}")
+                        tool_result = send_push_notification_tool.invoke({
+                            "title":     tc_args.get('title', ''),
+                            "body":      tc_args.get('body', ''),
+                            "url":       tc_args.get('url', '/'),
+                            "people_id": str(people_id_for_tools or ""),
+                        })
+                        push_context = (push_context + "\n\n" if push_context else "") + tool_result
+                    elif tc_name == 'check_my_weather_alerts_tool' and WEATHER_ALERTS_AVAILABLE:
+                        days = int(tc_args.get('days_ahead', 2) or 2)
+                        print(f"[Advisory Agent] Executing Check Weather Alerts: days={days}")
+                        tool_result = check_my_weather_alerts_tool.invoke({
+                            "days_ahead": days,
+                            "people_id":  str(people_id_for_tools or ""),
+                        })
+                        weather_alerts_context = (weather_alerts_context + "\n\n" if weather_alerts_context else "") + tool_result
+                    elif tc_name == 'get_my_recent_history_tool' and HISTORY_STORE_AVAILABLE:
+                        et = tc_args.get('entry_type', '') or ''
+                        limit = int(tc_args.get('limit', 5) or 5)
+                        print(f"[Advisory Agent] Executing Recent History: type={et} limit={limit}")
+                        tool_result = get_my_recent_history_tool.invoke({
+                            "entry_type": et,
+                            "limit":      limit,
+                            "people_id":  str(people_id_for_tools or ""),
+                        })
+                        history_context = (history_context + "\n\n" if history_context else "") + tool_result
                 continue  # Loop back to LLM with new context
 
             # No tool calls - we have our answer
@@ -1554,7 +1660,7 @@ def mixed_advisory_node(state: FarmState):
     return run_advisory_agent(
         state,
         role_prompt="You are an integrated farming systems expert specializing in permaculture, mixed farming, and sustainable agricultural practices.",
-        rag_systems=[rag_livestock, rag_plant, rag_bakasura, rag_hitl_charlie]
+        rag_systems=[rag_livestock, rag_plant, rag_bakasura, rag_hitl_charlie, rag_news]
     )
 
 
