@@ -70,6 +70,7 @@ from routers import event_leads
 from routers import event_floor_plan
 from routers import event_booth_services
 from routers import event_coi
+from routers import food_aggregator
 from routers import stripe_payments
 from routers import news
 from routers import thaiyme
@@ -266,6 +267,7 @@ app.include_router(event_leads.router)
 app.include_router(event_floor_plan.router)
 app.include_router(event_booth_services.router)
 app.include_router(event_coi.router)
+app.include_router(food_aggregator.router)
 app.include_router(stripe_payments.router)
 app.include_router(news.router)
 app.include_router(thaiyme.router)
