@@ -475,6 +475,59 @@ def _booth_services_revenue(db: Session, event_id: int) -> Dict[str, Any]:
     return {"event_id": event_id, "total_revenue": round(total, 2), "by_service": items}
 
 
+def _esg_status(db: Session, business_id: int) -> Dict[str, Any]:
+    """ESG snapshot for the focused business — last 90 days of live numbers
+    (sourcing transparency, residue testing pass rate, cold-chain integrity,
+    waste, sensors) plus the most recent saved report and recent manual
+    metrics. Lets Thaiyme answer questions like 'how are we doing on EU
+    compliance' or 'are we ready for an EthiFinance audit'."""
+    try:
+        # Reuse the live aggregator from the ESG router so the answers Thaiyme
+        # gives match what the page shows.
+        from routers.esg_reports import _live_metrics, _manual_metrics
+        from datetime import date, timedelta
+        end = date.today()
+        start = end - timedelta(days=90)
+        live = _live_metrics(db, business_id, start, end)
+        manual = _manual_metrics(db, business_id, start, end)
+    except Exception as e:
+        return {"error": f"ESG snapshot unavailable: {e}"}
+
+    latest_report = db.execute(text("""
+        SELECT TOP 1 ReportID, Title, PeriodStart, PeriodEnd, GeneratedDate, Signatory
+          FROM OFNESGReport
+         WHERE BusinessID = :bid
+         ORDER BY GeneratedDate DESC
+    """), {"bid": business_id}).fetchone()
+
+    return {
+        "business_id":   business_id,
+        "window":        {"start": live["period"]["start"], "end": live["period"]["end"]},
+        "sourcing":      live.get("sourcing"),
+        "procurement":   live.get("procurement"),
+        "cold_chain":    live.get("cold_chain"),
+        "waste":         live.get("waste"),
+        "inputs":        live.get("inputs_to_farms"),
+        "sensors":       live.get("sensors"),
+        "manual_metrics_count": len(manual),
+        "manual_metrics_recent": [
+            {"category": m.get("Category"), "label": m.get("Label"),
+             "value": m.get("Value"), "evidence": m.get("EvidenceURL")}
+            for m in manual[:8]
+        ],
+        "latest_saved_report": (
+            {
+                "report_id":     int(latest_report.ReportID),
+                "title":         latest_report.Title,
+                "period_start":  str(latest_report.PeriodStart) if latest_report.PeriodStart else None,
+                "period_end":    str(latest_report.PeriodEnd)   if latest_report.PeriodEnd   else None,
+                "generated":     str(latest_report.GeneratedDate),
+                "signatory":     latest_report.Signatory,
+            } if latest_report else None
+        ),
+    }
+
+
 def _coi_summary(db: Session, event_id: int) -> Dict[str, Any]:
     by_status = db.execute(text("""
         SELECT Status, COUNT(1) AS n FROM OFNEventCOI
@@ -927,6 +980,16 @@ def _build_tool_registry(
             "desc": "Recent customer payments received within the last N days (default 30).",
             "params": {"days": {"type_": "INTEGER", "description": "Look-back window in days (default 30)."}},
             "run": lambda days=30, **_: _recent_payments(db, business_id, int(days or 30)),
+            "mutating": False,
+        }
+
+        # ESG / sustainability snapshot — Food Aggregator businesses use this
+        # for audit prep, regulatory filings (EU CSRD, EthiFinance), and to
+        # justify premium pricing to consumers.
+        registry["esg_status"] = {
+            "desc": "ESG (Environmental, Social, Governance) snapshot for the business — sourcing transparency (% certified farms), residue-test pass rate, cold-chain integrity (% of dispatches with no breach), inputs to farms, IoT sensor data, plus the most recent saved audit report and any manual metrics. Use for 'how are we doing on EU compliance', 'are we audit-ready', 'what's our sustainability story', 'cold chain breaches this quarter', 'is our EthiFinance rating defensible'.",
+            "params": {},
+            "run": lambda **_: _esg_status(db, business_id),
             "mutating": False,
         }
 
