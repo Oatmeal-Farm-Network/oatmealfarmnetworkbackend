@@ -110,6 +110,9 @@ stripe>=7.0.0
 # Web Push (used by saige.push_notifications for AppNotifications → phone push)
 pywebpush>=1.14.0
 
+# PDF generation for ESG audit reports (routers/esg_reports.py)
+reportlab>=4.0.0
+
 
 # =========================================================
 # Security / Authentication
