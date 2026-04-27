@@ -113,6 +113,10 @@ pywebpush>=1.14.0
 # PDF generation for ESG audit reports (routers/esg_reports.py)
 reportlab>=4.0.0
 
+# Repairs the UTF-8 → Latin-1 → UTF-8 mojibake the news ingestion pipeline
+# leaves in some article descriptions (USDA's, "quotes", etc.)
+ftfy>=6.0
+
 
 # =========================================================
 # Security / Authentication
