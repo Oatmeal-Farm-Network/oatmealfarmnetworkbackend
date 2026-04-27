@@ -43,6 +43,28 @@ def _get_db():
     return _db_client
 
 
+try:
+    from ftfy import fix_text as _ftfy_fix
+except Exception:
+    _ftfy_fix = None
+
+
+def _unmojibake(value):
+    """Repair the UTF-8 → Latin-1 → UTF-8 round-trip mojibake the news sync
+    pipeline leaves in titles/descriptions/content (e.g. "USDAâ€™s" →
+    "USDA's"). No-op if ftfy isn't installed or value isn't a string."""
+    if not isinstance(value, str) or not value or _ftfy_fix is None:
+        return value
+    try:
+        return _ftfy_fix(value)
+    except Exception:
+        return value
+
+
+# Fields known to come from third-party RSS/HTML sources where mojibake appears.
+_TEXT_FIELDS = ("title", "description", "content", "summary", "source", "author")
+
+
 def _serialize(doc_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(data, dict):
         return {"id": doc_id}
@@ -54,6 +76,9 @@ def _serialize(doc_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
     synced = out.get("syncedAt")
     if isinstance(synced, datetime):
         out["syncedAt"] = synced.astimezone(timezone.utc).isoformat()
+    for f in _TEXT_FIELDS:
+        if f in out:
+            out[f] = _unmojibake(out[f])
     out.setdefault("id", doc_id)
     return out
 
