@@ -3,6 +3,7 @@ from typing import Optional
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from routers.translation import translate_fields, translate_list
 from database import get_db
 from datetime import datetime, timedelta
 
@@ -292,6 +293,7 @@ def list_event_types(db: Session = Depends(get_db)):
 def list_events(
     business_id: Optional[int] = Query(None),
     limit: Optional[int] = Query(None, ge=1, le=200),
+    lang: str = Query("en"),
     db: Session = Depends(get_db),
 ):
     where = ["e.Deleted = 0", "e.IsPublished = 1",
@@ -313,7 +315,8 @@ def list_events(
         WHERE {' AND '.join(where)}
         ORDER BY e.EventStartDate ASC
     """), params).fetchall()
-    return [dict(r._mapping) for r in rows]
+    events = [dict(r._mapping) for r in rows]
+    return translate_list(events, ["EventName", "EventDescription"], lang, db)
 
 
 # ── Account: list my events (as organizer) ────────────────────────────────────
@@ -396,7 +399,7 @@ def my_events(business_id: int, db: Session = Depends(get_db)):
 
 # ── Public: single event detail ───────────────────────────────────────────────
 @router.get("/api/events/{event_id}")
-def get_event(event_id: int, db: Session = Depends(get_db)):
+def get_event(event_id: int, lang: str = "en", db: Session = Depends(get_db)):
     row = db.execute(text("""
         SELECT e.*, b.BusinessName,
                (SELECT COUNT(1) FROM OFNEventRegistrations r WHERE r.EventID = e.EventID) AS AttendeeCount
@@ -420,7 +423,7 @@ def get_event(event_id: int, db: Session = Depends(get_db)):
     """), {"eid": event_id}).fetchall()
     d["options"] = [dict(r._mapping) for r in opts]
 
-    return d
+    return translate_fields(d, ["EventName", "EventDescription"], lang, db)
 
 
 # ── Create event ──────────────────────────────────────────────────────────────

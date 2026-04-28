@@ -3,6 +3,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from database import get_db
 import re
+from routers.translation import translate_fields, translate_list
 
 router = APIRouter(prefix="/api/ingredient-knowledgebase", tags=["ingredient-knowledgebase"])
 
@@ -49,7 +50,7 @@ def get_categories(db: Session = Depends(get_db)):
 
 
 @router.get("/category/{slug}")
-def get_category(slug: str, db: Session = Depends(get_db)):
+def get_category(slug: str, lang: str = "en", db: Session = Depends(get_db)):
     try:
         # Get all categories and find matching slug
         sql = text("""
@@ -74,7 +75,7 @@ def get_category(slug: str, db: Session = Depends(get_db)):
         """)
         ing_rows = db.execute(ing_sql, {"cat_id": cat_row.IngredientCategoryID}).fetchall()
 
-        return {
+        result = {
             "category_id": cat_row.IngredientCategoryID,
             "category_name": cat_row.IngredientCategory,
             "description": None,
@@ -90,6 +91,8 @@ def get_category(slug: str, db: Session = Depends(get_db)):
                 for r in ing_rows
             ]
         }
+        result["ingredients"] = translate_list(result["ingredients"], ["description"], lang, db)
+        return result
     except HTTPException:
         raise
     except Exception as e:
@@ -98,7 +101,7 @@ def get_category(slug: str, db: Session = Depends(get_db)):
 
 
 @router.get("/varieties/{ingredient_id}")
-def get_varieties(ingredient_id: int, db: Session = Depends(get_db)):
+def get_varieties(ingredient_id: int, lang: str = "en", db: Session = Depends(get_db)):
     try:
         # Get ingredient name
         ing_row = db.execute(
@@ -123,7 +126,7 @@ def get_varieties(ingredient_id: int, db: Session = Depends(get_db)):
         """)
         rows = db.execute(sql, {"ing_id": ingredient_id}).fetchall()
 
-        return {
+        result = {
             "ingredient_name": ing_row.IngredientName,
             "ingredient_description": ing_row.IngredientDescription,
             "varieties": [
@@ -136,6 +139,8 @@ def get_varieties(ingredient_id: int, db: Session = Depends(get_db)):
                 for r in rows
             ]
         }
+        result["varieties"] = translate_list(result["varieties"], ["description"], lang, db)
+        return translate_fields(result, ["ingredient_description"], lang, db)
     except HTTPException:
         raise
     except Exception as e:
