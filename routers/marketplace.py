@@ -13,6 +13,7 @@ from datetime import date
 import os
 
 from image_service import ensure_images_for_catalog
+from routers.translation import translate_fields, translate_list
 from routers.notifications import notify_business
 
 marketplace_router = APIRouter()
@@ -258,6 +259,7 @@ def get_catalog(
     available_within_days:   Optional[int]   = Query(None),
     min_quantity:            Optional[float] = Query(None),
     state:                   Optional[str]   = Query(None),
+    lang:                    str             = Query("en"),
     db:                      Session         = Depends(get_db),
 ):
     """
@@ -572,11 +574,11 @@ def get_catalog(
         from database import get_db as get_db_factory
         background_tasks.add_task(ensure_images_for_catalog, items_needing_images, get_db_factory)
 
-    return results
+    return translate_list(results, ["Description"], lang, db)
 
 
 @marketplace_router.get("/catalog/{listing_id}")
-def get_listing(listing_id: str, db: Session = Depends(get_db)):
+def get_listing(listing_id: str, lang: str = "en", db: Session = Depends(get_db)):
     """
     Single listing detail. listing_id format: P{id} | M{id} | F{id}
     """
@@ -693,7 +695,7 @@ def get_listing(listing_id: str, db: Session = Depends(get_db)):
     listing["reviews"]     = []
     listing["relatedListings"] = []
 
-    return listing
+    return translate_fields(listing, ["Description"], lang, db)
 
 
 # ─────────────────────────────────────────────
@@ -2119,7 +2121,7 @@ def get_animal_progeny(animal_id: int, db: Session = Depends(get_db)):
 
 
 @marketplace_router.get("/animal/{animal_id}")
-def get_animal_detail(animal_id: int, db: Session = Depends(get_db)):
+def get_animal_detail(animal_id: int, lang: str = "en", db: Session = Depends(get_db)):
     """Public endpoint — returns everything needed for the animal detail page."""
 
     # ── core animal fields (no fragile outer joins) ───────────────────────────
@@ -2305,7 +2307,7 @@ def get_animal_detail(animal_id: int, db: Session = Depends(get_db)):
     species_slug     = SPECIES_ID_TO_SLUG.get(species_id)
     species_singular = SLUG_TO_SINGULAR.get(species_slug, "Animal")
 
-    return {
+    result = {
         "animal_id":        d["AnimalID"],
         "full_name":        _unescape(d.get("FullName") or ""),
         "species_id":       species_id,
@@ -2371,6 +2373,7 @@ def get_animal_detail(animal_id: int, db: Session = Depends(get_db)):
         "awards":             awards,
         "fiber_stats":        fiber_stats,
     }
+    return translate_fields(result, ["description", "stud_description"], lang, db)
 
 
 # ─────────────────────────────────────────────
