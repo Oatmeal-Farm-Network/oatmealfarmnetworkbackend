@@ -4,6 +4,7 @@ from database import get_db
 from fastapi import Depends
 from sqlalchemy.orm import Session
 import time
+from routers.translation import translate_list, translate_fields
 
 router = APIRouter(prefix="/api/plant-knowledgebase", tags=["plant-knowledgebase"])
 
@@ -51,11 +52,11 @@ def get_plant_counts(db: Session = Depends(get_db)):
 
 
 @router.get("/plants")
-def get_plants(plant_type: str = None, db: Session = Depends(get_db)):
+def get_plants(plant_type: str = None, lang: str = "en", db: Session = Depends(get_db)):
     cache_key = "plants_" + (plant_type or "all")
     cached = cache_get(cache_key)
     if cached:
-        return cached
+        return translate_list(cached, ["plant_description"], lang, db)
     try:
         if plant_type:
             sql = text("""
@@ -94,18 +95,20 @@ def get_plants(plant_type: str = None, db: Session = Depends(get_db)):
             for row in rows
         ]
         cache_set(cache_key, result)
-        return result
+        return translate_list(result, ["plant_description"], lang, db)
     except Exception as e:
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/varietals/{plant_id}")
-def get_varietals(plant_id: int, db: Session = Depends(get_db)):
+def get_varietals(plant_id: int, lang: str = "en", db: Session = Depends(get_db)):
     cache_key = "varietals_" + str(plant_id)
     cached = cache_get(cache_key)
     if cached:
-        return cached
+        result = dict(cached)
+        result["varietals"] = translate_list(result["varietals"], ["plant_variety_description"], lang, db)
+        return translate_fields(result, ["plant_description"], lang, db)
     try:
         plant_row = db.execute(
             text("SELECT PlantName, PlantDescription FROM Plant WHERE PlantID = :pid"),
@@ -157,7 +160,9 @@ def get_varietals(plant_id: int, db: Session = Depends(get_db)):
             ]
         }
         cache_set(cache_key, result)
-        return result
+        result = dict(result)
+        result["varietals"] = translate_list(result["varietals"], ["plant_variety_description"], lang, db)
+        return translate_fields(result, ["plant_description"], lang, db)
     except HTTPException:
         raise
     except Exception as e:
@@ -166,11 +171,11 @@ def get_varietals(plant_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/varietal-detail/{variety_id}")
-def get_varietal_detail(variety_id: int, db: Session = Depends(get_db)):
+def get_varietal_detail(variety_id: int, lang: str = "en", db: Session = Depends(get_db)):
     cache_key = "varietal_detail_" + str(variety_id)
     cached = cache_get(cache_key)
     if cached:
-        return cached
+        return translate_fields(cached, ["plant_variety_description"], lang, db)
     try:
         sql = text("""
             SELECT PV.PlantVarietyID, PV.PlantVarietyName, PV.PlantVarietyDescription,
@@ -248,7 +253,7 @@ def get_varietal_detail(variety_id: int, db: Session = Depends(get_db)):
             ]
         }
         cache_set(cache_key, result)
-        return result
+        return translate_fields(result, ["plant_variety_description"], lang, db)
     except HTTPException:
         raise
     except Exception as e:

@@ -3,6 +3,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from database import get_db
 import time
+from routers.translation import translate_fields, translate_list
 
 router = APIRouter(prefix="/api/livestock", tags=["livestock"])
 
@@ -127,14 +128,18 @@ ORDER BY FirstLetter
 
 
 @router.get("/species/{slug}")
-def get_species(slug: str, letter: str = None, db: Session = Depends(get_db)):
+def get_species(slug: str, letter: str = None, lang: str = "en", db: Session = Depends(get_db)):
     """Returns breeds for a species, optionally filtered by first letter."""
     if letter and letter.lower() == "all":
         letter = None
     cache_key = f'species_{slug}_{letter or "all"}'
     cached = cache_get(cache_key)
     if cached:
-        return cached
+        result = dict(cached)
+        result["breeds"] = translate_list(result["breeds"], ["description"], lang, db)
+        if result.get("species_info"):
+            result["species_info"] = translate_fields(result["species_info"], ["description"], lang, db)
+        return result
     try:
         species_id = SLUG_TO_SPECIES_ID.get(slug)
         if not species_id:
@@ -187,6 +192,10 @@ def get_species(slug: str, letter: str = None, db: Session = Depends(get_db)):
             ]
         }
         cache_set(cache_key, result)
+        result = dict(result)
+        result["breeds"] = translate_list(result["breeds"], ["description"], lang, db)
+        if result.get("species_info"):
+            result["species_info"] = translate_fields(result["species_info"], ["description"], lang, db)
         return result
     except HTTPException:
         raise
@@ -196,10 +205,10 @@ def get_species(slug: str, letter: str = None, db: Session = Depends(get_db)):
 
 
 @router.get("/breed/{breed_id}")
-def get_breed(breed_id: int, db: Session = Depends(get_db)):
+def get_breed(breed_id: int, lang: str = "en", db: Session = Depends(get_db)):
     cached = cache_get(f'breed_{breed_id}')
     if cached:
-        return cached
+        return translate_fields(cached, ["description"], lang, db)
     try:
         sql = text("""
             SELECT BreedLookupID, Breed, Breeddescription, BreedImage,
@@ -221,7 +230,7 @@ def get_breed(breed_id: int, db: Session = Depends(get_db)):
             "video": row.Breedvideo,
         }
         cache_set(f'breed_{breed_id}', result)
-        return result
+        return translate_fields(result, ["description"], lang, db)
     except HTTPException:
         raise
     except Exception as e:
