@@ -79,24 +79,14 @@ def build_logo_url(logo):
 
 
 @router.get("/countries")
-def get_countries(business_type_id: str = None, db: Session = Depends(get_db)):
+def get_countries(db: Session = Depends(get_db)):
     try:
-        if business_type_id:
-            rows = db.execute(text("""
-                SELECT DISTINCT a.AddressCountry
-                FROM Business b
-                JOIN Address a ON b.AddressID = a.AddressID
-                WHERE b.BusinessTypeID = :btype
-                  AND a.AddressCountry IS NOT NULL AND a.AddressCountry <> ''
-                ORDER BY a.AddressCountry
-            """), {"btype": int(business_type_id)}).fetchall()
-            return [r[0] for r in rows if r[0]]
         rows = db.execute(text("""
-            SELECT DISTINCT AddressCountry FROM Address
-            WHERE AddressCountry IS NOT NULL AND AddressCountry <> ''
-            ORDER BY AddressCountry
+            SELECT country_id, name FROM country
+            WHERE name IS NOT NULL AND name <> ''
+            ORDER BY name
         """)).fetchall()
-        return [r[0] for r in rows if r[0]]
+        return [{"country_id": r.country_id, "name": r.name} for r in rows]
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -146,11 +136,14 @@ def create_account(payload: dict, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail="PeopleID is required")
 
         # 1. Create Address record
+        country_id = payload.get("country_id") or None
         address = models.Address(
-            AddressStreet = payload.get("AddressStreet", ""),
-            AddressCity   = payload.get("AddressCity", ""),
-            AddressState  = payload.get("StateIndex", ""),
-            AddressZip    = payload.get("AddressZip", ""),
+            AddressStreet  = payload.get("AddressStreet", ""),
+            AddressCity    = payload.get("AddressCity", ""),
+            AddressState   = payload.get("StateIndex", ""),
+            AddressZip     = payload.get("AddressZip", ""),
+            AddressCountry = payload.get("country", ""),
+            country_id     = int(country_id) if country_id else None,
         )
         db.add(address)
         db.flush()

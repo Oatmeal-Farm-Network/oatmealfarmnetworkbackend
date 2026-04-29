@@ -3,119 +3,124 @@ import requests
 
 router = APIRouter(prefix="/api", tags=["weather"])
 
-HEADERS = {
-    "User-Agent": "OatmealFarmNetwork/1.0 (john@oatmealfarmnetwork.com)",
-    "Accept": "application/geo+json",
+_WMO = {
+    0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+    45: "Fog", 48: "Rime fog",
+    51: "Light drizzle", 53: "Moderate drizzle", 55: "Dense drizzle",
+    56: "Freezing drizzle", 57: "Heavy freezing drizzle",
+    61: "Slight rain", 63: "Moderate rain", 65: "Heavy rain",
+    66: "Freezing rain", 67: "Heavy freezing rain",
+    71: "Slight snow", 73: "Moderate snow", 75: "Heavy snow", 77: "Snow grains",
+    80: "Slight showers", 81: "Moderate showers", 82: "Violent showers",
+    85: "Slight snow showers", 86: "Heavy snow showers",
+    95: "Thunderstorm", 96: "Thunderstorm w/ hail", 99: "Thunderstorm w/ heavy hail",
 }
 
+_DIRS = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"]
 
-def _parse_wind_mph(wind_str: str) -> float:
-    """Parse NWS wind speed string like '5 mph' or '5 to 15 mph' → float."""
+
+def _wmo_label(code: int) -> str:
+    return _WMO.get(code, "Unknown")
+
+
+def _deg_to_compass(deg: float) -> str:
+    if deg is None:
+        return ""
+    return _DIRS[round(deg / 22.5) % 16]
+
+
+def _city_state(lat: float, lon: float) -> tuple[str, str]:
+    """Best-effort reverse geocode. Returns ("", "") on any failure."""
     try:
-        return float(wind_str.split()[0])
+        r = requests.get(
+            "https://nominatim.openstreetmap.org/reverse",
+            params={"lat": lat, "lon": lon, "format": "json"},
+            headers={"User-Agent": "OatmealFarmNetwork/1.0"},
+            timeout=5,
+        )
+        if r.status_code == 200:
+            addr = r.json().get("address", {})
+            city  = addr.get("city") or addr.get("town") or addr.get("village") or addr.get("county", "")
+            state = addr.get("state", "")
+            return city, state
     except Exception:
-        return 0.0
+        pass
+    return "", ""
 
 
 @router.get("/weather")
 def get_weather(lat: float, lon: float):
     """
-    Fetch current conditions + hourly + 7-day forecast using api.weather.gov.
-    No API key required — only a User-Agent header.
-    Covers US locations only.
+    Fetch current conditions + hourly + 7-day forecast using Open-Meteo.
+    No API key required. Covers global locations.
     """
-    # ── Step 1: resolve lat/lon → NWS grid point ──────────────────────────────
     try:
-        pts = requests.get(
-            f"https://api.weather.gov/points/{lat:.4f},{lon:.4f}",
-            headers=HEADERS,
+        resp = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude":  lat,
+                "longitude": lon,
+                "current": (
+                    "temperature_2m,apparent_temperature,"
+                    "relative_humidity_2m,weather_code,"
+                    "wind_speed_10m,wind_direction_10m"
+                ),
+                "hourly": "temperature_2m,weather_code",
+                "daily": "temperature_2m_max,temperature_2m_min,weather_code",
+                "temperature_unit": "fahrenheit",
+                "wind_speed_unit":  "mph",
+                "timezone": "auto",
+                "forecast_days": 7,
+            },
             timeout=10,
         )
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"NWS unreachable: {e}")
+        raise HTTPException(status_code=502, detail=f"Open-Meteo unreachable: {e}")
 
-    if pts.status_code == 404:
-        raise HTTPException(status_code=404, detail="Location not covered by api.weather.gov (US only)")
-    if pts.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"NWS points error {pts.status_code}")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Open-Meteo error {resp.status_code}")
 
-    pts_props = pts.json()["properties"]
-    city  = pts_props.get("relativeLocation", {}).get("properties", {}).get("city", "")
-    state = pts_props.get("relativeLocation", {}).get("properties", {}).get("state", "")
-    forecast_url = pts_props["forecast"]
-    hourly_url   = pts_props["forecastHourly"]
+    data = resp.json()
+    cur  = data.get("current", {})
+    hrly = data.get("hourly", {})
+    dly  = data.get("daily", {})
 
-    # ── Step 2: fetch forecast + hourly in parallel ────────────────────────────
-    try:
-        fc_resp = requests.get(forecast_url, headers=HEADERS, timeout=10)
-        hr_resp = requests.get(hourly_url,   headers=HEADERS, timeout=10)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"NWS forecast unreachable: {e}")
+    current = {
+        "temp_f":      cur.get("temperature_2m"),
+        "feelslike_f": cur.get("apparent_temperature"),
+        "wind_mph":    cur.get("wind_speed_10m"),
+        "wind_dir":    _deg_to_compass(cur.get("wind_direction_10m")),
+        "humidity":    cur.get("relative_humidity_2m"),
+        "condition":   _wmo_label(cur.get("weather_code", 0)),
+        "icon":        None,
+    }
 
-    # ── Step 3: build daily forecast (pair day + night periods) ───────────────
-    daily = []
-    today = {}
-    if fc_resp.status_code == 200:
-        periods = fc_resp.json()["properties"]["periods"]
-        i = 0
-        while i < len(periods) and len(daily) < 7:
-            p = periods[i]
-            if p["isDaytime"]:
-                entry = {
-                    "date":   p["startTime"][:10],
-                    "high_f": p["temperature"],
-                    "low_f":  None,
-                    "icon":   p["icon"],
-                    "condition": p["shortForecast"],
-                }
-                # pair with the following night period
-                if i + 1 < len(periods) and not periods[i + 1]["isDaytime"]:
-                    entry["low_f"] = periods[i + 1]["temperature"]
-                    i += 2
-                else:
-                    i += 1
-                daily.append(entry)
-            else:
-                # starts at night — grab low, no high
-                entry = {
-                    "date":   p["startTime"][:10],
-                    "high_f": None,
-                    "low_f":  p["temperature"],
-                    "icon":   p["icon"],
-                    "condition": p["shortForecast"],
-                }
-                daily.append(entry)
-                i += 1
+    times  = hrly.get("time", [])
+    temps  = hrly.get("temperature_2m", [])
+    wcodes = hrly.get("weather_code", [])
+    hourly = [
+        {"time": times[i], "temp_f": temps[i], "icon": None, "condition": _wmo_label(wcodes[i])}
+        for i in range(min(24, len(times)))
+    ]
 
-        if daily:
-            today = {"high_f": daily[0]["high_f"], "low_f": daily[0]["low_f"]}
+    dates  = dly.get("time", [])
+    highs  = dly.get("temperature_2m_max", [])
+    lows   = dly.get("temperature_2m_min", [])
+    dcodes = dly.get("weather_code", [])
+    daily  = [
+        {
+            "date":      dates[i],
+            "high_f":    highs[i],
+            "low_f":     lows[i],
+            "condition": _wmo_label(dcodes[i]),
+            "icon":      None,
+        }
+        for i in range(min(7, len(dates)))
+    ]
 
-    # ── Step 4: build hourly + derive current from first hour ─────────────────
-    hourly  = []
-    current = {}
-    if hr_resp.status_code == 200:
-        hr_periods = hr_resp.json()["properties"]["periods"][:24]
+    today = {"high_f": daily[0]["high_f"], "low_f": daily[0]["low_f"]} if daily else {}
 
-        hourly = [
-            {
-                "time":   h["startTime"],
-                "temp_f": h["temperature"],
-                "icon":   h["icon"],
-            }
-            for h in hr_periods
-        ]
-
-        if hr_periods:
-            first = hr_periods[0]
-            current = {
-                "temp_f":      first["temperature"],
-                "feelslike_f": None,   # NWS standard forecast doesn't include feels-like
-                "wind_mph":    _parse_wind_mph(first.get("windSpeed", "0 mph")),
-                "wind_dir":    first.get("windDirection", ""),
-                "humidity":    first.get("relativeHumidity", {}).get("value"),
-                "condition":   first["shortForecast"],
-                "icon":        first["icon"],
-            }
+    city, state = _city_state(lat, lon)
 
     return {
         "location": {"city": city, "state": state},
