@@ -150,18 +150,24 @@ from api import app as saige_app, app_lifespan as saige_lifespan  # noqa: E402
 print("[serve_all] Saige loaded")
 
 
-# ── Phase 5: restore main-backend 'database' for hot-reload safety ──────────
-# Saige is fully loaded — all its `from database import Database` calls have
-# already resolved and bound the class into each module's namespace.  We can
-# safely re-point sys.modules['database'] at the main backend's module so that
-# any subsequent import of a main-backend router (e.g. during uvicorn --reload)
-# finds `get_db` / `SessionLocal` instead of saige's Database class.
+# ── Phase 5: restore main-backend 'database' and 'models' for hot-reload safety
+# Saige is fully loaded — all its imports have already resolved and bound into
+# each module's namespace.  We re-point sys.modules for the names that the main
+# backend uses lazily at request time so those `import models` / `import database`
+# calls inside request handlers find the SQLAlchemy versions, not saige's.
 _main_db_mod = sys.modules.get("_oatmeal_database")
 if _main_db_mod is not None:
     sys.modules["database"] = _main_db_mod
     print("[serve_all] phase 5: sys.modules['database'] restored → main backend")
 else:
     print("[serve_all] phase 5: WARNING _oatmeal_database not in sys.modules — skipping restore")
+
+_main_models_mod = sys.modules.get("_oatmeal_models")
+if _main_models_mod is not None:
+    sys.modules["models"] = _main_models_mod
+    print("[serve_all] phase 5: sys.modules['models'] restored → main backend")
+else:
+    print("[serve_all] phase 5: WARNING _oatmeal_models not in sys.modules — skipping restore")
 
 
 # ── Unified lifespan ───────────────────────────────────────────────────────

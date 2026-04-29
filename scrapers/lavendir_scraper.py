@@ -70,6 +70,38 @@ def _resolve(base: str, href: Optional[str]) -> Optional[str]:
         return None
 
 
+def _srcset_widest(srcset: str) -> Optional[str]:
+    """Return the URL of the widest candidate in a srcset attribute string.
+
+    Handles both width descriptors ("800w") and pixel-density descriptors ("2x").
+    Returns None if the srcset string cannot be parsed.
+    """
+    best_url: Optional[str] = None
+    best_w = -1
+    for candidate in srcset.split(","):
+        parts = candidate.strip().split()
+        if not parts:
+            continue
+        url = parts[0]
+        w = 0
+        if len(parts) >= 2:
+            desc = parts[1].lower()
+            if desc.endswith("w"):
+                try:
+                    w = int(desc[:-1])
+                except ValueError:
+                    pass
+            elif desc.endswith("x"):
+                try:
+                    w = int(float(desc[:-1]) * 1000)  # treat 2x as 2000 "virtual px"
+                except ValueError:
+                    pass
+        if w > best_w:
+            best_w = w
+            best_url = url
+    return best_url or None
+
+
 def _hex_to_rgb(hex_s: str) -> Tuple[int, int, int]:
     h = hex_s.lstrip("#")
     return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
@@ -270,6 +302,37 @@ def _extract_design_tokens(soup: "BeautifulSoup") -> Dict[str, Any]:
         )
         if _gf_m:
             google_fonts_url = _gf_m.group(1)
+
+    # 3c. Resolve CSS custom properties (--variable: value) before hex scanning.
+    # Modern WordPress themes (Astra, Kadence, Hello Elementor, Divi, OceanWP,
+    # GeneratePress) store the entire brand palette in :root as CSS variables:
+    #   :root { --e-global-color-primary: #6EC1E4; --primary-color: #7b68ee; }
+    #   nav { background-color: var(--primary-color); }
+    # Without resolution the hex scan finds nothing in these rules and the
+    # palette falls back to noise. We do a single substitution pass over the
+    # already-inlined css_text so subsequent code needs no changes.
+    _root_block_rx  = re.compile(r"(?::root|html)\s*\{([^}]*)\}", re.IGNORECASE)
+    _var_decl_rx    = re.compile(r"--([\w-]+)\s*:\s*([^;]+)")
+    _css_var_map: Dict[str, str] = {}
+    for _rm in _root_block_rx.finditer(css_text):
+        for _vm in _var_decl_rx.finditer(_rm.group(1)):
+            _vname = _vm.group(1).strip()
+            _vval  = _vm.group(2).strip()
+            # Only keep values that look like colors
+            if re.search(r"#[0-9a-fA-F]{3,8}\b|rgb[a]?\s*\(|hsl[a]?\s*\(", _vval) \
+                    or re.fullmatch(r"[a-zA-Z]+", _vval):
+                _css_var_map[_vname] = _vval
+
+    if _css_var_map:
+        def _resolve_css_var(s: str, _d: int = 5) -> str:
+            if _d <= 0 or "var(" not in s:
+                return s
+            def _var_sub(m) -> str:
+                n  = m.group(1).strip()
+                fb = (m.group(2) or "").strip()
+                return _resolve_css_var(_css_var_map.get(n) or fb or m.group(0), _d - 1)
+            return re.sub(r"var\(\s*--([\w-]+)\s*(?:,\s*([^)]*?))?\)", _var_sub, s)
+        css_text = _resolve_css_var(css_text)
 
     # Hex colors from CSS (general frequency signal)
     for m in re.finditer(r"#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b", css_text):
@@ -647,7 +710,7 @@ def _extract_features_grid(soup: "BeautifulSoup", max_items: int = 9) -> List[Di
         if len(children) < 3 or len(children) > 8:
             continue
         cards = [_card_from(c) for c in children]
-        valid = [c for c in cards if c and c["title"] and c["description"]]
+        valid = [c for c in cards if c and c["title"]]
         if len(valid) < 3:
             continue
         for card in valid:
@@ -681,10 +744,56 @@ _HOURS_ROW_RE = re.compile(
 _CLOSED_RE = re.compile(r"\bclosed\b", re.IGNORECASE)
 
 
+_DAY_RANGE_ALIASES: Dict[str, str] = {
+    "m": "Monday", "t": "Tuesday", "w": "Wednesday",
+    "th": "Thursday", "r": "Thursday", "f": "Friday",
+    "sa": "Saturday", "s": "Saturday", "su": "Sunday",
+}
+_DAY_RANGE_ALIASES.update(_DAY_ALIASES)
+
+# Expands "Mon-Fri", "M-F", "Weekdays", "Weekends" into a list of day names.
+_WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+_WEEKEND  = ["Saturday", "Sunday"]
+_ALL_DAYS = _WEEKDAYS + _WEEKEND
+
+def _expand_day_range(start: str, end: str) -> List[str]:
+    """Return the ordered list of days from start to end (inclusive)."""
+    start_n = _DAY_RANGE_ALIASES.get(start.lower().strip()[:3])
+    end_n   = _DAY_RANGE_ALIASES.get(end.lower().strip()[:3])
+    if not start_n or not end_n:
+        return []
+    try:
+        s_i = _ALL_DAYS.index(start_n)
+        e_i = _ALL_DAYS.index(end_n)
+    except ValueError:
+        return []
+    if s_i <= e_i:
+        return _ALL_DAYS[s_i:e_i + 1]
+    return _ALL_DAYS[s_i:] + _ALL_DAYS[:e_i + 1]
+
+_DAY_RANGE_LINE_RE = re.compile(
+    r"(?:"
+    r"(?P<from_day>mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?|m|th|f|sa|su|t|w|s)"
+    r"\s*[-–—/]\s*"
+    r"(?P<to_day>mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?|m|th|f|sa|su|t|w|s)"
+    r"|(?P<weekdays>weekdays?)"
+    r"|(?P<weekends>weekends?)"
+    r")"
+    r"(?:[:\s,]+)"
+    r"(?P<hours_text>[^\n]{3,80})",
+    re.IGNORECASE,
+)
+_HOURS_RANGE_RE = re.compile(
+    r"(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*[-–—to]+\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))",
+    re.IGNORECASE,
+)
+
+
 def _extract_hours(soup: "BeautifulSoup") -> List[Dict[str, Any]]:
     """Detect hours-of-operation patterns and return list of
     {day, open, close, closed, notes} dicts (7-entry canonical week).
-    Handles: <table> rows, <dl>/<dt>/<dd>, plain-text lines."""
+    Handles: day-range lines (M-F, Mon-Fri, Weekdays), <table> rows,
+    <dl>/<dt>/<dd>, and plain-text lines."""
     rows: Dict[str, Dict[str, Any]] = {}
 
     def _record(day_raw: str, open_t: str, close_t: str, closed: bool, notes: str = "") -> None:
@@ -698,6 +807,29 @@ def _extract_hours(soup: "BeautifulSoup") -> List[Dict[str, Any]]:
             "closed": closed or (not open_t and not close_t),
             "notes": notes.strip()[:80],
         }
+
+    # 0. Day-range scan — "M-F 11am-4pm", "Mon-Fri: 9am-5pm", "Weekdays 8am to 6pm"
+    full_text = soup.get_text(" ")
+    for rm in _DAY_RANGE_LINE_RE.finditer(full_text):
+        hours_text = (rm.group("hours_text") or "").strip()
+        is_closed = bool(_CLOSED_RE.search(hours_text))
+        hm = _HOURS_RANGE_RE.search(hours_text)
+        # Skip matches with no discernible hours — likely a false positive
+        if not hm and not is_closed:
+            continue
+        open_t  = hm.group(1) if hm else ""
+        close_t = hm.group(2) if hm else ""
+        # Expand to individual day names
+        if rm.group("weekdays"):
+            day_list = _WEEKDAYS
+        elif rm.group("weekends"):
+            day_list = _WEEKEND
+        else:
+            day_list = _expand_day_range(
+                rm.group("from_day") or "", rm.group("to_day") or ""
+            )
+        for day_name in day_list:
+            _record(day_name, open_t, close_t, is_closed)
 
     # 1. Table approach — first col = day, second col = hours
     for table in soup.find_all("table"):
@@ -1322,7 +1454,8 @@ def _detect_layout_patterns(soup: "BeautifulSoup") -> Dict[str, Any]:
                 pass
         return n
 
-    if any_match("[class*='hero']", "[class*='banner']", "[class*='slider']", "[class*='carousel']", "[class*='jumbotron']"):
+    if any_match("[class*='hero']", "[class*='banner']", "[class*='slider']", "[class*='carousel']",
+                 "[class*='jumbotron']", "[class*='wp-block-cover']", "[class*='page-header']"):
         sections.append("hero-section")
     if count_match("[class*='card']", "[class*='grid-item']", "[class*='feature']", "[class*='tile']") >= 3:
         sections.append("card-grid")
@@ -1404,7 +1537,7 @@ def _nav_item_from_li(li, base_url: str, depth: int = 0) -> Optional[Dict[str, A
     return {
         "text": text,
         "href": "" if is_placeholder else (resolved or ""),
-        "children": children[:10],
+        "children": children[:25],
     }
 
 
@@ -1430,11 +1563,11 @@ def _extract_nav_tree(soup: "BeautifulSoup", base_url: str) -> List[Dict[str, An
     candidates = [c for c in candidates if top_level_count(c) >= 2]
     candidates.sort(key=top_level_count, reverse=True)
 
-    for root in candidates[:5]:
+    for root in candidates[:10]:
         uls = root.find_all("ul", recursive=True)
-        # Use the first <ul> that has at least 2 direct <li> children
-        target = next((u for u in uls if len(u.find_all("li", recursive=False)) >= 2), None)
-        if not target:
+        # Use the <ul> with the most direct <li> children (primary nav level)
+        target = max(uls, key=lambda u: len(u.find_all("li", recursive=False)), default=None)
+        if target is None or len(target.find_all("li", recursive=False)) < 2:
             continue
         items: List[Dict[str, Any]] = []
         for li in target.find_all("li", recursive=False):
@@ -1442,7 +1575,7 @@ def _extract_nav_tree(soup: "BeautifulSoup", base_url: str) -> List[Dict[str, An
             if node:
                 items.append(node)
         if len(items) >= 2:
-            return items[:12]
+            return items[:50]
 
     # Fallback: flat anchor list inside the first nav-like container
     for sel in ("header nav a", "nav a[href]", "[role='navigation'] a"):
@@ -1452,7 +1585,7 @@ def _extract_nav_tree(soup: "BeautifulSoup", base_url: str) -> List[Dict[str, An
             continue
         flat: List[Dict[str, Any]] = []
         seen: set = set()
-        for a in anchors[:20]:
+        for a in anchors[:100]:
             t = _clean(a.get_text())
             if not t or len(t) > 80 or t in seen:
                 continue
@@ -1464,8 +1597,63 @@ def _extract_nav_tree(soup: "BeautifulSoup", base_url: str) -> List[Dict[str, An
                 "children": [],
             })
         if flat:
-            return flat[:12]
+            return flat[:50]
     return []
+
+
+def _collect_internal_links(soup: "BeautifulSoup", base_url: str) -> List[str]:
+    """Return all unique same-origin page URLs found in <a href> tags.
+
+    Filters out: external links, media/static files, WP admin/feed/tag paths,
+    and URL fragments.  Suitable for discovering pages not listed in the nav.
+    """
+    from urllib.parse import urlparse as _urlparse
+
+    _parsed_base = _urlparse(base_url)
+    origin = f"{_parsed_base.scheme}://{_parsed_base.netloc}"
+    home = origin.rstrip("/")
+
+    _SKIP_EXTS = frozenset([
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico",
+        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".zip", ".rar",
+        ".mp4", ".mp3", ".avi", ".mov", ".css", ".js",
+        ".woff", ".woff2", ".ttf", ".eot", ".otf",
+    ])
+    _SKIP_PREFIXES = (
+        "/wp-admin", "/wp-content", "/wp-includes", "/wp-login",
+        "/wp-json", "/xmlrpc", "/feed",
+    )
+    _SKIP_SEGMENTS = ("/tag/", "/author/", "/page/", "/attachment/", "/comment-page-")
+
+    seen: set = set()
+    results: List[str] = []
+
+    for a in soup.find_all("a", href=True):
+        href = (a["href"] or "").strip()
+        if not href or href.startswith(("mailto:", "tel:", "javascript:")):
+            continue
+        resolved = _resolve(base_url, href)
+        if not resolved:
+            continue
+        # Same origin only
+        if not (resolved.startswith(origin + "/") or resolved.rstrip("/") == home):
+            continue
+        p_path = _urlparse(resolved).path.lower().rstrip("/")
+        if any(p_path.endswith(ext) for ext in _SKIP_EXTS):
+            continue
+        if any(p_path.startswith(pfx) for pfx in _SKIP_PREFIXES):
+            continue
+        if any(seg in p_path for seg in _SKIP_SEGMENTS):
+            continue
+        # Normalize: strip fragment and trailing slash
+        clean = resolved.split("#")[0].rstrip("/")
+        if not clean or clean == home:
+            continue
+        if clean not in seen:
+            seen.add(clean)
+            results.append(clean)
+
+    return results
 
 
 def _extract_logo_url(soup: "BeautifulSoup", base_url: str) -> Optional[str]:
@@ -1573,21 +1761,66 @@ def _extract_slideshow_images(soup: "BeautifulSoup", base_url: str) -> List[str]
 
 def _extract_hero_image_url(soup: "BeautifulSoup", base_url: str) -> Optional[str]:
     """Return an absolute URL for the largest above-the-fold banner image.
-    Prefers explicit hero containers, falls back to the first sizable <img>."""
-    for sel in ("[class*='hero'] img", "[class*='banner'] img", "[class*='slider'] img",
-                "[class*='carousel'] img", "header + section img", "main img"):
+    Prefers explicit hero containers, falls back to og:image, then first sizable <img>."""
+    # Check explicit hero/banner <img> selectors first (classic themes + WP block editor).
+    # wp-block-cover is the Gutenberg "Cover" block — the dominant hero pattern for sites
+    # built with the default WP editor since 5.0. page-header is common in Genesis/Divi/custom themes.
+    for sel in (
+        "[class*='wp-block-cover'] img", "[class*='cover__image'] img",
+        "[class*='page-header'] img",
+        "[class*='hero'] img", "[class*='banner'] img",
+        "[class*='slider'] img", "[class*='carousel'] img",
+        "header + section img", "main img",
+    ):
         try:
             img = soup.select_one(sel)
         except Exception:
             continue
         if not img:
             continue
-        src = img.get("src") or img.get("data-src") or ""
+        src = (img.get("src") or img.get("data-src") or
+               img.get("data-lazy-src") or img.get("data-original") or "")
         if src and not src.lower().endswith(".svg"):
             return _resolve(base_url, src)
-    # Last resort: first non-svg image on the page
+
+    # Gutenberg cover blocks often store the image only as a CSS background-image on
+    # the wrapper div (no <img> child). Check inline styles on cover/page-header elements.
+    for sel in ("[class*='wp-block-cover']", "[class*='page-header']", "[class*='hero-section']"):
+        try:
+            el = soup.select_one(sel)
+        except Exception:
+            continue
+        if not el:
+            continue
+        style = el.get("style") or ""
+        bg_m = re.search(r"background(?:-image)?\s*:\s*[^;]*url\(\s*['\"]?([^'\")\s]+)['\"]?\s*\)",
+                         style, re.IGNORECASE)
+        if bg_m:
+            src = bg_m.group(1).strip()
+            if src and not src.startswith("data:"):
+                return _resolve(base_url, src)
+    # og:image / twitter:image is the site owner's canonical representative image —
+    # far better than the arbitrary first <img> on a card-grid homepage.
+    for attr_pair in (
+        {"property": "og:image"}, {"name": "og:image"},
+        {"property": "twitter:image"}, {"name": "twitter:image"},
+    ):
+        og = soup.find("meta", attrs=attr_pair)
+        if og and og.get("content"):
+            resolved = _resolve(base_url, og["content"])
+            if resolved:
+                return resolved
+    # Last resort: first non-svg image on the page; prefer srcset widest candidate
+    # over the fallback src so responsive images aren't downsampled.
     for img in soup.find_all("img"):
-        src = img.get("src") or img.get("data-src") or ""
+        src = (img.get("src") or img.get("data-src") or
+               img.get("data-lazy-src") or img.get("data-original") or "")
+        srcset = img.get("srcset") or img.get("data-srcset") or ""
+        if srcset:
+            # srcset: "url1 400w, url2 800w, url3 1600w" — pick widest
+            best = _srcset_widest(srcset)
+            if best:
+                src = best
         if src and not src.lower().endswith(".svg"):
             return _resolve(base_url, src)
     return None
@@ -2678,15 +2911,44 @@ def _extract_footer(raw_html: str, base_url: str) -> Optional[Dict[str, Any]]:
             seen_href.add(href)
             other_links.append({"text": text[:80], "href": href})
 
-    # Address: look for a paragraph/li that contains a US state + ZIP pattern.
-    # Fallback: any short line that contains "PO Box" or a street-style token.
+    # Plain-text phone fallback — pick up numbers not wrapped in tel: links.
+    if not phones:
+        _phone_rx = re.compile(
+            r"(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}"
+        )
+        for el in footer.find_all(["p", "li", "div", "address", "span"]):
+            t = el.get_text(" ").strip()
+            if len(t) > 300:
+                continue
+            pm = _phone_rx.search(t)
+            if pm:
+                ph = re.sub(r"\s+", "", pm.group(0)).strip()
+                if ph and ph not in phones:
+                    phones.append(ph)
+            if len(phones) >= 3:
+                break
+
+    # Address: look for a paragraph/li that contains a recognisable address pattern.
+    # Supports: US state+ZIP, PO Box, street address with common suffix, or
+    # "City, ST" without ZIP (common on small association/org footers).
     address = ""
-    for el in footer.find_all(["p", "li", "div", "address"]):
+    _addr_pats = [
+        re.compile(r"\b(PO Box|P\.O\. Box)\b", re.IGNORECASE),
+        re.compile(r"\b[A-Z]{2}\s*\d{5}\b"),
+        re.compile(
+            r"\b\d+\s+\w[\w\s]*"
+            r"(?:Road|Rd|Street|St|Avenue|Ave|Drive|Dr|Lane|Ln|Way|Blvd|Boulevard|"
+            r"Highway|Hwy|County Road|CR|Rural Route|RR|Place|Pl|Court|Ct|Trail|Trl)\b",
+            re.IGNORECASE,
+        ),
+        re.compile(r",\s*[A-Za-z]{2}\s*\d{5}"),          # ", MN 55734"
+        re.compile(r",\s*[A-Za-z][a-z]+,?\s+[A-Z]{2}\b"),    # ", Elgin, MN" or ", Elgin MN"
+    ]
+    for el in footer.find_all(["p", "li", "div", "address", "span"]):
         t = _clean(el.get_text(" "))
-        if not t or len(t) > 200:
+        if not t or len(t) > 250:
             continue
-        if re.search(r"\b(PO Box|P\.O\. Box)\b", t) or \
-           re.search(r"\b[A-Z]{2}\s*\d{5}\b", t):
+        if any(p.search(t) for p in _addr_pats):
             address = t
             break
 
@@ -3192,6 +3454,7 @@ async def _fetch_pages_content_playwright(
                             "banner":           banner or {},
                             "meta_title":       content.get("pageTitle") or "",
                             "meta_description": content.get("metaDescription") or "",
+                            "og_image":         content.get("ogImage") or "",
                             "faq_items":        _extract_faq(soup),
                             "map_embed":        _extract_map_embed(soup),
                             "hours_rows":       _extract_hours(soup),
@@ -3391,6 +3654,113 @@ async def _capture_page_styles(url: str, timeout_ms: int = 25000) -> Dict[str, A
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Sitemap discovery
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _fetch_sitemap_urls(base_url: str, *, timeout: float = 8.0) -> List[str]:
+    """Discover all page URLs for a site via its XML sitemap(s).
+
+    Tries common sitemap paths in order.  Handles both plain ``<urlset>``
+    sitemaps and ``<sitemapindex>`` files (one level of nesting).  Returns
+    only URLs on the same origin, excluding media and WP infrastructure paths.
+    """
+    from urllib.parse import urlparse as _urlparse
+    from xml.etree import ElementTree as ET
+
+    _parsed = _urlparse(base_url)
+    origin = f"{_parsed.scheme}://{_parsed.netloc}"
+
+    _SITEMAP_CANDIDATES = [
+        "/sitemap.xml",
+        "/sitemap_index.xml",
+        "/wp-sitemap.xml",
+        "/page-sitemap.xml",
+        "/post-sitemap.xml",
+        "/sitemap/sitemap.xml",
+    ]
+    _NS_RE = re.compile(r"\{[^}]*\}")
+    _SKIP_KEYS = (
+        "/wp-content/", "/wp-includes/", "?attachment_id=",
+        "/feed/", "/tag/", "/author/",
+    )
+    _MEDIA_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg",
+                   ".pdf", ".mp4", ".mp3", ".zip")
+
+    def _parse_xml(text: str):
+        """Return (page_urls, child_sitemap_urls) from sitemap XML text."""
+        pages: List[str] = []
+        children: List[str] = []
+        try:
+            root_el = ET.fromstring(text)
+        except ET.ParseError:
+            return pages, children
+        root_tag = _NS_RE.sub("", root_el.tag).lower()
+        is_index = root_tag == "sitemapindex"
+        for el in root_el.iter():
+            tag = _NS_RE.sub("", el.tag).lower()
+            if tag != "loc" or not el.text:
+                continue
+            loc = el.text.strip()
+            if not loc:
+                continue
+            if is_index or loc.endswith(".xml"):
+                children.append(loc)
+            elif loc.startswith(origin):
+                if not any(k in loc for k in _SKIP_KEYS):
+                    if not any(loc.lower().endswith(ext) for ext in _MEDIA_EXTS):
+                        pages.append(loc)
+        return pages, children
+
+    collected: List[str] = []
+    seen: set = set()
+
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True,
+                                 headers={"User-Agent": UA}) as client:
+        # Phase 1: try each candidate path until one returns 200 XML
+        root_text = ""
+        for path in _SITEMAP_CANDIDATES:
+            try:
+                r = await client.get(origin + path)
+                if r.status_code == 200 and ("<loc>" in r.text or "<urlset" in r.text or "<sitemapindex" in r.text):
+                    root_text = r.text
+                    break
+            except Exception:
+                continue
+
+        if not root_text:
+            return []
+
+        pages, children = _parse_xml(root_text)
+        for p in pages:
+            if p not in seen:
+                seen.add(p)
+                collected.append(p)
+
+        # Phase 2: follow child sitemaps (one level deep)
+        async def _fetch_child(url: str):
+            try:
+                r = await client.get(url)
+                if r.status_code == 200:
+                    return r.text
+            except Exception:
+                pass
+            return ""
+
+        if children:
+            child_texts = await asyncio.gather(*[_fetch_child(c) for c in children[:20]])
+            for ct in child_texts:
+                if not ct:
+                    continue
+                sub_pages, _ = _parse_xml(ct)
+                for p in sub_pages:
+                    if p not in seen:
+                        seen.add(p)
+                        collected.append(p)
+
+    return collected
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Public entry point
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -3508,6 +3878,45 @@ async def scrape(url: str, *, use_playwright: bool = False,
         design_tokens["footerBgImage"] = footer_bg["footerBgImage"]
     layout_patterns = _detect_layout_patterns(soup)
     nav_tree       = _extract_nav_tree(soup, url)
+
+    # ── Page discovery: sitemap + full internal-link crawl ──────────────────
+    # Build a deduplicated list of all same-origin page URLs so that the
+    # import pipeline can create and populate pages beyond the visible nav.
+    _pd_seen: set = set()
+    _pd_urls: List[str] = []
+
+    def _pd_add(u: str) -> None:
+        u = (u or "").split("#")[0].rstrip("/")
+        if u and u not in _pd_seen:
+            _pd_seen.add(u)
+            _pd_urls.append(u)
+
+    # 1. URLs explicitly listed in the nav tree (walk full tree)
+    def _walk_nav(items):
+        for item in items:
+            if item.get("href"):
+                _pd_add(item["href"])
+            for child in (item.get("children") or []):
+                if child.get("href"):
+                    _pd_add(child["href"])
+                for gc in (child.get("children") or []):
+                    if gc.get("href"):
+                        _pd_add(gc["href"])
+    _walk_nav(nav_tree)
+
+    # 2. Every <a href> on the homepage pointing to the same domain
+    for _il in _collect_internal_links(soup, url):
+        _pd_add(_il)
+
+    # 3. Sitemap XML (the most comprehensive source when available)
+    try:
+        for _su in await _fetch_sitemap_urls(url):
+            _pd_add(_su)
+    except Exception as _sm_ex:
+        print(f"[lavendir_scraper] sitemap fetch skipped: {_sm_ex}")
+
+    print(f"[lavendir_scraper] page discovery: {len(_pd_urls)} unique page URLs found")
+
     slideshow_urls = _extract_slideshow_images(soup, url)
     hero_image_url = _extract_hero_image_url(soup, url)
     logo_url       = _extract_logo_url(soup, url)
@@ -3621,6 +4030,7 @@ async def scrape(url: str, *, use_playwright: bool = False,
         "designTokens":    design_tokens,
         "layoutPatterns":  layout_patterns,
         "navTree":         nav_tree,
+        "allPageUrls":     _pd_urls,
         "heroImageUrl":    hero_image_url or "",
         "homepageBanner":  homepage_banner,
         "slideshowImages": slideshow_urls,

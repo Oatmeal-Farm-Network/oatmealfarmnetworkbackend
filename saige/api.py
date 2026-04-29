@@ -22,7 +22,7 @@ from chat_history import chat_history
 from message_buffer import message_buffer, get_last_n, push_message
 from redis_client import RedisClientManager, get_redis_manager
 from llm import llm
-from models import FollowUpEntityExtraction
+from saige_models import FollowUpEntityExtraction
 from jwt_auth import get_current_user
 
 
