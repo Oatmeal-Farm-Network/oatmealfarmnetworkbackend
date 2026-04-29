@@ -3716,16 +3716,40 @@ async def _fetch_sitemap_urls(base_url: str, *, timeout: float = 8.0) -> List[st
 
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True,
                                  headers={"User-Agent": UA}) as client:
-        # Phase 1: try each candidate path until one returns 200 XML
+        # Phase 0: check robots.txt for explicit Sitemap: directives
         root_text = ""
-        for path in _SITEMAP_CANDIDATES:
-            try:
-                r = await client.get(origin + path)
-                if r.status_code == 200 and ("<loc>" in r.text or "<urlset" in r.text or "<sitemapindex" in r.text):
-                    root_text = r.text
-                    break
-            except Exception:
-                continue
+        try:
+            rb = await client.get(origin + "/robots.txt")
+            if rb.status_code == 200:
+                for line in rb.text.splitlines():
+                    m = re.match(r"Sitemap\s*:\s*(.+)", line.strip(), re.IGNORECASE)
+                    if not m:
+                        continue
+                    sm_url = m.group(1).strip()
+                    if not sm_url:
+                        continue
+                    try:
+                        rs = await client.get(sm_url)
+                        if rs.status_code == 200 and (
+                            "<loc>" in rs.text or "<urlset" in rs.text or "<sitemapindex" in rs.text
+                        ):
+                            root_text = rs.text
+                            break
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        # Phase 1: try each candidate path until one returns 200 XML
+        if not root_text:
+            for path in _SITEMAP_CANDIDATES:
+                try:
+                    r = await client.get(origin + path)
+                    if r.status_code == 200 and ("<loc>" in r.text or "<urlset" in r.text or "<sitemapindex" in r.text):
+                        root_text = r.text
+                        break
+                except Exception:
+                    continue
 
         if not root_text:
             return []
@@ -3914,6 +3938,41 @@ async def scrape(url: str, *, use_playwright: bool = False,
             _pd_add(_su)
     except Exception as _sm_ex:
         print(f"[lavendir_scraper] sitemap fetch skipped: {_sm_ex}")
+
+    # 4. 2nd-level crawl: fetch top nav pages and harvest their internal links.
+    # Catches subpages/blog posts that aren't linked from the homepage but appear
+    # in the body of a parent page (e.g., "Blog" → individual post links).
+    # Capped to 12 nav pages and uses a short timeout to keep scrapes fast.
+    _nav_top_hrefs = [
+        item["href"] for item in nav_tree
+        if item.get("href") and item["href"] not in _pd_seen
+    ][:12]
+    if _nav_top_hrefs:
+        try:
+            async with httpx.AsyncClient(
+                timeout=7.0, follow_redirects=True,
+                headers={"User-Agent": UA},
+                limits=httpx.Limits(max_connections=8, max_keepalive_connections=4),
+            ) as _2l_client:
+                _2l_sem = asyncio.Semaphore(6)
+
+                async def _fetch_2l(sub_url: str) -> List[str]:
+                    async with _2l_sem:
+                        try:
+                            r2 = await _2l_client.get(sub_url)
+                            if r2.status_code < 400 and r2.text:
+                                sub_soup = BeautifulSoup(r2.text, "html.parser")
+                                return _collect_internal_links(sub_soup, sub_url)
+                        except Exception:
+                            pass
+                        return []
+
+                _2l_batches = await asyncio.gather(*[_fetch_2l(h) for h in _nav_top_hrefs])
+                for _2l_links in _2l_batches:
+                    for _2l_link in _2l_links:
+                        _pd_add(_2l_link)
+        except Exception as _2l_ex:
+            print(f"[lavendir_scraper] 2nd-level crawl skipped: {_2l_ex}")
 
     print(f"[lavendir_scraper] page discovery: {len(_pd_urls)} unique page URLs found")
 
