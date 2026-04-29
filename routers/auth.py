@@ -198,6 +198,12 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
 
         token = create_access_token(data={"sub": str(user.PeopleID)})
 
+        try:
+            db.execute(text("UPDATE People SET OFNLastAccess = GETDATE() WHERE PeopleID = :id"), {"id": user.PeopleID})
+            db.commit()
+        except Exception:
+            pass
+
         return {
             "AccessToken": token,
             "token_type": "bearer",
