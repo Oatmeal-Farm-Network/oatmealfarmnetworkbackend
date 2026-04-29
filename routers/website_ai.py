@@ -1834,6 +1834,7 @@ def _fetch_pages_content_parallel(urls: list[str], *, timeout: float = 8.0) -> d
                     "banner":          banner,
                     "meta_title":      content.get("pageTitle") or "",
                     "meta_description":content.get("metaDescription") or "",
+                    "og_image":        content.get("ogImage") or "",
                     "faq_items":       faq_items,
                     "map_embed":       map_embed,
                     "hours_rows":      hours_rows,
@@ -1846,7 +1847,7 @@ def _fetch_pages_content_parallel(urls: list[str], *, timeout: float = 8.0) -> d
         async with httpx.AsyncClient(
             timeout=timeout, follow_redirects=True,
             headers={"User-Agent": UA},
-            limits=httpx.Limits(max_connections=6, max_keepalive_connections=4),
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=6),
         ) as client:
             await asyncio.gather(*[_one(client, u) for u in urls])
         return out
@@ -2466,6 +2467,85 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
         if created:
             added.append(f"{created} nav page{'s' if created != 1 else ''}")
 
+    # ── Discovered pages: sitemap + internal-link crawl ─────────────────────
+    # Pages found via page discovery (sitemap.xml, all <a href> links) that
+    # are NOT already present in page_sources (from the nav tree). Gives us
+    # the full site depth: subpages, blog posts, event listings, etc.
+    if "nav" in include:
+        all_page_urls: list[str] = data.get("allPageUrls") or []
+        _MAX_TOTAL_PAGES = 80  # hard cap so imports stay manageable
+        _covered_hrefs = {ps[2].rstrip("/") for ps in page_sources}
+
+        def _name_from_url_path(url_str: str) -> str:
+            """Derive a human-readable page name from the last URL path segment."""
+            try:
+                from urllib.parse import urlparse as _up
+                path = _up(url_str).path.strip("/")
+                segments = [s for s in path.split("/") if s]
+                if not segments:
+                    return "Page"
+                last = segments[-1]
+                last = re.sub(r"\.[a-z]{2,4}$", "", last)          # strip extension
+                last = re.sub(r"[-_]+", " ", last).strip().title()  # slug → Title Case
+                return last or "Page"
+            except Exception:
+                return "Page"
+
+        # Walk all_page_urls in order (nav-tree URLs first, then sitemap, then
+        # homepage crawl), creating a DB page for each URL not yet covered,
+        # until we hit the cap.
+        disc_created = 0
+        for disc_url in all_page_urls:
+            total_pages = len(page_sources) + disc_created
+            if total_pages >= _MAX_TOTAL_PAGES:
+                break
+            norm = disc_url.rstrip("/")
+            if norm in _covered_hrefs:
+                continue
+            _covered_hrefs.add(norm)
+
+            page_name = _name_from_url_path(disc_url)
+            # Upsert: reuse existing page with matching slug to stay idempotent
+            from urllib.parse import urlparse as _up
+            slug_base = re.sub(r"[^a-z0-9-]+", "-",
+                               (_up(disc_url).path.strip("/").replace("/", "-") or "page").lower()).strip("-") or "page"
+            slug = slug_base
+            _si = 2
+            while db.query(models.BusinessWebPage).filter(
+                models.BusinessWebPage.WebsiteID == website_id,
+                models.BusinessWebPage.Slug == slug,
+            ).first():
+                slug = f"{slug_base}-{_si}"
+                _si += 1
+
+            try:
+                last_pg = db.query(models.BusinessWebPage).filter(
+                    models.BusinessWebPage.WebsiteID == website_id,
+                ).order_by(models.BusinessWebPage.SortOrder.desc()).first()
+                next_sort = (last_pg.SortOrder + 1) if last_pg and last_pg.SortOrder is not None else 100
+
+                from datetime import datetime as _dt
+                new_pg = models.BusinessWebPage(
+                    WebsiteID=website_id, BusinessID=business_id,
+                    PageName=page_name, Slug=slug,
+                    SortOrder=next_sort, IsPublished=True,
+                    IsHomePage=False, IsNavHeading=False, ParentPageID=None,
+                    LinkURL=None,
+                    CreatedAt=_dt.utcnow(), UpdatedAt=_dt.utcnow(),
+                )
+                db.add(new_pg)
+                db.flush()
+                page_sources.append((new_pg.PageID, page_name, disc_url))
+                disc_created += 1
+            except Exception as _dc_ex:
+                _diag(f"discovered page create error ({disc_url}): {_dc_ex}")
+                continue
+
+        if disc_created:
+            db.commit()
+            added.append(f"{disc_created} discovered page{'s' if disc_created != 1 else ''}")
+            _diag(f"page discovery: created {disc_created} extra pages (total sources: {len(page_sources)})")
+
     # Remove the setup-wizard's generic farm placeholder content block before
     # we layer scraped content on top — otherwise the user sees "We are a local
     # farm dedicated to…" next to imported content about a horse association,
@@ -2492,6 +2572,13 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
         hero_image = hero_url
         if not hero_image:
             hero_image = _pick_hero_image(images)
+        # og:image is the site owner's declared representative image — use it
+        # when no hero image was found via DOM selectors (e.g. card-grid homepages
+        # with no traditional banner section).
+        if not hero_image:
+            og_img = (data.get("ogImage") or tokens.get("ogImage") or "").strip()
+            if og_img:
+                hero_image = og_img
         # Rehost the hero image so the imported page doesn't break if the
         # source site renames/removes the asset.
         if hero_image:
@@ -2658,6 +2745,10 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
 
     if "about" in include:
         body = "\n\n".join(bodies[1:4]) if len(bodies) > 1 else (bodies[0] if bodies else "")
+        # Fall back to meta description when the article-scope body scraper came up empty
+        # (e.g. card-grid homepages with no long content paragraphs).
+        if not body:
+            body = (data.get("metaDescription") or "").strip()
         if body:
             # Reuse the existing about block if there is one, so re-running the
             # import doesn't stack multiple copies of the same content. The
@@ -2701,7 +2792,7 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
     if "gallery" in include and len(images) >= 3:
         srcs = []
         for img in images[:12]:
-            src = img.get("src") if isinstance(img, dict) else None
+            src = (img.get("url") or img.get("src") or "") if isinstance(img, dict) else ""
             if src and not src.endswith(".svg"):
                 srcs.append(src)
         if len(srcs) >= 3:
@@ -3010,7 +3101,7 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
                     missing.append(phref)
             if missing:
                 _diag(f"per-page content: playwright fallback for {len(missing)} pages")
-                pw_results = _fetch_pages_content_playwright(missing[:15])
+                pw_results = _fetch_pages_content_playwright(missing[:25])
                 for u, pd in pw_results.items():
                     if pd.get("bodies") or pd.get("links") or pd.get("headings"):
                         per_page[u] = pd
@@ -3044,6 +3135,8 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
                 p_hero = banner_bg
                 if not p_hero:
                     p_hero = _pick_hero_image(p_images)
+                if not p_hero:
+                    p_hero = (page_data.get("og_image") or "").strip()
                 if p_hero:
                     p_hero = _rehost_remote_image(p_hero)
                 body_text = "\n\n".join(p_bodies[:6]).strip()
@@ -3230,10 +3323,10 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
 
                 elif page_type == "gallery":
                     srcs = [
-                        (img.get("src") if isinstance(img, dict) else None)
-                        for img in p_images
-                        if (img.get("src") if isinstance(img, dict) else None)
-                        and not (img.get("src") if isinstance(img, dict) else "").endswith(".svg")
+                        (img.get("url") or img.get("src") or "")
+                        for img in p_images if isinstance(img, dict)
+                        if (img.get("url") or img.get("src") or "")
+                        and not (img.get("url") or img.get("src") or "").endswith(".svg")
                     ]
                     if srcs:
                         _add_block("gallery", {

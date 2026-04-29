@@ -3,7 +3,7 @@ Simple test script for the enhanced farm advisory system.
 Tests that main.py loads correctly and the graph is functional.
 """
 from graph import graph
-from models import FarmState
+from saige_models import FarmState
 from langgraph.types import Command
 
 def test_graph_empty_start():

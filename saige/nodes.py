@@ -4,7 +4,7 @@ from typing import Dict, Any, List, Optional
 from langgraph.types import interrupt
 
 from config import RAG_AVAILABLE, WEATHER_AVAILABLE, MAX_QUESTIONS
-from models import FarmState, AssessmentDecision, QueryClassification, QueryTypeClassification, WeatherQueryParsed, FollowUpEntityExtraction
+from saige_models import FarmState, AssessmentDecision, QueryClassification, QueryTypeClassification, WeatherQueryParsed, FollowUpEntityExtraction
 from llm import llm
 from rag import rag_livestock, rag_plant, rag_bakasura, rag_news, rag_hitl_charlie
 from weather import weather_service, get_weather_tool, weather_tools

@@ -125,7 +125,6 @@ ftfy>=6.0
 # Security / Authentication
 # =========================================================
 
-passlib>=1.7.4
 python-jose>=3.5.0
 bcrypt>=4.0.0
 
