@@ -1806,44 +1806,89 @@ def _fetch_pages_content_parallel(urls: list[str], *, timeout: float = 8.0) -> d
 
     async def _run():
         out: dict = {}
-        async def _one(client, u):
+        sem = asyncio.Semaphore(10)
+
+        async def _css_text(client, href: str) -> str:
             try:
-                r = await client.get(u)
-                if r.status_code >= 400 or not r.text:
-                    return
-                soup = BeautifulSoup(r.text, "html.parser")
-                content = _extract_content(soup, u)
-                banner = {}
+                r = await client.get(href)
+                return r.text if r.status_code < 400 else ""
+            except Exception:
+                return ""
+
+        async def _one(client, u):
+            async with sem:
                 try:
-                    banner = _extract_page_banner(soup, u) or {}
-                except Exception:
+                    r = await client.get(u)
+                    if r.status_code >= 400 or not r.text:
+                        return
+                    soup = BeautifulSoup(r.text, "html.parser")
+
+                    # Inject external CSS so CSS-backed banner detection works.
+                    # Elementor / Divi / WP themes store background-image rules in
+                    # separate .css files — without them _extract_page_banner misses
+                    # the section hero on most interior pages.
+                    try:
+                        from scrapers.lavendir_scraper import _resolve as _lav_resolve
+                        _css_hrefs = []
+                        for _lnk in soup.find_all("link", rel=True):
+                            if "stylesheet" not in " ".join(_lnk.get("rel") or []).lower():
+                                continue
+                            _h = (_lnk.get("href") or "").strip()
+                            if not _h or "fonts.googleapis" in _h:
+                                continue
+                            _abs = _lav_resolve(u, _h)
+                            if _abs:
+                                _css_hrefs.append(_abs)
+                            if len(_css_hrefs) >= 5:
+                                break
+                        if _css_hrefs:
+                            _css_results = await asyncio.gather(
+                                *[_css_text(client, _h) for _h in _css_hrefs],
+                                return_exceptions=True,
+                            )
+                            _merged = "\n".join(
+                                t for t in _css_results
+                                if isinstance(t, str) and t
+                            )
+                            if _merged:
+                                _stag = soup.new_tag("style")
+                                _stag.string = _merged
+                                (soup.head or soup).append(_stag)
+                    except Exception:
+                        pass
+
+                    content = _extract_content(soup, u)
                     banner = {}
-                faq_items     = _extract_faq(soup)
-                map_embed     = _extract_map_embed(soup)
-                hours_rows    = _extract_hours(soup)
-                team_members  = _extract_team_members(soup, u)
-                pricing_table = _extract_pricing_table(soup)
-                page_cta      = _extract_page_cta(soup, u)
-                out[u] = {
-                    "headings":        content.get("headings") or [],
-                    "bodies":          content.get("bodyText") or [],
-                    "bodies_html":     content.get("bodyHtml") or [],
-                    "body_ordered":    content.get("bodyOrdered") or "",
-                    "images":          content.get("images") or [],
-                    "links":           content.get("links")   or [],
-                    "banner":          banner,
-                    "meta_title":      content.get("pageTitle") or "",
-                    "meta_description":content.get("metaDescription") or "",
-                    "og_image":        content.get("ogImage") or "",
-                    "faq_items":       faq_items,
-                    "map_embed":       map_embed,
-                    "hours_rows":      hours_rows,
-                    "team_members":    team_members,
-                    "pricing_table":   pricing_table,
-                    "page_cta":        page_cta,
-                }
-            except Exception as _e:
-                return
+                    try:
+                        banner = _extract_page_banner(soup, u) or {}
+                    except Exception:
+                        banner = {}
+                    faq_items     = _extract_faq(soup)
+                    map_embed     = _extract_map_embed(soup)
+                    hours_rows    = _extract_hours(soup)
+                    team_members  = _extract_team_members(soup, u)
+                    pricing_table = _extract_pricing_table(soup)
+                    page_cta      = _extract_page_cta(soup, u)
+                    out[u] = {
+                        "headings":        content.get("headings") or [],
+                        "bodies":          content.get("bodyText") or [],
+                        "bodies_html":     content.get("bodyHtml") or [],
+                        "body_ordered":    content.get("bodyOrdered") or "",
+                        "images":          content.get("images") or [],
+                        "links":           content.get("links")   or [],
+                        "banner":          banner,
+                        "meta_title":      content.get("pageTitle") or "",
+                        "meta_description":content.get("metaDescription") or "",
+                        "og_image":        content.get("ogImage") or "",
+                        "faq_items":       faq_items,
+                        "map_embed":       map_embed,
+                        "hours_rows":      hours_rows,
+                        "team_members":    team_members,
+                        "pricing_table":   pricing_table,
+                        "page_cta":        page_cta,
+                    }
+                except Exception:
+                    return
         async with httpx.AsyncClient(
             timeout=timeout, follow_redirects=True,
             headers={"User-Agent": UA},
@@ -2491,6 +2536,23 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
             except Exception:
                 return "Page"
 
+        # Archive/pagination patterns we don't want as importable pages:
+        # /2024/01/, ?p=123, /page/2/, /tag/x, /author/x, etc.
+        _ARCHIVE_URL_RE = re.compile(
+            r"/\d{4}/\d{2}/"              # WordPress date archive
+            r"|[?&]p=\d+"                 # WP post ID query
+            r"|[?&]page_id=\d+"
+            r"|/page/\d+/"                # pagination
+            r"|[?&]paged=\d+"
+            r"|/tag/"                     # tag archive
+            r"|/author/"                  # author archive
+            r"|/feed/"                    # RSS feed
+            r"|/category/"               # category archive
+            r"|[?&]attachment_id=\d+"
+            r"|[?&]m=\d{4,}",            # date query
+            re.IGNORECASE,
+        )
+
         # Walk all_page_urls in order (nav-tree URLs first, then sitemap, then
         # homepage crawl), creating a DB page for each URL not yet covered,
         # until we hit the cap.
@@ -2501,6 +2563,8 @@ def _execute_import_from_website(params: dict, website_id: int, business_id: int
                 break
             norm = disc_url.rstrip("/")
             if norm in _covered_hrefs:
+                continue
+            if _ARCHIVE_URL_RE.search(disc_url):
                 continue
             _covered_hrefs.add(norm)
 
