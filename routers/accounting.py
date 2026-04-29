@@ -1112,46 +1112,65 @@ def get_dashboard(
     db: Session = Depends(get_db),
 ):
     bid = access["business_id"]
-    ar = db.execute(
-        text("""
-            SELECT
-              ISNULL(SUM(CASE WHEN Status NOT IN ('Paid','Void') THEN BalanceDue ELSE 0 END),0) AS TotalAR,
-              ISNULL(SUM(CASE WHEN Status='Overdue'              THEN BalanceDue ELSE 0 END),0) AS OverdueAR,
-              COUNT(CASE WHEN Status NOT IN ('Paid','Void') THEN 1 END)                         AS OpenCount
-            FROM Invoices WHERE BusinessID=:bid
-        """),
-        {"bid": bid},
-    ).fetchone()
-    ap = db.execute(
-        text("""
-            SELECT
-              ISNULL(SUM(CASE WHEN Status NOT IN ('Paid','Void') THEN BalanceDue ELSE 0 END),0) AS TotalAP,
-              ISNULL(SUM(CASE WHEN Status='Overdue'              THEN BalanceDue ELSE 0 END),0) AS OverdueAP,
-              COUNT(CASE WHEN Status NOT IN ('Paid','Void') THEN 1 END)                         AS OpenCount
-            FROM Bills WHERE BusinessID=:bid
-        """),
-        {"bid": bid},
-    ).fetchone()
-    recent_payments = db.execute(
-        text("""
-            SELECT TOP 5 p.*, c.DisplayName AS CustomerName
-            FROM Payments p JOIN AccountingCustomers c ON p.CustomerID=c.CustomerID
-            WHERE p.BusinessID=:bid ORDER BY p.PaymentDate DESC
-        """),
-        {"bid": bid},
-    ).fetchall()
-    overdue_invoices = db.execute(
-        text("""
-            SELECT TOP 5 i.*, c.DisplayName AS CustomerName
-            FROM Invoices i JOIN AccountingCustomers c ON i.CustomerID=c.CustomerID
-            WHERE i.BusinessID=:bid AND i.Status NOT IN ('Paid','Void')
-              AND i.DueDate < GETDATE() ORDER BY i.DueDate ASC
-        """),
-        {"bid": bid},
-    ).fetchall()
+    p = {"bid": bid}
+
+    # AR: posted invoices + unposted aggregator B2B orders not yet synced
+    ar_inv = db.execute(text("""
+        SELECT
+          ISNULL(SUM(CASE WHEN Status NOT IN ('Paid','Void') THEN BalanceDue ELSE 0 END),0) AS TotalAR,
+          ISNULL(SUM(CASE WHEN Status='Overdue'              THEN BalanceDue ELSE 0 END),0) AS OverdueAR,
+          COUNT(CASE WHEN Status NOT IN ('Paid','Void') THEN 1 END)                         AS OpenCount
+        FROM Invoices WHERE BusinessID=:bid
+    """), p).fetchone()
+    ar_agg = db.execute(text("""
+        SELECT
+          ISNULL(SUM(CASE WHEN PaymentStatus != 'paid' THEN TotalValue ELSE 0 END),0) AS TotalAR,
+          ISNULL(SUM(CASE WHEN PaymentStatus != 'paid' AND DeliveryDate < CONVERT(DATE,GETDATE()) THEN TotalValue ELSE 0 END),0) AS OverdueAR,
+          COUNT(CASE WHEN PaymentStatus != 'paid' THEN 1 END) AS OpenCount
+        FROM OFNAggregatorB2BOrder
+        WHERE BusinessID=:bid AND AccountingInvoiceID IS NULL AND Status != 'cancelled'
+    """), p).fetchone()
+
+    # AP: posted bills + unposted aggregator purchases not yet synced
+    ap_bill = db.execute(text("""
+        SELECT
+          ISNULL(SUM(CASE WHEN Status NOT IN ('Paid','Void') THEN BalanceDue ELSE 0 END),0) AS TotalAP,
+          ISNULL(SUM(CASE WHEN Status='Overdue'              THEN BalanceDue ELSE 0 END),0) AS OverdueAP,
+          COUNT(CASE WHEN Status NOT IN ('Paid','Void') THEN 1 END)                         AS OpenCount
+        FROM Bills WHERE BusinessID=:bid
+    """), p).fetchone()
+    ap_agg = db.execute(text("""
+        SELECT
+          ISNULL(SUM(CASE WHEN PaymentStatus != 'paid' THEN TotalPaid ELSE 0 END),0) AS TotalAP,
+          ISNULL(SUM(CASE WHEN PaymentStatus != 'paid' AND DATEADD(DAY,30,ReceivedDate) < CONVERT(DATE,GETDATE()) THEN TotalPaid ELSE 0 END),0) AS OverdueAP,
+          COUNT(CASE WHEN PaymentStatus != 'paid' THEN 1 END) AS OpenCount
+        FROM OFNAggregatorPurchase
+        WHERE BusinessID=:bid AND AccountingBillID IS NULL
+    """), p).fetchone()
+
+    recent_payments = db.execute(text("""
+        SELECT TOP 5 p.*, c.DisplayName AS CustomerName
+        FROM Payments p JOIN AccountingCustomers c ON p.CustomerID=c.CustomerID
+        WHERE p.BusinessID=:bid ORDER BY p.PaymentDate DESC
+    """), p).fetchall()
+    overdue_invoices = db.execute(text("""
+        SELECT TOP 5 i.*, c.DisplayName AS CustomerName
+        FROM Invoices i JOIN AccountingCustomers c ON i.CustomerID=c.CustomerID
+        WHERE i.BusinessID=:bid AND i.Status NOT IN ('Paid','Void')
+          AND i.DueDate < GETDATE() ORDER BY i.DueDate ASC
+    """), p).fetchall()
+
     return {
-        "ar": dict(ar._mapping) if ar else {},
-        "ap": dict(ap._mapping) if ap else {},
+        "ar": {
+            "TotalAR":   float(ar_inv.TotalAR  or 0) + float(ar_agg.TotalAR  or 0),
+            "OverdueAR": float(ar_inv.OverdueAR or 0) + float(ar_agg.OverdueAR or 0),
+            "OpenCount": int(ar_inv.OpenCount   or 0) + int(ar_agg.OpenCount   or 0),
+        },
+        "ap": {
+            "TotalAP":   float(ap_bill.TotalAP  or 0) + float(ap_agg.TotalAP  or 0),
+            "OverdueAP": float(ap_bill.OverdueAP or 0) + float(ap_agg.OverdueAP or 0),
+            "OpenCount": int(ap_bill.OpenCount   or 0) + int(ap_agg.OpenCount   or 0),
+        },
         "recentPayments":  [dict(r._mapping) for r in recent_payments],
         "overdueInvoices": [dict(r._mapping) for r in overdue_invoices],
     }

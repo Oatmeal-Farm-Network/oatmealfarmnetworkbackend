@@ -201,6 +201,29 @@ def ensure_tables(db: Session):
         )
     """))
 
+    # Add platform-account link columns to OFNAggregatorFarm (migration for existing tables)
+    for col, coltype in [("LinkedBusinessID", "INT NULL"), ("LinkedPeopleID", "INT NULL")]:
+        db.execute(text(f"""
+            IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='OFNAggregatorFarm')
+               AND NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                               WHERE TABLE_NAME='OFNAggregatorFarm' AND COLUMN_NAME='{col}')
+            ALTER TABLE OFNAggregatorFarm ADD {col} {coltype}
+        """))
+
+    # Accounting link columns — track which aggregator records have been posted
+    for tbl, col, coltype in [
+        ("OFNAggregatorFarm",     "AccountingVendorID",   "INT NULL"),
+        ("OFNAggregatorB2BAccount","AccountingCustomerID","INT NULL"),
+        ("OFNAggregatorB2BOrder", "AccountingInvoiceID",  "INT NULL"),
+        ("OFNAggregatorPurchase", "AccountingBillID",     "INT NULL"),
+    ]:
+        db.execute(text(f"""
+            IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='{tbl}')
+               AND NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                               WHERE TABLE_NAME='{tbl}' AND COLUMN_NAME='{col}')
+            ALTER TABLE {tbl} ADD {col} {coltype}
+        """))
+
     # Indexes for the per-business queries every screen runs
     for ix in [
         ("IX_OFNAggregatorFarm_Biz",       "OFNAggregatorFarm",      "BusinessID"),
@@ -323,7 +346,8 @@ def _update_row(db, table, pk_col, pk_val, body, allowed):
 
 FARM_FIELDS = ["FarmName","ContactName","ContactPhone","ContactEmail","AddressLine",
                "City","Region","Country","HectaresUnder","PrimaryCrops",
-               "Certification","Status","JoinedDate","Notes"]
+               "Certification","Status","JoinedDate","Notes",
+               "LinkedBusinessID","LinkedPeopleID"]
 
 
 @router.get("/api/aggregator/{business_id}/farms")
@@ -349,26 +373,28 @@ def create_farm(business_id: int, body: dict, db: Session = Depends(get_db)):
         INSERT INTO OFNAggregatorFarm
             (BusinessID, FarmName, ContactName, ContactPhone, ContactEmail,
              AddressLine, City, Region, Country, HectaresUnder, PrimaryCrops,
-             Certification, Status, JoinedDate, Notes)
+             Certification, Status, JoinedDate, Notes, LinkedBusinessID, LinkedPeopleID)
         OUTPUT INSERTED.FarmID
         VALUES (:bid, :fn, :cn, :cp, :ce, :addr, :city, :reg, :ctry, :ha, :pc,
-                :cert, :st, :jd, :notes)
+                :cert, :st, :jd, :notes, :lbid, :lpid)
     """), {
-        "bid": business_id,
-        "fn":  body["FarmName"],
-        "cn":  body.get("ContactName"),
-        "cp":  body.get("ContactPhone"),
-        "ce":  body.get("ContactEmail"),
-        "addr":body.get("AddressLine"),
-        "city":body.get("City"),
-        "reg": body.get("Region"),
-        "ctry":body.get("Country"),
-        "ha":  body.get("HectaresUnder"),
-        "pc":  body.get("PrimaryCrops"),
-        "cert":body.get("Certification"),
-        "st":  body.get("Status", "active"),
-        "jd":  body.get("JoinedDate"),
-        "notes": body.get("Notes"),
+        "bid":  business_id,
+        "fn":   body["FarmName"],
+        "cn":   body.get("ContactName"),
+        "cp":   body.get("ContactPhone"),
+        "ce":   body.get("ContactEmail"),
+        "addr": body.get("AddressLine"),
+        "city": body.get("City"),
+        "reg":  body.get("Region"),
+        "ctry": body.get("Country"),
+        "ha":   body.get("HectaresUnder"),
+        "pc":   body.get("PrimaryCrops"),
+        "cert": body.get("Certification"),
+        "st":   body.get("Status", "active"),
+        "jd":   body.get("JoinedDate"),
+        "notes":body.get("Notes"),
+        "lbid": body.get("LinkedBusinessID"),
+        "lpid": body.get("LinkedPeopleID"),
     }).fetchone()
     db.commit()
     return {"FarmID": int(res.FarmID)}
@@ -387,6 +413,191 @@ def delete_farm(farm_id: int, db: Session = Depends(get_db)):
     db.execute(text("DELETE FROM OFNAggregatorFarm WHERE FarmID = :id"), {"id": farm_id})
     db.commit()
     return {"ok": True}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Farm search — find existing platform businesses/people to link as farms
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/api/aggregator/search")
+def search_platform_farms(q: str = "", db: Session = Depends(get_db)):
+    """Search Business + People tables so the admin can find existing platform accounts."""
+    if not q or len(q) < 2:
+        return []
+    like = f"%{q}%"
+    rows = db.execute(text("""
+        SELECT TOP 20
+            b.BusinessID,
+            b.BusinessName,
+            p.PeopleID,
+            p.PeopleFirstName,
+            p.PeopleLastName,
+            p.PeopleEmail,
+            a.AddressCity  AS City,
+            a.AddressState AS Region,
+            a.AddressCountry AS Country
+        FROM Business b
+        LEFT JOIN BusinessAccess ba ON ba.BusinessID = b.BusinessID AND ba.AccessLevelID >= 3
+        LEFT JOIN People p ON p.PeopleID = ba.PeopleID
+        LEFT JOIN Address a ON a.AddressID = b.AddressID
+        WHERE b.BusinessName LIKE :q
+           OR p.PeopleFirstName LIKE :q
+           OR p.PeopleLastName  LIKE :q
+           OR p.PeopleEmail     LIKE :q
+        ORDER BY b.BusinessName
+    """), {"q": like}).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Invite farm — create a free platform account and add the farm to the network
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/api/aggregator/{business_id}/invite-farm")
+def invite_farm(business_id: int, body: dict, db: Session = Depends(get_db)):
+    """
+    1. Optionally create a People (user) record if email not already in the system.
+    2. Create a Business record (free tier) for the farm.
+    3. Link them via BusinessAccess.
+    4. Create an OFNAggregatorFarm record with LinkedBusinessID.
+    5. Send an invite email via SendGrid.
+    Returns { FarmID, BusinessID, PeopleID, alreadyExisted }.
+    """
+    from auth import hash_password
+    from routers.services import SENDGRID_API_KEY, SENDGRID_URL, FROM_EMAIL
+    import httpx, secrets
+
+    farm_name    = (body.get("FarmName") or "").strip()
+    contact_name = (body.get("ContactName") or "").strip()
+    contact_email= (body.get("ContactEmail") or "").strip().lower()
+    contact_phone= body.get("ContactPhone") or ""
+
+    if not farm_name:
+        raise HTTPException(400, "FarmName is required")
+
+    # ── 1. Find or create People record ──────────────────────────────────────
+    people_id = None
+    already_existed = False
+    if contact_email:
+        existing_person = db.execute(
+            text("SELECT TOP 1 PeopleID FROM People WHERE PeopleEmail = :e"),
+            {"e": contact_email}
+        ).fetchone()
+        if existing_person:
+            people_id = int(existing_person.PeopleID)
+            already_existed = True
+        else:
+            # Split contact_name into first/last
+            parts = contact_name.split(" ", 1) if contact_name else ["", ""]
+            first = parts[0]
+            last  = parts[1] if len(parts) > 1 else ""
+            temp_password = secrets.token_urlsafe(16)
+            row = db.execute(text("""
+                INSERT INTO People (PeopleFirstName, PeopleLastName, PeopleEmail, PeoplePassword,
+                                    PeopleActive, accesslevel, Subscriptionlevel, PeopleCreationDate)
+                OUTPUT INSERTED.PeopleID
+                VALUES (:fn, :ln, :email, :pw, 1, 0, 0, GETDATE())
+            """), {
+                "fn":    first,
+                "ln":    last,
+                "email": contact_email,
+                "pw":    hash_password(temp_password),
+            }).fetchone()
+            people_id = int(row.PeopleID)
+
+    # ── 2. Create Business record ─────────────────────────────────────────────
+    addr_row = db.execute(text("""
+        INSERT INTO Address (AddressStreet, AddressCity, AddressState, AddressCountry, AddressZip)
+        OUTPUT INSERTED.AddressID
+        VALUES (:s, :c, :r, :co, :z)
+    """), {
+        "s":  body.get("AddressLine") or "",
+        "c":  body.get("City") or "",
+        "r":  body.get("Region") or "",
+        "co": body.get("Country") or "",
+        "z":  "",
+    }).fetchone()
+    address_id = int(addr_row.AddressID)
+
+    biz_row = db.execute(text("""
+        INSERT INTO Business (BusinessName, AddressID, SubscriptionLevel, AccessLevel)
+        OUTPUT INSERTED.BusinessID
+        VALUES (:n, :a, 0, 1)
+    """), {"n": farm_name, "a": address_id}).fetchone()
+    new_business_id = int(biz_row.BusinessID)
+
+    # ── 3. Link People → Business via BusinessAccess ──────────────────────────
+    if people_id:
+        db.execute(text("""
+            IF NOT EXISTS (SELECT 1 FROM BusinessAccess WHERE BusinessID=:bid AND PeopleID=:pid)
+            INSERT INTO BusinessAccess (BusinessID, PeopleID, AccessLevelID, Active, CreatedAt, Role)
+            VALUES (:bid, :pid, 3, 1, GETDATE(), 'Owner')
+        """), {"bid": new_business_id, "pid": people_id})
+        # Set Contact1PeopleID on Business
+        db.execute(text("UPDATE Business SET Contact1PeopleID=:pid WHERE BusinessID=:bid"),
+                   {"pid": people_id, "bid": new_business_id})
+
+    # ── 4. Create OFNAggregatorFarm record ────────────────────────────────────
+    farm_row = db.execute(text("""
+        INSERT INTO OFNAggregatorFarm
+            (BusinessID, FarmName, ContactName, ContactPhone, ContactEmail,
+             AddressLine, City, Region, Country, PrimaryCrops, Certification,
+             Status, JoinedDate, Notes, LinkedBusinessID, LinkedPeopleID)
+        OUTPUT INSERTED.FarmID
+        VALUES (:bid, :fn, :cn, :cp, :ce, :addr, :city, :reg, :ctry, :pc, :cert,
+                'active', CONVERT(DATE,GETDATE()), :notes, :lbid, :lpid)
+    """), {
+        "bid":  business_id,
+        "fn":   farm_name,
+        "cn":   contact_name or None,
+        "cp":   contact_phone or None,
+        "ce":   contact_email or None,
+        "addr": body.get("AddressLine") or None,
+        "city": body.get("City") or None,
+        "reg":  body.get("Region") or None,
+        "ctry": body.get("Country") or None,
+        "pc":   body.get("PrimaryCrops") or None,
+        "cert": body.get("Certification") or None,
+        "notes":body.get("Notes") or None,
+        "lbid": new_business_id,
+        "lpid": people_id,
+    }).fetchone()
+    farm_id = int(farm_row.FarmID)
+    db.commit()
+
+    # ── 5. Send invite email ──────────────────────────────────────────────────
+    if contact_email and not already_existed:
+        try:
+            invite_html = (
+                f"<p>Hi {contact_name or 'there'},</p>"
+                "<p>You've been invited to join the <strong>Oatmeal Farm Network</strong> as a partner farm.</p>"
+                f"<p>Your farm <strong>{farm_name}</strong> has been added to our platform. "
+                "A free account has been created for you using this email address.</p>"
+                "<p>Please visit <a href='https://oatmealfarmnetwork.com'>oatmealfarmnetwork.com</a> "
+                "to set your password and complete your profile.</p>"
+                "<p>Welcome to the network!</p>"
+                "<p>— The Oatmeal Farm Network Team</p>"
+            )
+            email_payload = {
+                "personalizations": [{"to": [{"email": contact_email}]}],
+                "from": {"email": FROM_EMAIL, "name": "Oatmeal Farm Network"},
+                "subject": "You've been invited to the Oatmeal Farm Network",
+                "content": [{"type": "text/html", "value": invite_html}],
+            }
+            email_headers = {
+                "Authorization": "Bearer " + SENDGRID_API_KEY,
+                "Content-Type": "application/json",
+            }
+            httpx.post(SENDGRID_URL, json=email_payload, headers=email_headers, timeout=10)
+        except Exception as e:
+            print(f"[invite-farm] email error: {e}")
+
+    return {
+        "FarmID": farm_id,
+        "BusinessID": new_business_id,
+        "PeopleID": people_id,
+        "alreadyExisted": already_existed,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -554,6 +765,7 @@ def list_purchases(business_id: int,
     rows = db.execute(text(f"""
         SELECT p.PurchaseID, p.BusinessID, p.FarmID, f.FarmName, p.ContractID,
                {', '.join('p.'+col for col in PURCHASE_FIELDS if col not in ('FarmID','ContractID'))},
+               p.AccountingBillID,
                p.CreatedDate
           FROM OFNAggregatorPurchase p
           LEFT JOIN OFNAggregatorFarm f ON f.FarmID = p.FarmID
@@ -739,6 +951,7 @@ def list_b2b_orders(business_id: int, account_id: Optional[int] = None, db: Sess
     rows = db.execute(text(f"""
         SELECT o.OrderID, o.BusinessID, a.BuyerName,
                {', '.join('o.'+f for f in B2B_ORDER_FIELDS)},
+               o.AccountingInvoiceID,
                o.CreatedDate
           FROM OFNAggregatorB2BOrder o
           LEFT JOIN OFNAggregatorB2BAccount a ON a.AccountID = o.AccountID
@@ -928,3 +1141,332 @@ def delete_logistics(dispatch_id: int, db: Session = Depends(get_db)):
     db.execute(text("DELETE FROM OFNAggregatorLogistics WHERE DispatchID = :id"), {"id": dispatch_id})
     db.commit()
     return {"ok": True}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Accounting integration
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _acct_has_setup(bid: int, db: Session) -> bool:
+    """Return True if the business has a chart of accounts."""
+    return (db.execute(
+        text("SELECT COUNT(*) FROM Accounts WHERE BusinessID = :bid"), {"bid": bid}
+    ).scalar() or 0) > 0
+
+
+def _next_num(prefix: str, table: str, col: str, bid: int, db: Session) -> str:
+    row = db.execute(
+        text(f"SELECT TOP 1 {col} FROM {table} WHERE BusinessID = :bid ORDER BY {col} DESC"),
+        {"bid": bid},
+    ).fetchone()
+    if not row or not row[0]:
+        return f"{prefix}-00001"
+    try:
+        num = int(str(row[0]).split("-")[-1]) + 1
+    except ValueError:
+        num = 1
+    return f"{prefix}-{str(num).zfill(5)}"
+
+
+def _find_account(bid: int, account_type: str, db: Session) -> Optional[int]:
+    """Find the first active account of the given type for this business."""
+    row = db.execute(
+        text("""
+            SELECT TOP 1 a.AccountID FROM Accounts a
+            JOIN AccountTypes at ON a.AccountTypeID = at.AccountTypeID
+            WHERE a.BusinessID = :bid AND at.TypeName = :atype AND a.IsActive = 1
+            ORDER BY a.AccountNumber
+        """),
+        {"bid": bid, "atype": account_type},
+    ).fetchone()
+    return row.AccountID if row else None
+
+
+@router.get("/api/aggregator/{business_id}/accounting/summary")
+def accounting_summary(business_id: int, db: Session = Depends(get_db)):
+    bid = {"bid": business_id}
+
+    if not _acct_has_setup(business_id, db):
+        return {"setup": False}
+
+    # AR: posted invoices + unposted B2B orders not yet in accounting
+    ar_invoices = db.execute(text("""
+        SELECT ISNULL(SUM(BalanceDue),0) AS TotalAR, COUNT(*) AS OpenCount
+        FROM Invoices WHERE BusinessID = :bid AND Status NOT IN ('Paid','Void')
+    """), bid).fetchone()
+    ar_unposted = db.execute(text("""
+        SELECT ISNULL(SUM(TotalValue),0) AS TotalAR, COUNT(*) AS OpenCount
+        FROM OFNAggregatorB2BOrder
+        WHERE BusinessID = :bid AND AccountingInvoiceID IS NULL
+          AND Status != 'cancelled' AND PaymentStatus != 'paid'
+    """), bid).fetchone()
+
+    # AP: posted bills + unposted purchases not yet in accounting
+    ap_bills = db.execute(text("""
+        SELECT ISNULL(SUM(BalanceDue),0) AS TotalAP, COUNT(*) AS OpenCount
+        FROM Bills WHERE BusinessID = :bid AND Status NOT IN ('Paid','Void')
+    """), bid).fetchone()
+    ap_unposted = db.execute(text("""
+        SELECT ISNULL(SUM(TotalPaid),0) AS TotalAP, COUNT(*) AS OpenCount
+        FROM OFNAggregatorPurchase
+        WHERE BusinessID = :bid AND AccountingBillID IS NULL AND PaymentStatus != 'paid'
+    """), bid).fetchone()
+
+    ar = type('AR', (), {
+        'TotalAR':    float(ar_invoices.TotalAR or 0) + float(ar_unposted.TotalAR or 0),
+        'OpenInvoices': int(ar_invoices.OpenCount or 0) + int(ar_unposted.OpenCount or 0),
+    })()
+    ap = type('AP', (), {
+        'TotalAP':   float(ap_bills.TotalAP or 0) + float(ap_unposted.TotalAP or 0),
+        'OpenBills': int(ap_bills.OpenCount or 0) + int(ap_unposted.OpenCount or 0),
+    })()
+
+    # Revenue from B2B orders (all time)
+    b2b_rev = db.execute(text(
+        "SELECT ISNULL(SUM(TotalValue),0) FROM OFNAggregatorB2BOrder WHERE BusinessID = :bid AND Status <> 'cancelled'"
+    ), bid).scalar() or 0
+
+    # Revenue from D2C orders (all time)
+    d2c_rev = db.execute(text(
+        "SELECT ISNULL(SUM(TotalValue),0) FROM OFNAggregatorD2COrder WHERE BusinessID = :bid AND Status NOT IN ('refunded','placed')"
+    ), bid).scalar() or 0
+
+    # COGS from purchases
+    cogs = db.execute(text(
+        "SELECT ISNULL(SUM(TotalPaid),0) FROM OFNAggregatorPurchase WHERE BusinessID = :bid"
+    ), bid).scalar() or 0
+
+    # Input costs (grant/loan — actual cash out)
+    input_cost = db.execute(text(
+        "SELECT ISNULL(SUM(TotalCost),0) FROM OFNAggregatorInput WHERE BusinessID = :bid AND RecoveryModel IN ('grant','loan')"
+    ), bid).scalar() or 0
+
+    # Unposted counts
+    unposted_orders = db.execute(text(
+        "SELECT COUNT(*) FROM OFNAggregatorB2BOrder WHERE BusinessID = :bid AND AccountingInvoiceID IS NULL AND Status <> 'cancelled'"
+    ), bid).scalar() or 0
+
+    unposted_purchases = db.execute(text(
+        "SELECT COUNT(*) FROM OFNAggregatorPurchase WHERE BusinessID = :bid AND AccountingBillID IS NULL"
+    ), bid).scalar() or 0
+
+    total_rev = float(b2b_rev) + float(d2c_rev)
+    gross_margin = total_rev - float(cogs)
+
+    return {
+        "setup": True,
+        "ar": {"total": float(ar.TotalAR), "open_count": int(ar.OpenInvoices)},
+        "ap": {"total": float(ap.TotalAP), "open_count": int(ap.OpenBills)},
+        "revenue": {"b2b": float(b2b_rev), "d2c": float(d2c_rev), "total": total_rev},
+        "cogs": float(cogs),
+        "input_cost": float(input_cost),
+        "gross_margin": gross_margin,
+        "gross_margin_pct": round(gross_margin / total_rev * 100, 1) if total_rev else 0,
+        "unposted_orders": int(unposted_orders),
+        "unposted_purchases": int(unposted_purchases),
+    }
+
+
+@router.post("/api/aggregator/{business_id}/accounting/sync")
+def accounting_sync(business_id: int, db: Session = Depends(get_db)):
+    """
+    Push unposted aggregator records into the accounting system:
+      - B2B accounts  → AccountingCustomers   (upsert by name)
+      - Farms         → AccountingVendors      (upsert by name)
+      - B2B orders    → Invoices               (skip if AccountingInvoiceID already set)
+      - Purchases     → Bills                  (skip if AccountingBillID already set)
+    Returns counts of records created.
+    """
+    bid = business_id
+
+    if not _acct_has_setup(bid, db):
+        raise HTTPException(status_code=400, detail="Accounting not set up for this business. Open the Accounting page and click 'Initialize Accounting' first.")
+
+    revenue_account_id = _find_account(bid, "Revenue", db)
+    cogs_account_id    = _find_account(bid, "Cost of Goods Sold", db)
+    if not revenue_account_id:
+        # fallback: any income-statement account with 4xxx number
+        row = db.execute(text(
+            "SELECT TOP 1 AccountID FROM Accounts WHERE BusinessID=:bid AND AccountNumber LIKE '4%' AND IsActive=1 ORDER BY AccountNumber"
+        ), {"bid": bid}).fetchone()
+        revenue_account_id = row.AccountID if row else None
+    if not cogs_account_id:
+        row = db.execute(text(
+            "SELECT TOP 1 AccountID FROM Accounts WHERE BusinessID=:bid AND AccountNumber LIKE '5%' AND IsActive=1 ORDER BY AccountNumber"
+        ), {"bid": bid}).fetchone()
+        cogs_account_id = row.AccountID if row else None
+
+    customers_created = 0
+    vendors_created   = 0
+    invoices_created  = 0
+    bills_created     = 0
+
+    # ── 1. Sync B2B accounts → accounting customers ──────────────
+    b2b_accounts = db.execute(text(
+        "SELECT AccountID, BuyerName, ContactName, ContactPhone, ContactEmail, NetTermsDays, AccountingCustomerID "
+        "FROM OFNAggregatorB2BAccount WHERE BusinessID = :bid AND Status = 'active'"
+    ), {"bid": bid}).fetchall()
+
+    for acct in b2b_accounts:
+        if acct.AccountingCustomerID:
+            continue  # already linked
+        # find existing customer by name
+        existing = db.execute(text(
+            "SELECT TOP 1 CustomerID FROM AccountingCustomers WHERE BusinessID=:bid AND DisplayName=:dn"
+        ), {"bid": bid, "dn": acct.BuyerName}).fetchone()
+        if existing:
+            cid = existing.CustomerID
+        else:
+            terms = f"Net{acct.NetTermsDays}" if acct.NetTermsDays else "Net30"
+            row = db.execute(text("""
+                INSERT INTO AccountingCustomers (BusinessID, DisplayName, CompanyName, Email, Phone, PaymentTerms)
+                OUTPUT INSERTED.CustomerID
+                VALUES (:bid,:dn,:co,:em,:ph,:pt)
+            """), {
+                "bid": bid, "dn": acct.BuyerName, "co": acct.BuyerName,
+                "em": acct.ContactEmail, "ph": acct.ContactPhone, "pt": terms,
+            }).fetchone()
+            cid = row.CustomerID
+            customers_created += 1
+        db.execute(text(
+            "UPDATE OFNAggregatorB2BAccount SET AccountingCustomerID=:cid WHERE AccountID=:aid"
+        ), {"cid": cid, "aid": acct.AccountID})
+
+    # ── 2. Sync farms → accounting vendors ───────────────────────
+    farms = db.execute(text(
+        "SELECT FarmID, FarmName, ContactName, ContactPhone, ContactEmail, AccountingVendorID "
+        "FROM OFNAggregatorFarm WHERE BusinessID = :bid AND Status <> 'churned'"
+    ), {"bid": bid}).fetchall()
+
+    for farm in farms:
+        if farm.AccountingVendorID:
+            continue
+        existing = db.execute(text(
+            "SELECT TOP 1 VendorID FROM AccountingVendors WHERE BusinessID=:bid AND DisplayName=:dn"
+        ), {"bid": bid, "dn": farm.FarmName}).fetchone()
+        if existing:
+            vid = existing.VendorID
+        else:
+            row = db.execute(text("""
+                INSERT INTO AccountingVendors (BusinessID, DisplayName, CompanyName, Email, Phone, PaymentTerms, Is1099)
+                OUTPUT INSERTED.VendorID
+                VALUES (:bid,:dn,:co,:em,:ph,'Net30',1)
+            """), {
+                "bid": bid, "dn": farm.FarmName, "co": farm.FarmName,
+                "em": farm.ContactEmail, "ph": farm.ContactPhone,
+            }).fetchone()
+            vid = row.VendorID
+            vendors_created += 1
+        db.execute(text(
+            "UPDATE OFNAggregatorFarm SET AccountingVendorID=:vid WHERE FarmID=:fid"
+        ), {"vid": vid, "fid": farm.FarmID})
+
+    db.commit()  # commit customer/vendor links before creating invoices/bills
+
+    # ── 3. Post unposted B2B orders → invoices ───────────────────
+    orders = db.execute(text("""
+        SELECT o.OrderID, o.AccountID, o.CropType, o.QuantityKg, o.PricePerKg,
+               o.TotalValue, o.DeliveryDate, o.InvoiceNumber, o.Status,
+               a.AccountingCustomerID, a.NetTermsDays
+        FROM OFNAggregatorB2BOrder o
+        JOIN OFNAggregatorB2BAccount a ON o.AccountID = a.AccountID
+        WHERE o.BusinessID = :bid AND o.AccountingInvoiceID IS NULL AND o.Status <> 'cancelled'
+    """), {"bid": bid}).fetchall()
+
+    for order in orders:
+        if not order.AccountingCustomerID:
+            continue
+        invoice_number = _next_num("AGG-INV", "Invoices", "InvoiceNumber", bid, db)
+        due_days = order.NetTermsDays or 30
+        due_date = db.execute(text(
+            f"SELECT CONVERT(DATE, DATEADD(DAY, {due_days}, ISNULL(:dd, GETDATE())))"
+        ), {"dd": order.DeliveryDate}).scalar()
+
+        inv = db.execute(text("""
+            INSERT INTO Invoices (BusinessID, CustomerID, InvoiceNumber, InvoiceDate, DueDate,
+              Status, SubTotal, TaxAmount, TotalAmount, BalanceDue, Notes, PaymentTerms)
+            OUTPUT INSERTED.InvoiceID
+            VALUES (:bid,:cid,:num,ISNULL(:dd,CONVERT(DATE,GETDATE())),:due,
+                    'Sent',:total,0,:total,:total,:notes,:pt)
+        """), {
+            "bid": bid, "cid": order.AccountingCustomerID,
+            "num": invoice_number,
+            "dd": order.DeliveryDate, "due": due_date,
+            "total": float(order.TotalValue or 0),
+            "notes": f"Aggregator B2B order #{order.OrderID} — {order.CropType}",
+            "pt": f"Net{due_days}",
+        }).fetchone()
+
+        invoice_id = inv.InvoiceID
+        db.execute(text("""
+            INSERT INTO InvoiceLines (InvoiceID, BusinessID, AccountID, Description,
+              Quantity, UnitPrice, TaxAmount, LineTotal, LineOrder)
+            VALUES (:inv,:bid,:acct,:desc,:qty,:price,0,:total,0)
+        """), {
+            "inv": invoice_id, "bid": bid, "acct": revenue_account_id,
+            "desc": f"{order.CropType} — {float(order.QuantityKg or 0):.1f} kg @ ${float(order.PricePerKg or 0):.2f}/kg",
+            "qty": float(order.QuantityKg or 0),
+            "price": float(order.PricePerKg or 0),
+            "total": float(order.TotalValue or 0),
+        })
+        db.execute(text(
+            "UPDATE OFNAggregatorB2BOrder SET AccountingInvoiceID=:iid WHERE OrderID=:oid"
+        ), {"iid": invoice_id, "oid": order.OrderID})
+        invoices_created += 1
+
+    # ── 4. Post unposted purchases → bills ───────────────────────
+    purchases = db.execute(text("""
+        SELECT p.PurchaseID, p.FarmID, p.CropType, p.QuantityKg, p.PricePerKg,
+               p.TotalPaid, p.ReceivedDate, p.Grade,
+               f.AccountingVendorID, f.FarmName
+        FROM OFNAggregatorPurchase p
+        JOIN OFNAggregatorFarm f ON p.FarmID = f.FarmID
+        WHERE p.BusinessID = :bid AND p.AccountingBillID IS NULL
+    """), {"bid": bid}).fetchall()
+
+    for purch in purchases:
+        if not purch.AccountingVendorID:
+            continue
+        bill_num = _next_num("AGG-BILL", "Bills", "BillNumber", bid, db)
+        due_date = db.execute(text(
+            "SELECT CONVERT(DATE, DATEADD(DAY, 30, ISNULL(:rd, GETDATE())))"
+        ), {"rd": purch.ReceivedDate}).scalar()
+
+        bill = db.execute(text("""
+            INSERT INTO Bills (BusinessID, VendorID, BillNumber, BillDate, DueDate,
+              Status, SubTotal, TaxAmount, TotalAmount, BalanceDue, Notes)
+            OUTPUT INSERTED.BillID
+            VALUES (:bid,:vid,:num,ISNULL(:rd,CONVERT(DATE,GETDATE())),:due,
+                    'Open',:total,0,:total,:total,:notes)
+        """), {
+            "bid": bid, "vid": purch.AccountingVendorID,
+            "num": bill_num,
+            "rd": purch.ReceivedDate, "due": due_date,
+            "total": float(purch.TotalPaid or 0),
+            "notes": f"Purchase #{purch.PurchaseID} — {purch.CropType} from {purch.FarmName}",
+        }).fetchone()
+
+        bill_id = bill.BillID
+        db.execute(text("""
+            INSERT INTO BillLines (BillID, BusinessID, AccountID, Description,
+              Quantity, UnitPrice, TaxAmount, LineTotal, LineOrder)
+            VALUES (:bill,:bid,:acct,:desc,:qty,:price,0,:total,0)
+        """), {
+            "bill": bill_id, "bid": bid, "acct": cogs_account_id,
+            "desc": f"{purch.CropType} ({purch.Grade}) — {float(purch.QuantityKg or 0):.1f} kg @ ${float(purch.PricePerKg or 0):.2f}/kg",
+            "qty": float(purch.QuantityKg or 0),
+            "price": float(purch.PricePerKg or 0),
+            "total": float(purch.TotalPaid or 0),
+        })
+        db.execute(text(
+            "UPDATE OFNAggregatorPurchase SET AccountingBillID=:bid2 WHERE PurchaseID=:pid"
+        ), {"bid2": bill_id, "pid": purch.PurchaseID})
+        bills_created += 1
+
+    db.commit()
+    return {
+        "customers_created": customers_created,
+        "vendors_created":   vendors_created,
+        "invoices_created":  invoices_created,
+        "bills_created":     bills_created,
+    }
