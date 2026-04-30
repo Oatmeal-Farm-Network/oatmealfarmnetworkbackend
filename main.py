@@ -79,7 +79,18 @@ from routers import thaiyme
 
 from routers.marketplace import marketplace_router
 from marketplace_stripe import stripe_router
+from routers.equipment_marketplace import equipment_router
+from routers.food_wanted import food_wanted_router
 from routers import notifications
+from routers import mill
+from routers import job_board
+from routers import csa
+from routers import land_leasing
+from routers import certifications
+from routers import supplier_directory
+from routers import grants
+from routers import education
+from routers import csa_advanced
 
 load_dotenv()
 
@@ -225,7 +236,18 @@ app.include_router(meat.router)
 
 app.include_router(marketplace_router, prefix="/api/marketplace")
 app.include_router(stripe_router, prefix="/api/marketplace/payments")
+app.include_router(equipment_router, prefix="/api/equipment")
+app.include_router(food_wanted_router, prefix="/api/food-wanted")
 app.include_router(notifications.router)
+app.include_router(mill.router)
+app.include_router(job_board.router)
+app.include_router(csa.router)
+app.include_router(land_leasing.router)
+app.include_router(certifications.router)
+app.include_router(supplier_directory.router)
+app.include_router(grants.router)
+app.include_router(education.router)
+app.include_router(csa_advanced.router)
 app.include_router(forgot_password.router)
 app.include_router(weather.router)
 app.include_router(notes.router)

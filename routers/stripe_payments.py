@@ -75,7 +75,8 @@ def _post_event_cart_accounting(db: Session, cart_id: int, amount_paid: float):
             WHERE c.CartID = :id
         """), {"id": cart_id}).mappings().first()
         if row and row["BusinessID"] and amount_paid > 0:
-            desc = f"Event Registration — {row['EventName'] or f'Event #{row[\"EventID\"]}'}"
+            event_label = row["EventName"] or f"Event #{row['EventID']}"
+            desc = f"Event Registration — {event_label}"
             post_income_je(db, row["BusinessID"], amount_paid,
                            date.today().isoformat(), desc,
                            "event_cart", cart_id, prefer_service=True)
