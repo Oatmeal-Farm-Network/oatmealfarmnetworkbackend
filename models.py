@@ -454,7 +454,7 @@ class FieldAssessmentReport(Base):
     PeopleID      = Column(Integer)
     GeneratedAt   = Column(DateTime)
     Headline      = Column(String(500))
-    OverallHealth = Column(String(20))
+    OverallHealth = Column(String(100))
     Confidence    = Column(String(20))
     ReportJSON    = Column(Text)
     RawText       = Column(Text)
