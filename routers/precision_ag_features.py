@@ -48,12 +48,41 @@ def _safe_float(v):
     except Exception:
         return None
 
-def _latest_analyses(field_id: int, limit: int = 50):
+def _latest_analyses(field_id: int, limit: int = 50, db: Session = None):
+    # Try the external crop-monitor service first
     try:
         r = requests.get(f"{CROP_MONITOR_URL}/api/fields/{field_id}/analyses?limit={limit}", timeout=10)
-        return (r.json().get("analyses") or []) if r.ok else []
+        if r.ok:
+            results = r.json().get("analyses") or []
+            if results:
+                return results
     except Exception:
+        pass
+
+    # Fall back to local FieldBiomassAnalysis rows when the service is unreachable
+    if db is None:
         return []
+    rows = (
+        db.query(models.FieldBiomassAnalysis)
+        .filter(models.FieldBiomassAnalysis.FieldID == field_id)
+        .order_by(desc(models.FieldBiomassAnalysis.CapturedAt))
+        .limit(limit)
+        .all()
+    )
+    out = []
+    for row in rows:
+        features = {}
+        try:
+            features = json.loads(row.FeaturesJSON or "{}")
+        except Exception:
+            pass
+        out.append({
+            "analysis_date":       row.CapturedAt.isoformat()[:10] if row.CapturedAt else None,
+            "health_score":        features.get("health_score"),
+            "vegetation_indices":  features.get("vegetation_indices", []),
+            "source":              "local",
+        })
+    return out
 
 def _get_index(analysis, name):
     for i in (analysis.get("vegetation_indices") or []):
@@ -521,7 +550,7 @@ def export_field_report_xlsx(field_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=501, detail="openpyxl not installed — run: pip install openpyxl")
 
     field = _field_or_404(field_id, db)
-    analyses = _latest_analyses(field_id, limit=50)
+    analyses = _latest_analyses(field_id, limit=50, db=db)
 
     wb = openpyxl.Workbook()
 
@@ -900,7 +929,7 @@ def get_irrigation(field_id: int, days: int = 30, db: Session = Depends(get_db))
 @router.get("/fields/{field_id}/yield-forecast")
 def get_yield_forecast(field_id: int, db: Session = Depends(get_db)):
     field = _field_or_404(field_id, db)
-    analyses = _latest_analyses(field_id, limit=20)
+    analyses = _latest_analyses(field_id, limit=20, db=db)
 
     crop_key = (field.CropType or "default").lower().split()[0]
     baseline = _CROP_BASELINES.get(crop_key, _CROP_BASELINES["default"])["yield_kgha"]
@@ -964,7 +993,7 @@ def get_field_alerts(field_id: int, db: Session = Depends(get_db)):
     alerts = []
 
     # 1. Low health score from latest analysis
-    analyses = _latest_analyses(field_id, limit=3)
+    analyses = _latest_analyses(field_id, limit=3, db=db)
     if analyses:
         latest = analyses[0]
         score = latest.get("health_score")
@@ -1006,7 +1035,7 @@ def get_field_alerts(field_id: int, db: Session = Depends(get_db)):
                         "acknowledged": False,
                     })
 
-    # 2. High-severity scouting observations in last 14 days
+    # 2. Scouting observations in last 14 days — all severity levels
     cutoff = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     from datetime import timedelta
     cutoff14 = cutoff - timedelta(days=14)
@@ -1015,10 +1044,10 @@ def get_field_alerts(field_id: int, db: Session = Depends(get_db)):
         .filter(
             models.FieldScout.FieldID == field_id,
             models.FieldScout.ObservedAt >= cutoff14,
-            models.FieldScout.Severity.in_(["High", "Critical"]),
+            models.FieldScout.Severity.in_(["Critical", "High", "Medium", "Low"]),
         )
         .order_by(desc(models.FieldScout.ObservedAt))
-        .limit(5)
+        .limit(10)
         .all()
     )
     for s in recent_scouts:
@@ -1061,7 +1090,7 @@ def get_benchmark(business_id: int, db: Session = Depends(get_db)):
 
     results = []
     for field in fields:
-        analyses = _latest_analyses(field.FieldID, limit=10)
+        analyses = _latest_analyses(field.FieldID, limit=10, db=db)
         if not analyses:
             results.append({
                 "field_id":   field.FieldID,
