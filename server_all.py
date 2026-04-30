@@ -2,9 +2,9 @@
 Unified launcher — runs main backend + Saige + CropMonitor in one FastAPI process.
 
 Routes:
-  /             → main backend (auth, marketplace, events, notifications, ...)
-  /saige/*      → Saige (LangGraph chat + push + agent endpoints)
-  /cm/*         → CropMonitor (fields, analyses, weather, raster, zones, ...)
+  /             -> main backend (auth, marketplace, events, notifications, ...)
+  /saige/*      -> Saige (LangGraph chat + push + agent endpoints)
+  /cm/*         -> CropMonitor (fields, analyses, weather, raster, zones, ...)
 
 Run from Backend/oatmealfarmnetworkbackend/:
     ../venv/Scripts/python.exe -m uvicorn server_all:app --reload --port 8000
@@ -135,7 +135,7 @@ _remove_path(HERE)
 # for the rest of the process lifetime — main backend has no cwd dependencies.
 _add_path_front(CROP_DIR)
 os.chdir(CROP_DIR)
-print(f"[serve_all] phase 3: chdir → {CROP_DIR}, loading CropMonitor")
+print(f"[serve_all] phase 3: chdir -> {CROP_DIR}, loading CropMonitor")
 import backend as _crop_module                                # noqa: E402
 crop_app = _crop_module.app
 print("[serve_all] CropMonitor loaded")
@@ -158,14 +158,14 @@ print("[serve_all] Saige loaded")
 _main_db_mod = sys.modules.get("_oatmeal_database")
 if _main_db_mod is not None:
     sys.modules["database"] = _main_db_mod
-    print("[serve_all] phase 5: sys.modules['database'] restored → main backend")
+    print("[serve_all] phase 5: sys.modules['database'] restored -> main backend")
 else:
     print("[serve_all] phase 5: WARNING _oatmeal_database not in sys.modules — skipping restore")
 
 _main_models_mod = sys.modules.get("_oatmeal_models")
 if _main_models_mod is not None:
     sys.modules["models"] = _main_models_mod
-    print("[serve_all] phase 5: sys.modules['models'] restored → main backend")
+    print("[serve_all] phase 5: sys.modules['models'] restored -> main backend")
 else:
     print("[serve_all] phase 5: WARNING _oatmeal_models not in sys.modules — skipping restore")
 
