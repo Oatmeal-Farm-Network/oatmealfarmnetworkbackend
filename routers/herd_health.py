@@ -6,6 +6,7 @@ from typing import Optional
 from pydantic import BaseModel
 from datetime import date, datetime
 from decimal import Decimal
+from herd_health_accounting import post_expense_je, post_income_je, void_je, sync_herd_health_to_accounting
 
 router = APIRouter(prefix="/api/herd-health", tags=["herd-health"])
 
@@ -217,11 +218,17 @@ def create_treatment(business_id: int, body: TreatmentIn, db: Session = Depends(
            "dos":body.Dosage,"rt":body.Route,"freq":body.Frequency,"dur":body.DurationDays,
            "wd":body.WithdrawalDate,"wm":body.WithdrawalMilk,"prx":body.PrescribedBy,
            "by":body.AdministeredBy,"cost":body.Cost,"out":body.Outcome,"notes":body.Notes})
+    treatment_id = r.scalar()
     db.commit()
-    return {"treatment_id": r.scalar()}
+    post_expense_je(db, business_id, body.Cost, body.TreatmentDate,
+                    f"Treatment — {body.Diagnosis or body.Medication or 'Livestock Treatment'}",
+                    "herd_treatment", treatment_id)
+    db.commit()
+    return {"treatment_id": treatment_id}
 
 @router.put("/treatments/{tid}")
 def update_treatment(tid: int, body: TreatmentIn, db: Session = Depends(get_db)):
+    biz = db.execute(text("SELECT BusinessID FROM HerdHealthTreatment WHERE TreatmentID=:id"), {"id": tid}).scalar()
     db.execute(text("""
         UPDATE HerdHealthTreatment SET
             AnimalID=:aid,AnimalTag=:tag,TreatmentDate=:dt,Diagnosis=:diag,
@@ -235,10 +242,16 @@ def update_treatment(tid: int, body: TreatmentIn, db: Session = Depends(get_db))
            "wd":body.WithdrawalDate,"wm":body.WithdrawalMilk,"prx":body.PrescribedBy,
            "by":body.AdministeredBy,"cost":body.Cost,"out":body.Outcome,"notes":body.Notes})
     db.commit()
+    if biz:
+        post_expense_je(db, biz, body.Cost, body.TreatmentDate,
+                        f"Treatment — {body.Diagnosis or body.Medication or 'Livestock Treatment'}",
+                        "herd_treatment", tid)
+        db.commit()
     return {"ok": True}
 
 @router.delete("/treatments/{tid}")
 def delete_treatment(tid: int, db: Session = Depends(get_db)):
+    void_je(db, "herd_treatment", tid)
     db.execute(text("DELETE FROM HerdHealthTreatment WHERE TreatmentID=:id"), {"id": tid})
     db.commit()
     return {"ok": True}
@@ -282,11 +295,17 @@ def create_vet_visit(business_id: int, body: VetVisitIn, db: Session = Depends(g
            "find":body.Findings,"diag":body.Diagnoses,"proc":body.ProceduresPerformed,
            "rx":body.Prescriptions,"fu":body.FollowUpDate,"fun":body.FollowUpNotes,
            "cost":body.Cost,"notes":body.Notes})
+    visit_id = r.scalar()
     db.commit()
-    return {"visit_id": r.scalar()}
+    post_expense_je(db, business_id, body.Cost, body.VisitDate,
+                    f"Vet Visit — {body.VetName or body.ClinicName or 'Veterinarian'}",
+                    "herd_vet_visit", visit_id)
+    db.commit()
+    return {"visit_id": visit_id}
 
 @router.put("/vet-visits/{vid}")
 def update_vet_visit(vid: int, body: VetVisitIn, db: Session = Depends(get_db)):
+    biz = db.execute(text("SELECT BusinessID FROM HerdHealthVetVisit WHERE VisitID=:id"), {"id": vid}).scalar()
     db.execute(text("""
         UPDATE HerdHealthVetVisit SET
             VisitDate=:dt,VetName=:vet,ClinicName=:clinic,VisitType=:type,
@@ -300,10 +319,16 @@ def update_vet_visit(vid: int, body: VetVisitIn, db: Session = Depends(get_db)):
            "rx":body.Prescriptions,"fu":body.FollowUpDate,"fun":body.FollowUpNotes,
            "cost":body.Cost,"notes":body.Notes})
     db.commit()
+    if biz:
+        post_expense_je(db, biz, body.Cost, body.VisitDate,
+                        f"Vet Visit — {body.VetName or body.ClinicName or 'Veterinarian'}",
+                        "herd_vet_visit", vid)
+        db.commit()
     return {"ok": True}
 
 @router.delete("/vet-visits/{vid}")
 def delete_vet_visit(vid: int, db: Session = Depends(get_db)):
+    void_je(db, "herd_vet_visit", vid)
     db.execute(text("DELETE FROM HerdHealthVetVisit WHERE VisitID=:id"), {"id": vid})
     db.commit()
     return {"ok": True}
@@ -603,11 +628,18 @@ def create_mortality(business_id: int, body: MortalityIn, db: Session = Depends(
            "pmf":body.PostMortemFindings,"disp":body.DisposalMethod,
            "ins":1 if body.InsuranceClaim else 0,"iamt":body.InsuranceAmount,
            "val":body.EstimatedValue,"rpt":body.ReportedTo,"notes":body.Notes})
+    mortality_id = r.scalar()
     db.commit()
-    return {"mortality_id": r.scalar()}
+    if body.InsuranceClaim and body.InsuranceAmount:
+        post_income_je(db, business_id, body.InsuranceAmount, body.DeathDate,
+                       f"Livestock Insurance — {body.AnimalTag or body.AnimalSpecies or 'Animal'}",
+                       "herd_mortality_ins", mortality_id)
+        db.commit()
+    return {"mortality_id": mortality_id}
 
 @router.put("/mortality/{mid}")
 def update_mortality(mid: int, body: MortalityIn, db: Session = Depends(get_db)):
+    biz = db.execute(text("SELECT BusinessID FROM HerdHealthMortality WHERE MortalityID=:id"), {"id": mid}).scalar()
     db.execute(text("""
         UPDATE HerdHealthMortality SET
             AnimalID=:aid,AnimalTag=:tag,AnimalSpecies=:sp,DeathDate=:dt,
@@ -624,10 +656,19 @@ def update_mortality(mid: int, body: MortalityIn, db: Session = Depends(get_db))
            "ins":1 if body.InsuranceClaim else 0,"iamt":body.InsuranceAmount,
            "val":body.EstimatedValue,"rpt":body.ReportedTo,"notes":body.Notes})
     db.commit()
+    if biz:
+        if body.InsuranceClaim and body.InsuranceAmount:
+            post_income_je(db, biz, body.InsuranceAmount, body.DeathDate,
+                           f"Livestock Insurance — {body.AnimalTag or body.AnimalSpecies or 'Animal'}",
+                           "herd_mortality_ins", mid)
+        else:
+            void_je(db, "herd_mortality_ins", mid)
+        db.commit()
     return {"ok": True}
 
 @router.delete("/mortality/{mid}")
 def delete_mortality(mid: int, db: Session = Depends(get_db)):
+    void_je(db, "herd_mortality_ins", mid)
     db.execute(text("DELETE FROM HerdHealthMortality WHERE MortalityID=:id"), {"id": mid})
     db.commit()
     return {"ok": True}
@@ -916,6 +957,14 @@ def delete_reproduction(rid: int, db: Session = Depends(get_db)):
     db.execute(text("DELETE FROM HerdHealthReproduction WHERE ReproductionID=:id"), {"id": rid})
     db.commit()
     return {"ok": True}
+
+# ── ACCOUNTING SYNC ───────────────────────────────────────────────────────────
+
+@router.post("/accounting/sync")
+def sync_accounting(business_id: int, db: Session = Depends(get_db)):
+    """Bulk-post all unposted herd health financial records to accounting."""
+    _bid(business_id, db)
+    return sync_herd_health_to_accounting(db, business_id)
 
 # ── LIST BUSINESS ANIMALS (animal-picker dropdowns) ───────────────────────────
 

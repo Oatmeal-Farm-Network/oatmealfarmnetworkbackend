@@ -63,6 +63,35 @@ def _stripe(db: Session):
     return stripe, cfg
 
 
+def _post_event_cart_accounting(db: Session, cart_id: int, amount_paid: float):
+    """Post an income JE for a paid event cart. Wrapped in try/except so accounting
+    failures never block payment confirmation."""
+    try:
+        from herd_health_accounting import post_income_je
+        row = db.execute(text("""
+            SELECT e.BusinessID, c.EventID, e.EventName
+            FROM OFNEventRegistrationCart c
+            JOIN OFNEvents e ON c.EventID = e.EventID
+            WHERE c.CartID = :id
+        """), {"id": cart_id}).mappings().first()
+        if row and row["BusinessID"] and amount_paid > 0:
+            desc = f"Event Registration — {row['EventName'] or f'Event #{row[\"EventID\"]}'}"
+            post_income_je(db, row["BusinessID"], amount_paid,
+                           date.today().isoformat(), desc,
+                           "event_cart", cart_id, prefer_service=True)
+            db.commit()
+    except Exception as e:
+        print(f"[stripe_payments] accounting post failed for cart {cart_id}: {e}")
+
+
+def _void_event_cart_accounting(db: Session, cart_id: int):
+    try:
+        from herd_health_accounting import void_je
+        void_je(db, "event_cart", cart_id)
+    except Exception as e:
+        print(f"[stripe_payments] accounting void failed for cart {cart_id}: {e}")
+
+
 @router.post("/api/events/cart/{cart_id}/payment-intent")
 def create_payment_intent(cart_id: int, db: Session = Depends(get_db)):
     """Create a PaymentIntent for this cart. Returns the client_secret
@@ -184,6 +213,7 @@ def confirm_payment(cart_id: int, payload: dict, db: Session = Depends(get_db)):
             print(f"[stripe_payments] sold-out check failed: {e}")
     db.commit()
     if cart_status == "paid":
+        _post_event_cart_accounting(db, cart_id, amount_paid)
         _send_cart_receipt(db, cart_id)
     return {"Status": cart_status, "AmountPaid": amount_paid}
 
@@ -218,6 +248,7 @@ def capture_payment(cart_id: int, db: Session = Depends(get_db)):
     except Exception as e:
         print(f"[stripe_payments] sold-out check failed: {e}")
     db.commit()
+    _post_event_cart_accounting(db, cart_id, amount_paid)
     _send_cart_receipt(db, cart_id)
     return {"Status": "paid", "AmountPaid": amount_paid}
 
@@ -295,6 +326,7 @@ def refund_cart(cart_id: int, payload: dict | None = None, db: Session = Depends
     """), {"id": cart_id, "ar": new_refunded, "s": new_status})
     if new_status == "refunded":
         _mark_entries_refunded(db, cart_id)
+        _void_event_cart_accounting(db, cart_id)
     db.commit()
     return {"Status": new_status, "AmountRefunded": new_refunded, "RefundID": refund.id}
 
@@ -338,6 +370,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
             _mark_entries_paid(db, cart_row["CartID"])
         db.commit()
         if cart_row and transitioned:
+            _post_event_cart_accounting(db, cart_row["CartID"], amount_paid)
             _send_cart_receipt(db, cart_row["CartID"])
     elif typ == "charge.refunded":
         amt_refunded = float(obj.get("amount_refunded") or 0) / 100
