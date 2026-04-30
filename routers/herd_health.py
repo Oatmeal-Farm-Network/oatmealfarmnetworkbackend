@@ -916,3 +916,20 @@ def delete_reproduction(rid: int, db: Session = Depends(get_db)):
     db.execute(text("DELETE FROM HerdHealthReproduction WHERE ReproductionID=:id"), {"id": rid})
     db.commit()
     return {"ok": True}
+
+# ── LIST BUSINESS ANIMALS (animal-picker dropdowns) ───────────────────────────
+
+@router.get("/animals")
+def list_business_animals(business_id: int, db: Session = Depends(get_db)):
+    _bid(business_id, db)
+    rows = db.execute(text("""
+        SELECT a.AnimalID, a.FullName, a.SpeciesID,
+               COALESCE(sa.SingularTerm, CAST(a.SpeciesID AS NVARCHAR)) AS SpeciesName,
+               sc.SpeciesCategory AS Category
+        FROM Animals a
+        LEFT JOIN SpeciesAvailable sa ON sa.SpeciesID = a.SpeciesID
+        LEFT JOIN speciescategory sc ON sc.SpeciesCategoryID = a.SpeciesCategoryID
+        WHERE a.BusinessID = :b AND a.FullName IS NOT NULL
+        ORDER BY sa.SingularTerm, a.FullName
+    """), {"b": business_id}).fetchall()
+    return _rows(rows)
