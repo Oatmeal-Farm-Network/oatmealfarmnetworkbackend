@@ -55,6 +55,7 @@ from routers import associations
 from routers import blog
 from routers import accounting
 from routers import animals
+from routers import herd_health
 from routers import platform_settings
 from routers import platform_subscriptions
 from routers import platform_services
@@ -215,6 +216,7 @@ app.include_router(plant_knowledgebase.router)
 app.include_router(crop_summary.router)
 app.include_router(ingredient_knowledgebase.router)
 app.include_router(livestock.router)
+app.include_router(herd_health.router)
 app.include_router(produce.router)
 app.include_router(processed_food.router)
 app.include_router(services.router)
