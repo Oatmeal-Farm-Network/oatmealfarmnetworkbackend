@@ -79,14 +79,25 @@ def build_logo_url(logo):
 
 
 @router.get("/countries")
-def get_countries(db: Session = Depends(get_db)):
+def get_countries(business_type_id: str = None, db: Session = Depends(get_db)):
     try:
-        rows = db.execute(text("""
-            SELECT country_id, name FROM country
-            WHERE name IS NOT NULL AND name <> ''
-            ORDER BY name
-        """)).fetchall()
-        return [{"country_id": r.country_id, "name": r.name} for r in rows]
+        if business_type_id:
+            rows = db.execute(text("""
+                SELECT DISTINCT c.name
+                FROM country c
+                JOIN Address a ON a.country_id = c.country_id
+                JOIN Business b ON b.AddressID = a.AddressID
+                WHERE b.BusinessTypeID = :btid
+                  AND c.name IS NOT NULL AND c.name <> ''
+                ORDER BY c.name
+            """), {"btid": int(business_type_id)}).fetchall()
+        else:
+            rows = db.execute(text("""
+                SELECT name FROM country
+                WHERE name IS NOT NULL AND name <> ''
+                ORDER BY name
+            """)).fetchall()
+        return [r.name for r in rows]
     except Exception as e:
         import traceback
         traceback.print_exc()
