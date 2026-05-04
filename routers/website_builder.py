@@ -1444,6 +1444,14 @@ def _build_bundle(site: models.BusinessWebsite, db) -> dict:
 
         site_data = _ser_site(site)
         site_data["pages"] = result_pages
+
+        # Include header images so the public renderer can pick the date-matched one.
+        header_rows = db.execute(
+            text("SELECT * FROM WebsiteHeaderImages WHERE WebsiteID=:wid ORDER BY StartDate, SortOrder"),
+            {"wid": site.WebsiteID}
+        ).fetchall()
+        site_data["header_images"] = [_ser_header_image(r) for r in header_rows]
+
         return site_data
     except Exception as exc:
         traceback.print_exc()
