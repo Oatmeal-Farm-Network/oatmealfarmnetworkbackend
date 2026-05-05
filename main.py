@@ -91,6 +91,7 @@ from routers import supplier_directory
 from routers import grants
 from routers import education
 from routers import csa_advanced
+from routers import meetings
 
 load_dotenv()
 
@@ -297,6 +298,7 @@ app.include_router(esg_reports.router)
 app.include_router(stripe_payments.router)
 app.include_router(news.router)
 app.include_router(thaiyme.router)
+app.include_router(meetings.router)
 
 
 # ── Public testimonials endpoint (used by website blocks) ─────────
