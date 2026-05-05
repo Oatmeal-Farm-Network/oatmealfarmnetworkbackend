@@ -41,6 +41,7 @@ DEFAULT_FEATURES = [
     ("education_center",     "Education Center",          0.0,   0.0, 29),
     ("commodity_prices",     "Commodity Prices",          0.0,   0.0, 30),
     ("forums",               "Forums",                    0.0,   0.0, 31),
+    ("meetings",             "Meetings",                  0.0,   0.0, 32),
     ("business_directory",   "Business Directory",        0.0,   0.0, 98),
     ("food_system_newsfeed", "Food System Newsfeed",      0.0,   0.0, 99),
 ]
