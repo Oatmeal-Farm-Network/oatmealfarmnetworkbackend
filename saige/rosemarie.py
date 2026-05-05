@@ -617,6 +617,298 @@ def list_my_listings_tool(
     return header + "\n" + "\n".join(lines).lstrip()
 
 
+# ---------------------------------------------------------------------------
+# Recipe & Batch tools
+# ---------------------------------------------------------------------------
+
+@tool
+def list_recipes_tool(search: str = "", business_id: int = 0) -> str:
+    """List this producer's saved recipes. Pass an optional `search` keyword
+    to filter by recipe name or category. Use when the user asks "show me my
+    recipes", "what recipes do I have for aged cheddar", "list all baking
+    formulas", etc."""
+    if not business_id:
+        return "Open Rosemarie from your producer dashboard so I know which business to look up."
+    params: List[Any] = [int(business_id)]
+    extra = ""
+    if search.strip():
+        extra = " AND (RecipeName LIKE %s OR Category LIKE %s)"
+        params += [f"%{search.strip()}%", f"%{search.strip()}%"]
+    rows = _query(
+        f"SELECT RecipeID, RecipeName, Category, YieldQty, YieldUnit, BatchSizeNote "
+        f"FROM ProducerRecipes WHERE BusinessID = %s AND IsArchived = 0{extra} "
+        f"ORDER BY RecipeName",
+        tuple(params),
+    )
+    if not rows:
+        return "No recipes found." + (f" (search: '{search}')" if search else " Add your first one!")
+    lines = ["Your recipes:"]
+    for r in rows:
+        yld = f"  yield {r['YieldQty']:g} {r['YieldUnit']}" if r.get("YieldQty") else ""
+        lines.append(f"  • [{r['RecipeID']}] {r['RecipeName']}" + (f" ({r['Category']})" if r.get("Category") else "") + yld)
+    return "\n".join(lines)
+
+
+@tool
+def get_recipe_tool(recipe_id: int = 0, business_id: int = 0) -> str:
+    """Get the full detail for one recipe — ingredients list and step-by-step
+    instructions. Use when the user says "show me recipe 12", "pull up my
+    sourdough formula", "what are the steps for that jam recipe", etc."""
+    if not recipe_id or not business_id:
+        return "I need a recipe_id. Ask the user which recipe number they mean."
+    rows = _query(
+        "SELECT * FROM ProducerRecipes WHERE RecipeID = %s AND BusinessID = %s AND IsArchived = 0",
+        (int(recipe_id), int(business_id)),
+    )
+    if not rows:
+        return f"Recipe {recipe_id} not found."
+    r = rows[0]
+    lines = [
+        f"Recipe #{r['RecipeID']}: {r['RecipeName']}",
+        f"Category: {r.get('Category') or 'n/a'}",
+        f"Yield: {r.get('YieldQty') or '?'} {r.get('YieldUnit') or ''}",
+        f"Batch note: {r.get('BatchSizeNote') or '—'}",
+        f"Description: {r.get('Description') or '—'}",
+    ]
+    ings = _query(
+        "SELECT IngredientName, Quantity, Unit, Notes FROM RecipeIngredients WHERE RecipeID = %s ORDER BY RecipeIngID",
+        (int(recipe_id),),
+    )
+    if ings:
+        lines.append("\nIngredients:")
+        for i in ings:
+            qty = f"{float(i['Quantity']):g} {i.get('Unit') or ''}".strip() if i.get("Quantity") else ""
+            note = f"  ({i['Notes']})" if i.get("Notes") else ""
+            lines.append(f"  • {i['IngredientName']}{(' — ' + qty) if qty else ''}{note}")
+    steps = _query(
+        "SELECT StepNumber, StepText FROM RecipeSteps WHERE RecipeID = %s ORDER BY StepNumber",
+        (int(recipe_id),),
+    )
+    if steps:
+        lines.append("\nSteps:")
+        for s in steps:
+            lines.append(f"  {s['StepNumber']}. {s['StepText']}")
+    return "\n".join(lines)
+
+
+@tool
+def create_recipe_tool(
+    recipe_name: str = "",
+    category: str = "",
+    description: str = "",
+    yield_qty: float = 0.0,
+    yield_unit: str = "",
+    ingredients_csv: str = "",
+    steps_numbered: str = "",
+    business_id: int = 0,
+) -> str:
+    """Save a new recipe to this producer's library. Collect recipe_name,
+    optional category (e.g. 'Bread', 'Cheese', 'Jam'), a yield amount and
+    unit, then a comma-separated ingredients list (format: 'name:qty:unit')
+    and newline-separated steps (format: '1. step text'). Confirm the details
+    with the user before calling. Use when the user says "save this recipe",
+    "add a new formula", "store our cheddar aging steps", etc."""
+    if not recipe_name.strip() or not business_id:
+        return "I need at least a recipe name and your business context."
+    conn = _connect()
+    if not conn:
+        return "Database unavailable — try again in a moment."
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO ProducerRecipes (BusinessID, RecipeName, Category, Description, YieldQty, YieldUnit) "
+            "OUTPUT INSERTED.RecipeID VALUES (%s, %s, %s, %s, %s, %s)",
+            (int(business_id), recipe_name.strip()[:300], category[:100],
+             description, float(yield_qty) if yield_qty else None, yield_unit[:60]),
+        )
+        recipe_id = cur.fetchone()["RecipeID"]
+
+        # Parse ingredients: "flour:500:g, water:300:ml"
+        ing_count = 0
+        for part in ingredients_csv.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            bits = [b.strip() for b in part.split(":")]
+            name = bits[0] if bits else ""
+            qty = float(bits[1]) if len(bits) > 1 and bits[1] else None
+            unit = bits[2] if len(bits) > 2 else ""
+            if name:
+                cur.execute(
+                    "INSERT INTO RecipeIngredients (RecipeID, IngredientName, Quantity, Unit) VALUES (%s, %s, %s, %s)",
+                    (recipe_id, name[:200], qty, unit[:60]),
+                )
+                ing_count += 1
+
+        # Parse steps: "1. Mix flour\n2. Add water"
+        step_count = 0
+        for line in steps_numbered.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            num, _, txt = line.partition(".")
+            try:
+                n = int(num.strip())
+            except ValueError:
+                step_count += 1
+                n = step_count
+            txt = txt.strip() or line
+            if txt:
+                cur.execute(
+                    "INSERT INTO RecipeSteps (RecipeID, StepNumber, StepText) VALUES (%s, %s, %s)",
+                    (recipe_id, n, txt),
+                )
+                step_count += 1
+
+        conn.commit()
+        return (
+            f"Recipe saved as #{recipe_id}: '{recipe_name.strip()}' "
+            f"({ing_count} ingredient(s), {step_count} step(s))."
+        )
+    except Exception as e:
+        logger.error("[Rosemarie] create_recipe_tool: %s", e)
+        return f"Couldn't save the recipe: {e}"
+    finally:
+        conn.close()
+
+
+@tool
+def list_batches_tool(status: str = "", recipe_id: int = 0, business_id: int = 0) -> str:
+    """List production batches for this producer. Filter by `status`
+    ('planned', 'in_progress', 'complete', 'on_hold') or by a specific
+    `recipe_id`. Use when the user says "show my batches", "what batches are
+    in progress", "list all cheese batches this month", etc."""
+    if not business_id:
+        return "Open Rosemarie from your producer dashboard."
+    params: List[Any] = [int(business_id)]
+    extra = ""
+    if status.strip():
+        extra += " AND b.Status = %s"; params.append(status.strip()[:30])
+    if recipe_id:
+        extra += " AND b.RecipeID = %s"; params.append(int(recipe_id))
+    rows = _query(
+        f"SELECT TOP 40 b.BatchID, b.RecipeName, b.BatchDate, b.BatchSize, b.SizeUnit, b.Status, b.Notes "
+        f"FROM ProducerBatches b WHERE b.BusinessID = %s{extra} "
+        f"ORDER BY b.BatchDate DESC, b.BatchID DESC",
+        tuple(params),
+    )
+    if not rows:
+        return "No batches found." + (f" (filter: status='{status}')" if status else "")
+    lines = ["Production batches:"]
+    for b in rows:
+        sz = f"{float(b['BatchSize']):g} {b.get('SizeUnit') or ''}".strip() if b.get("BatchSize") else ""
+        date_s = str(b.get("BatchDate", ""))[:10]
+        lines.append(
+            f"  • [{b['BatchID']}] {b.get('RecipeName') or 'No recipe'} — {date_s} · {b['Status']}"
+            + (f" · {sz}" if sz else "")
+        )
+    return "\n".join(lines)
+
+
+@tool
+def log_batch_tool(
+    recipe_id: int = 0,
+    batch_date: str = "",
+    batch_size: float = 1.0,
+    size_unit: str = "",
+    notes: str = "",
+    business_id: int = 0,
+) -> str:
+    """Start a new production batch. recipe_id links it to a saved recipe
+    (ingredients are seeded automatically). batch_date defaults to today.
+    batch_size is the multiplier relative to the recipe yield (e.g. 2.5 means
+    2.5x the base recipe). Use when the user says "start a batch", "log a
+    production run", "I'm making a double batch of sourdough today", etc."""
+    if not business_id:
+        return "Open Rosemarie from your producer dashboard."
+    conn = _connect()
+    if not conn:
+        return "Database unavailable."
+    try:
+        cur = conn.cursor()
+        recipe_name = None
+        recipe_ings = []
+        if recipe_id:
+            cur.execute(
+                "SELECT RecipeName FROM ProducerRecipes WHERE RecipeID = %s AND BusinessID = %s",
+                (int(recipe_id), int(business_id)),
+            )
+            row = cur.fetchone()
+            if row:
+                recipe_name = row["RecipeName"]
+            cur.execute(
+                "SELECT IngredientName, Quantity, Unit FROM RecipeIngredients WHERE RecipeID = %s",
+                (int(recipe_id),),
+            )
+            recipe_ings = list(cur.fetchall())
+
+        from datetime import date as _date
+        bd = batch_date.strip() or str(_date.today())
+        cur.execute(
+            "INSERT INTO ProducerBatches (BusinessID, RecipeID, RecipeName, BatchDate, "
+            "BatchSize, SizeUnit, Status, Notes) OUTPUT INSERTED.BatchID "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (int(business_id), int(recipe_id) if recipe_id else None,
+             recipe_name, bd, float(batch_size), size_unit[:60],
+             "planned", notes[:2000]),
+        )
+        batch_id = cur.fetchone()["BatchID"]
+
+        scale = float(batch_size) if batch_size else 1.0
+        for ri in recipe_ings:
+            planned = (float(ri["Quantity"]) * scale) if ri["Quantity"] else None
+            cur.execute(
+                "INSERT INTO BatchIngredients (BatchID, IngredientName, PlannedQty, Unit) VALUES (%s, %s, %s, %s)",
+                (batch_id, ri["IngredientName"], planned, ri["Unit"] or ""),
+            )
+        conn.commit()
+        return (
+            f"Batch #{batch_id} logged"
+            + (f" from recipe '{recipe_name}'" if recipe_name else "")
+            + f" for {bd}, size {batch_size:g}x. Status: planned."
+        )
+    except Exception as e:
+        logger.error("[Rosemarie] log_batch_tool: %s", e)
+        return f"Couldn't log the batch: {e}"
+    finally:
+        conn.close()
+
+
+@tool
+def update_batch_tool(
+    batch_id: int = 0,
+    status: str = "",
+    notes: str = "",
+    business_id: int = 0,
+) -> str:
+    """Update a batch's status or notes. Valid statuses: planned, in_progress,
+    complete, on_hold. Use when the user says "mark batch 7 as complete",
+    "put batch 3 on hold — the milk delivery is late", "add a note to today's
+    cheese batch", etc. Confirm before marking complete."""
+    if not batch_id or not business_id:
+        return "Tell me which batch number to update."
+    sets: List[str] = ["UpdatedAt = GETDATE()"]
+    params: List[Any] = []
+    if status.strip():
+        valid = {"planned", "in_progress", "complete", "on_hold"}
+        s = status.strip().lower()
+        if s not in valid:
+            return f"Unknown status '{s}'. Valid options: {', '.join(sorted(valid))}."
+        sets.append("Status = %s"); params.append(s)
+    if notes.strip():
+        sets.append("Notes = %s"); params.append(notes.strip()[:2000])
+    if len(sets) == 1:
+        return "Tell me what to update — a new status or notes."
+    params += [int(batch_id), int(business_id)]
+    n = _execute(
+        f"UPDATE ProducerBatches SET {', '.join(sets)} WHERE BatchID = %s AND BusinessID = %s",
+        tuple(params),
+    )
+    if n == 0:
+        return f"Batch {batch_id} not found."
+    return f"Batch {batch_id} updated (status: {status or 'unchanged'})."
+
+
 rosemarie_own_tools = [
     rosemarie_knowledge_tool,
     update_producer_profile_tool,
@@ -626,6 +918,12 @@ rosemarie_own_tools = [
     reject_order_item_tool,
     ship_order_item_tool,
     list_my_listings_tool,
+    list_recipes_tool,
+    get_recipe_tool,
+    create_recipe_tool,
+    list_batches_tool,
+    log_batch_tool,
+    update_batch_tool,
 ]
 
 
@@ -668,6 +966,17 @@ SELLER SIDE (fulfilling orders from restaurants / chefs)
 - ship_order_item_tool: mark a confirmed order as shipped (tracking + ETA).
 - list_my_listings_tool: current inventory the producer has up for sale;
   `low_stock=True` flags items at or below 5 units.
+
+RECIPES & BATCH TRACKING (production records)
+- list_recipes_tool: show the producer's saved recipe library; optional search.
+- get_recipe_tool: fetch one recipe in full — ingredients + step-by-step method.
+- create_recipe_tool: save a new recipe (name, category, yield, ingredients as
+  'name:qty:unit' CSV, steps as numbered lines). Confirm details before saving.
+- list_batches_tool: show production runs, filterable by status or recipe.
+- log_batch_tool: start a new batch tied to a recipe; ingredients are seeded
+  from the recipe automatically at the requested batch_size multiplier.
+- update_batch_tool: change a batch's status (planned / in_progress / complete /
+  on_hold) or add notes. Confirm before marking complete.
 
 Account changes
 - update_producer_profile_tool: edit the Business record's name, description,
@@ -880,6 +1189,51 @@ def _dispatch_tool(
         if name == "list_my_listings_tool":
             return list_my_listings_tool.invoke({
                 "low_stock":   bool(args.get("low_stock", False)),
+                "business_id": business_id,
+            })
+
+        # --- Recipe & Batch tools ---
+        if name == "list_recipes_tool":
+            return list_recipes_tool.invoke({
+                "search":      args.get("search", ""),
+                "business_id": business_id,
+            })
+        if name == "get_recipe_tool":
+            return get_recipe_tool.invoke({
+                "recipe_id":   int(args.get("recipe_id", 0) or 0),
+                "business_id": business_id,
+            })
+        if name == "create_recipe_tool":
+            return create_recipe_tool.invoke({
+                "recipe_name":      args.get("recipe_name", ""),
+                "category":         args.get("category", ""),
+                "description":      args.get("description", ""),
+                "yield_qty":        float(args.get("yield_qty", 0) or 0),
+                "yield_unit":       args.get("yield_unit", ""),
+                "ingredients_csv":  args.get("ingredients_csv", ""),
+                "steps_numbered":   args.get("steps_numbered", ""),
+                "business_id":      business_id,
+            })
+        if name == "list_batches_tool":
+            return list_batches_tool.invoke({
+                "status":      args.get("status", ""),
+                "recipe_id":   int(args.get("recipe_id", 0) or 0),
+                "business_id": business_id,
+            })
+        if name == "log_batch_tool":
+            return log_batch_tool.invoke({
+                "recipe_id":   int(args.get("recipe_id", 0) or 0),
+                "batch_date":  args.get("batch_date", ""),
+                "batch_size":  float(args.get("batch_size", 1) or 1),
+                "size_unit":   args.get("size_unit", ""),
+                "notes":       args.get("notes", ""),
+                "business_id": business_id,
+            })
+        if name == "update_batch_tool":
+            return update_batch_tool.invoke({
+                "batch_id":    int(args.get("batch_id", 0) or 0),
+                "status":      args.get("status", ""),
+                "notes":       args.get("notes", ""),
                 "business_id": business_id,
             })
 
