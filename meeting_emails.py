@@ -1,7 +1,13 @@
 import os
+import re
+import base64
+import urllib.parse
+from datetime import datetime, timedelta
 import sendgrid
-from sendgrid.helpers.mail import Mail, Email, To, Content
-from datetime import datetime
+from sendgrid.helpers.mail import (
+    Mail, Email, To, Content,
+    Attachment, FileContent, FileName, FileType, Disposition,
+)
 
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 FROM_EMAIL = os.getenv("FROM_EMAIL", "john@oatmeal-ai.com")
@@ -9,7 +15,13 @@ FROM_NAME  = os.getenv("FROM_NAME",  "Oatmeal Farm Network")
 OFN_BASE_URL = os.getenv("OFN_BASE_URL", "https://oatmealfarmnetwork.com")
 
 
-def _send(to: str, subject: str, html: str) -> bool:
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _strip_html(s: str) -> str:
+    return re.sub(r"<[^>]+>", " ", s or "").strip()
+
+
+def _send(to: str, subject: str, html: str, ics: str | None = None) -> bool:
     try:
         sg = sendgrid.SendGridAPIClient(api_key=SENDGRID_API_KEY)
         msg = Mail(
@@ -18,6 +30,13 @@ def _send(to: str, subject: str, html: str) -> bool:
             subject=subject,
             html_content=Content("text/html", html),
         )
+        if ics:
+            msg.add_attachment(Attachment(
+                FileContent(base64.b64encode(ics.encode("utf-8")).decode()),
+                FileName("meeting.ics"),
+                FileType("text/calendar; method=REQUEST"),
+                Disposition("attachment"),
+            ))
         r = sg.send(msg)
         return r.status_code < 300
     except Exception as e:
@@ -25,35 +44,125 @@ def _send(to: str, subject: str, html: str) -> bool:
         return False
 
 
-def _fmt_date(d) -> str:
+def _parse_dt(d) -> datetime | None:
     if not d:
-        return "TBD"
-    if isinstance(d, str):
-        try:
-            d = datetime.fromisoformat(d.replace("Z", "+00:00"))
-        except Exception:
-            return str(d)
+        return None
+    if isinstance(d, datetime):
+        return d
     try:
-        return d.strftime("%A, %B %d, %Y")
+        return datetime.fromisoformat(str(d).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _fmt_date(d) -> str:
+    dt = _parse_dt(d)
+    if not dt:
+        return "TBD"
+    try:
+        return dt.strftime("%A, %B %d, %Y")
     except Exception:
         return str(d)
 
 
 def _fmt_time(d) -> str:
-    if not d:
+    dt = _parse_dt(d)
+    if not dt:
         return ""
-    if isinstance(d, str):
-        try:
-            d = datetime.fromisoformat(d.replace("Z", "+00:00"))
-        except Exception:
-            return ""
     try:
-        return d.strftime("%-I:%M %p")
+        return dt.strftime("%-I:%M %p")
     except Exception:
         try:
-            return d.strftime("%I:%M %p").lstrip("0")
+            return dt.strftime("%I:%M %p").lstrip("0")
         except Exception:
             return ""
+
+
+def _gcal_url(meeting: dict) -> str:
+    title    = meeting.get("title", "Meeting")
+    desc     = _strip_html(meeting.get("description") or "")
+    location = meeting.get("location") or ""
+    meet_link = meeting.get("google_meet_link") or ""
+    if meet_link:
+        desc = f"{desc}\n\nGoogle Meet: {meet_link}".strip()
+
+    dt = _parse_dt(meeting.get("meeting_date"))
+    if dt:
+        start = dt.strftime("%Y%m%dT%H%M%SZ")
+        end   = (dt + timedelta(hours=1)).strftime("%Y%m%dT%H%M%SZ")
+        dates = f"{start}/{end}"
+    else:
+        dates = ""
+
+    params = urllib.parse.urlencode({
+        "action":   "TEMPLATE",
+        "text":     title,
+        "dates":    dates,
+        "details":  desc,
+        "location": location,
+    })
+    return f"https://www.google.com/calendar/render?{params}"
+
+
+def _ics_content(meeting: dict) -> str:
+    def esc(s):
+        return (s or "").replace("\\", "\\\\").replace("\n", "\\n").replace(",", "\\,").replace(";", "\\;")
+
+    title     = esc(meeting.get("title", "Meeting"))
+    desc      = esc(_strip_html(meeting.get("description") or ""))
+    location  = esc(meeting.get("location") or "")
+    meet_link = (meeting.get("google_meet_link") or "").strip()
+    uid       = f"meeting-{meeting.get('meeting_id', '000')}@oatmealfarmnetwork.com"
+
+    dt = _parse_dt(meeting.get("meeting_date"))
+    if dt:
+        start = dt.strftime("%Y%m%dT%H%M%SZ")
+        end   = (dt + timedelta(hours=1)).strftime("%Y%m%dT%H%M%SZ")
+    else:
+        now   = datetime.utcnow()
+        start = now.strftime("%Y%m%dT%H%M%SZ")
+        end   = (now + timedelta(hours=1)).strftime("%Y%m%dT%H%M%SZ")
+
+    url_line = f"URL:{meet_link}\r\n" if meet_link else ""
+
+    return (
+        "BEGIN:VCALENDAR\r\n"
+        "VERSION:2.0\r\n"
+        "PRODID:-//OatmealFarmNetwork//Meetings//EN\r\n"
+        "CALSCALE:GREGORIAN\r\n"
+        "METHOD:REQUEST\r\n"
+        "BEGIN:VEVENT\r\n"
+        f"DTSTART:{start}\r\n"
+        f"DTEND:{end}\r\n"
+        f"SUMMARY:{title}\r\n"
+        f"DESCRIPTION:{desc}\r\n"
+        f"LOCATION:{location}\r\n"
+        f"{url_line}"
+        f"UID:{uid}\r\n"
+        "STATUS:CONFIRMED\r\n"
+        "END:VEVENT\r\n"
+        "END:VCALENDAR\r\n"
+    )
+
+
+def _calendar_block_html(meeting: dict) -> str:
+    gcal = _gcal_url(meeting)
+    return f"""
+    <div style="margin:16px 0;padding:12px 14px;background:#f0f7ee;
+                border-radius:6px;border:1px solid #c7dfc2;">
+      <p style="margin:0 0 8px;font-size:12px;color:#374151;font-weight:600;">
+        📅 Add this meeting to your calendar:
+      </p>
+      <a href="{gcal}" target="_blank"
+         style="display:inline-block;background:#3D6B34;color:#fff;
+                padding:7px 16px;border-radius:6px;font-size:13px;
+                text-decoration:none;font-weight:600;">
+        + Add to Google Calendar
+      </a>
+      <span style="margin-left:10px;font-size:11px;color:#6b7280;">
+        (or open the attached .ics file for Outlook / Apple Calendar)
+      </span>
+    </div>"""
 
 
 def _project_badge(name: str) -> str:
@@ -67,10 +176,11 @@ def _agenda_section_html(section: dict) -> str:
     items = section.get("items", [])
     rows_html = ""
     for item in items:
-        dur = f" ({item['duration_minutes']} min)" if item.get("duration_minutes") else ""
-        pres = f" — {item['presenter']}" if item.get("presenter") else ""
-        notes = (f"<p style='margin:4px 0 0;color:#555;font-size:13px;'>"
-                 f"{item['notes_template']}</p>") if item.get("notes_template") else ""
+        dur   = f" ({item['duration_minutes']} min)" if item.get("duration_minutes") else ""
+        pres  = f" — {item['presenter']}" if item.get("presenter") else ""
+        notes_raw = item.get("notes_template") or ""
+        notes = (f"<div style='margin:4px 0 0;color:#555;font-size:13px;'>"
+                 f"{notes_raw}</div>") if notes_raw else ""
         rows_html += f"""
         <tr>
           <td style='padding:8px 12px;border-bottom:1px solid #eee;'>
@@ -94,7 +204,7 @@ def _minutes_section_html(section: dict) -> str:
     items = section.get("items", [])
     rows_html = ""
     for item in items:
-        m = item.get("minutes") or {}
+        m         = item.get("minutes") or {}
         notes     = m.get("notes", "") or ""
         decisions = m.get("decisions", "") or ""
         actions   = m.get("action_items", "") or ""
@@ -202,6 +312,8 @@ def _base_template(header_title: str, business_name: str, content_html: str) -> 
 </html>"""
 
 
+# ── Public senders ────────────────────────────────────────────────────────────
+
 def send_meeting_agenda(
     to_email: str,
     attendee_name: str,
@@ -209,11 +321,12 @@ def send_meeting_agenda(
     sections: list,
     accounting_snapshot: dict = None,
 ) -> bool:
-    date_str  = _fmt_date(meeting.get("meeting_date"))
-    time_str  = _fmt_time(meeting.get("meeting_date"))
-    location  = meeting.get("location") or "To be confirmed"
-    biz_name  = meeting.get("business_name", "")
-    desc      = meeting.get("description", "")
+    date_str   = _fmt_date(meeting.get("meeting_date"))
+    time_str   = _fmt_time(meeting.get("meeting_date"))
+    location   = meeting.get("location") or "To be confirmed"
+    biz_name   = meeting.get("business_name", "")
+    desc       = meeting.get("description", "")
+    meet_link  = (meeting.get("google_meet_link") or "").strip()
 
     total_min = sum(
         (item.get("duration_minutes") or 0)
@@ -224,10 +337,14 @@ def send_meeting_agenda(
 
     sections_html = "".join(_agenda_section_html(s) for s in sections)
     acct_html     = _accounting_html(accounting_snapshot) if accounting_snapshot else ""
+    cal_html      = _calendar_block_html(meeting)
 
     time_clause = f" at <strong>{time_str}</strong>" if time_str else ""
     desc_block  = (f"<p style='margin:8px 0 16px;color:#374151;font-size:13px;'>{desc}</p>"
                    if desc else "")
+    meet_line   = (f"<p style='margin:0 0 4px;color:#4b5563;font-size:14px;'>"
+                   f"📹 <a href='{meet_link}' style='color:#3D6B34;font-weight:bold;'>Join Google Meet</a></p>"
+                   if meet_link else "")
 
     body = f"""
     <h2 style="margin:0 0 6px;font-size:18px;color:#1f2937;">{meeting.get('title','Meeting')}</h2>
@@ -235,6 +352,8 @@ def send_meeting_agenda(
       📅 <strong>{date_str}</strong>{time_clause}
     </p>
     <p style="margin:0 0 4px;color:#4b5563;font-size:14px;">📍 <strong>{location}</strong></p>
+    {meet_line}
+    {cal_html}
     {desc_block}
     <p style="margin:0 0 16px;color:#6b7280;font-size:13px;">
       Dear {attendee_name},<br/>You are invited to attend the above meeting.
@@ -246,7 +365,8 @@ def send_meeting_agenda(
     {acct_html}"""
 
     html = _base_template("Meeting Agenda", biz_name, body)
-    return _send(to_email, f"Agenda: {meeting.get('title','Meeting')} — {date_str}", html)
+    ics  = _ics_content(meeting)
+    return _send(to_email, f"Agenda: {meeting.get('title','Meeting')} — {date_str}", html, ics)
 
 
 def send_meeting_minutes(
@@ -258,13 +378,18 @@ def send_meeting_minutes(
 ) -> bool:
     date_str  = _fmt_date(meeting.get("meeting_date"))
     biz_name  = meeting.get("business_name", "")
+    meet_link = (meeting.get("google_meet_link") or "").strip()
 
     sections_html = "".join(_minutes_section_html(s) for s in sections)
     acct_html     = _accounting_html(accounting_snapshot) if accounting_snapshot else ""
+    meet_line     = (f"<p style='margin:0 0 8px;color:#4b5563;font-size:14px;'>"
+                     f"📹 <a href='{meet_link}' style='color:#3D6B34;font-weight:bold;'>Google Meet recording/link</a></p>"
+                     if meet_link else "")
 
     body = f"""
     <h2 style="margin:0 0 6px;font-size:18px;color:#1f2937;">{meeting.get('title','Meeting')}</h2>
-    <p style="margin:0 0 16px;color:#4b5563;font-size:14px;">📅 <strong>{date_str}</strong></p>
+    <p style="margin:0 0 4px;color:#4b5563;font-size:14px;">📅 <strong>{date_str}</strong></p>
+    {meet_line}
     <p style="margin:0 0 16px;color:#6b7280;font-size:13px;">
       Dear {attendee_name},<br/>Please find the meeting minutes below.
     </p>

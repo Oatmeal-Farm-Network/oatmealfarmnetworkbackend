@@ -32,12 +32,15 @@ def _ensure_tables():
              Description     NVARCHAR(MAX) NULL,
              MeetingDate     DATETIME2     NULL,
              Location        NVARCHAR(300) NULL,
+             GoogleMeetLink  NVARCHAR(500) NULL,
              Status          NVARCHAR(30)  DEFAULT 'draft',
              AccountingScope NVARCHAR(20)  DEFAULT 'none',
              CreatedBy       INT           NULL,
              CreatedAt       DATETIME2     DEFAULT SYSDATETIME(),
              UpdatedAt       DATETIME2     DEFAULT SYSDATETIME()
            )""",
+        """IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID('Meeting') AND name='GoogleMeetLink')
+           ALTER TABLE Meeting ADD GoogleMeetLink NVARCHAR(500) NULL""",
         """IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name='MeetingAttendee')
            CREATE TABLE MeetingAttendee (
              AttendeeID INT IDENTITY(1,1) PRIMARY KEY,
@@ -211,6 +214,7 @@ def _meeting_detail(meeting_id: int, db: Session) -> dict:
         "description":      m["Description"],
         "meeting_date":     m["MeetingDate"].isoformat() if m["MeetingDate"] else None,
         "location":         m["Location"],
+        "google_meet_link": m["GoogleMeetLink"],
         "status":           m["Status"],
         "accounting_scope": m["AccountingScope"],
         "created_at":       m["CreatedAt"].isoformat() if m["CreatedAt"] else None,
@@ -410,10 +414,10 @@ def create_meeting(payload: dict, access=Depends(require_access), db: Session = 
         text("""
             INSERT INTO Meeting
               (BusinessID, ProjectID, Title, Description, MeetingDate,
-               Location, Status, AccountingScope, CreatedBy)
+               Location, GoogleMeetLink, Status, AccountingScope, CreatedBy)
             OUTPUT INSERTED.MeetingID
             VALUES (:bid, :proj, :title, :desc, :date,
-                    :loc, 'draft', :acct_scope, :creator)
+                    :loc, :meet_link, 'draft', :acct_scope, :creator)
         """),
         {
             "bid":        access["business_id"],
@@ -422,6 +426,7 @@ def create_meeting(payload: dict, access=Depends(require_access), db: Session = 
             "desc":       payload.get("description"),
             "date":       payload.get("meeting_date"),
             "loc":        payload.get("location"),
+            "meet_link":  payload.get("google_meet_link"),
             "acct_scope": payload.get("accounting_scope", "none"),
             "creator":    access["people_id"],
         },
@@ -447,8 +452,8 @@ def update_meeting(meeting_id: int, payload: dict,
     db.execute(
         text("""
             UPDATE Meeting SET Title=:title, Description=:desc, MeetingDate=:date,
-              Location=:loc, ProjectID=:proj, AccountingScope=:acct_scope,
-              UpdatedAt=SYSDATETIME()
+              Location=:loc, GoogleMeetLink=:meet_link, ProjectID=:proj,
+              AccountingScope=:acct_scope, UpdatedAt=SYSDATETIME()
             WHERE MeetingID=:id AND BusinessID=:bid
         """),
         {
@@ -458,6 +463,7 @@ def update_meeting(meeting_id: int, payload: dict,
             "desc":       payload.get("description"),
             "date":       payload.get("meeting_date"),
             "loc":        payload.get("location"),
+            "meet_link":  payload.get("google_meet_link"),
             "proj":       payload.get("project_id"),
             "acct_scope": payload.get("accounting_scope", "none"),
         },
