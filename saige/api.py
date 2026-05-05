@@ -4,10 +4,12 @@ import json
 import logging
 import time
 import re
+import base64
+import struct
 from typing import Optional, List
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Query, Request, Depends
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from langgraph.types import Command
@@ -230,6 +232,60 @@ class ChatRequest(BaseModel):
         if not v:
             raise ValueError("user_input must not be empty or whitespace-only")
         return v
+
+
+class TTSRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=2000)
+
+
+def _pcm_to_wav(pcm: bytes, sample_rate: int = 24000, channels: int = 1, bits: int = 16) -> bytes:
+    data_size = len(pcm)
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF", 36 + data_size, b"WAVE",
+        b"fmt ", 16,
+        1, channels, sample_rate,
+        sample_rate * channels * bits // 8,
+        channels * bits // 8,
+        bits,
+        b"data", data_size,
+    )
+    return header + pcm
+
+
+@app.post("/tts")
+async def text_to_speech(body: TTSRequest):
+    """Convert text to speech using Google Gemini TTS with the Aoede voice."""
+    import requests as _req
+    api_key = os.getenv("GOOGLE_API_KEY", "")
+    if not api_key:
+        return JSONResponse(status_code=503, content={"error": "TTS not configured"})
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"gemini-2.5-flash-preview-tts:generateContent?key={api_key}"
+    )
+    payload = {
+        "contents": [{"parts": [{"text": body.text}]}],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {"voiceName": "Aoede"}
+                }
+            },
+        },
+    }
+    try:
+        resp = _req.post(url, json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        inline = data["candidates"][0]["content"]["parts"][0]["inlineData"]
+        pcm_bytes = base64.b64decode(inline["data"])
+        wav_bytes = _pcm_to_wav(pcm_bytes)
+        return Response(content=wav_bytes, media_type="audio/wav")
+    except Exception as e:
+        logger.error(f"[TTS] Gemini TTS error: {e}")
+        return JSONResponse(status_code=502, content={"error": "TTS generation failed"})
 
 
 def _looks_like_new_question(text: str) -> bool:
