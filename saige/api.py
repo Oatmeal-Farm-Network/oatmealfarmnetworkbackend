@@ -2158,6 +2158,95 @@ async def rosemarie_thread_delete(
 
 
 # ============================================================================
+# CASSIA — customer success / account-setup agent
+# ============================================================================
+
+try:
+    import cassia as _cassia
+    _CASSIA_AVAILABLE = True
+except Exception as _cassia_err:
+    print(f"[API] cassia import failed: {_cassia_err}")
+    _CASSIA_AVAILABLE = False
+
+
+class CassiaChatRequest(BaseModel):
+    user_input: str = Field(..., min_length=1, max_length=MAX_MESSAGE_CHARS)
+    thread_id:  str = Field(..., min_length=1, max_length=128)
+    business_id: Optional[int] = None
+
+    @field_validator("user_input")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("user_input must not be empty")
+        return v
+
+
+@app.post("/cassia/chat")
+async def cassia_chat(
+    request: CassiaChatRequest,
+    people_id: str = Depends(get_current_user),
+):
+    """One chat turn with Cassia. Rate-limited per thread."""
+    if not _CASSIA_AVAILABLE:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    allowed, req_count = _check_rate_limit(request.thread_id)
+    if not allowed:
+        return JSONResponse(
+            status_code=429,
+            content={"status": "error", "message": f"Too many requests ({req_count}/{RATE_LIMIT_MAX_REQUESTS} in {RATE_LIMIT_WINDOW_SECONDS}s)."},
+        )
+    result = _cassia.respond(
+        user_input=request.user_input,
+        thread_id=request.thread_id,
+        user_id=people_id,
+        business_id=request.business_id,
+    )
+    return result
+
+
+@app.get("/cassia/threads")
+async def cassia_threads(
+    people_id: str = Depends(get_current_user),
+    limit: int = Query(default=20, ge=1, le=100),
+    cursor: Optional[str] = Query(default=None),
+):
+    if not _CASSIA_AVAILABLE:
+        return {"threads": [], "next_cursor": None}
+    threads, next_cursor = _cassia.list_threads(people_id, limit=limit, cursor=cursor)
+    return {"threads": threads, "next_cursor": next_cursor}
+
+
+@app.get("/cassia/threads/{thread_id}/messages")
+async def cassia_thread_messages(
+    thread_id: str,
+    people_id: str = Depends(get_current_user),
+    limit: int = Query(default=50, ge=1, le=200),
+    cursor: Optional[str] = Query(default=None),
+):
+    if not _CASSIA_AVAILABLE:
+        return {"thread_id": thread_id, "messages": [], "next_cursor": None}
+    messages, next_cursor = _cassia.get_messages(people_id, thread_id, limit=limit, cursor=cursor)
+    if not messages and cursor is None:
+        return JSONResponse(status_code=404, content={"error": "Thread not found"})
+    return {"thread_id": thread_id, "messages": messages, "next_cursor": next_cursor}
+
+
+@app.delete("/cassia/threads/{thread_id}")
+async def cassia_thread_delete(
+    thread_id: str,
+    people_id: str = Depends(get_current_user),
+):
+    if not _CASSIA_AVAILABLE:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    ok = _cassia.delete_thread(people_id, thread_id)
+    if not ok:
+        return JSONResponse(status_code=404, content={"error": "Thread not found"})
+    return {"status": "deleted", "thread_id": thread_id}
+
+
+# ============================================================================
 # MAIN
 # ============================================================================
 
