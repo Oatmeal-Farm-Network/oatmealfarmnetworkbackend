@@ -94,6 +94,8 @@ from routers import education
 from routers import csa_advanced
 from routers import meetings
 from routers import recipes_batches
+from routers import cold_chain
+from routers import farmer_settlement
 
 load_dotenv()
 
@@ -303,6 +305,8 @@ app.include_router(thaiyme.router)
 app.include_router(market_alerts.router)
 app.include_router(meetings.router)
 app.include_router(recipes_batches.router)
+app.include_router(cold_chain.router)
+app.include_router(farmer_settlement.router)
 
 
 # ── Public testimonials endpoint (used by website blocks) ─────────

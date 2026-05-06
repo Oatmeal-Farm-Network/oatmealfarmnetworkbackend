@@ -42,6 +42,8 @@ DEFAULT_FEATURES = [
     ("commodity_prices",     "Commodity Prices",          0.0,   0.0, 30),
     ("forums",               "Forums",                    0.0,   0.0, 31),
     ("meetings",             "Meetings",                  0.0,   0.0, 32),
+    ("cold_chain",           "Cold Chain & Logistics",   29.0, 290.0, 33),
+    ("farmer_settlement",    "Farmer Settlement & Pay",  19.0, 190.0, 34),
     ("business_directory",   "Business Directory",        0.0,   0.0, 98),
     ("food_system_newsfeed", "Food System Newsfeed",      0.0,   0.0, 99),
 ]
