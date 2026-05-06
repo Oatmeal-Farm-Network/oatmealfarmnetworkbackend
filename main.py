@@ -76,6 +76,7 @@ from routers import esg_reports
 from routers import stripe_payments
 from routers import news
 from routers import thaiyme
+from routers import market_alerts
 
 from routers.marketplace import marketplace_router
 from marketplace_stripe import stripe_router
@@ -299,6 +300,7 @@ app.include_router(esg_reports.router)
 app.include_router(stripe_payments.router)
 app.include_router(news.router)
 app.include_router(thaiyme.router)
+app.include_router(market_alerts.router)
 app.include_router(meetings.router)
 app.include_router(recipes_batches.router)
 
