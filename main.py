@@ -320,6 +320,122 @@ def get_public_testimonials(BusinessID: int, db: Session = Depends(get_db)):
     return [dict(r._mapping) for r in rows]
 
 
+@app.get("/sitemap.xml", response_class=Response)
+def dynamic_sitemap(db: Session = Depends(get_db)):
+    from sqlalchemy import text
+    from datetime import datetime
+
+    BASE = "https://oatmealfarmnetwork.com"
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+
+    static_pages = [
+        ("/",                              "weekly",  "1.0"),
+        ("/about",                         "monthly", "0.8"),
+        ("/platform/saige",                "monthly", "0.9"),
+        ("/platform/pairsley",             "monthly", "0.9"),
+        ("/platform/rosemarie",            "monthly", "0.9"),
+        ("/platform/thaiyme",              "monthly", "0.9"),
+        ("/platform",                      "monthly", "0.8"),
+        ("/app/news",                      "daily",   "0.7"),
+        ("/events",                        "daily",   "0.8"),
+        ("/blog",                          "weekly",  "0.7"),
+        ("/services/directory",            "weekly",  "0.7"),
+        ("/marketplaces/livestock",        "weekly",  "0.7"),
+        ("/marketplaces/farm-to-table",    "weekly",  "0.7"),
+        ("/marketplace/products",          "weekly",  "0.7"),
+        ("/marketplaces/food-wanted",      "weekly",  "0.6"),
+        ("/marketplaces/equipment",        "weekly",  "0.6"),
+        ("/contact-us",                    "yearly",  "0.5"),
+        ("/signup",                        "yearly",  "0.6"),
+        ("/login",                         "yearly",  "0.5"),
+    ]
+
+    def _url(loc, lastmod, changefreq, priority):
+        return (
+            f"  <url>\n"
+            f"    <loc>{loc}</loc>\n"
+            f"    <lastmod>{lastmod}</lastmod>\n"
+            f"    <changefreq>{changefreq}</changefreq>\n"
+            f"    <priority>{priority}</priority>\n"
+            f"  </url>"
+        )
+
+    urls = [_url(f"{BASE}{path}", today, freq, pri) for path, freq, pri in static_pages]
+
+    # Blog posts
+    try:
+        rows = db.execute(text(
+            "SELECT BlogID, UpdatedAt, PublishedAt FROM blog "
+            "WHERE IsPublished = 1 ORDER BY COALESCE(UpdatedAt, PublishedAt) DESC"
+        )).fetchall()
+        for r in rows:
+            dt = r.UpdatedAt or r.PublishedAt
+            d = dt.strftime("%Y-%m-%d") if dt else today
+            urls.append(_url(f"{BASE}/blog/{r.BlogID}", d, "monthly", "0.6"))
+    except Exception:
+        pass
+
+    # Events
+    try:
+        rows = db.execute(text(
+            "SELECT EventID, EventStartDate FROM OFNEvents "
+            "WHERE IsPublished = 1 AND Deleted = 0 ORDER BY EventStartDate DESC"
+        )).fetchall()
+        for r in rows:
+            d = r.EventStartDate.strftime("%Y-%m-%d") if r.EventStartDate else today
+            urls.append(_url(f"{BASE}/events/{r.EventID}", d, "weekly", "0.6"))
+    except Exception:
+        pass
+
+    # Services
+    try:
+        rows = db.execute(text(
+            "SELECT ServicesID FROM Services WHERE ServiceAvailable = 1"
+        )).fetchall()
+        for r in rows:
+            urls.append(_url(f"{BASE}/services/public/{r.ServicesID}", today, "monthly", "0.5"))
+    except Exception:
+        pass
+
+    # Products
+    try:
+        rows = db.execute(text(
+            "SELECT ProdID FROM sfproducts WHERE ProdQuantityAvailable > 0"
+        )).fetchall()
+        for r in rows:
+            urls.append(_url(f"{BASE}/marketplace/products/{r.ProdID}", today, "weekly", "0.5"))
+    except Exception:
+        pass
+
+    # News articles (Firestore)
+    try:
+        from routers.news import _get_db as _news_firestore
+        fs = _news_firestore()
+        if fs:
+            from google.cloud.firestore_v1 import Query as FSQuery
+            docs = (
+                fs.collection("news_articles")
+                .order_by("pubDate", direction=FSQuery.DESCENDING)
+                .limit(300)
+                .stream()
+            )
+            for doc in docs:
+                data = doc.to_dict() or {}
+                pub = data.get("pubDate")
+                d = pub.strftime("%Y-%m-%d") if hasattr(pub, "strftime") else today
+                urls.append(_url(f"{BASE}/app/news/{doc.id}", d, "never", "0.5"))
+    except Exception:
+        pass
+
+    sitemap_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        + "\n".join(urls)
+        + "\n</urlset>"
+    )
+    return Response(content=sitemap_xml, media_type="application/xml")
+
+
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
