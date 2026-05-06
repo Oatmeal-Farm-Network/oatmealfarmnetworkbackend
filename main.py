@@ -204,12 +204,32 @@ async def _startup_migrations():
                 _db.commit()
         except Exception:
             pass
+        # Ensure BusinessServiceAccess table exists (may be created by Node.js admin; replicate here)
+        try:
+            with SessionLocal() as _db:
+                _db.execute(_t(
+                    "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'BusinessServiceAccess') "
+                    "CREATE TABLE BusinessServiceAccess ("
+                    "  AccessID INT IDENTITY PRIMARY KEY,"
+                    "  BusinessID INT NOT NULL,"
+                    "  CategoryID INT NOT NULL,"
+                    "  IsEnabled BIT NOT NULL DEFAULT 1,"
+                    "  TierOverride NVARCHAR(50) NULL,"
+                    "  CustomPrice DECIMAL(10,2) NULL,"
+                    "  PriceNote NVARCHAR(500) NULL,"
+                    "  UpdatedAt DATETIME2 DEFAULT GETDATE(),"
+                    "  CONSTRAINT UQ_BizServiceCategory UNIQUE (BusinessID, CategoryID)"
+                    ")"
+                ))
+                _db.commit()
+        except Exception:
+            pass
         # Add FeatureKey column to FeatureCategory (links admin catalog to OFN feature flags)
         try:
             with SessionLocal() as _db:
                 _db.execute(_t(
-                    "IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'FeatureCategory') "
-                    "AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('FeatureCategory') AND name = 'FeatureKey') "
+                    "IF NOT EXISTS (SELECT 1 FROM sys.columns "
+                    "WHERE object_id = OBJECT_ID('FeatureCategory') AND name = 'FeatureKey') "
                     "ALTER TABLE FeatureCategory ADD FeatureKey NVARCHAR(100) NULL"
                 ))
                 _db.commit()
@@ -246,9 +266,12 @@ async def _startup_migrations():
         }
         try:
             with SessionLocal() as _db:
-                rows = _db.execute(_t(
-                    "SELECT CategoryID, CategoryName FROM FeatureCategory WHERE FeatureKey IS NULL"
-                )).fetchall()
+                try:
+                    rows = _db.execute(_t(
+                        "SELECT CategoryID, CategoryName FROM FeatureCategory WHERE FeatureKey IS NULL"
+                    )).fetchall()
+                except Exception:
+                    rows = []
                 for row in rows:
                     fk = _FEATURE_KEY_MAP.get(row[1])
                     if fk:
@@ -261,6 +284,25 @@ async def _startup_migrations():
             pass
 
     asyncio.get_event_loop().run_in_executor(None, _run)
+
+    # Seed commodity price history if the table is empty (first deploy / cold start).
+    # Runs in background so startup is never blocked.
+    def _seed_prices():
+        try:
+            from routers.commodity_history import _fetch_and_store_prices
+            from database import SessionLocal as _SL
+            with _SL() as _db:
+                has_data = _db.execute(
+                    __import__('sqlalchemy').text(
+                        "SELECT TOP 1 1 FROM CommodityPriceHistory WHERE FetchedAt >= DATEADD(hour, -25, GETDATE())"
+                    )
+                ).scalar()
+            if not has_data:
+                _fetch_and_store_prices()
+        except Exception as _e:
+            print(f"[startup] price seed skipped: {_e}")
+
+    asyncio.get_event_loop().run_in_executor(None, _seed_prices)
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
