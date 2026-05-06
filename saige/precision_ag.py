@@ -1600,6 +1600,57 @@ def get_field_assessment_history_tool(field_id: int, limit: int = 3, people_id: 
 # TOOL REGISTRY
 # ---------------------------------------------------------------------------
 
+@tool
+def get_price_trends_tool(commodity: str = "", days: int = 30, people_id: str = "") -> str:
+    """Get the historical price trend for a commodity over the last N days (default 30).
+    Use when the user asks about price trends, whether a commodity is getting more or less
+    expensive, market timing for selling, or seasonal price patterns.
+    Commodity names match the Market Intelligence panel labels, e.g. 'Nat\\'l Chicken Breast'
+    or 'Nat\\'l Pork Loin'. people_id is not needed for this tool."""
+    if not commodity:
+        return "Please specify a commodity name (e.g. \"Nat'l Chicken Breast\" or \"Nat'l Pork Loin\")."
+    days = max(7, min(int(days or 30), 365))
+    rows = _query(
+        "SELECT TOP 200 Commodity, PriceUSD, FetchedAt "
+        "FROM CommodityPriceHistory "
+        "WHERE Commodity = %s AND FetchedAt >= DATEADD(day, -%s, GETDATE()) "
+        "ORDER BY FetchedAt ASC",
+        (str(commodity), days),
+    )
+    if not rows:
+        return (
+            f"No historical price data found for '{commodity}'. "
+            "Prices are logged when users view the Market Intelligence panel — "
+            "check back after it has been open a few times."
+        )
+    prices = []
+    dates  = []
+    for r in rows:
+        try:
+            prices.append(float(r.get("priceusd") or r.get("PriceUSD") or 0))
+            dates.append(str(r.get("fetchedat") or r.get("FetchedAt") or "")[:10])
+        except (TypeError, ValueError):
+            continue
+    if not prices:
+        return f"Price data for '{commodity}' could not be parsed."
+    first, last = prices[0], prices[-1]
+    avg   = sum(prices) / len(prices)
+    pct   = (last - first) / first * 100 if first else 0
+    trend = "rising" if pct > 2 else ("falling" if pct < -2 else "stable")
+    lines = [
+        f"Price trend for {commodity} (last {days} days, {len(prices)} observations):",
+        f"  Start:   ${first:.2f}  ({dates[0]})",
+        f"  Latest:  ${last:.2f}  ({dates[-1]})",
+        f"  Average: ${avg:.2f}",
+        f"  Change:  {pct:+.1f}% ({trend})",
+    ]
+    if len(prices) > 1:
+        lines.append("Recent readings:")
+        for p, d in zip(prices[-6:], dates[-6:]):
+            lines.append(f"  • {d}: ${p:.2f}")
+    return "\n".join(lines)
+
+
 precision_ag_tools = [
     list_my_fields_tool,
     get_field_analysis_tool,
@@ -1626,4 +1677,5 @@ precision_ag_tools = [
     get_field_agronomy_tool,
     get_field_zones_tool,
     get_field_assessment_history_tool,
+    get_price_trends_tool,
 ]

@@ -475,6 +475,65 @@ def _booth_services_revenue(db: Session, event_id: int) -> Dict[str, Any]:
     return {"event_id": event_id, "total_revenue": round(total, 2), "by_service": items}
 
 
+def _order_analytics(db: Session, business_id: int) -> Dict[str, Any]:
+    """Aggregate order analytics: standing orders and B2B aggregator activity (last 90 days)."""
+    try:
+        standing = db.execute(text("""
+            SELECT
+                COUNT(*)                                             AS total_orders,
+                COUNT(DISTINCT BuyerBusinessID)                     AS unique_buyers,
+                COUNT(CASE WHEN Status = 'active'    THEN 1 END)   AS active_orders,
+                COUNT(CASE WHEN Status = 'paused'    THEN 1 END)   AS paused_orders,
+                COUNT(CASE WHEN Status = 'cancelled' THEN 1 END)   AS cancelled_orders
+            FROM RestaurantStandingOrders
+            WHERE FarmBusinessID = :bid
+        """), {"bid": business_id}).mappings().first()
+
+        top_products = db.execute(text("""
+            SELECT TOP 5 ProductTitle, COUNT(*) AS order_count, Frequency
+            FROM RestaurantStandingOrders
+            WHERE FarmBusinessID = :bid AND Status = 'active'
+            GROUP BY ProductTitle, Frequency
+            ORDER BY order_count DESC
+        """), {"bid": business_id}).mappings().all()
+
+        b2b = db.execute(text("""
+            SELECT
+                COUNT(*)                                                AS total_b2b,
+                ISNULL(SUM(TotalValue), 0)                             AS total_revenue,
+                ISNULL(AVG(TotalValue), 0)                             AS avg_order_value,
+                COUNT(DISTINCT AccountID)                               AS unique_accounts,
+                COUNT(CASE WHEN Status = 'delivered'  THEN 1 END)      AS delivered,
+                COUNT(CASE WHEN Status = 'cancelled'  THEN 1 END)      AS cancelled
+            FROM OFNAggregatorB2BOrder
+            WHERE BusinessID = :bid AND OrderDate >= DATEADD(day, -90, GETDATE())
+        """), {"bid": business_id}).mappings().first()
+
+        lines = ["Order analytics snapshot:"]
+        if standing:
+            lines.append(
+                f"Standing orders: {standing['total_orders']} total "
+                f"({standing['active_orders']} active, {standing['paused_orders']} paused, "
+                f"{standing['cancelled_orders']} cancelled) "
+                f"from {standing['unique_buyers']} unique buyers."
+            )
+        if top_products:
+            lines.append("Top active products:")
+            for p in top_products:
+                lines.append(f"  • {p['ProductTitle']} — {p['order_count']} orders ({p['Frequency']})")
+        if b2b:
+            lines.append(
+                f"B2B aggregator (last 90 days): {b2b['total_b2b']} orders, "
+                f"${float(b2b['total_revenue']):,.2f} revenue, "
+                f"avg ${float(b2b['avg_order_value']):,.2f}/order, "
+                f"{b2b['unique_accounts']} accounts, "
+                f"{b2b['delivered']} delivered, {b2b['cancelled']} cancelled."
+            )
+        return {"summary": "\n".join(lines)}
+    except Exception as e:
+        return {"error": f"Order analytics unavailable: {e}"}
+
+
 def _esg_status(db: Session, business_id: int) -> Dict[str, Any]:
     """ESG snapshot for the focused business — last 90 days of live numbers
     (sourcing transparency, residue testing pass rate, cold-chain integrity,
@@ -990,6 +1049,13 @@ def _build_tool_registry(
             "desc": "ESG (Environmental, Social, Governance) snapshot for the business — sourcing transparency (% certified farms), residue-test pass rate, cold-chain integrity (% of dispatches with no breach), inputs to farms, IoT sensor data, plus the most recent saved audit report and any manual metrics. Use for 'how are we doing on EU compliance', 'are we audit-ready', 'what's our sustainability story', 'cold chain breaches this quarter', 'is our EthiFinance rating defensible'.",
             "params": {},
             "run": lambda **_: _esg_status(db, business_id),
+            "mutating": False,
+        }
+
+        registry["order_analytics"] = {
+            "desc": "Aggregate order analytics — standing (recurring) orders count and status breakdown by buyer, top active products, and B2B aggregator activity (last 90 days): order count, total revenue, average order value, unique accounts, fulfillment rate. Use for 'how are our orders doing', 'which products sell most', 'what\\'s our B2B revenue', 'how many active buyers do we have'.",
+            "params": {},
+            "run": lambda **_: _order_analytics(db, business_id),
             "mutating": False,
         }
 

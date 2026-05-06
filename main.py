@@ -77,6 +77,9 @@ from routers import stripe_payments
 from routers import news
 from routers import thaiyme
 from routers import market_alerts
+from routers import commodity_history
+from routers import provenance
+from routers import field_health_alerts
 
 from routers.marketplace import marketplace_router
 from marketplace_stripe import stripe_router
@@ -201,6 +204,61 @@ async def _startup_migrations():
                 _db.commit()
         except Exception:
             pass
+        # Add FeatureKey column to FeatureCategory (links admin catalog to OFN feature flags)
+        try:
+            with SessionLocal() as _db:
+                _db.execute(_t(
+                    "IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'FeatureCategory') "
+                    "AND NOT EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID('FeatureCategory') AND name = 'FeatureKey') "
+                    "ALTER TABLE FeatureCategory ADD FeatureKey NVARCHAR(100) NULL"
+                ))
+                _db.commit()
+        except Exception:
+            pass
+        # Populate FeatureKey on existing FeatureCategory rows by CategoryName → OFN key mapping
+        _FEATURE_KEY_MAP = {
+            'Precision Ag':                  'precision_ag',
+            'Livestock & Herd Health':       'livestock',
+            'Farm 2 Table — Seller':    'farm_2_table',
+            'Farm 2 Table — Buyer':     'farm_2_table',
+            'Livestock Marketplace':         'livestock',
+            'Products & Storefront':         'products',
+            'Equipment Marketplace':         'equipment',
+            'Food Wanted Board':             'food_wanted',
+            'Services Directory':            'services',
+            'CSA':                           'csa_management',
+            'Events':                        'events',
+            'Job Board':                     'job_board',
+            'Land Leasing':                  'land_leasing',
+            'Certifications Tracker':        'certifications',
+            'Supplier Directory':            'supplier_directory',
+            'Grants & Programs':             'grants_programs',
+            'Education Center':              'education_center',
+            'Commodity Prices':              'commodity_prices',
+            'Forums & Community':            'forums',
+            'Blog':                          'blog',
+            'Website Builder (Lavendir AI)': 'my_website',
+            'Accounting':                    'accounting',
+            'Testimonials & Social Proof':   'testimonials',
+            'Properties Management':         'properties',
+            'Cold Chain & Logistics':        'cold_chain',
+            'Farmer Settlement & Pay':       'farmer_settlement',
+        }
+        try:
+            with SessionLocal() as _db:
+                rows = _db.execute(_t(
+                    "SELECT CategoryID, CategoryName FROM FeatureCategory WHERE FeatureKey IS NULL"
+                )).fetchall()
+                for row in rows:
+                    fk = _FEATURE_KEY_MAP.get(row[1])
+                    if fk:
+                        _db.execute(
+                            _t("UPDATE FeatureCategory SET FeatureKey = :fk WHERE CategoryID = :cid"),
+                            {"fk": fk, "cid": row[0]},
+                        )
+                _db.commit()
+        except Exception:
+            pass
 
     asyncio.get_event_loop().run_in_executor(None, _run)
 
@@ -303,6 +361,9 @@ app.include_router(stripe_payments.router)
 app.include_router(news.router)
 app.include_router(thaiyme.router)
 app.include_router(market_alerts.router)
+app.include_router(commodity_history.router)
+app.include_router(provenance.router)
+app.include_router(field_health_alerts.router)
 app.include_router(meetings.router)
 app.include_router(recipes_batches.router)
 app.include_router(cold_chain.router)
