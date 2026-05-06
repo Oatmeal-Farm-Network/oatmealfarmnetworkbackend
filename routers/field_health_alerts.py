@@ -3,16 +3,22 @@
 # Users set per-field NDVI drop thresholds; the frontend POSTs /check on page load,
 # and the backend fires AppNotifications when NDVI newly crosses below threshold.
 # Edge-triggered with a 24-hour cooldown between repeat notifications per field.
+# POST /check-all is called by Cloud Scheduler (no user auth; SCHEDULER_SECRET header).
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db, engine
+from database import get_db, engine, SessionLocal
 from auth import get_current_user
 from routers.notifications import create_notification
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
+import os
+import logging
+
+_log = logging.getLogger(__name__)
+_SCHEDULER_SECRET = os.getenv("SCHEDULER_SECRET", "")
 
 router = APIRouter(prefix="/api/field-health-alerts", tags=["field_health_alerts"])
 
@@ -214,3 +220,87 @@ def _describe_ndvi(v: float) -> str:
     if v >= 0.3: return "moderately stressed"
     if v >= 0.1: return "significantly stressed"
     return "severely degraded"
+
+
+def _run_check_all() -> dict:
+    """Core logic for the scheduled all-user NDVI check. Runs in its own DB session."""
+    fired = 0
+    skipped = 0
+    try:
+        with SessionLocal() as db:
+            alerts = db.execute(text("""
+                SELECT AlertID, PeopleID, FieldID, FieldName, CropType,
+                       NDVIThreshold, LastNotifiedAt, LastCheckedNDVI
+                FROM FieldHealthAlerts
+                ORDER BY PeopleID, FieldID
+            """)).mappings().all()
+
+            for alert in alerts:
+                try:
+                    ndvi_row = db.execute(text("""
+                        SELECT TOP 1 vi.MeanValue
+                        FROM dbo.Analysis a
+                        JOIN dbo.VegetationIndex vi ON vi.AnalysisID = a.AnalysisID
+                        WHERE a.FieldID = :fid AND vi.IndexType = 'NDVI'
+                        ORDER BY a.AnalysisDate DESC
+                    """), {"fid": alert["FieldID"]}).mappings().first()
+
+                    if not ndvi_row or ndvi_row["MeanValue"] is None:
+                        skipped += 1
+                        continue
+
+                    current   = float(ndvi_row["MeanValue"])
+                    threshold = float(alert["NDVIThreshold"])
+                    last_ndvi = float(alert["LastCheckedNDVI"]) if alert["LastCheckedNDVI"] is not None else None
+                    last_notif = alert["LastNotifiedAt"]
+
+                    below_now   = current <= threshold
+                    was_below   = last_ndvi is not None and last_ndvi <= threshold
+                    on_cooldown = last_notif is not None and (
+                        (datetime.utcnow() - last_notif).total_seconds() < 86400
+                    )
+
+                    if below_now and not was_below and not on_cooldown:
+                        field_name = alert["FieldName"] or f"Field #{alert['FieldID']}"
+                        crop       = alert["CropType"] or "crop"
+                        create_notification(
+                            db,
+                            people_id=alert["PeopleID"],
+                            type="field_health_alert",
+                            title=f"{field_name} health alert",
+                            body=(
+                                f"{field_name} ({crop}) NDVI is {current:.3f} — "
+                                f"{_describe_ndvi(current)}. "
+                                f"Below your alert threshold of {threshold:.3f}."
+                            ),
+                            link_path="/crop-monitor",
+                        )
+                        db.execute(text("""
+                            UPDATE FieldHealthAlerts
+                            SET LastNotifiedAt = GETDATE(), LastCheckedNDVI = :n
+                            WHERE AlertID = :aid
+                        """), {"n": current, "aid": alert["AlertID"]})
+                        fired += 1
+                    else:
+                        db.execute(
+                            text("UPDATE FieldHealthAlerts SET LastCheckedNDVI = :n WHERE AlertID = :aid"),
+                            {"n": current, "aid": alert["AlertID"]},
+                        )
+                except Exception as e:
+                    _log.warning(f"[field_health] alert {alert['AlertID']}: {e}")
+
+            db.commit()
+    except Exception as e:
+        _log.error(f"[field_health] check_all error: {e}")
+
+    return {"ok": True, "fired": fired, "skipped": skipped}
+
+
+@router.post("/check-all")
+def check_all_field_alerts(x_scheduler_secret: Optional[str] = Header(None, alias="X-Scheduler-Secret")):
+    """System-level NDVI check across all users — called by Cloud Scheduler.
+    Authenticated via X-Scheduler-Secret header (SCHEDULER_SECRET env var).
+    No user JWT required."""
+    if _SCHEDULER_SECRET and x_scheduler_secret != _SCHEDULER_SECRET:
+        raise HTTPException(403, "Forbidden")
+    return _run_check_all()

@@ -1601,6 +1601,136 @@ def get_field_assessment_history_tool(field_id: int, limit: int = 3, people_id: 
 # ---------------------------------------------------------------------------
 
 @tool
+def get_planting_timing_advice_tool(crop: str = "", people_id: str = "") -> str:
+    """Get demand-driven planting timing advice for a specific crop.
+    Combines current commodity price trends with crop days-to-maturity and seasonal
+    patterns to recommend whether NOW is a good time to plant, wait, or harvest.
+    Use when the user asks 'when should I plant X', 'is now a good time to grow Y',
+    'will prices be good when my crop is ready', or 'how should I time my plantings'.
+    Example crops: strawberries, blueberries, microgreens, salad mix, tomatoes, corn,
+    soybeans. people_id is injected from session state."""
+    if not crop:
+        return "Please specify a crop name (e.g. 'strawberries', 'microgreens', 'corn')."
+
+    crop_lower = crop.strip().lower()
+
+    # Crop calendar — days-to-maturity and commodity mapping
+    CROP_CALENDAR = {
+        "microgreens":   {"dtm": (7, 14),   "commodity": "Microgreens",    "season": "year_round"},
+        "salad mix":     {"dtm": (21, 40),   "commodity": "Mixed Greens",   "season": "cool"},
+        "mixed greens":  {"dtm": (21, 40),   "commodity": "Mixed Greens",   "season": "cool"},
+        "strawberries":  {"dtm": (60, 90),   "commodity": "Strawberries",   "season": "spring_summer"},
+        "blueberries":   {"dtm": (60, 180),  "commodity": "Blueberries",    "season": "summer"},
+        "tomatoes":      {"dtm": (60, 85),   "commodity": "Roma Tomatoes",  "season": "summer"},
+        "roma tomatoes": {"dtm": (75, 85),   "commodity": "Roma Tomatoes",  "season": "summer"},
+        "corn":          {"dtm": (65, 95),   "commodity": "Nat'l Corn",     "season": "summer"},
+        "soybeans":      {"dtm": (90, 120),  "commodity": "Nat'l Soybeans", "season": "summer"},
+        "pork":          {"dtm": None,       "commodity": "Nat'l Pork Loin","season": None},
+        "chicken":       {"dtm": None,       "commodity": "Nat'l Chicken Breast", "season": None},
+    }
+
+    # Fuzzy match
+    info = None
+    for k, v in CROP_CALENDAR.items():
+        if k in crop_lower or crop_lower in k:
+            info = v
+            break
+
+    import datetime as _dt
+    now = _dt.datetime.utcnow()
+    month = now.month
+
+    # Season context
+    season_notes = {
+        "cool":         "Best planted in spring (Mar–May) or fall (Aug–Oct) when temperatures are 45–75°F.",
+        "spring_summer":"Plant in early spring after last frost; peak harvest summer.",
+        "summer":       "Plant after last frost in spring; harvests mid-summer through fall.",
+        "year_round":   "Can be grown indoors year-round under grow lights.",
+    }
+
+    lines = [f"Planting timing analysis for: {crop.title()}"]
+
+    if info:
+        dtm = info["dtm"]
+        commodity = info["commodity"]
+        season_key = info.get("season")
+
+        if dtm:
+            harvest_min = now + _dt.timedelta(days=dtm[0])
+            harvest_max = now + _dt.timedelta(days=dtm[1])
+            lines.append(f"Days to maturity: {dtm[0]}–{dtm[1]} days")
+            lines.append(f"Estimated harvest window if planted today: {harvest_min.strftime('%b %d')}–{harvest_max.strftime('%b %d')}")
+
+        if season_key and season_key in season_notes:
+            lines.append(f"Seasonal guidance: {season_notes[season_key]}")
+
+        # Pull price trend from history
+        price_rows = _query(
+            "SELECT TOP 60 PriceUSD, FetchedAt FROM CommodityPriceHistory "
+            "WHERE Commodity = %s AND FetchedAt >= DATEADD(day, -30, GETDATE()) "
+            "ORDER BY FetchedAt ASC",
+            (commodity,),
+        )
+        if price_rows:
+            prices = []
+            for r in price_rows:
+                try:
+                    prices.append(float(r.get("priceusd") or r.get("PriceUSD") or 0))
+                except (TypeError, ValueError):
+                    pass
+            if len(prices) >= 2:
+                first, last = prices[0], prices[-1]
+                pct = (last - first) / first * 100 if first else 0
+                trend = "rising" if pct > 2 else ("falling" if pct < -2 else "stable")
+                lines.append(f"\nMarket signal ({commodity}):")
+                lines.append(f"  Current price: ${last:.2f}")
+                lines.append(f"  30-day trend: {trend} ({pct:+.1f}%)")
+
+                # Timing advice based on trend + DTM
+                if dtm and trend == "rising":
+                    harvest_peak = now + _dt.timedelta(days=dtm[0])
+                    lines.append(f"\n  ✅ GOOD TIME TO PLANT: Prices are rising and your harvest window "
+                                 f"({harvest_peak.strftime('%b %d')}) aligns with continued demand. "
+                                 f"Consider planting now to capture peak pricing.")
+                elif dtm and trend == "falling":
+                    lines.append(f"\n  ⚠️  CONSIDER WAITING: Prices are falling. Unless you have pre-sold orders, "
+                                 f"consider delaying planting by 2–4 weeks to let the market stabilize.")
+                elif dtm and trend == "stable":
+                    lines.append(f"\n  ℹ️  NEUTRAL: Prices are stable. Planting now is reasonable; "
+                                 f"focus on production cost efficiency.")
+            else:
+                lines.append(f"\nNo recent price history for {commodity} — check market directly for current pricing.")
+        else:
+            lines.append(f"\nNo price data yet for {commodity} in the system. "
+                         f"Prices are logged as the market panel is used.")
+
+        # Check user's field NDVI readiness
+        biz_ids = _business_ids_for_people(people_id)
+        if biz_ids:
+            placeholders = ",".join(["%s"] * len(biz_ids))
+            field_rows = _query(
+                f"SELECT TOP 3 f.FieldID, f.Name, f.CropType, vi.MeanValue as NDVI "
+                f"FROM dbo.Field f "
+                f"LEFT JOIN dbo.Analysis a ON a.FieldID = f.FieldID "
+                f"LEFT JOIN dbo.VegetationIndex vi ON vi.AnalysisID = a.AnalysisID AND vi.IndexType = 'NDVI' "
+                f"WHERE f.BusinessID IN ({placeholders}) AND f.DeletedAt IS NULL "
+                f"ORDER BY a.AnalysisDate DESC",
+                tuple(biz_ids),
+            )
+            ready_fields = [r for r in field_rows if r.get("ndvi") is not None and float(r.get("ndvi") or 0) < 0.3]
+            if ready_fields:
+                names = ", ".join(r.get("name") or f"#{r.get('fieldid')}" for r in ready_fields[:2])
+                lines.append(f"\nField readiness: {names} have low NDVI (harvested/bare) — likely ready for new planting.")
+    else:
+        lines.append(f"Crop '{crop}' not in the timing database. For general guidance:")
+        lines.append("  1. Check current USDA AMS prices for price trends")
+        lines.append("  2. Subtract your crop's days-to-maturity from your target market date")
+        lines.append("  3. Use your field NDVI data to confirm field readiness")
+
+    return "\n".join(lines)
+
+
+@tool
 def get_price_trends_tool(commodity: str = "", days: int = 30, people_id: str = "") -> str:
     """Get the historical price trend for a commodity over the last N days (default 30).
     Use when the user asks about price trends, whether a commodity is getting more or less
@@ -1678,4 +1808,5 @@ precision_ag_tools = [
     get_field_zones_tool,
     get_field_assessment_history_tool,
     get_price_trends_tool,
+    get_planting_timing_advice_tool,
 ]
