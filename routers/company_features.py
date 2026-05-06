@@ -49,24 +49,68 @@ DEFAULT_FEATURES = [
 ]
 
 
+def _business_service_overrides(business_id: int, db: Session) -> Optional[dict]:
+    """Return {feature_key: is_enabled} from BusinessServiceAccess if any rows exist."""
+    try:
+        rows = db.execute(
+            text(
+                """
+                SELECT fc.FeatureKey, bsa.IsEnabled
+                FROM BusinessServiceAccess bsa
+                JOIN FeatureCategory fc ON fc.CategoryID = bsa.CategoryID
+                WHERE bsa.BusinessID = :bid
+                  AND fc.FeatureKey IS NOT NULL
+                """
+            ),
+            {"bid": business_id},
+        ).fetchall()
+    except Exception:
+        # Table may not exist yet on older deployments
+        return None
+    if not rows:
+        return None
+    return {r[0]: bool(r[1]) for r in rows}
+
+
 @router.get("/features")
 def get_features(
     business_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
 ):
-    """Return feature flags for a business based on its subscription package.
+    """Return feature flags for a business.
 
-    Logic:
-    - If business_id is given:
-        1. Check whether the business has a SubscriptionTier set.
-        2. If SubscriptionTier is set → return only the features from that package
-           (empty list if the package has no features assigned yet).
-        3. If SubscriptionTier is NULL/empty → fall back to site-wide flags,
-           so unsubscribed businesses still see all features.
-    - No business_id → return all site-wide CompanySiteManagement rows (admin use).
+    Priority order (highest first):
+    1. Per-business admin overrides in BusinessServiceAccess (if any rows exist for this business).
+    2. Subscription package features (if business has a SubscriptionTier set).
+    3. Site-wide CompanySiteManagement flags (fallback).
     """
     if business_id is not None:
-        # Check whether the business has a subscription assigned
+        # 1. Check per-business admin service overrides first
+        overrides = _business_service_overrides(business_id, db)
+        if overrides is not None:
+            # Load site-wide rows to get price/name metadata, then apply overrides
+            site_rows = db.execute(
+                text(
+                    "SELECT FeatureKey, FeatureName, IsEnabled, MonthlyPrice, YearlyPrice, SortOrder "
+                    "FROM CompanySiteManagement ORDER BY SortOrder"
+                )
+            ).fetchall()
+            result = []
+            for r in site_rows:
+                key = r[0]
+                is_enabled = overrides.get(key, False)  # not in admin list → off
+                if is_enabled:
+                    result.append({
+                        "feature_key":   key,
+                        "feature_name":  r[1],
+                        "is_enabled":    True,
+                        "monthly_price": float(r[3]),
+                        "yearly_price":  float(r[4]),
+                        "sort_order":    r[5],
+                    })
+            return result
+
+        # 2. Subscription tier
         tier_row = db.execute(
             text("SELECT SubscriptionTier FROM Business WHERE BusinessID = :bid"),
             {"bid": business_id},
@@ -75,7 +119,6 @@ def get_features(
         has_subscription = tier_row and tier_row[0] and str(tier_row[0]).strip()
 
         if has_subscription:
-            # Return only features from the assigned package
             rows = db.execute(
                 text(
                     """
@@ -97,16 +140,15 @@ def get_features(
                 {
                     "feature_key":   r[0],
                     "feature_name":  r[1],
-                    "is_enabled":    True,   # included in package → always on
+                    "is_enabled":    True,
                     "monthly_price": float(r[3]),
                     "yearly_price":  float(r[4]),
                     "sort_order":    r[5],
                 }
                 for r in rows
             ]
-        # Business exists but has no subscription → fall through to site-wide flags
 
-    # Site-wide fallback: all CompanySiteManagement rows
+    # 3. Site-wide fallback
     rows = db.execute(
         text(
             "SELECT FeatureKey, FeatureName, IsEnabled, MonthlyPrice, YearlyPrice, SortOrder "

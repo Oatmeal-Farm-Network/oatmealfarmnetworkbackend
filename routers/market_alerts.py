@@ -106,6 +106,14 @@ def check_alerts(body: PriceCheckRequest, db: Session = Depends(get_db), user=De
     Re-notify cooldown: 4 hours minimum between repeat notifications."""
     price_map = {item.commodity.lower(): item.price for item in body.prices}
 
+    # Log every submitted price to the history table for trend analysis / sparklines
+    for item in body.prices:
+        if item.price is not None:
+            db.execute(text("""
+                INSERT INTO CommodityPriceHistory (Commodity, PriceUSD)
+                VALUES (:c, :p)
+            """), {"c": item.commodity, "p": item.price})
+
     alerts = db.execute(text("""
         SELECT AlertID, Commodity, Direction, ThresholdPrice, Unit,
                LastNotifiedAt, LastCheckedPrice
