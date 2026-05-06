@@ -2,13 +2,16 @@
 # Equipment Marketplace — buy, sell, swap, and borrow farm equipment
 # Mount: app.include_router(equipment_router, prefix="/api/equipment")
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import uuid
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db, engine
 from auth import get_current_user
 from pydantic import BaseModel
 from typing import Optional
+
+GCS_BUCKET = "oatmeal-farm-network-images"
 
 equipment_router = APIRouter()
 
@@ -138,8 +141,8 @@ def browse_listings(
         wheres.append("l.Category = :cat")
         params["cat"] = category
     if state:
-        wheres.append("l.StateProvince = :state")
-        params["state"] = state
+        wheres.append("l.StateProvince LIKE :state")
+        params["state"] = f"%{state}%"
     if search:
         wheres.append("(l.Title LIKE :q OR l.Make LIKE :q OR l.Model LIKE :q)")
         params["q"] = f"%{search}%"
@@ -179,7 +182,11 @@ def my_listings(
     rows = db.execute(text("""
         SELECT l.*,
                (SELECT TOP 1 ImageURL FROM EquipmentListingImages
-                WHERE ListingID = l.ListingID ORDER BY SortOrder) AS PrimaryImage
+                WHERE ListingID = l.ListingID ORDER BY SortOrder) AS PrimaryImage,
+               (SELECT COUNT(*) FROM EquipmentListingImages
+                WHERE ListingID = l.ListingID) AS ImageCount,
+               (SELECT COUNT(*) FROM EquipmentInquiries
+                WHERE ListingID = l.ListingID AND Status = 'pending') AS PendingInquiries
         FROM EquipmentListings l
         WHERE l.BusinessID = :bid
         ORDER BY l.CreatedAt DESC
@@ -284,6 +291,47 @@ def add_image(
     """), {"lid": listing_id, "url": image_url, "sort": sort_order})
     db.commit()
     return {"ok": True}
+
+
+@equipment_router.post("/{listing_id}/upload-image")
+async def upload_equipment_image(
+    listing_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    row = db.execute(
+        text("SELECT ListingID FROM EquipmentListings WHERE ListingID=:id"),
+        {"id": listing_id},
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(400, "File must be an image")
+    content = await file.read()
+    ext = (file.filename or "img").rsplit(".", 1)[-1].lower()
+    if ext not in {"jpg", "jpeg", "png", "gif", "webp", "avif"}:
+        ext = "jpg"
+    filename = f"{uuid.uuid4().hex}.{ext}"
+    try:
+        from google.cloud import storage
+        client = storage.Client()
+        bucket = client.bucket(GCS_BUCKET)
+        blob = bucket.blob(f"equipment/{filename}")
+        blob.upload_from_string(content, content_type=file.content_type)
+        url = f"https://storage.googleapis.com/{GCS_BUCKET}/equipment/{filename}"
+    except Exception as e:
+        raise HTTPException(500, f"Upload failed: {e}")
+    max_sort = db.execute(text("""
+        SELECT COALESCE(MAX(SortOrder), -1) FROM EquipmentListingImages WHERE ListingID=:id
+    """), {"id": listing_id}).scalar()
+    result = db.execute(text("""
+        INSERT INTO EquipmentListingImages (ListingID, ImageURL, SortOrder)
+        OUTPUT INSERTED.ImageID
+        VALUES (:lid, :url, :sort)
+    """), {"lid": listing_id, "url": url, "sort": max_sort + 1}).fetchone()
+    db.commit()
+    return {"url": url, "image_id": result[0]}
 
 
 @equipment_router.delete("/images/{image_id}")
