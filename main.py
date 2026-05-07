@@ -143,7 +143,7 @@ class DynamicCORSMiddleware(BaseHTTPMiddleware):
     """Replaces the static CORSMiddleware so registered custom domains are allowed automatically."""
     CORS_HEADERS = {
         "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, x-people-id",
         "Access-Control-Max-Age": "86400",
     }
 

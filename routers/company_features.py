@@ -49,27 +49,62 @@ DEFAULT_FEATURES = [
 ]
 
 
+# Fallback CategoryName → feature_key for rows seeded before FeatureKey column existed
+_CATEGORY_NAME_MAP = {
+    'Precision Ag':                  'precision_ag',
+    'Livestock & Herd Health':       'livestock',
+    'Livestock Marketplace':         'livestock',
+    'Farm 2 Table — Seller':         'farm_2_table',
+    'Farm 2 Table — Buyer':          'farm_2_table',
+    'Products & Storefront':         'products',
+    'Equipment Marketplace':         'equipment',
+    'Food Wanted Board':             'food_wanted',
+    'Services Directory':            'services',
+    'CSA':                           'csa_management',
+    'Events':                        'events',
+    'Job Board':                     'job_board',
+    'Land Leasing':                  'land_leasing',
+    'Certifications Tracker':        'certifications',
+    'Supplier Directory':            'supplier_directory',
+    'Grants & Programs':             'grants_programs',
+    'Education Center':              'education_center',
+    'Commodity Prices':              'commodity_prices',
+    'Forums & Community':            'forums',
+    'Blog':                          'blog',
+    'Website Builder (Lavendir AI)': 'my_website',
+    'Accounting':                    'accounting',
+    'Testimonials & Social Proof':   'testimonials',
+    'Properties Management':         'properties',
+    'Cold Chain & Logistics':        'cold_chain',
+    'Farmer Settlement & Pay':       'farmer_settlement',
+    'Meetings':                      'meetings',
+}
+
+
 def _business_service_overrides(business_id: int, db: Session) -> Optional[dict]:
-    """Return {feature_key: is_enabled} from BusinessServiceAccess if any rows exist."""
+    """Return {feature_key: is_enabled} from BusinessServiceAccess if any rows exist.
+    Resolves feature_key via FeatureCategory.FeatureKey first, then CategoryName fallback."""
     try:
         rows = db.execute(
-            text(
-                """
-                SELECT fc.FeatureKey, bsa.IsEnabled
+            text("""
+                SELECT fc.FeatureKey, fc.CategoryName, bsa.IsEnabled
                 FROM BusinessServiceAccess bsa
                 JOIN FeatureCategory fc ON fc.CategoryID = bsa.CategoryID
                 WHERE bsa.BusinessID = :bid
-                  AND fc.FeatureKey IS NOT NULL
-                """
-            ),
+            """),
             {"bid": business_id},
         ).fetchall()
     except Exception:
-        # Table may not exist yet on older deployments
         return None
     if not rows:
         return None
-    return {r[0]: bool(r[1]) for r in rows}
+    result: dict = {}
+    for r in rows:
+        fk = r[0] or _CATEGORY_NAME_MAP.get(r[1])
+        if fk:
+            # IsEnabled=True wins if the same key appears multiple times (e.g. Farm 2 Table Seller+Buyer)
+            result[fk] = result.get(fk, False) or bool(r[2])
+    return result if result else None
 
 
 @router.get("/features")
@@ -88,27 +123,22 @@ def get_features(
         # 1. Check per-business admin service overrides first
         overrides = _business_service_overrides(business_id, db)
         if overrides is not None:
-            # Load site-wide rows to get price/name metadata, then apply overrides
-            site_rows = db.execute(
-                text(
-                    "SELECT FeatureKey, FeatureName, IsEnabled, MonthlyPrice, YearlyPrice, SortOrder "
-                    "FROM CompanySiteManagement ORDER BY SortOrder"
-                )
-            ).fetchall()
+            # Use DEFAULT_FEATURES for name/price metadata; iterate overrides directly
+            # so features don't need to pre-exist in CompanySiteManagement.
+            meta = {key: (name, monthly, yearly, sort) for key, name, monthly, yearly, sort in DEFAULT_FEATURES}
             result = []
-            for r in site_rows:
-                key = r[0]
-                is_enabled = overrides.get(key, False)  # not in admin list → off
+            for key, is_enabled in overrides.items():
                 if is_enabled:
+                    m = meta.get(key, (key, 0.0, 0.0, 99))
                     result.append({
                         "feature_key":   key,
-                        "feature_name":  r[1],
+                        "feature_name":  m[0],
                         "is_enabled":    True,
-                        "monthly_price": float(r[3]),
-                        "yearly_price":  float(r[4]),
-                        "sort_order":    r[5],
+                        "monthly_price": float(m[1]),
+                        "yearly_price":  float(m[2]),
+                        "sort_order":    m[3],
                     })
-            return result
+            return sorted(result, key=lambda x: x["sort_order"])
 
         # 2. Subscription tier
         tier_row = db.execute(
