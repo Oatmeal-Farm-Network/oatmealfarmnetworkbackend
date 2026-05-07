@@ -1160,6 +1160,35 @@ def get_dashboard(
           AND i.DueDate < GETDATE() ORDER BY i.DueDate ASC
     """), p).fetchall()
 
+    # Farmer settlement summary (read-only cross-module view)
+    fs_exists = db.execute(text(
+        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='FarmerSettlement'"
+    )).scalar()
+    if fs_exists:
+        fs_summary = db.execute(text("""
+            SELECT
+              ISNULL(SUM(CASE WHEN Status='Pending'  THEN NetPayment ELSE 0 END), 0) AS PendingTotal,
+              COUNT(CASE  WHEN Status='Pending'  THEN 1 END)                          AS PendingCount,
+              ISNULL(SUM(CASE WHEN Status='Paid'     THEN NetPayment ELSE 0 END), 0) AS PaidTotal,
+              COUNT(CASE  WHEN Status='Paid'     THEN 1 END)                          AS PaidCount
+            FROM FarmerSettlement WHERE BusinessID=:bid
+        """), p).fetchone()
+        recent_settlements = db.execute(text("""
+            SELECT TOP 5 SettlementID, FarmerName, GrossSales, CommissionPct,
+                         LogisticsCost, OtherDeductions, NetPayment, Status, PaidAt, CreatedAt
+            FROM FarmerSettlement WHERE BusinessID=:bid
+            ORDER BY CreatedAt DESC
+        """), p).fetchall()
+        farmer_payouts = {
+            "pendingTotal":  float(fs_summary.PendingTotal or 0),
+            "pendingCount":  int(fs_summary.PendingCount   or 0),
+            "paidTotal":     float(fs_summary.PaidTotal    or 0),
+            "paidCount":     int(fs_summary.PaidCount      or 0),
+            "recent": [dict(r._mapping) for r in recent_settlements],
+        }
+    else:
+        farmer_payouts = {"pendingTotal": 0, "pendingCount": 0, "paidTotal": 0, "paidCount": 0, "recent": []}
+
     return {
         "ar": {
             "TotalAR":   float(ar_inv.TotalAR  or 0) + float(ar_agg.TotalAR  or 0),
@@ -1173,7 +1202,45 @@ def get_dashboard(
         },
         "recentPayments":  [dict(r._mapping) for r in recent_payments],
         "overdueInvoices": [dict(r._mapping) for r in overdue_invoices],
+        "farmerPayouts":   farmer_payouts,
     }
+
+
+# ────────────────────────────────────────────────────────────────
+# FARMER PAYOUTS — cross-module read-only view of FarmerSettlement
+# ────────────────────────────────────────────────────────────────
+
+@router.get("/farmer-payouts")
+def get_farmer_payouts(
+    status: str = Query(None),
+    access=Depends(require_accounting_access),
+    db: Session = Depends(get_db),
+):
+    """Full list of farmer settlements for the business, scoped by accounting auth."""
+    bid = access["business_id"]
+    fs_exists = db.execute(text(
+        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='FarmerSettlement'"
+    )).scalar()
+    if not fs_exists:
+        return {"settlements": []}
+
+    sql = """
+        SELECT SettlementID, FarmerName, FarmerPhone, FarmerUPI,
+               CommissionPct, LogisticsCost, OtherDeductions,
+               GrossSales, NetPayment, Status, Notes, PaidAt, PaymentRef, CreatedAt
+        FROM FarmerSettlement
+        WHERE BusinessID = :bid
+    """
+    params: dict = {"bid": bid}
+    if status:
+        sql += " AND Status = :status"
+        params["status"] = status
+    sql += " ORDER BY CreatedAt DESC"
+    rows = db.execute(text(sql), params).fetchall()
+    cols = ["SettlementID", "FarmerName", "FarmerPhone", "FarmerUPI",
+            "CommissionPct", "LogisticsCost", "OtherDeductions",
+            "GrossSales", "NetPayment", "Status", "Notes", "PaidAt", "PaymentRef", "CreatedAt"]
+    return {"settlements": [dict(zip(cols, r)) for r in rows]}
 
 
 # ────────────────────────────────────────────────────────────────

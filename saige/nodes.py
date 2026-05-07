@@ -180,7 +180,11 @@ except Exception as _e:
     PRECISION_AG_AVAILABLE = False
 
 try:
-    from business_ops import business_ops_tools
+    from business_ops import (
+        business_ops_tools,
+        get_tracked_grants_tool,
+        calculate_shelf_life_tool,
+    )
     BUSINESS_OPS_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] business_ops unavailable: {_e}")
@@ -1086,6 +1090,12 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
         "my truck", "my fleet", "my ranch info", "my business",
         "cold chain vehicle", "list vehicle", "fleet vehicle",
         "cold chain reading", "temperature reading",
+        "my grant", "my tracker", "grant track", "tracking grant",
+        "what grant", "which grant", "grant appli", "program appli",
+        "what program", "programs i track", "grants i track",
+        "shelf life", "shelf-life", "cargo freshness", "temperature excursion",
+        "produce still good", "shipment viable", "days left", "how fresh",
+        "cold chain sla", "sla impact", "degradation",
     ))
 
     _INTENT_PRECISION_AG = any(k in _rl for k in (
@@ -1159,6 +1169,8 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
         "my fleet", "my ranch", "my farm data", "my business", "marketplace",
         "cold chain", "produce", "meat", "processed food", "sell", "selling",
         "shipment", "delivery", "business name", "business info", "business profile",
+        "my grant", "my tracker", "grant track", "tracking grant", "what grant",
+        "which grant", "grant appli", "program appli", "grants i track",
         "zoom", "fly to", "map", "navigate", "field", "precision", "[page:",
     )
     _prefetch_needed = any(k in _lum_for_prefetch for k in _biz_relevant_kw)
@@ -1458,6 +1470,12 @@ PERSONAL HISTORY & ALERTS — read-only / opt-in helpers tied to the user's acco
 - check_my_weather_alerts_tool(days_ahead): scan the user's saved push-notification locations against the next 1–5 day forecast (default 2) and return any hazards (frost, hard freeze, heat, flood, hail, wind, wildfire smoke). Read-only — does NOT send a push. Use for "any weather risks coming", "is frost in the forecast for my farm", "should I worry about weather this week".
 - send_push_notification_tool(title, body, url): send a real push notification to the user's subscribed devices. Use ONLY when the user explicitly asks to be pinged ("notify me when…", "remind me about…") or for an immediate, time-sensitive alert (incoming frost, irrigation overdue). ALWAYS confirm wording before calling. title ≤60 chars, body ≤160 chars, url is the in-app deep link.
 
+GRANTS & PROGRAMS — personal tracker:
+- get_tracked_grants_tool(business_id, people_id): list grants and programs the business is tracking, including title, agency, status (interested/in_progress/submitted/awarded/declined/not_eligible), applied date, result date, amount received, and notes. Use for "what grants am I tracking", "show my grant applications", "what programs am I applying for", "grant tracker".
+
+COLD-CHAIN — predictive shelf life:
+- calculate_shelf_life_tool(vehicle_id, product_type, original_shelf_life_days, lookback_hours, business_id, people_id): compute adjusted shelf life for cargo using Q10 degradation model applied to actual vehicle temperature logs. Returns remaining days, degradation %, excursion time, and recommended action (Normal/Expedite/Express Sale/Discard). Use for "how fresh is my cargo", "did the temperature excursion hurt the lettuce", "what's the shelf life impact", "is the shipment still viable", "how many days does the produce have left".
+
 Prioritize the latest user message and any newly provided measurements over older generic context.
 If soil-test values are present, reference them explicitly and avoid repeating unchanged advice.
 
@@ -1566,6 +1584,7 @@ Write like you're talking to a friend."""
     push_context = ""
     weather_alerts_context = ""
     history_context = ""
+    grants_context = ""
     max_iterations = 3
     final_response = ""
     _map_cmd_collected = ""  # [MAP_CMD: ...] extracted from geocode tool result
@@ -1619,6 +1638,8 @@ Write like you're talking to a friend."""
                 current_input += f"\n\n[Weather Alerts]: {weather_alerts_context}"
             if history_context:
                 current_input += f"\n\n[Saige History]: {history_context}"
+            if grants_context:
+                current_input += f"\n\n[Grant Tracker]: {grants_context}"
             # If map tool already ran, override the directive so the LLM doesn't call it again
             if _map_cmd_collected:
                 current_input += (
@@ -2366,6 +2387,27 @@ Write like you're talking to a friend."""
                             "people_id":  str(people_id_for_tools or ""),
                         })
                         history_context = (history_context + "\n\n" if history_context else "") + tool_result
+                    elif tc_name == 'get_tracked_grants_tool' and BUSINESS_OPS_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Get Tracked Grants: business_id={bid}")
+                        tool_result = get_tracked_grants_tool.invoke({
+                            "business_id": bid,
+                            "people_id": str(people_id_for_tools or ""),
+                        })
+                        grants_context = (grants_context + "\n\n" if grants_context else "") + tool_result
+                    elif tc_name == 'calculate_shelf_life_tool' and BUSINESS_OPS_AVAILABLE:
+                        vid = int(tc_args.get('vehicle_id', 0) or 0)
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Shelf Life Calc: vehicle_id={vid} product={tc_args.get('product_type')}")
+                        tool_result = calculate_shelf_life_tool.invoke({
+                            "vehicle_id":              vid,
+                            "product_type":            tc_args.get('product_type', 'general'),
+                            "original_shelf_life_days": int(tc_args.get('original_shelf_life_days', 7) or 7),
+                            "lookback_hours":          int(tc_args.get('lookback_hours', 48) or 48),
+                            "business_id":             bid,
+                            "people_id":               str(people_id_for_tools or ""),
+                        })
+                        grants_context = (grants_context + "\n\n" if grants_context else "") + tool_result
                 continue  # Loop back to LLM with new context
 
             # No tool calls - we have our answer

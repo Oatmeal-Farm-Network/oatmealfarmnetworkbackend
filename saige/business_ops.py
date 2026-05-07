@@ -664,6 +664,159 @@ def list_event_pending_cois_tool(event_id: int, people_id: str = "") -> str:
     return "\n".join(lines)
 
 
+@tool
+def get_tracked_grants_tool(business_id: int, people_id: str = "") -> str:
+    """Return the grants and programs this business is actively tracking —
+    including each grant's title, agency, status (interested / in_progress /
+    submitted / awarded / declined / not_eligible), notes, applied date,
+    result date, and amount received. Use when the user asks 'what grants am
+    I tracking', 'show my grant applications', 'what programs am I applying for',
+    or anything about their personal grant tracker."""
+    biz_ids = _business_ids_for_people(people_id)
+    if not biz_ids:
+        return "Cannot fetch grant tracking — account not linked to any business."
+    if not _business_accessible(business_id, biz_ids):
+        return f"Business {business_id} is not accessible on your account."
+
+    rows = _query(
+        """
+        SELECT t.Status, t.Notes, t.AppliedDate, t.ResultDate, t.AmountReceived,
+               g.Title, g.Agency, g.MaxAmount, g.Deadline, g.ExternalUrl
+        FROM BusinessGrantTracking t
+        JOIN GrantPrograms g ON g.GrantID = t.GrantID
+        WHERE t.BusinessID = %s
+        ORDER BY t.CreatedAt DESC
+        """,
+        (business_id,),
+    )
+    if not rows:
+        return "No grants are currently being tracked for this business."
+
+    lines = [f"Tracked grants for business #{business_id} ({len(rows)} total):"]
+    for r in rows:
+        line = f"  • {r.get('Title')} ({r.get('Agency') or 'Unknown agency'}) — Status: {r.get('Status')}"
+        if r.get("AmountReceived"):
+            line += f" · Received: {_fmt_money(r['AmountReceived'])}"
+        elif r.get("MaxAmount"):
+            line += f" · Max award: {_fmt_money(r['MaxAmount'])}"
+        if r.get("Deadline"):
+            line += f" · Deadline: {_fmt_date(r['Deadline'])}"
+        if r.get("AppliedDate"):
+            line += f" · Applied: {_fmt_date(r['AppliedDate'])}"
+        if r.get("ResultDate"):
+            line += f" · Result: {_fmt_date(r['ResultDate'])}"
+        if r.get("Notes"):
+            line += f" · Notes: {r['Notes']}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+_SHELF_LIFE_PARAMS = {
+    "leafy_greens": {"t_ref": 4.0,  "q10": 2.5, "base_days": 10},
+    "berries":      {"t_ref": 2.0,  "q10": 3.0, "base_days":  7},
+    "root_veg":     {"t_ref": 2.0,  "q10": 2.0, "base_days": 30},
+    "eggs":         {"t_ref": 4.0,  "q10": 2.0, "base_days": 35},
+    "dairy_milk":   {"t_ref": 4.0,  "q10": 3.0, "base_days": 14},
+    "apples":       {"t_ref": 1.0,  "q10": 2.0, "base_days": 60},
+    "tomatoes":     {"t_ref": 13.0, "q10": 2.0, "base_days": 14},
+    "bananas":      {"t_ref": 13.0, "q10": 2.5, "base_days": 10},
+    "meat_fresh":   {"t_ref": 2.0,  "q10": 3.5, "base_days":  7},
+    "poultry":      {"t_ref": 2.0,  "q10": 3.5, "base_days":  5},
+    "fish":         {"t_ref": 0.0,  "q10": 4.0, "base_days":  3},
+    "general":      {"t_ref": 4.0,  "q10": 2.0, "base_days": 14},
+}
+
+
+@tool
+def calculate_shelf_life_tool(
+    vehicle_id: int,
+    product_type: str = "general",
+    original_shelf_life_days: int = 7,
+    lookback_hours: int = 48,
+    business_id: int = 0,
+    people_id: str = "",
+) -> str:
+    """Calculate the adjusted shelf life for cargo on a cold-chain vehicle using the
+    Q10 degradation model applied to actual temperature readings. Returns the remaining
+    shelf life in days, degradation percentage, excursion time, and a recommended action
+    (Normal / Expedite / Express Sale / Discard). Use when asked about cargo freshness,
+    shelf life impact of a temperature excursion, or whether a shipment is still viable.
+
+    product_type options: leafy_greens, berries, root_veg, eggs, dairy_milk, apples,
+    tomatoes, bananas, meat_fresh, poultry, fish, general."""
+    from datetime import datetime, timezone
+
+    params = _SHELF_LIFE_PARAMS.get(product_type, _SHELF_LIFE_PARAMS["general"])
+    t_ref, q10 = params["t_ref"], params["q10"]
+    base_minutes = original_shelf_life_days * 24 * 60
+
+    rows = _query(
+        f"""
+        SELECT TOP 500 TempC, RecordedAt
+        FROM ColdChainReading
+        WHERE VehicleID = %s
+          AND RecordedAt >= DATEADD(HOUR, -{lookback_hours}, GETDATE())
+        ORDER BY RecordedAt ASC
+        """,
+        (vehicle_id,),
+    )
+
+    if len(rows) < 2:
+        return (
+            f"Not enough temperature readings for vehicle {vehicle_id} in the last "
+            f"{lookback_hours} hours (found {len(rows)}). Log more readings to run a "
+            f"shelf-life calculation."
+        )
+
+    fraction_consumed = 0.0
+    excursion_minutes = 0
+    max_excursion_temp = None
+
+    for i in range(1, len(rows)):
+        try:
+            t_prev = rows[i - 1]["RecordedAt"]
+            t_curr = rows[i]["RecordedAt"]
+            if hasattr(t_prev, "timestamp") and hasattr(t_curr, "timestamp"):
+                interval_min = abs((t_curr - t_prev).total_seconds()) / 60.0
+            else:
+                interval_min = 5.0
+        except Exception:
+            interval_min = 5.0
+
+        temp = float(rows[i]["TempC"])
+        rate_factor = q10 ** ((temp - t_ref) / 10.0)
+        fraction_consumed += (rate_factor * interval_min) / base_minutes
+
+        if temp > t_ref:
+            excursion_minutes += int(interval_min)
+            if max_excursion_temp is None or temp > max_excursion_temp:
+                max_excursion_temp = temp
+
+    adjusted = max(0.0, original_shelf_life_days * (1.0 - fraction_consumed))
+    degradation_pct = round(fraction_consumed * 100, 1)
+
+    if adjusted <= 0:
+        action = "DISCARD — shelf life exhausted. Do not distribute."
+    elif degradation_pct >= 60:
+        action = "EXPRESS SALE — move to priority/clearance immediately."
+    elif degradation_pct >= 30:
+        action = "EXPEDITE delivery — shelf life significantly reduced."
+    else:
+        action = "Normal distribution — shelf life within acceptable range."
+
+    lines = [
+        f"Shelf-Life SLA for vehicle {vehicle_id} ({product_type.replace('_', ' ')}):",
+        f"  Original shelf life:  {original_shelf_life_days} days",
+        f"  Adjusted shelf life:  {adjusted:.1f} days ({degradation_pct:.1f}% degraded)",
+        f"  Temp excursion:       {excursion_minutes} minutes above {t_ref}°C optimal",
+    ]
+    if max_excursion_temp is not None:
+        lines.append(f"  Peak excursion temp:  {max_excursion_temp:.1f}°C")
+    lines.append(f"  Readings analyzed:    {len(rows)}")
+    lines.append(f"  Recommended action:   {action}")
+    return "\n".join(lines)
+
+
 # ── Tool registry ───────────────────────────────────────────────────────────
 
 business_ops_tools = [
@@ -680,4 +833,6 @@ business_ops_tools = [
     get_event_booth_services_revenue_tool,
     get_event_coi_summary_tool,
     list_event_pending_cois_tool,
+    get_tracked_grants_tool,
+    calculate_shelf_life_tool,
 ]
