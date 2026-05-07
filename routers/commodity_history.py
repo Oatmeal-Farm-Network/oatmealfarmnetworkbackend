@@ -10,9 +10,27 @@ from typing import Optional
 from datetime import datetime, timedelta
 from collections import defaultdict
 import requests as _req
+from requests.adapters import HTTPAdapter
+import ssl
+import urllib3
 import logging
 
 _log = logging.getLogger(__name__)
+
+# marketnews.usda.gov uses an older TLS config that triggers TLSV1_UNRECOGNIZED_NAME
+# when the standard SNI path is used. A session with check_hostname=False fixes it.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+class _NoSNIAdapter(HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs):
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        kwargs['ssl_context'] = ctx
+        super().init_poolmanager(*args, **kwargs)
+
+_fv_session = _req.Session()
+_fv_session.mount('https://www.marketnews.usda.gov', _NoSNIAdapter())
 
 # ── USDA AMS commodity definitions ────────────────────────────────────────────
 # Livestock/poultry (Market Livestock Reporter — mpr.datamart.ams.usda.gov)
@@ -82,7 +100,7 @@ def _fetch_and_store_prices() -> dict:
         # Specialty produce via USDA FV Market News
         for c in _FV_COMMODITIES:
             try:
-                r = _req.get(_FV_BASE, params={
+                r = _fv_session.get(_FV_BASE, params={
                     "startIndex": 1, "type": "terminal", "repType": c["repType"],
                     "run": "Run", "format": "json", "commodity": c["commName"],
                     "organic": "N",
