@@ -1017,8 +1017,78 @@ def list_orders(buyer_people_id: int, db: Session = Depends(get_db)):
 
 
 # ─────────────────────────────────────────────
-# SELLER ACTIONS
+# SELLER ACTIONS  (frontend-compatible paths)
 # ─────────────────────────────────────────────
+
+@marketplace_router.get("/orders/seller/{business_id}")
+def get_seller_orders_v2(
+    business_id: int,
+    status: str = Query(None),
+    db: Session = Depends(get_db),
+):
+    sql = """
+        SELECT oi.OrderItemID, oi.ListingID, oi.SellerBusinessID, oi.SellerName,
+               oi.ProductTitle, oi.ProductType, oi.Quantity, oi.UnitPrice,
+               oi.LineTotal, oi.PlatformFee, oi.SellerPayout, oi.Notes,
+               oi.SellerStatus, oi.TrackingNumber, oi.ShippedAt, oi.DeliveredAt,
+               oi.EstimatedDeliveryDate, oi.RejectionReason, oi.CreatedAt,
+               o.OrderNumber, o.BuyerName, o.BuyerEmail, o.BuyerPhone,
+               o.DeliveryMethod, o.DeliveryAddress, o.RequestedDeliveryDate
+        FROM MarketplaceOrderItems oi
+        JOIN MarketplaceOrders o ON oi.OrderID = o.OrderID
+        WHERE oi.SellerBusinessID = :bid
+    """
+    params: dict = {"bid": business_id}
+    if status:
+        sql += " AND oi.SellerStatus = :status"
+        params["status"] = status
+    sql += " ORDER BY o.CreatedAt DESC"
+    rows = db.execute(text(sql), params).fetchall()
+    orders = []
+    for r in rows:
+        row = dict(r._mapping)
+        for f in ["UnitPrice", "LineTotal", "SellerPayout", "PlatformFee"]:
+            if row.get(f) is not None:
+                row[f] = float(row[f])
+        orders.append(row)
+    return {"orders": orders}
+
+
+@marketplace_router.post("/orders/seller/confirm")
+def seller_confirm_v2(body: dict, db: Session = Depends(get_db)):
+    oiid = body.get("OrderItemID")
+    status = body.get("Status")
+    if not oiid or status not in ("confirmed", "rejected"):
+        raise HTTPException(400, "OrderItemID and valid Status required")
+    db.execute(text("""
+        UPDATE MarketplaceOrderItems
+        SET SellerStatus = :status, RejectionReason = :reason,
+            EstimatedDeliveryDate = :edd, UpdatedAt = GETDATE()
+        WHERE OrderItemID = :oiid
+    """), {
+        "status": status,
+        "reason": body.get("RejectionReason"),
+        "edd": body.get("EstimatedDeliveryDate"),
+        "oiid": oiid,
+    })
+    db.commit()
+    return {"ok": True}
+
+
+@marketplace_router.post("/orders/seller/ship")
+def seller_ship_v2(body: dict, db: Session = Depends(get_db)):
+    oiid = body.get("OrderItemID")
+    if not oiid:
+        raise HTTPException(400, "OrderItemID required")
+    db.execute(text("""
+        UPDATE MarketplaceOrderItems
+        SET SellerStatus = 'shipped', TrackingNumber = :tracking,
+            ShippedAt = GETDATE(), UpdatedAt = GETDATE()
+        WHERE OrderItemID = :oiid
+    """), {"tracking": body.get("TrackingNumber"), "oiid": oiid})
+    db.commit()
+    return {"ok": True}
+
 
 @marketplace_router.get("/seller/orders")
 def get_seller_orders(business_id: int, db: Session = Depends(get_db)):

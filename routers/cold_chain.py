@@ -1,13 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db
 
 router = APIRouter(prefix="/api/cold-chain", tags=["cold_chain"])
 
+_tables_ready = False
+
 
 def _ensure_tables(db: Session):
+    global _tables_ready
+    if _tables_ready:
+        return
     db.execute(text("""
         IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'ColdChainVehicle')
         CREATE TABLE ColdChainVehicle (
@@ -35,7 +39,17 @@ def _ensure_tables(db: Session):
             Notes        NVARCHAR(1000) NULL
         )
     """))
+    db.execute(text("""
+        IF NOT EXISTS (
+            SELECT 1 FROM sys.indexes
+            WHERE object_id = OBJECT_ID('ColdChainReading')
+              AND name = 'IX_ColdChainReading_Vehicle_Time'
+        )
+        CREATE INDEX IX_ColdChainReading_Vehicle_Time
+            ON ColdChainReading (VehicleID, RecordedAt DESC)
+    """))
     db.commit()
+    _tables_ready = True
 
 
 # ── Vehicles ──────────────────────────────────────────────────────────────────
@@ -45,15 +59,18 @@ def list_vehicles(business_id: int = Query(...), db: Session = Depends(get_db)):
     _ensure_tables(db)
     rows = db.execute(
         text("""
-            SELECT v.*, (
-                SELECT TOP 1 TempC FROM ColdChainReading
-                WHERE VehicleID = v.VehicleID ORDER BY RecordedAt DESC
-            ) AS LatestTempC,
-            (
-                SELECT TOP 1 RecordedAt FROM ColdChainReading
-                WHERE VehicleID = v.VehicleID ORDER BY RecordedAt DESC
-            ) AS LatestReadingAt
+            SELECT v.VehicleID, v.BusinessID, v.VehicleName, v.LicensePlate,
+                   v.DriverName, v.DriverPhone, v.MinTempC, v.MaxTempC,
+                   v.IsActive, v.CreatedAt,
+                   lr.TempC    AS LatestTempC,
+                   lr.RecordedAt AS LatestReadingAt
             FROM ColdChainVehicle v
+            OUTER APPLY (
+                SELECT TOP 1 TempC, RecordedAt
+                FROM ColdChainReading
+                WHERE VehicleID = v.VehicleID
+                ORDER BY RecordedAt DESC
+            ) lr
             WHERE v.BusinessID = :bid
             ORDER BY v.VehicleName
         """),
@@ -137,19 +154,19 @@ def delete_vehicle(vehicle_id: int, db: Session = Depends(get_db)):
 @router.get("/vehicles/{vehicle_id}/readings")
 def list_readings(
     vehicle_id: int,
-    limit: int = Query(50, ge=1, le=500),
+    limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
     _ensure_tables(db)
     rows = db.execute(
-        text("""
-            SELECT TOP (@lim) ReadingID, VehicleID, TempC, Humidity,
+        text(f"""
+            SELECT TOP {limit} ReadingID, VehicleID, TempC, Humidity,
                    LocationDesc, RecordedAt, Notes
             FROM ColdChainReading
             WHERE VehicleID = :vid
             ORDER BY RecordedAt DESC
         """),
-        {"vid": vehicle_id, "lim": limit},
+        {"vid": vehicle_id},
     ).fetchall()
     cols = ["ReadingID", "VehicleID", "TempC", "Humidity", "LocationDesc", "RecordedAt", "Notes"]
     return [dict(zip(cols, r)) for r in rows]
