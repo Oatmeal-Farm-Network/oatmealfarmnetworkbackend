@@ -6,10 +6,12 @@ import time
 import re
 import base64
 import struct
+import asyncio
+import threading
 from typing import Optional, List
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Query, Request, Depends
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from langgraph.types import Command
@@ -24,7 +26,8 @@ from chat_history import chat_history
 from message_buffer import message_buffer, get_last_n, push_message
 from redis_client import RedisClientManager, get_redis_manager
 from llm import llm
-from saige_models import FollowUpEntityExtraction
+from saige_models import FollowUpEntityExtraction, MapIntentDetection
+from nodes import register_stream_queue, deregister_stream_queue
 from jwt_auth import get_current_user
 
 
@@ -451,6 +454,77 @@ async def firestore_health():
 
 
 # ============================================================================
+# INTENT HELPERS
+# ============================================================================
+
+_TOOL_ONLY_MAP_KW = (
+    "zoom to", "zoom in to", "zoom into", "zoom the map", "zoom map",
+    "zoom in on", "zoom over to", "zoom over", "zoom out",
+    "go to zip", "fly to", "center on", "center map",
+    "navigate to", "pan to", "jump to", "move map to", "focus on zip",
+    "show zip", "show me on the map", "take me to zip", "go to the zip",
+    "take me to", "bring the map", "show me where",
+    "move over to", "move the map", "move to the",
+)
+
+# Matches "1365 Spring Street Medford", "242 Oak Ave Portland", etc.
+_ADDRESS_RE = re.compile(
+    r'\b\d{2,5}\b.{0,40}\b(street|st|avenue|ave|road|rd|boulevard|blvd|drive|dr|'
+    r'lane|ln|way|court|ct|place|pl|highway|hwy|parkway|pkwy|route|rte)\b',
+    re.IGNORECASE,
+)
+
+# Signals that a message *might* be a location/navigation query — gate for LLM fallback.
+# Only fire the LLM call when at least one of these weaker hints is present.
+_LOCATION_HINT_RE = re.compile(
+    r'\b\d{5}\b'                                                        # zip code
+    r'|\b(go|head|move|take|bring|drive|pull)\b.{0,25}\b(to|over)\b'  # nav verb + prep
+    r'|\b\w{3,},\s+[A-Za-z]{2,}\b'                                     # "City, State"
+    r'|\b(downtown|uptown|suburb|metro|area|region|district)\b',        # area descriptors
+    re.IGNORECASE,
+)
+
+# Lazy singleton — built once on first LLM-fallback call
+_map_intent_classifier = None
+
+
+def _get_map_intent_classifier():
+    global _map_intent_classifier
+    if _map_intent_classifier is None:
+        _map_intent_classifier = llm.with_structured_output(MapIntentDetection)
+    return _map_intent_classifier
+
+
+def _is_tool_only_intent(user_input: str) -> bool:
+    """Layer 1+2: keyword match OR address regex — no LLM cost."""
+    lum = user_input.lower()
+    if any(k in lum for k in _TOOL_ONLY_MAP_KW):
+        return True
+    # Strip page/field context hints before address check
+    clean = re.sub(r'\[(page|field)[^\]]*\]', '', lum, flags=re.IGNORECASE).strip()
+    return bool(_ADDRESS_RE.search(clean))
+
+
+def _classify_map_intent_llm(user_input: str) -> bool:
+    """Layer 3: small structured-output LLM call, only when a location hint is present.
+    ~300 ms cost; only fires when layers 1+2 both miss."""
+    clean = re.sub(r'\[(page|field)[^\]]*\]', '', user_input, flags=re.IGNORECASE).strip()
+    if not _LOCATION_HINT_RE.search(clean):
+        return False
+    try:
+        result = _get_map_intent_classifier().invoke(
+            f'User message: "{clean[:300]}"\n'
+            "Is the user asking to navigate, zoom, pan, or center a map to a specific location?"
+        )
+        if result.is_map_navigation:
+            print(f"[MapIntent-LLM] Classified as map navigation: {clean[:80]}")
+        return result.is_map_navigation
+    except Exception as _e:
+        print(f"[MapIntent-LLM] Classification failed: {_e}")
+        return False
+
+
+# ============================================================================
 # CHAT ENDPOINT
 # ============================================================================
 
@@ -474,8 +548,12 @@ async def chat(
     last_n = get_last_n(request.thread_id, SHORT_TERM_N)
     short_term_history = _buffer_messages_to_history(last_n)
 
-    chat_history.save_message(user_id=user_id, thread_id=request.thread_id, role="user", content=request.user_input)
-    push_message(thread_id=request.thread_id, message={"role": "user", "content": request.user_input})
+    _skip_history = _is_tool_only_intent(request.user_input)
+    if not _skip_history:
+        _skip_history = _classify_map_intent_llm(request.user_input)
+    if not _skip_history:
+        chat_history.save_message(user_id=user_id, thread_id=request.thread_id, role="user", content=request.user_input)
+        push_message(thread_id=request.thread_id, message={"role": "user", "content": request.user_input})
 
     try:
         state = graph.get_state(config)
@@ -506,7 +584,8 @@ async def chat(
         events = safe_graph_stream(Command(resume=request.user_input), config, stream_mode="values")
     else:
         existing_state = state.values if state.values else {}
-        has_completed_conversation = existing_state.get("assessment_summary") and not state.next
+        # Tool-only intents are stateless — bypass has_completed so they always get a fresh run
+        has_completed_conversation = (not _skip_history) and existing_state.get("assessment_summary") and not state.next
 
         if has_completed_conversation:
             print(f"[API] Follow-up question in thread {request.thread_id} - extracting entities and preserving context")
@@ -604,14 +683,19 @@ Examples:
             print(f"[API] Starting new conversation for thread {request.thread_id}")
             print(f"[API] people_id={people_id}, business_id={business_id}")
             initial_history = (short_term_history + [f"User: {request.user_input}"])[-SHORT_TERM_N:] if short_term_history else [f"User: {request.user_input}"]
-            long_term_memory = chat_history.get_user_memory(user_id) if user_id else {}
-            if long_term_memory and any(long_term_memory.values()):
-                print(f"[API] Loaded long-term memory: locations={len(long_term_memory.get('locations', []))}, crops={len(long_term_memory.get('crops', []))}, topics={len(long_term_memory.get('recent_topics', []))}")
+            if _skip_history:
+                long_term_memory = {}
+                print(f"[API] Skipping long-term memory load (tool-only intent)")
+            else:
+                long_term_memory = chat_history.get_user_memory(user_id) if user_id else {}
+                if long_term_memory and any(long_term_memory.values()):
+                    print(f"[API] Loaded long-term memory: locations={len(long_term_memory.get('locations', []))}, crops={len(long_term_memory.get('crops', []))}, topics={len(long_term_memory.get('recent_topics', []))}")
             events = safe_graph_stream(
                 {
                     "history": initial_history,
                     "people_id": people_id,
                     "business_id": business_id,
+                    "thread_id": request.thread_id,
                     "long_term_memory": long_term_memory,
                 },
                 config,
@@ -707,12 +791,13 @@ Examples:
             diagnosis = "I'm processing your weather request. Please make sure you've provided a location (e.g., 'Hayward, California')."
 
     latency_ms = int((time.time() - turn_start) * 1000)
-    chat_history.save_message(
-        user_id=user_id, thread_id=request.thread_id, role="assistant",
-        content=diagnosis if diagnosis else "No diagnosis generated",
-        metadata={"advisory_type": advisory_type, "recommendations": recommendations, "latency_ms": latency_ms},
-    )
-    push_message(thread_id=request.thread_id, message={"role": "assistant", "content": diagnosis if diagnosis else "No diagnosis generated", "metadata": {"advisory_type": advisory_type, "recommendations": recommendations}})
+    if not _skip_history:
+        chat_history.save_message(
+            user_id=user_id, thread_id=request.thread_id, role="assistant",
+            content=diagnosis if diagnosis else "No diagnosis generated",
+            metadata={"advisory_type": advisory_type, "recommendations": recommendations, "latency_ms": latency_ms},
+        )
+        push_message(thread_id=request.thread_id, message={"role": "assistant", "content": diagnosis if diagnosis else "No diagnosis generated", "metadata": {"advisory_type": advisory_type, "recommendations": recommendations}})
 
     farm_context = {
         "location": final_values.get("location"),
@@ -731,6 +816,170 @@ Examples:
         "assessment_summary": assessment_summary,
         "processing_stage": processing_stage
     }
+
+# ============================================================================
+# STREAMING CHAT ENDPOINT
+# ============================================================================
+
+@app.post("/chat/stream")
+async def chat_stream(
+    request: ChatRequest,
+    people_id: str = Depends(get_current_user),
+):
+    """SSE streaming chat endpoint. Yields tokens as they are generated, then a
+    final 'done' event with advisory_type/recommendations metadata."""
+
+    allowed, req_count = _check_rate_limit(request.thread_id)
+    if not allowed:
+        return JSONResponse(
+            status_code=429,
+            content={"status": "error", "message": f"Too many requests. (limit: {RATE_LIMIT_MAX_REQUESTS} per {RATE_LIMIT_WINDOW_SECONDS}s)"},
+        )
+
+    thread_id = request.thread_id
+    # Use a threading.Queue for the sync→async bridge (nodes.py writes from a sync thread).
+    # We use call_soon_threadsafe to push items into an asyncio.Queue so the event loop
+    # can await them without blocking executor threads.
+    loop = asyncio.get_running_loop()
+    async_q: asyncio.Queue = asyncio.Queue()
+
+    # The threading.Queue registered in nodes.py; a feeder thread drains it → async_q.
+    stream_q = register_stream_queue(thread_id)
+    result_holder: dict = {}
+
+    def _feed_async_q():
+        """Bridge: read from sync queue and push into asyncio queue via the event loop."""
+        while True:
+            item = stream_q.get()
+            loop.call_soon_threadsafe(async_q.put_nowait, item)
+            if item is None:
+                break
+
+    def _run_graph_sync():
+        """Execute the full chat logic synchronously in a background thread."""
+        try:
+            # Replicate the /chat endpoint logic so the advisory node finds the queue.
+            user_id = people_id
+            business_id = request.business_id
+            turn_start = time.time()
+            config = {"configurable": {"thread_id": thread_id}}
+            last_n = get_last_n(thread_id, SHORT_TERM_N)
+            short_term_history = _buffer_messages_to_history(last_n)
+
+            _skip_hist = _is_tool_only_intent(request.user_input)
+            if not _skip_hist:
+                _skip_hist = _classify_map_intent_llm(request.user_input)
+            if not _skip_hist:
+                chat_history.save_message(user_id=user_id, thread_id=thread_id, role="user", content=request.user_input)
+                push_message(thread_id=thread_id, message={"role": "user", "content": request.user_input})
+
+            try:
+                state = graph.get_state(config)
+            except Exception as _se:
+                class _EmptyState:
+                    next = []; values = {}; tasks = None
+                state = _EmptyState()
+
+            if state.next:
+                events = safe_graph_stream(Command(resume=request.user_input), config, stream_mode="values")
+            else:
+                existing_state = state.values if state.values else {}
+                # Tool-only intents (map zoom, etc.) are stateless — always start a fresh
+                # conversation so they don't get stuck in the terminal graph state left by a
+                # previous run, which would cause the advisory node to never execute.
+                has_completed = (not _skip_hist) and existing_state.get("assessment_summary") and not state.next
+                if has_completed:
+                    new_history = (short_term_history or existing_state.get("history", []) + [f"User: {request.user_input}"])[-SHORT_TERM_N:]
+                    update = {
+                        "history": new_history, "diagnosis": None, "recommendations": [],
+                        "advisory_type": None,
+                        "current_issues": [request.user_input],
+                        "thread_id": thread_id,
+                    }
+                    if existing_state.get("crops"):
+                        update["crops"] = existing_state["crops"]
+                    if existing_state.get("location"):
+                        update["location"] = existing_state["location"]
+                    merged_issues = update["current_issues"]
+                    merged_crops = update.get("crops", existing_state.get("crops", []))
+                    merged_location = update.get("location", existing_state.get("location"))
+                    update["assessment_summary"] = _build_assessment_summary(merged_issues, merged_crops, merged_location)
+                    events = safe_graph_stream(update, config, stream_mode="values")
+                else:
+                    initial_history = (short_term_history + [f"User: {request.user_input}"])[-SHORT_TERM_N:] if short_term_history else [f"User: {request.user_input}"]
+                    long_term_memory = {} if _skip_hist else (chat_history.get_user_memory(user_id) if user_id else {})
+                    events = safe_graph_stream(
+                        {
+                            "history": initial_history,
+                            "people_id": people_id,
+                            "business_id": business_id,
+                            "thread_id": thread_id,
+                            "long_term_memory": long_term_memory,
+                        },
+                        config,
+                        stream_mode="values",
+                    )
+
+            for _ev in events:
+                pass  # drain; tokens already went into stream_q via run_advisory_agent
+
+            try:
+                final_state = graph.get_state(config)
+            except Exception:
+                class _EmptyState:
+                    next = []; values = {}; tasks = None
+                final_state = _EmptyState()
+
+            final_values = final_state.values if final_state.values else {}
+            diagnosis = final_values.get("diagnosis", "") or ""
+            recommendations = final_values.get("recommendations", []) or []
+            advisory_type = final_values.get("advisory_type", "mixed")
+            latency_ms = int((time.time() - turn_start) * 1000)
+
+            if not _skip_hist:
+                chat_history.save_message(
+                    user_id=user_id, thread_id=thread_id, role="assistant",
+                    content=diagnosis or "No diagnosis generated",
+                    metadata={"advisory_type": advisory_type, "recommendations": recommendations, "latency_ms": latency_ms},
+                )
+                push_message(thread_id=thread_id, message={"role": "assistant", "content": diagnosis or "No diagnosis generated"})
+
+            result_holder["diagnosis"] = diagnosis
+            result_holder["recommendations"] = recommendations
+            result_holder["advisory_type"] = advisory_type
+        except Exception as _ex:
+            logger.error(f"[StreamChat] Error: {_ex}", exc_info=True)
+            result_holder["error"] = str(_ex)
+        finally:
+            deregister_stream_queue(thread_id)
+            stream_q.put(None)  # sentinel: done
+
+    # Start graph execution + feeder in background threads
+    threading.Thread(target=_run_graph_sync, daemon=True).start()
+    threading.Thread(target=_feed_async_q, daemon=True).start()
+
+    async def _generate():
+        while True:
+            token = await async_q.get()
+            if token is None:
+                break
+            yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+        # Send final metadata
+        done_payload = {"type": "done"}
+        if result_holder.get("error"):
+            done_payload["error"] = result_holder["error"]
+        else:
+            done_payload["advisory_type"] = result_holder.get("advisory_type", "mixed")
+            done_payload["recommendations"] = result_holder.get("recommendations", [])
+            done_payload["diagnosis"] = result_holder.get("diagnosis", "")
+        yield f"data: {json.dumps(done_payload)}\n\n"
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
 
 # ============================================================================
 # THREAD MANAGEMENT ENDPOINTS

@@ -208,9 +208,97 @@ def list_cold_chain_vehicles_tool(business_id: int = 0) -> str:
     return "\n".join(lines)
 
 
+@tool
+def geocode_location_tool(query: str) -> str:
+    """Resolve a location — zip code, city, address, or landmark — to GPS
+    coordinates so the frontend map can zoom/fly to it. Returns a human-readable
+    place name plus a hidden [MAP_CMD] marker the widget intercepts to pan the
+    map. Use when the user asks to 'zoom to', 'go to', 'show me', 'center the
+    map on', 'fly to', or 'navigate to' any place."""
+    if not query or not query.strip():
+        return "Please provide a location, zip code, or address to zoom to."
+    try:
+        r = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params={"format": "json", "q": query.strip(), "countrycodes": "us", "limit": 1, "addressdetails": 1},
+            headers={"User-Agent": "OatmealFarmNetwork/1.0 (saige-agent)"},
+            timeout=HTTP_TIMEOUT,
+        )
+        r.raise_for_status()
+        results = r.json() or []
+    except Exception as e:
+        return f"Could not geocode '{query}' ({e})."
+    if not results:
+        # Retry without countrycodes restriction
+        try:
+            r2 = requests.get(
+                "https://nominatim.openstreetmap.org/search",
+                params={"format": "json", "q": query.strip(), "limit": 1},
+                headers={"User-Agent": "OatmealFarmNetwork/1.0 (saige-agent)"},
+                timeout=HTTP_TIMEOUT,
+            )
+            r2.raise_for_status()
+            results = r2.json() or []
+        except Exception:
+            pass
+    if not results:
+        # Last-chance retry: if the query looks like a street address (starts with a number),
+        # strip the street number and retry with just "street name city state".
+        import re as _re
+        stripped = _re.sub(r'^\d+\s+', '', query.strip())
+        if stripped != query.strip():
+            try:
+                r3 = requests.get(
+                    "https://nominatim.openstreetmap.org/search",
+                    params={"format": "json", "q": stripped, "limit": 1, "addressdetails": 1},
+                    headers={"User-Agent": "OatmealFarmNetwork/1.0 (saige-agent)"},
+                    timeout=HTTP_TIMEOUT,
+                )
+                r3.raise_for_status()
+                results = r3.json() or []
+            except Exception:
+                pass
+    if not results:
+        return f"Could not find '{query}' on the map. Try a city name or zip code."
+    place = results[0]
+    lat = float(place["lat"])
+    lon = float(place["lon"])
+    display = place.get("display_name", query)
+    addr = place.get("address", {})
+    # Zoom level: street address → 16, zip/postcode → 13, city → 11, else → 9
+    if addr.get("road") or addr.get("house_number"):
+        zoom = 16
+    elif addr.get("postcode") and not (addr.get("city") or addr.get("town")):
+        zoom = 13
+    elif addr.get("city") or addr.get("town"):
+        zoom = 11
+    else:
+        zoom = 9
+    # Human-readable short name
+    parts = []
+    if addr.get("house_number") and addr.get("road"):
+        parts.append(f"{addr['house_number']} {addr['road']}")
+    elif addr.get("road"):
+        parts.append(addr["road"])
+    city = addr.get("city") or addr.get("town") or addr.get("village") or addr.get("county")
+    if city:
+        parts.append(city)
+    if addr.get("state"):
+        parts.append(addr["state"])
+    if addr.get("postcode"):
+        parts.append(addr["postcode"])
+    short = ", ".join(parts) if parts else display.split(",")[0]
+    # The [MAP_CMD] block is stripped by the widget before display — it carries the fly-to instruction.
+    return (
+        f"Zooming to {short}.\n"
+        f"[MAP_CMD: action=flyTo lat={lat:.5f} lon={lon:.5f} zoom={zoom}]"
+    )
+
+
 farm_data_tools = [
     list_my_animals_tool,
     list_my_listings_tool,
     count_my_animals_tool,
     list_cold_chain_vehicles_tool,
+    geocode_location_tool,
 ]
