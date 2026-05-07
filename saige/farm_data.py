@@ -170,8 +170,47 @@ def count_my_animals_tool(business_id: int = 0) -> str:
     return "\n".join(lines)
 
 
+@tool
+def list_cold_chain_vehicles_tool(business_id: int = 0) -> str:
+    """List cold-chain / refrigerated transport vehicles for the current business.
+    Returns vehicle name, temperature range, driver, and the latest temperature
+    reading. Use when the user asks "what vehicles do I have", "my cold chain
+    vehicles", "show my refrigerated trucks", "what's in my cold chain fleet".
+    business_id is injected from session state — do not guess it."""
+    if not business_id or int(business_id) <= 0:
+        return ("No business context is set for this chat. Open Saige from one of "
+                "your business pages, or tell me which business you mean.")
+    try:
+        r = requests.get(
+            f"{BACKEND_URL}/api/cold-chain/vehicles",
+            params={"business_id": int(business_id)},
+            timeout=HTTP_TIMEOUT,
+        )
+        r.raise_for_status()
+        data = r.json() or []
+    except Exception as e:
+        return f"Could not fetch cold chain vehicles ({e})."
+    if not data:
+        return f"No cold chain vehicles found for BusinessID {business_id}."
+    lines = [f"Cold chain vehicles — BusinessID {business_id} ({len(data)} total):"]
+    for v in data:
+        name = v.get("VehicleName") or f"Vehicle #{v.get('VehicleID')}"
+        min_t = v.get("MinTempC")
+        max_t = v.get("MaxTempC")
+        temp_range = (f"{min_t}°C to {max_t}°C"
+                      if min_t is not None and max_t is not None else "range n/a")
+        driver = v.get("DriverName") or "no driver assigned"
+        latest_temp = v.get("LatestTempC")
+        latest = (f"latest reading {latest_temp}°C"
+                  if latest_temp is not None else "no recent readings")
+        active = "" if v.get("IsActive", True) else " [inactive]"
+        lines.append(f"  • {name}{active} — {temp_range} — driver: {driver} — {latest}")
+    return "\n".join(lines)
+
+
 farm_data_tools = [
     list_my_animals_tool,
     list_my_listings_tool,
     count_my_animals_tool,
+    list_cold_chain_vehicles_tool,
 ]
