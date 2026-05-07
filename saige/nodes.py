@@ -171,6 +171,7 @@ try:
         list_my_animals_tool,
         list_my_listings_tool,
         count_my_animals_tool,
+        list_cold_chain_vehicles_tool,
     )
     FARM_DATA_AVAILABLE = True
 except Exception as _e:
@@ -179,6 +180,7 @@ except Exception as _e:
     list_my_animals_tool = None
     list_my_listings_tool = None
     count_my_animals_tool = None
+    list_cold_chain_vehicles_tool = None
     FARM_DATA_AVAILABLE = False
 
 try:
@@ -504,17 +506,32 @@ def assessment_node(state: FarmState):
 Query: "{first_user_message}"
 
 CLASSIFICATION RULES:
-1. Use query_type='general' for ANY non-farming question: greetings, identity/account questions,
-   tech questions, general chat, or anything not about crops/livestock/weather/soil.
-2. Default needs_clarification=False. Only set True if the query is completely unintelligible
+1. Use query_type='general' ONLY for pure identity / account lookups (user ID, people ID,
+   business ID) and social greetings. Do NOT use 'general' for questions about the user's
+   farm data, animals, vehicles, inventory, fields, orders, or operations — those are 'mixed'.
+2. Use query_type='mixed' for any question about the user's own farm data or business
+   operations: vehicles, fleet, cold chain, marketplace inventory, orders, fields, animals
+   owned, grants, certifications, accounting, seller dashboard, CSA, or any "what do I have /
+   show me my" question. These need tool access to answer correctly.
+3. Default needs_clarification=False. Only set True if the query is completely unintelligible
    without more context (e.g., "help", "something is wrong", "what should I do").
-3. Most farming questions can be answered directly — do NOT ask follow-ups just because
+4. Most farming questions can be answered directly — do NOT ask follow-ups just because
    location or farm size isn't mentioned.
 
 Examples:
 - "what is my user ID" → query_type: general, is_specific: true, needs_clarification: false
 - "what is my people ID" → query_type: general, is_specific: true, needs_clarification: false
+- "what is my business ID" → query_type: general, is_specific: true, needs_clarification: false
+- "what is my businessid" → query_type: general, is_specific: true, needs_clarification: false
+- "what is my BusinessID" → query_type: general, is_specific: true, needs_clarification: false
 - "hello" → query_type: general, is_specific: true, needs_clarification: false
+- "what vehicles do I have" → query_type: mixed, is_specific: true, needs_clarification: false
+- "show my cold chain fleet" → query_type: mixed, is_specific: true, needs_clarification: false
+- "what animals do I have" → query_type: mixed, is_specific: true, needs_clarification: false
+- "my marketplace inventory" → query_type: mixed, is_specific: true, needs_clarification: false
+- "show my fields" → query_type: mixed, is_specific: true, needs_clarification: false
+- "my grants and programs" → query_type: mixed, is_specific: true, needs_clarification: false
+- "what orders do I have" → query_type: mixed, is_specific: true, needs_clarification: false
 - "weather in California" → query_type: weather, is_specific: true, needs_clarification: false
 - "best goat breeds for meat" → query_type: livestock, is_specific: true, needs_clarification: false
 - "my tomato leaves are yellow" → query_type: crops, is_specific: true, needs_clarification: false
@@ -955,10 +972,22 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
         )
         memory_section = "\n".join(parts)
 
+    # Build a query-specific directive when the user is asking about their own data
+    # so the LLM calls the right tool instead of guessing from training knowledge.
+    _lum = latest_user_message.lower()
+    _tool_directive = ""
+    _vehicle_kw = ("vehicle", "truck", "van", "trailer", "fleet", "cold chain", "refrigerat")
+    if any(k in _lum for k in _vehicle_kw):
+        _tool_directive = (
+            "\n⚠ TOOL REQUIRED: The user is asking about their cold chain fleet. "
+            "You MUST call list_cold_chain_vehicles_tool() immediately. "
+            "Do NOT describe or list vehicles from memory — only report what the tool returns.\n"
+        )
+
     full_prompt = f"""{role_prompt}
 
 {identity_section}
-
+{_tool_directive}
 {memory_section}
 
 Farmer's latest message: {latest_user_message}
@@ -1040,6 +1069,9 @@ After fetching data, always give a SPECIFIC, ACTIONABLE recommendation — never
 - list_my_animals_tool(studs_only): animals on the current business (for-sale by default; set studs_only=true for stud listings). Use for "my animals", "what's for sale on my ranch".
 - list_my_listings_tool(): unified marketplace inventory (produce + meat + processed food) for the current business. Use for "my inventory", "my marketplace listings".
 - count_my_animals_tool(): quick count of for-sale vs at-stud animals on the current business. Use for "how many animals do I have".
+
+COLD CHAIN & LOGISTICS — Vehicle fleet (ALWAYS call the tool; NEVER guess vehicle names or specs):
+- list_cold_chain_vehicles_tool(): REQUIRED for any question about the user's vehicles, fleet, truck, van, trailer, cold chain, or refrigerated transport. Returns the exact vehicles, temperature ranges, drivers, and latest readings from the database. Do NOT describe vehicles from memory — call this tool first, then report what it returns.
 - get_animal_detail_tool(animal_id): FULL animal profile — name, breed/category, sex, DOB, colors, sale/stud price, embryo/semen price, registration numbers, fiber stats (micron, CV, comfort factor), co-owners. Use when the user asks about a SPECIFIC animal by ID: "tell me about animal #42", "what's the stud fee for that alpaca", "show me the fiber data". Access-controlled to the user's business.
 
 PLANT & INGREDIENT KNOWLEDGE BASE — agronomic reference data for 3,000+ plant varieties and all food ingredient groups:
@@ -1506,6 +1538,11 @@ Write like you're talking to a friend."""
                         bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
                         print(f"[Advisory Agent] Executing Count My Animals Tool: business_id={bid}")
                         tool_result = count_my_animals_tool.invoke({"business_id": bid})
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'list_cold_chain_vehicles_tool' and FARM_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing List Cold Chain Vehicles Tool: business_id={bid}")
+                        tool_result = list_cold_chain_vehicles_tool.invoke({"business_id": bid})
                         farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
                     elif tc_name == 'search_plants_tool' and KNOWLEDGE_BASE_AVAILABLE:
                         query = tc_args.get('query', '')
