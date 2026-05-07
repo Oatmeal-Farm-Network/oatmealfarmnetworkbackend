@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 class FarmState(TypedDict, total=False):
     people_id: Optional[str]
     business_id: Optional[str]
+    thread_id: Optional[str]
     """State for managing farm information and diagnostics"""
     farm_name: Optional[str]
     location: Optional[str]
@@ -79,6 +80,17 @@ class QueryTypeClassification(BaseModel):
     items: List[str] = Field(
         default_factory=list,
         description="List of specific crops/animals mentioned (e.g., ['cattle'], ['tomato', 'maize']), empty list if none"
+    )
+
+
+class MapIntentDetection(BaseModel):
+    """Fast binary classification: is this a request to navigate/zoom a map?"""
+    is_map_navigation: bool = Field(
+        description=(
+            "True if the user is asking to zoom, pan, fly, navigate, center, or move a map "
+            "to a specific location (city, address, zip code, region, country, etc.). "
+            "False for farming questions, greetings, crop advice, or anything unrelated to map navigation."
+        )
     )
 
 

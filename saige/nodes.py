@@ -1,7 +1,29 @@
 ﻿# --- nodes.py --- (All node functions, routing, and advisory engine)
 import re
+import queue as _queue_mod
+import threading
 from typing import Dict, Any, List, Optional
 from langgraph.types import interrupt
+
+# ── Streaming support ────────────────────────────────────────────────────────
+# Maps thread_id → Queue. The advisory ReAct loop puts text tokens into the
+# queue when streaming mode is active; the /chat/stream SSE endpoint reads them.
+_stream_queues: dict = {}
+_stream_lock = threading.Lock()
+
+def register_stream_queue(thread_id: str) -> "_queue_mod.Queue":
+    q = _queue_mod.Queue()
+    with _stream_lock:
+        _stream_queues[thread_id] = q
+    return q
+
+def deregister_stream_queue(thread_id: str):
+    with _stream_lock:
+        _stream_queues.pop(thread_id, None)
+
+def _get_stream_queue(thread_id: str):
+    with _stream_lock:
+        return _stream_queues.get(thread_id)
 
 from config import RAG_AVAILABLE, WEATHER_AVAILABLE, MAX_QUESTIONS
 from saige_models import FarmState, AssessmentDecision, QueryClassification, QueryTypeClassification, WeatherQueryParsed, FollowUpEntityExtraction
@@ -172,6 +194,7 @@ try:
         list_my_listings_tool,
         count_my_animals_tool,
         list_cold_chain_vehicles_tool,
+        geocode_location_tool,
     )
     FARM_DATA_AVAILABLE = True
 except Exception as _e:
@@ -181,6 +204,7 @@ except Exception as _e:
     list_my_listings_tool = None
     count_my_animals_tool = None
     list_cold_chain_vehicles_tool = None
+    geocode_location_tool = None
     FARM_DATA_AVAILABLE = False
 
 try:
@@ -551,6 +575,62 @@ def assessment_node(state: FarmState):
 
         if first_user_message and len(first_user_message) > 5:
             msg_lower = first_user_message.lower()
+
+            # ── Keyword fast-track: skip the LLM classify call for obvious cases ──
+            _kw_weather    = ("weather", "forecast", "rain", "snow", "frost", "hail", "humidity",
+                              "temperature", "wind speed", "drought", "precipitation", "how hot",
+                              "how cold", "storm", "tornado", "hurricane", "blizzard")
+            _kw_livestock  = ("cattle", "cow", "bull", "sheep", "goat", "pig", "hog", "chicken",
+                              "turkey", "duck", "rabbit", "horse", "alpaca", "llama", "bison",
+                              "dairy", "beef", "poultry", "flock", "herd", "breed", "mastitis",
+                              "calving", "farrowing", "lambing", "kidding", "wormer", "deworming",
+                              "vaccination", "estrus", "gestation")
+            _kw_crops      = ("corn", "maize", "wheat", "rice", "barley", "soybean", "cotton",
+                              "tomato", "potato", "alfalfa", "canola", "sunflower", "beet",
+                              "ndvi", "evi", "irrigation", "fertiliz", "pesticide", "herbicide",
+                              "fungicide", "cover crop", "rotation", "tillage", "germination",
+                              "harvest", "planting date", "soil ph", "nitrogen deficien")
+            _kw_mixed_biz  = ("vehicle", "truck", "fleet", "cold chain", "refrigerat",
+                              "my animal", "my listing", "my inventory", "my order", "my service",
+                              "my blog", "my certification", "my profile", "my account",
+                              "marketplace", "business profile", "zoom to", "zoom in", "zoom map",
+                              "zoom over", "zoom out", "fly to", "navigate to", "pan to",
+                              "center on", "center map", "take me to", "bring the map",
+                              "show me where", "move over to", "move the map", "move to the",
+                              "map", "zip code", "zipcode",
+                              "field", "precision ag", "sensor", "my ranch", "my farm data")
+            _kw_general    = ("hello", "hi ", "hey ", "good morning", "good afternoon",
+                              "what is my people", "what is my user", "what is my business",
+                              "my businessid", "my peopleid", "my people id", "my business id",
+                              "thank you", "thanks", "bye", "goodbye")
+
+            _ft = None
+            if any(k in msg_lower for k in _kw_general) or len(first_user_message.split()) <= 2:
+                _ft = ("general", [first_user_message], [])
+            elif any(k in msg_lower for k in _kw_weather):
+                _ft = ("weather", [first_user_message], [])
+            elif any(k in msg_lower for k in _kw_livestock):
+                _ft = ("livestock", [first_user_message], [])
+            elif any(k in msg_lower for k in _kw_crops):
+                _ft = ("crops", [first_user_message], [])
+            elif any(k in msg_lower for k in _kw_mixed_biz):
+                _ft = ("mixed", [first_user_message], [])
+
+            if _ft is not None:
+                _ft_type, _ft_issues, _ft_items = _ft
+                print(f"[Assessment] Keyword fast-track → {_ft_type} (skipping LLM classify)")
+                if _ft_type == "general":
+                    return {
+                        "assessment_summary": f"General question: {first_user_message}",
+                        "current_issues": _ft_issues,
+                        "advisory_type": "mixed",
+                    }
+                return {
+                    "assessment_summary": f"Farmer seeks assistance with: {first_user_message}",
+                    "current_issues": _ft_issues,
+                    "crops": _ft_items if _ft_items else None,
+                    "advisory_type": _ft_type,
+                }
 
             # Use LLM to intelligently classify the query and determine next steps
             print(f"[Assessment] Using LLM for smart query classification...")
@@ -976,6 +1056,70 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
     if not latest_user_message:
         latest_user_message = ", ".join(issues) if issues else "General inquiry"
 
+    # ── Lightweight intent router ────────────────────────────────────────────
+    # Detect the primary intent from the user message so we can prune RAG and
+    # the tool list before doing any expensive work.  Matches are broad enough
+    # to catch paraphrases without needing an LLM call.
+    _rl = latest_user_message.lower()
+
+    _MAP_KW_MATCH = any(k in _rl for k in (
+        "zoom to", "zoom in to", "zoom into", "zoom the map", "zoom map",
+        "zoom in on", "zoom over to", "zoom over", "zoom out",
+        "go to zip", "fly to", "center on", "center map",
+        "navigate to", "pan to", "jump to", "move map to", "focus on zip",
+        "show zip", "show me on the map", "take me to zip", "go to the zip",
+        "move to the map", "go to the map", "take the map to",
+        "show me where", "take me to", "bring the map",
+        "move over to", "move the map", "move to the",
+    ))
+    # Address pattern: "1365 Spring Street Medford", "242 Oak Ave Portland OR", etc.
+    _MAP_ADDR_MATCH = bool(re.search(
+        r'\b\d{2,5}\b.{0,40}\b(street|st|avenue|ave|road|rd|boulevard|blvd|'
+        r'drive|dr|lane|ln|way|court|ct|place|pl|highway|hwy|parkway|pkwy|route|rte)\b',
+        _rl, re.IGNORECASE,
+    ))
+    _INTENT_MAP = _MAP_KW_MATCH or _MAP_ADDR_MATCH
+
+    _INTENT_BUSINESS = any(k in _rl for k in (
+        "my animal", "my listing", "my inventory", "my order", "my service",
+        "my blog", "my cert", "my profile", "my account", "my vehicle",
+        "my truck", "my fleet", "my ranch info", "my business",
+        "cold chain vehicle", "list vehicle", "fleet vehicle",
+        "cold chain reading", "temperature reading",
+    ))
+
+    _INTENT_PRECISION_AG = any(k in _rl for k in (
+        "my field", "ndvi", "evi", "savi", "my crop monitoring",
+        "field analysis", "field alert", "field health", "field soil",
+        "biomass confidence", "improve confidence", "field zones",
+        "management zone", "yield forecast", "gdd", "growing degree",
+        "irrigation recom", "field weather", "scouting report",
+        "field activity", "field assessment", "log scouting",
+        "log field", "add soil sample",
+    ))
+
+    _INTENT_ACCOUNTING = any(k in _rl for k in (
+        "invoice", "overdue", "payment", "accounts receivable",
+        "accounts payable", "accounting snapshot", "my books",
+        "how are the books", "open invoice", "customer payment",
+        "recent payment", "cash flow", "sponsorship revenue",
+        "booth service revenue", "lead summary", "event lead",
+        "event registration", "floor plan status", "coi",
+        "certificate of insur",
+    ))
+
+    _INTENT_KNOWLEDGE_ONLY = not (_INTENT_MAP or _INTENT_BUSINESS
+                                  or _INTENT_PRECISION_AG or _INTENT_ACCOUNTING)
+
+    # Suppress RAG for all non-knowledge intents — those queries don't benefit
+    # from vector retrieval and it just wastes 500-800 ms.
+    if not _INTENT_KNOWLEDGE_ONLY:
+        rag_systems = []
+        print(f"[Intent Router] RAG suppressed — intent: "
+              f"map={_INTENT_MAP} biz={_INTENT_BUSINESS} "
+              f"precag={_INTENT_PRECISION_AG} acct={_INTENT_ACCOUNTING}")
+    # ── end intent router ─────────────────────────────────────────────────────
+
     recent_turns = "\n".join(history[-8:]) if history else "Not available"
 
     soil_lines = []
@@ -1003,12 +1147,36 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
                 print(f"[Advisory Agent] RAG error ({rag_sys._label}): {e}")
         rag_context = "\n\n".join(context_parts)
 
-    # 2.5  Business Context Pre-fetch
-    # Always pull the business profile + animal counts before building the prompt so
-    # Saige has live DB data in context without waiting for the LLM to decide to call a tool.
+    # 2.5  Business Context Pre-fetch (conditional)
+    # Only fetch when business data is likely relevant — skip for pure weather/crop/livestock
+    # advisory queries that have no business-data keywords, to avoid 2 unnecessary DB round-trips.
     business_snapshot = ""
     _bid_prefetch = state.get("business_id")
-    if _bid_prefetch and BUSINESS_DATA_AVAILABLE:
+    _lum_for_prefetch = latest_user_message.lower()
+    _biz_relevant_kw = (
+        "my animal", "my listing", "my inventory", "my order", "my service",
+        "my blog", "my cert", "my profile", "my account", "my vehicle", "my truck",
+        "my fleet", "my ranch", "my farm data", "my business", "marketplace",
+        "cold chain", "produce", "meat", "processed food", "sell", "selling",
+        "shipment", "delivery", "business name", "business info", "business profile",
+        "zoom", "fly to", "map", "navigate", "field", "precision", "[page:",
+    )
+    _prefetch_needed = any(k in _lum_for_prefetch for k in _biz_relevant_kw)
+    # Also pre-fetch when page context is clearly business-oriented
+    _page_ctx = ""
+    for _h in reversed(history[-4:] if history else []):
+        if "[Page:" in _h:
+            _page_ctx = _h.lower()
+            break
+    _biz_page_kw = (
+        "seller", "marketplace", "orders", "inventory", "cold chain", "animals",
+        "livestock", "blog", "services", "certifications", "business profile", "ranch",
+        "farmer settlement", "csa", "aggregator",
+    )
+    if not _prefetch_needed and _page_ctx:
+        _prefetch_needed = any(k in _page_ctx for k in _biz_page_kw)
+
+    if _bid_prefetch and BUSINESS_DATA_AVAILABLE and _prefetch_needed:
         try:
             _profile_raw = get_business_profile_tool.invoke({"business_id": int(_bid_prefetch)})
             _counts_raw  = count_my_animals_tool.invoke({"business_id": int(_bid_prefetch)})
@@ -1022,6 +1190,8 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
             print(f"[Advisory Agent] Business snapshot pre-fetched for BusinessID={_bid_prefetch}")
         except Exception as _pf_err:
             print(f"[Advisory Agent] Business pre-fetch failed: {_pf_err}")
+    elif _bid_prefetch and not _prefetch_needed:
+        print(f"[Advisory Agent] Business pre-fetch skipped (query not business-data-related)")
 
     # 3. Construct Full Prompt
     rag_section = f"RELEVANT KNOWLEDGE BASE:\n{rag_context}" if rag_context else ""
@@ -1070,6 +1240,13 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
     _blog_kw = ("my blog", "blog post", "my articles", "my posts")
     _cert_kw = ("my certification", "my cert", "certifications i have", "organic cert", "cert expir")
     _reading_kw = ("temperature reading", "temp reading", "cold chain reading", "vehicle reading")
+    _map_kw = ("zoom to", "zoom in on", "zoom in to", "zoom into", "zoom the map", "zoom map",
+               "zoom over to", "zoom over", "zoom out",
+               "go to zip", "fly to", "center on", "center map", "navigate to",
+               "show me on the map", "pan to", "jump to", "move map to", "focus on zip", "show zip",
+               "zoom in zip", "take me to zip", "go to the zip",
+               "take me to", "bring the map", "show me where",
+               "move over to", "move the map", "move to the")
     if any(k in _lum for k in _vehicle_kw):
         _tool_directive = (
             "\n⚠ TOOL REQUIRED: The user is asking about their cold chain fleet. "
@@ -1111,6 +1288,13 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
         _tool_directive = (
             "\n⚠ TOOL REQUIRED: Call list_cold_chain_readings_tool() to fetch temperature readings. "
             "Never invent temperature data.\n"
+        )
+    elif any(k in _lum for k in _map_kw):
+        _tool_directive = (
+            "\n⚠ TOOL REQUIRED: The user wants the map to zoom/navigate to a location. "
+            "You MUST call geocode_location_tool(query=<the location>) immediately. "
+            "Do NOT explain coordinates or describe the process — just call the tool and confirm the place name. "
+            "The [MAP_CMD] in the tool result will move the map automatically.\n"
         )
 
     full_prompt = f"""{role_prompt}
@@ -1202,6 +1386,7 @@ After fetching data, always give a SPECIFIC, ACTIONABLE recommendation — never
 
 COLD CHAIN & LOGISTICS — Vehicle fleet (ALWAYS call the tool; NEVER guess vehicle names or specs):
 - list_cold_chain_vehicles_tool(): REQUIRED for any question about the user's vehicles, fleet, truck, van, trailer, cold chain, or refrigerated transport. Returns the exact vehicles, temperature ranges, drivers, and latest readings from the database. Do NOT describe vehicles from memory — call this tool first, then report what it returns.
+- geocode_location_tool(query): resolve any zip code, city, address, or landmark to GPS coordinates so the map zooms there. ALWAYS call this tool when the user says "zoom to", "go to", "center on", "fly to", "show me", "navigate to", or "pan to" any location. The tool returns a [MAP_CMD] marker that the widget uses to move the map — you do not need to explain the coordinates, just confirm the place name.
 - list_cold_chain_readings_tool(vehicle_id?, limit?): recent temperature readings across all vehicles (or one vehicle). Use for "show temperature readings", "any temp violations", "what temps have been logged". vehicle_id=0 = all vehicles.
 - log_cold_chain_reading_tool(vehicle_id, temp_c, notes?): log a new temperature reading. Confirm vehicle + temp before calling. Use when user says "log a reading of -2°C on truck A".
 - list_cold_chain_shipments_tool(status?): active or historical shipments with origin, destination, vehicle, driver. Use for "show my shipments", "deliveries in transit", "shipment history".
@@ -1329,6 +1514,34 @@ Write like you're talking to a friend."""
         bound_tools.extend(weather_alert_tools)
     if HISTORY_STORE_AVAILABLE:
         bound_tools.extend(history_tools)
+
+    # ── Intent-based tool pruning ────────────────────────────────────────────
+    # After assembling the full tool list, restrict it to only the tools
+    # relevant to the detected intent.  This stops the LLM from wandering into
+    # unrelated tool calls (e.g., querying all 5 RAG systems for a map zoom).
+    if _INTENT_MAP:
+        _map_tool_names = {"geocode_location_tool"}
+        bound_tools = [t for t in bound_tools if t.name in _map_tool_names]
+        print(f"[Intent Router] Tool list pruned to map tools: {[t.name for t in bound_tools]}")
+    elif _INTENT_BUSINESS:
+        _biz_tool_names = (
+            {t.name for t in farm_data_tools if FARM_DATA_AVAILABLE}
+            | {t.name for t in business_data_tools if BUSINESS_DATA_AVAILABLE}
+            | {t.name for t in business_ops_tools if BUSINESS_OPS_AVAILABLE}
+        )
+        bound_tools = [t for t in bound_tools if t.name in _biz_tool_names]
+        print(f"[Intent Router] Tool list pruned to business tools ({len(bound_tools)} tools)")
+    elif _INTENT_PRECISION_AG:
+        _precag_tool_names = {t.name for t in precision_ag_tools if PRECISION_AG_AVAILABLE}
+        bound_tools = [t for t in bound_tools if t.name in _precag_tool_names]
+        print(f"[Intent Router] Tool list pruned to precision-ag tools ({len(bound_tools)} tools)")
+    elif _INTENT_ACCOUNTING:
+        _acct_tool_names = {t.name for t in business_ops_tools if BUSINESS_OPS_AVAILABLE}
+        bound_tools = [t for t in bound_tools if t.name in _acct_tool_names]
+        print(f"[Intent Router] Tool list pruned to accounting/events tools ({len(bound_tools)} tools)")
+    # _INTENT_KNOWLEDGE_ONLY: full tool list kept as-is
+    # ── end tool pruning ──────────────────────────────────────────────────────
+
     llm_with_tools = llm.bind_tools(bound_tools) if bound_tools else llm
 
     # 5. Tool Execution Loop (ReAct Pattern)
@@ -1355,6 +1568,7 @@ Write like you're talking to a friend."""
     history_context = ""
     max_iterations = 3
     final_response = ""
+    _map_cmd_collected = ""  # [MAP_CMD: ...] extracted from geocode tool result
     people_id_for_tools = state.get("people_id") or ""
     business_id_for_tools = 0
     try:
@@ -1405,7 +1619,33 @@ Write like you're talking to a friend."""
                 current_input += f"\n\n[Weather Alerts]: {weather_alerts_context}"
             if history_context:
                 current_input += f"\n\n[Saige History]: {history_context}"
-            response = llm_with_tools.invoke(current_input)
+            # If map tool already ran, override the directive so the LLM doesn't call it again
+            if _map_cmd_collected:
+                current_input += (
+                    "\n\n⚠ MAP ALREADY UPDATED — geocode_location_tool has already run and the "
+                    "map has moved. Do NOT call it again. Respond in one short sentence confirming "
+                    "the place name shown in [Farm Data] above."
+                )
+            _thread_id = state.get("thread_id", "")
+            _stream_q = _get_stream_queue(_thread_id) if _thread_id else None
+            if _stream_q is not None:
+                # Streaming mode: accumulate chunks and forward text tokens to the queue
+                _accumulated = None
+                try:
+                    for _chunk in llm_with_tools.stream(current_input):
+                        if _accumulated is None:
+                            _accumulated = _chunk
+                        else:
+                            _accumulated = _accumulated + _chunk
+                        _tok = getattr(_chunk, "content", None)
+                        if _tok:
+                            _stream_q.put(_tok)
+                except Exception as _se:
+                    print(f"[Advisory Agent] Streaming error, falling back to invoke: {_se}")
+                    _accumulated = llm_with_tools.invoke(current_input)
+                response = _accumulated if _accumulated is not None else llm_with_tools.invoke(current_input)
+            else:
+                response = llm_with_tools.invoke(current_input)
 
             # Check for tool calls
             if hasattr(response, 'tool_calls') and response.tool_calls and iteration < max_iterations - 1:
@@ -1713,6 +1953,15 @@ Write like you're talking to a friend."""
                         print(f"[Advisory Agent] Executing List Cold Chain Vehicles Tool: business_id={bid}")
                         tool_result = list_cold_chain_vehicles_tool.invoke({"business_id": bid})
                         farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'geocode_location_tool' and FARM_DATA_AVAILABLE:
+                        query = tc_args.get('query', '')
+                        print(f"[Advisory Agent] Executing Geocode Location: query={query!r}")
+                        tool_result = geocode_location_tool.invoke({"query": query})
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        # Capture [MAP_CMD] so we can append it to final_response later
+                        _mc = re.search(r'\[MAP_CMD:[^\]]+\]', tool_result)
+                        if _mc:
+                            _map_cmd_collected = _mc.group(0)
                     # ── business_data tools ───────────────────────────────────
                     elif tc_name == 'get_business_profile_tool' and BUSINESS_DATA_AVAILABLE:
                         bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
@@ -2131,6 +2380,15 @@ Write like you're talking to a friend."""
             "diagnosis": "I'm having trouble generating advice right now. Please try again.",
             "recommendations": ["Consult a local expert"]
         }
+
+    # Append any captured [MAP_CMD] marker so the widget can fire the map event.
+    # If final_response is empty (all iterations consumed by tool calls), supply a
+    # default confirmation so the widget never shows "No response received."
+    if _map_cmd_collected:
+        if not final_response or not final_response.strip():
+            final_response = "Map updated."
+        if _map_cmd_collected not in final_response:
+            final_response = final_response + "\n" + _map_cmd_collected
 
     # 6. Parse Recommendations (Simple Heuristic)
     recommendations = []
