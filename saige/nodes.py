@@ -184,6 +184,62 @@ except Exception as _e:
     FARM_DATA_AVAILABLE = False
 
 try:
+    from business_data import (
+        business_data_tools,
+        get_business_profile_tool,
+        update_business_profile_tool,
+        list_my_animals_detail_tool,
+        update_animal_tool,
+        list_produce_inventory_tool,
+        update_produce_listing_tool,
+        list_meat_inventory_tool,
+        update_meat_listing_tool,
+        list_processed_food_tool,
+        update_processed_food_tool,
+        list_my_blog_posts_tool,
+        create_blog_post_tool,
+        list_my_services_tool,
+        add_service_listing_tool,
+        list_seller_orders_tool,
+        confirm_seller_order_tool,
+        reject_seller_order_tool,
+        ship_seller_order_tool,
+        list_cold_chain_readings_tool,
+        log_cold_chain_reading_tool,
+        list_cold_chain_shipments_tool,
+        list_my_certifications_tool,
+        add_certification_tool,
+    )
+    BUSINESS_DATA_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] business_data unavailable: {_e}")
+    business_data_tools = []
+    get_business_profile_tool = None
+    update_business_profile_tool = None
+    list_my_animals_detail_tool = None
+    update_animal_tool = None
+    list_produce_inventory_tool = None
+    update_produce_listing_tool = None
+    list_meat_inventory_tool = None
+    update_meat_listing_tool = None
+    list_processed_food_tool = None
+    update_processed_food_tool = None
+    list_my_blog_posts_tool = None
+    create_blog_post_tool = None
+    list_my_services_tool = None
+    add_service_listing_tool = None
+    list_seller_orders_tool = None
+    confirm_seller_order_tool = None
+    reject_seller_order_tool = None
+    ship_seller_order_tool = None
+    list_cold_chain_readings_tool = None
+    log_cold_chain_reading_tool = None
+    list_cold_chain_shipments_tool = None
+    list_my_certifications_tool = None
+    add_certification_tool = None
+    BUSINESS_DATA_AVAILABLE = False
+
+try:
     from knowledge_base import (
         knowledge_base_tools,
         search_plants_tool,
@@ -532,6 +588,16 @@ Examples:
 - "show my fields" → query_type: mixed, is_specific: true, needs_clarification: false
 - "my grants and programs" → query_type: mixed, is_specific: true, needs_clarification: false
 - "what orders do I have" → query_type: mixed, is_specific: true, needs_clarification: false
+- "show my business profile" → query_type: mixed, is_specific: true, needs_clarification: false
+- "what is my business info" → query_type: mixed, is_specific: true, needs_clarification: false
+- "update my website link" → query_type: mixed, is_specific: true, needs_clarification: false
+- "show my produce inventory" → query_type: mixed, is_specific: true, needs_clarification: false
+- "what meat do I have listed" → query_type: mixed, is_specific: true, needs_clarification: false
+- "show my processed food listings" → query_type: mixed, is_specific: true, needs_clarification: false
+- "what services do I offer" → query_type: mixed, is_specific: true, needs_clarification: false
+- "show my blog posts" → query_type: mixed, is_specific: true, needs_clarification: false
+- "what certifications do I have" → query_type: mixed, is_specific: true, needs_clarification: false
+- "temperature readings on my trucks" → query_type: mixed, is_specific: true, needs_clarification: false
 - "weather in California" → query_type: weather, is_specific: true, needs_clarification: false
 - "best goat breeds for meat" → query_type: livestock, is_specific: true, needs_clarification: false
 - "my tomato leaves are yellow" → query_type: crops, is_specific: true, needs_clarification: false
@@ -937,6 +1003,26 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
                 print(f"[Advisory Agent] RAG error ({rag_sys._label}): {e}")
         rag_context = "\n\n".join(context_parts)
 
+    # 2.5  Business Context Pre-fetch
+    # Always pull the business profile + animal counts before building the prompt so
+    # Saige has live DB data in context without waiting for the LLM to decide to call a tool.
+    business_snapshot = ""
+    _bid_prefetch = state.get("business_id")
+    if _bid_prefetch and BUSINESS_DATA_AVAILABLE:
+        try:
+            _profile_raw = get_business_profile_tool.invoke({"business_id": int(_bid_prefetch)})
+            _counts_raw  = count_my_animals_tool.invoke({"business_id": int(_bid_prefetch)})
+            business_snapshot = (
+                "CURRENT BUSINESS CONTEXT (live from database — use this to answer questions "
+                "about the farm without calling additional tools unless the user needs detail):\n"
+                + _profile_raw
+                + "\n\n"
+                + _counts_raw
+            )
+            print(f"[Advisory Agent] Business snapshot pre-fetched for BusinessID={_bid_prefetch}")
+        except Exception as _pf_err:
+            print(f"[Advisory Agent] Business pre-fetch failed: {_pf_err}")
+
     # 3. Construct Full Prompt
     rag_section = f"RELEVANT KNOWLEDGE BASE:\n{rag_context}" if rag_context else ""
 
@@ -977,16 +1063,60 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
     _lum = latest_user_message.lower()
     _tool_directive = ""
     _vehicle_kw = ("vehicle", "truck", "van", "trailer", "fleet", "cold chain", "refrigerat")
+    _profile_kw = ("business profile", "business info", "my profile", "my account info", "business details")
+    _inventory_kw = ("produce inventory", "meat inventory", "processed food", "my listings", "my inventory", "what do i sell", "what am i selling")
+    _order_kw = ("my order", "incoming order", "pending order", "orders i have", "orders to ship", "what orders")
+    _service_kw = ("my service", "services i offer", "service listing", "service price")
+    _blog_kw = ("my blog", "blog post", "my articles", "my posts")
+    _cert_kw = ("my certification", "my cert", "certifications i have", "organic cert", "cert expir")
+    _reading_kw = ("temperature reading", "temp reading", "cold chain reading", "vehicle reading")
     if any(k in _lum for k in _vehicle_kw):
         _tool_directive = (
             "\n⚠ TOOL REQUIRED: The user is asking about their cold chain fleet. "
             "You MUST call list_cold_chain_vehicles_tool() immediately. "
             "Do NOT describe or list vehicles from memory — only report what the tool returns.\n"
         )
+    elif any(k in _lum for k in _profile_kw):
+        _tool_directive = (
+            "\n⚠ TOOL REQUIRED: Call get_business_profile_tool() to fetch the current business profile. "
+            "Never invent or assume profile details — only report what the tool returns.\n"
+        )
+    elif any(k in _lum for k in _order_kw):
+        _tool_directive = (
+            "\n⚠ TOOL REQUIRED: Call list_seller_orders_tool() to fetch real order data. "
+            "Never invent order details — only report what the tool returns.\n"
+        )
+    elif any(k in _lum for k in _inventory_kw):
+        _tool_directive = (
+            "\n⚠ TOOL REQUIRED: Call the appropriate inventory tool "
+            "(list_produce_inventory_tool / list_meat_inventory_tool / list_processed_food_tool / list_my_listings_tool) "
+            "before answering. Never invent inventory data.\n"
+        )
+    elif any(k in _lum for k in _service_kw):
+        _tool_directive = (
+            "\n⚠ TOOL REQUIRED: Call list_my_services_tool() to fetch service listings. "
+            "Never invent service details.\n"
+        )
+    elif any(k in _lum for k in _blog_kw):
+        _tool_directive = (
+            "\n⚠ TOOL REQUIRED: Call list_my_blog_posts_tool() to fetch blog posts. "
+            "Never invent blog content.\n"
+        )
+    elif any(k in _lum for k in _cert_kw):
+        _tool_directive = (
+            "\n⚠ TOOL REQUIRED: Call list_my_certifications_tool() to fetch certifications. "
+            "Never invent certification details.\n"
+        )
+    elif any(k in _lum for k in _reading_kw):
+        _tool_directive = (
+            "\n⚠ TOOL REQUIRED: Call list_cold_chain_readings_tool() to fetch temperature readings. "
+            "Never invent temperature data.\n"
+        )
 
     full_prompt = f"""{role_prompt}
 
 {identity_section}
+{business_snapshot}
 {_tool_directive}
 {memory_section}
 
@@ -1072,7 +1202,44 @@ After fetching data, always give a SPECIFIC, ACTIONABLE recommendation — never
 
 COLD CHAIN & LOGISTICS — Vehicle fleet (ALWAYS call the tool; NEVER guess vehicle names or specs):
 - list_cold_chain_vehicles_tool(): REQUIRED for any question about the user's vehicles, fleet, truck, van, trailer, cold chain, or refrigerated transport. Returns the exact vehicles, temperature ranges, drivers, and latest readings from the database. Do NOT describe vehicles from memory — call this tool first, then report what it returns.
+- list_cold_chain_readings_tool(vehicle_id?, limit?): recent temperature readings across all vehicles (or one vehicle). Use for "show temperature readings", "any temp violations", "what temps have been logged". vehicle_id=0 = all vehicles.
+- log_cold_chain_reading_tool(vehicle_id, temp_c, notes?): log a new temperature reading. Confirm vehicle + temp before calling. Use when user says "log a reading of -2°C on truck A".
+- list_cold_chain_shipments_tool(status?): active or historical shipments with origin, destination, vehicle, driver. Use for "show my shipments", "deliveries in transit", "shipment history".
 - get_animal_detail_tool(animal_id): FULL animal profile — name, breed/category, sex, DOB, colors, sale/stud price, embryo/semen price, registration numbers, fiber stats (micron, CV, comfort factor), co-owners. Use when the user asks about a SPECIFIC animal by ID: "tell me about animal #42", "what's the stud fee for that alpaca", "show me the fiber data". Access-controlled to the user's business.
+
+BUSINESS PROFILE — read and update the business account:
+- get_business_profile_tool(): read the full business profile (name, description, slogan, phone, email, website, address, type, active status, social links). Use for "show my business profile", "what is my business info", "what fields does my account have".
+- update_business_profile_tool(business_name?, description?, slogan?, phone?, email?, website?): update public profile fields. Leave fields blank to keep them unchanged. Confirm name changes first. Use for "update our website", "change our phone number", "fix our description", "update our slogan".
+
+ANIMALS — full management (list details, update price/status):
+- list_my_animals_detail_tool(): list ALL animals with editable fields — name, sex, DOB, sale price, stud price, for-sale/stud status, website visibility. Use for "show all my animals", "what are my animal prices", "which animals are not listed for sale".
+- update_animal_tool(animal_id, price?, stud_price?, for_sale?, for_stud?, description?, show_on_website?): update one animal. for_sale=1 to list / 0 to remove. Pass -1 for fields not being changed. Confirm price/status changes. Use for "change price on animal #42 to $1500", "take my llama off the market", "list my alpaca for stud".
+
+MARKETPLACE INVENTORY — produce, meat, processed food:
+- list_produce_inventory_tool(): full produce/crop inventory with qty, unit, prices, available date, active status (ShowProduce). Use for "show my produce", "what crops am I selling", "produce listings with prices".
+- update_produce_listing_tool(produce_id, quantity?, retail_price?, wholesale_price?, show_produce?, available_date?): update one produce listing. Pass -1 for fields not changing. Confirm price changes. Use for "change tomato price to $4/lb", "hide the apple listing", "update corn quantity".
+- list_meat_inventory_tool(): full meat inventory with ingredient, cut, qty, weight unit, prices, active status. Use for "show my meat inventory", "what cuts am I selling", "beef listings with prices".
+- update_meat_listing_tool(meat_id, quantity?, retail_price?, wholesale_price?, show_meat?, available_date?, notes?): update one meat listing. Use for "change beef price to $8/lb", "hide pork listing", "update lamb quantity".
+- list_processed_food_tool(): all processed/artisan food products with qty, prices, organic/local flags, active status. Use for "show my processed food", "what artisan products do I have", "food product listings".
+- update_processed_food_tool(food_id, quantity?, retail_price?, wholesale_price?, show_product?, notes?): update one processed food listing. Use for "change jam price to $6", "hide cheese listing", "update bread quantity".
+
+BLOG — view and create posts:
+- list_my_blog_posts_tool(): list blog posts with title, category, date, published/draft status and visibility (directory vs website). Use for "show my blog posts", "what articles have I written", "are my posts published".
+- create_blog_post_tool(title, content, category?, publish?): create a new blog post. publish=1 to publish immediately, 0 for draft. ALWAYS confirm title+content with user before calling. Use for "write a blog post about X", "publish an article on our process", "draft a post".
+
+SERVICES — view and add service listings:
+- list_my_services_tool(): list service listings with title, category, price, availability, description. Use for "what services do I offer", "show my service listings", "what is my shearing service price".
+- add_service_listing_tool(title, description?, price?, contact_for_price?, available?, phone?, website?): add a new service listing. Confirm details before calling. Use for "add a shearing service at $15/head", "create a boarding service listing".
+
+SELLER MARKETPLACE ORDERS — view and manage incoming orders:
+- list_seller_orders_tool(status?): incoming orders from buyers. status filter: 'pending'/'confirmed'/'shipped'/'rejected'; empty = active (pending+confirmed). Use for "what orders do I have", "pending orders", "orders I need to ship".
+- confirm_seller_order_tool(order_item_id, estimated_delivery_date?): accept a pending order. Confirm with user first. Use for "accept order #123", "confirm the tomato order".
+- reject_seller_order_tool(order_item_id, reason): reject pending order + restore inventory. Reason required (buyer sees it). Confirm first. Use for "reject order #123 — out of stock".
+- ship_seller_order_tool(order_item_id, tracking_number?, estimated_delivery_date?): mark confirmed order as shipped. Use for "order #123 shipped, tracking 1Z999".
+
+CERTIFICATIONS — track credentials and compliance:
+- list_my_certifications_tool(): list certifications with type, issuing body, cert number, issue/expiry dates, status. Use for "show my certifications", "when does my organic cert expire", "any certs expiring soon".
+- add_certification_tool(certification_type, issuing_body?, certification_number?, issue_date?, expiry_date?, notes?): add a new cert record. Confirm details first. Use for "add my USDA organic cert", "record my food safety certification".
 
 PLANT & INGREDIENT KNOWLEDGE BASE — agronomic reference data for 3,000+ plant varieties and all food ingredient groups:
 - search_plants_tool(query, plant_type): find plants by name or type (Vegetable/Herb/Fruit/Legume/Nut/Grain/Mushroom/Root/Tubers/Leafy Green). Returns plant IDs + variety counts. Use first when the user asks about a plant type or specific plant name: "what tomato varieties are in the system", "show me all grain plants", "find herb plants named basil".
@@ -1144,6 +1311,8 @@ Write like you're talking to a friend."""
         bound_tools.extend(business_ops_tools)
     if FARM_DATA_AVAILABLE:
         bound_tools.extend(farm_data_tools)
+    if BUSINESS_DATA_AVAILABLE:
+        bound_tools.extend(business_data_tools)
     if KNOWLEDGE_BASE_AVAILABLE:
         bound_tools.extend(knowledge_base_tools)
     if ACTIONS_AVAILABLE:
@@ -1543,6 +1712,215 @@ Write like you're talking to a friend."""
                         bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
                         print(f"[Advisory Agent] Executing List Cold Chain Vehicles Tool: business_id={bid}")
                         tool_result = list_cold_chain_vehicles_tool.invoke({"business_id": bid})
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    # ── business_data tools ───────────────────────────────────
+                    elif tc_name == 'get_business_profile_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Get Business Profile: business_id={bid}")
+                        tool_result = get_business_profile_tool.invoke({"business_id": bid})
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'update_business_profile_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Update Business Profile: business_id={bid}")
+                        tool_result = update_business_profile_tool.invoke({
+                            "business_id":   bid,
+                            "business_name": tc_args.get('business_name', ''),
+                            "description":   tc_args.get('description', ''),
+                            "slogan":        tc_args.get('slogan', ''),
+                            "phone":         tc_args.get('phone', ''),
+                            "email":         tc_args.get('email', ''),
+                            "website":       tc_args.get('website', ''),
+                        })
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'list_my_animals_detail_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing List Animals Detail: business_id={bid}")
+                        tool_result = list_my_animals_detail_tool.invoke({"business_id": bid})
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'update_animal_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Update Animal: animal_id={tc_args.get('animal_id')}")
+                        tool_result = update_animal_tool.invoke({
+                            "animal_id":       int(tc_args.get('animal_id', 0) or 0),
+                            "business_id":     bid,
+                            "price":           float(tc_args.get('price', -1) if tc_args.get('price') is not None else -1),
+                            "stud_price":      float(tc_args.get('stud_price', -1) if tc_args.get('stud_price') is not None else -1),
+                            "for_sale":        int(tc_args.get('for_sale', -1) if tc_args.get('for_sale') is not None else -1),
+                            "for_stud":        int(tc_args.get('for_stud', -1) if tc_args.get('for_stud') is not None else -1),
+                            "description":     tc_args.get('description', ''),
+                            "show_on_website": int(tc_args.get('show_on_website', -1) if tc_args.get('show_on_website') is not None else -1),
+                        })
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'list_produce_inventory_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing List Produce Inventory: business_id={bid}")
+                        tool_result = list_produce_inventory_tool.invoke({"business_id": bid})
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'update_produce_listing_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Update Produce Listing: produce_id={tc_args.get('produce_id')}")
+                        tool_result = update_produce_listing_tool.invoke({
+                            "produce_id":       int(tc_args.get('produce_id', 0) or 0),
+                            "business_id":      bid,
+                            "quantity":         float(tc_args.get('quantity', -1) if tc_args.get('quantity') is not None else -1),
+                            "retail_price":     float(tc_args.get('retail_price', -1) if tc_args.get('retail_price') is not None else -1),
+                            "wholesale_price":  float(tc_args.get('wholesale_price', -1) if tc_args.get('wholesale_price') is not None else -1),
+                            "show_produce":     int(tc_args.get('show_produce', -1) if tc_args.get('show_produce') is not None else -1),
+                            "available_date":   tc_args.get('available_date', ''),
+                        })
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'list_meat_inventory_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing List Meat Inventory: business_id={bid}")
+                        tool_result = list_meat_inventory_tool.invoke({"business_id": bid})
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'update_meat_listing_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Update Meat Listing: meat_id={tc_args.get('meat_id')}")
+                        tool_result = update_meat_listing_tool.invoke({
+                            "meat_id":          int(tc_args.get('meat_id', 0) or 0),
+                            "business_id":      bid,
+                            "quantity":         float(tc_args.get('quantity', -1) if tc_args.get('quantity') is not None else -1),
+                            "retail_price":     float(tc_args.get('retail_price', -1) if tc_args.get('retail_price') is not None else -1),
+                            "wholesale_price":  float(tc_args.get('wholesale_price', -1) if tc_args.get('wholesale_price') is not None else -1),
+                            "show_meat":        int(tc_args.get('show_meat', -1) if tc_args.get('show_meat') is not None else -1),
+                            "available_date":   tc_args.get('available_date', ''),
+                            "notes":            tc_args.get('notes', ''),
+                        })
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'list_processed_food_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing List Processed Food: business_id={bid}")
+                        tool_result = list_processed_food_tool.invoke({"business_id": bid})
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'update_processed_food_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Update Processed Food: food_id={tc_args.get('food_id')}")
+                        tool_result = update_processed_food_tool.invoke({
+                            "food_id":          int(tc_args.get('food_id', 0) or 0),
+                            "business_id":      bid,
+                            "quantity":         float(tc_args.get('quantity', -1) if tc_args.get('quantity') is not None else -1),
+                            "retail_price":     float(tc_args.get('retail_price', -1) if tc_args.get('retail_price') is not None else -1),
+                            "wholesale_price":  float(tc_args.get('wholesale_price', -1) if tc_args.get('wholesale_price') is not None else -1),
+                            "show_product":     int(tc_args.get('show_product', -1) if tc_args.get('show_product') is not None else -1),
+                            "notes":            tc_args.get('notes', ''),
+                        })
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'list_my_blog_posts_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing List Blog Posts: business_id={bid}")
+                        tool_result = list_my_blog_posts_tool.invoke({"business_id": bid})
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'create_blog_post_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Create Blog Post: business_id={bid}")
+                        tool_result = create_blog_post_tool.invoke({
+                            "business_id": bid,
+                            "title":       tc_args.get('title', ''),
+                            "content":     tc_args.get('content', ''),
+                            "category":    tc_args.get('category', ''),
+                            "publish":     int(tc_args.get('publish', 0) or 0),
+                        })
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'list_my_services_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing List Services: business_id={bid}")
+                        tool_result = list_my_services_tool.invoke({"business_id": bid})
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'add_service_listing_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Add Service: business_id={bid}")
+                        tool_result = add_service_listing_tool.invoke({
+                            "business_id":       bid,
+                            "title":             tc_args.get('title', ''),
+                            "description":       tc_args.get('description', ''),
+                            "price":             float(tc_args.get('price', -1) if tc_args.get('price') is not None else -1),
+                            "contact_for_price": int(tc_args.get('contact_for_price', 0) or 0),
+                            "available":         int(tc_args.get('available', 1) if tc_args.get('available') is not None else 1),
+                            "phone":             tc_args.get('phone', ''),
+                            "website":           tc_args.get('website', ''),
+                        })
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'list_seller_orders_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing List Seller Orders: business_id={bid}")
+                        tool_result = list_seller_orders_tool.invoke({
+                            "business_id": bid,
+                            "status":      tc_args.get('status', ''),
+                        })
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'confirm_seller_order_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Confirm Order: order_item_id={tc_args.get('order_item_id')}")
+                        tool_result = confirm_seller_order_tool.invoke({
+                            "order_item_id":           int(tc_args.get('order_item_id', 0) or 0),
+                            "business_id":             bid,
+                            "estimated_delivery_date": tc_args.get('estimated_delivery_date', ''),
+                        })
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'reject_seller_order_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Reject Order: order_item_id={tc_args.get('order_item_id')}")
+                        tool_result = reject_seller_order_tool.invoke({
+                            "order_item_id": int(tc_args.get('order_item_id', 0) or 0),
+                            "business_id":   bid,
+                            "reason":        tc_args.get('reason', ''),
+                        })
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'ship_seller_order_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Ship Order: order_item_id={tc_args.get('order_item_id')}")
+                        tool_result = ship_seller_order_tool.invoke({
+                            "order_item_id":           int(tc_args.get('order_item_id', 0) or 0),
+                            "business_id":             bid,
+                            "tracking_number":         tc_args.get('tracking_number', ''),
+                            "estimated_delivery_date": tc_args.get('estimated_delivery_date', ''),
+                        })
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'list_cold_chain_readings_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing List Cold Chain Readings: business_id={bid}")
+                        tool_result = list_cold_chain_readings_tool.invoke({
+                            "business_id": bid,
+                            "vehicle_id":  int(tc_args.get('vehicle_id', 0) or 0),
+                            "limit":       int(tc_args.get('limit', 20) or 20),
+                        })
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'log_cold_chain_reading_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Log Cold Chain Reading: vehicle_id={tc_args.get('vehicle_id')}")
+                        tool_result = log_cold_chain_reading_tool.invoke({
+                            "vehicle_id":  int(tc_args.get('vehicle_id', 0) or 0),
+                            "business_id": bid,
+                            "temp_c":      float(tc_args.get('temp_c', 0) or 0),
+                            "notes":       tc_args.get('notes', ''),
+                        })
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'list_cold_chain_shipments_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing List Cold Chain Shipments: business_id={bid}")
+                        tool_result = list_cold_chain_shipments_tool.invoke({
+                            "business_id": bid,
+                            "status":      tc_args.get('status', ''),
+                        })
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'list_my_certifications_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing List Certifications: business_id={bid}")
+                        tool_result = list_my_certifications_tool.invoke({"business_id": bid})
+                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                    elif tc_name == 'add_certification_tool' and BUSINESS_DATA_AVAILABLE:
+                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
+                        print(f"[Advisory Agent] Executing Add Certification: business_id={bid}")
+                        tool_result = add_certification_tool.invoke({
+                            "business_id":          bid,
+                            "certification_type":   tc_args.get('certification_type', ''),
+                            "issuing_body":         tc_args.get('issuing_body', ''),
+                            "certification_number": tc_args.get('certification_number', ''),
+                            "issue_date":           tc_args.get('issue_date', ''),
+                            "expiry_date":          tc_args.get('expiry_date', ''),
+                            "notes":                tc_args.get('notes', ''),
+                        })
                         farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
                     elif tc_name == 'search_plants_tool' and KNOWLEDGE_BASE_AVAILABLE:
                         query = tc_args.get('query', '')
