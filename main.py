@@ -51,6 +51,7 @@ from routers import my_registrations
 from routers import event_analytics
 from routers import event_features
 from routers import company_features
+from routers import dashboard as dashboard_router
 from routers import associations
 from routers import blog
 from routers import accounting
@@ -379,6 +380,7 @@ app.include_router(event_broadcast.router)
 app.include_router(my_registrations.router)
 app.include_router(event_analytics.router)
 app.include_router(company_features.router)
+app.include_router(dashboard_router.router)
 app.include_router(blog.router)
 app.include_router(accounting.router)
 app.include_router(animals.router)
