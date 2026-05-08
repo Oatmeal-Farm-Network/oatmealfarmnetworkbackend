@@ -2432,6 +2432,13 @@ Write like you're talking to a friend."""
         if _map_cmd_collected not in final_response:
             final_response = final_response + "\n" + _map_cmd_collected
 
+    if not final_response or not final_response.strip():
+        final_response = (
+            "I'm not quite sure what you're asking about. Could you give me a bit more detail? "
+            "For example, are you asking about a specific field on your farm, your livestock health, "
+            "crop conditions, or the weather? I can also look up your fields by name if you let me know which one."
+        )
+
     # 6. Parse Recommendations (Simple Heuristic)
     recommendations = []
     for line in final_response.split('\n'):
