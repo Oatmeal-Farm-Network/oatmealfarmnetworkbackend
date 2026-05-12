@@ -291,6 +291,8 @@ try:
     from actions import (
         actions_tools,
         draft_produce_listing_tool,
+        draft_meat_listing_tool,
+        draft_processed_food_listing_tool,
         draft_event_tool,
         draft_blog_post_tool,
     )
@@ -299,6 +301,8 @@ except Exception as _e:
     print(f"[nodes] actions unavailable: {_e}")
     actions_tools = []
     draft_produce_listing_tool = None
+    draft_meat_listing_tool = None
+    draft_processed_food_listing_tool = None
     draft_event_tool = None
     draft_blog_post_tool = None
     ACTIONS_AVAILABLE = False
@@ -501,6 +505,31 @@ def _options_are_consistent(question_text: str, options: List[str], answer_slot:
         return sum(1 for opt in opts_lower if any(marker in opt for marker in goal_markers)) >= 2
 
     return True
+
+
+# ============================================================================
+# SAIGE PERSONA
+# ============================================================================
+
+_SAIGE_PERSONA = """
+IDENTITY & VOICE — You are Saige. A woman in her early 40s, Caucasian, with a deep outdoor tan from years of working on farms and ranches. You carry a slight Texan accent — nothing heavy, just enough to add warmth and color to the way you talk.
+
+ROLE — You are a professional farm and food advisor. You help farmers with planting, growing, harvesting, livestock care, soil health, and marketing. You also help restaurant owners and food suppliers source local ingredients and build farm-to-table connections.
+
+PERSONALITY —
+- Warm and relationship-focused. You remember people's farms, their animals, their challenges. You ask follow-up questions when it helps.
+- Professional but never stiff. You mix technical agricultural vocabulary with plain, friendly language.
+- Politically neutral. You never take sides on policy, GMOs, organic vs. conventional, or land use debates — you give the pros and cons and let the farmer decide.
+- Pragmatic and solution-oriented. You focus on what actually works, not what's theoretically ideal.
+- Approachable. You're the advisor farmers call when they're worried about their crops or an animal is off — you calm them down and help them think through it.
+
+SPEECH STYLE — Casual Texan warmth mixed with technical precision when the topic calls for it.
+- Use "y'all" naturally (not constantly, just when addressing a group or being warm).
+- Occasional phrases like "sure thing", "you bet", "I reckon", "right off the bat", "holler at me if".
+- Keep answers concise by default. Go detailed when the topic is complex or the farmer seems to need depth.
+- Never be preachy or lecture. Give the answer, give the options, respect the farmer's judgment.
+- Do NOT open responses with "Hello", "Hi there", "Great question!", or any filler greeting. Start with the substance.
+""".strip()
 
 
 # ============================================================================
@@ -1032,8 +1061,8 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
         else:
             try:
                 _resp = llm.invoke(
-                    "You are Saige, a farm assistant. The user is mid-conversation. "
-                    "Answer the question directly and concisely. "
+                    f"{_SAIGE_PERSONA}\n\n"
+                    "The user is mid-conversation. Answer the question directly and concisely. "
                     "Do NOT introduce yourself, do NOT greet the user, and do NOT open with phrases like "
                     "'Hello there', 'Hi', 'I'm Saige', or 'your friendly assistant'. "
                     "Skip the preamble — start with the answer.\n\n"
@@ -1051,6 +1080,7 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
     assessment = state.get("assessment_summary", "")
     history = state.get("history") or []
     soil_info = state.get("soil_info") or {}
+    _image_data = state.get("image_data") or None  # base64 image for multimodal queries
 
     latest_user_message = ""
     for msg in reversed(history):
@@ -1309,13 +1339,22 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
             "The [MAP_CMD] in the tool result will move the map automatically.\n"
         )
 
-    full_prompt = f"""{role_prompt}
+    _image_note = (
+        "\n[IMAGE ATTACHED]: The farmer has shared a photo with this message. "
+        "The image is included as a multimodal attachment — analyze it directly and incorporate "
+        "your visual observations into your response (identify the plant/animal/symptom/condition visible).\n"
+        if _image_data else ""
+    )
+
+    full_prompt = f"""{_SAIGE_PERSONA}
+
+{role_prompt}
 
 {identity_section}
 {business_snapshot}
 {_tool_directive}
 {memory_section}
-
+{_image_note}
 Farmer's latest message: {latest_user_message}
 Farmer's tracked issues: {', '.join(issues) if issues else 'General inquiry'}
 Current Context:
@@ -1451,6 +1490,8 @@ WHEN GIVING PLANT/INGREDIENT ADVICE: Always translate lookup data into practical
 - Water need 1.0–1.5 in/week with NDVI stress = "this crop wants more water than it's getting — match irrigation to the GDD stage"
 - Organic matter "Moderate (2–4%)" = "your field's OM is adequate; adding cover crops can push it toward the High range and improve yields"
 - draft_produce_listing_tool(ingredient_name, quantity, measurement, retail_price, wholesale_price, available_date): DRAFT a new produce listing — saves a pending draft for the farmer to approve, never publishes directly. Use for "list my tomatoes at $3/lb", "put 10 dozen eggs on the marketplace". Always confirm the draft with the user before calling.
+- draft_meat_listing_tool(ingredient_name, cut, quantity, weight_unit, retail_price, wholesale_price, available_date): DRAFT a new meat inventory listing. Use for "list 50 lbs of ground beef at $8/lb", "add lamb chops to the marketplace", "put pork loin on sale". Saves pending draft — does not publish.
+- draft_processed_food_listing_tool(name, quantity, retail_price, wholesale_price, is_organic, is_local, notes): DRAFT a new processed/artisan food product listing. Use for "list my strawberry jam at $7 a jar", "add sourdough bread to the marketplace", "put goat cheese on sale". Saves pending draft — does not publish.
 - draft_event_tool(event_name, description, start_date, end_date, location_name, city, state, is_free, registration_required): DRAFT a new farm event. Use for "plan a farm tour", "create an open-ranch day". Saves pending — does not publish.
 - draft_blog_post_tool(title, content, category): DRAFT a new blog post for the business. Use for "write a blog post about…", "draft an article". Saves pending — does not publish.
 - planting_calendar_tool(crop, zone, lat, lon): when/how to plant a specific crop (earliest safe plant-out date, soil-temp target, seed depth, direct-sow vs transplant, days to maturity). Use for "when should I plant X", "is it too early for Y".
@@ -1479,12 +1520,12 @@ COLD-CHAIN — predictive shelf life:
 Prioritize the latest user message and any newly provided measurements over older generic context.
 If soil-test values are present, reference them explicitly and avoid repeating unchanged advice.
 
-Provide a concise, friendly response (3-4 sentences) with:
+Provide a concise response (3-4 sentences) with:
 1. Direct answer to their question
 2. 2-3 specific, actionable recommendations
 
-Use simple, conversational language. NO markdown formatting, NO asterisks, NO headers.
-Write like you're talking to a friend."""
+Keep it conversational — Saige's voice, not a textbook. NO markdown formatting, NO asterisks, NO headers.
+If the farmer seems worried, acknowledge it briefly before diving into solutions. If the answer is simple, keep it short."""
 
     # 4. Bind Tools
     bound_tools = []
@@ -1649,11 +1690,38 @@ Write like you're talking to a friend."""
                 )
             _thread_id = state.get("thread_id", "")
             _stream_q = _get_stream_queue(_thread_id) if _thread_id else None
+
+            # Build LLM input — multimodal on first iteration when an image was attached
+            if iteration == 0 and _image_data:
+                try:
+                    from langchain_core.messages import HumanMessage as _HumanMessage
+                    # Detect MIME type from base64 magic bytes
+                    _mime = "image/jpeg"
+                    try:
+                        import base64 as _b64
+                        _hdr = _b64.b64decode(_image_data[:16] + "==")[:4]
+                        if _hdr[:4] == b"\x89PNG":
+                            _mime = "image/png"
+                        elif _hdr[:4] == b"RIFF" or _hdr[:4] == b"WEBP":
+                            _mime = "image/webp"
+                    except Exception:
+                        pass
+                    _llm_input = _HumanMessage(content=[
+                        {"type": "image_url", "image_url": {"url": f"data:{_mime};base64,{_image_data}"}},
+                        {"type": "text", "text": current_input},
+                    ])
+                    print(f"[Advisory Agent] Sending multimodal message (mime={_mime})")
+                except Exception as _img_err:
+                    print(f"[Advisory Agent] Multimodal build failed, falling back to text: {_img_err}")
+                    _llm_input = current_input
+            else:
+                _llm_input = current_input
+
             if _stream_q is not None:
                 # Streaming mode: accumulate chunks and forward text tokens to the queue
                 _accumulated = None
                 try:
-                    for _chunk in llm_with_tools.stream(current_input):
+                    for _chunk in llm_with_tools.stream(_llm_input):
                         if _accumulated is None:
                             _accumulated = _chunk
                         else:
@@ -1663,10 +1731,10 @@ Write like you're talking to a friend."""
                             _stream_q.put(_tok)
                 except Exception as _se:
                     print(f"[Advisory Agent] Streaming error, falling back to invoke: {_se}")
-                    _accumulated = llm_with_tools.invoke(current_input)
-                response = _accumulated if _accumulated is not None else llm_with_tools.invoke(current_input)
+                    _accumulated = llm_with_tools.invoke(_llm_input)
+                response = _accumulated if _accumulated is not None else llm_with_tools.invoke(_llm_input)
             else:
-                response = llm_with_tools.invoke(current_input)
+                response = llm_with_tools.invoke(_llm_input)
 
             # Check for tool calls
             if hasattr(response, 'tool_calls') and response.tool_calls and iteration < max_iterations - 1:
@@ -2434,9 +2502,9 @@ Write like you're talking to a friend."""
 
     if not final_response or not final_response.strip():
         final_response = (
-            "I'm not quite sure what you're asking about. Could you give me a bit more detail? "
-            "For example, are you asking about a specific field on your farm, your livestock health, "
-            "crop conditions, or the weather? I can also look up your fields by name if you let me know which one."
+            "I'm not quite sure I caught what y'all are asking about — could you give me a bit more detail? "
+            "Are you asking about a specific field, your livestock, crop conditions, or the weather? "
+            "Holler at me with a little more context and I'll get you sorted right out."
         )
 
     # 6. Parse Recommendations (Simple Heuristic)
@@ -2467,7 +2535,7 @@ def livestock_advisory_node(state: FarmState):
     """Livestock advisory with RAG (livestock_knowledge) and weather tool."""
     return run_advisory_agent(
         state,
-        role_prompt="You are an expert livestock veterinarian and breed specialist. Provide practical advice on animal health, breed selection, and management.",
+        role_prompt="You are Saige — an expert livestock veterinarian and breed specialist with deep practical experience on farms and ranches. Give straight-talking advice on animal health, breed selection, and herd management. When an animal is sick or off, help the farmer stay calm and work through it step by step.",
         rag_systems=[rag_livestock]
     )
 
@@ -2476,7 +2544,7 @@ def crop_advisory_node(state: FarmState):
     """Crop advisory with RAG (plant_knowledge) and weather tool."""
     return run_advisory_agent(
         state,
-        role_prompt="You are an expert agronomist specializing in crop pathology, soil health, and sustainable farming practices.",
+        role_prompt="You are Saige — an expert agronomist who has worked fields from Texas Hill Country to the Salinas Valley. You specialize in crop pathology, soil health, and practical sustainable farming. Give grounded, actionable advice — what actually works in the field, not just what the textbook says.",
         rag_systems=[rag_plant]
     )
 
@@ -2485,7 +2553,7 @@ def bakasura_advisory_node(state: FarmState):
     """Bakasura docs advisory with RAG (bakasura-docs) and weather tool."""
     return run_advisory_agent(
         state,
-        role_prompt="You are a knowledgeable farm advisor with access to the Bakasura knowledge base. Provide accurate, practical guidance based on available documentation.",
+        role_prompt="You are Saige — a knowledgeable farm advisor with access to the Oatmeal Farm Network knowledge base. Give accurate, practical guidance grounded in the available documentation. Be direct and warm — farmers are busy people.",
         rag_systems=[rag_bakasura]
     )
 
@@ -2494,7 +2562,7 @@ def news_advisory_node(state: FarmState):
     """News articles advisory with RAG (news_articles) and weather tool."""
     return run_advisory_agent(
         state,
-        role_prompt="You are an agricultural news analyst. Provide insights and advice based on the latest farming news, market trends, and agricultural developments.",
+        role_prompt="You are Saige — an agricultural news analyst and market-savvy farm advisor. Translate the latest farming news and market trends into plain, practical takeaways that help farmers make smarter decisions. Skip the fluff and get to what actually matters for their operation.",
         rag_systems=[rag_news]
     )
 
@@ -2503,7 +2571,7 @@ def mixed_advisory_node(state: FarmState):
     """Integrated advisory using all three RAG collections and weather tool."""
     return run_advisory_agent(
         state,
-        role_prompt="You are an integrated farming systems expert specializing in permaculture, mixed farming, and sustainable agricultural practices.",
+        role_prompt="You are Saige — an integrated farming systems expert with deep roots in permaculture, mixed farming, and sustainable ag. You see the whole picture: how the livestock, crops, soil, and weather all connect. Give holistic but practical advice that farmers can actually act on.",
         rag_systems=[rag_livestock, rag_plant, rag_bakasura, rag_hitl_charlie, rag_news]
     )
 
