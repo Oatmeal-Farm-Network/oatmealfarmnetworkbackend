@@ -2,10 +2,44 @@ from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from database import get_db
-import time
+import time, re
 from routers.translation import translate_fields, translate_list
 
 router = APIRouter(prefix="/api/livestock", tags=["livestock"])
+
+GCS_IMAGES_URL = "https://storage.googleapis.com/oatmeal-farm-network-images/Animals"
+
+OLD_DOMAINS = [
+    'oatmealfarmnetwork.com', 'livestockofamerica.com',
+    'livestockoftheworld.com', 'alpacainfinity.com',
+    'globallivestocksolutions.com',
+]
+
+def _fix_image_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    url = url.strip()
+    if len(url) < 4:
+        return None
+    if url.lower().startswith('http'):
+        url = re.sub(r'^http:', 'https:', url, flags=re.IGNORECASE)
+        for domain in OLD_DOMAINS:
+            if domain in url.lower():
+                filename = url.split('/')[-1].strip()
+                if filename and len(filename) > 3:
+                    return f"{GCS_IMAGES_URL}/{filename}"
+        return url
+    if url.lower().startswith('/uploads/'):
+        filename = url[9:].strip()
+        if filename and len(filename) > 3:
+            return f"{GCS_IMAGES_URL}/{filename}"
+        return None
+    if '/' not in url and len(url) > 4:
+        return f"{GCS_IMAGES_URL}/{url}"
+    filename = url.split('/')[-1].strip()
+    if filename and len(filename) > 3:
+        return f"{GCS_IMAGES_URL}/{filename}"
+    return None
 
 SLUG_TO_SPECIES_ID = {
     'alpacas': 2, 'bison': 9, 'buffalo': 34, 'camels': 18, 'cattle': 8,
@@ -88,7 +122,7 @@ def get_species_letters(slug: str, db: Session = Depends(get_db)):
                 "singular": info_row.SingularTerm,
                 "plural": info_row.PluralTerm,
                 "description": info_row.SpeciesText1,
-                "main_image": info_row.SpeciesImage1,
+                "main_image": _fix_image_url(info_row.SpeciesImage1),
             }
 
         # Get distinct first letters
@@ -156,7 +190,7 @@ def get_species(slug: str, letter: str = None, lang: str = "en", db: Session = D
                 "singular": info_row.SingularTerm,
                 "plural": info_row.PluralTerm,
                 "description": info_row.SpeciesText1,
-                "main_image": info_row.SpeciesImage1,
+                "main_image": _fix_image_url(info_row.SpeciesImage1),
             }
 
         if letter:
@@ -185,7 +219,7 @@ def get_species(slug: str, letter: str = None, lang: str = "en", db: Session = D
                     "breed_id": r.BreedLookupID,
                     "breed": r.Breed,
                     "description": r.Breeddescription,
-                    "image": r.BreedImage,
+                    "image": _fix_image_url(r.BreedImage),
                     "image_caption": r.BreedImageCaption,
                 }
                 for r in rows
@@ -224,7 +258,7 @@ def get_breed(breed_id: int, lang: str = "en", db: Session = Depends(get_db)):
             "breed_id": row.BreedLookupID,
             "breed": row.Breed,
             "description": row.Breeddescription,
-            "image": row.BreedImage,
+            "image": _fix_image_url(row.BreedImage),
             "image_caption": row.BreedImageCaption,
             "image_orientation": row.BreedImageOrientation,
             "video": row.Breedvideo,
@@ -290,13 +324,13 @@ def get_about(slug: str, db: Session = Depends(get_db)):
             txt = getattr(info_row, f'SpeciesText{i}', None)
             img = getattr(info_row, f'SpeciesImage{i}', None)
             if txt:
-                sections.append({"title": "", "content": txt, "image": img})
+                sections.append({"title": "", "content": txt, "image": _fix_image_url(img)})
 
         result = {
             "singular": info_row.SingularTerm,
             "plural": info_row.PluralTerm,
             "about_html": info_row.SpeciesText1 or '',
-            "main_image": info_row.SpeciesImage1,
+            "main_image": _fix_image_url(info_row.SpeciesImage1),
             "sections": sections,
             "colors": [r.SpeciesColor for r in color_rows],
         }
