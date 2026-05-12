@@ -226,6 +226,7 @@ class ChatRequest(BaseModel):
     user_input: str = Field(..., min_length=1, max_length=MAX_MESSAGE_CHARS)
     thread_id: str = Field(..., min_length=1, max_length=128)
     business_id: Optional[str] = None  # from URL query param (?BusinessID=...)
+    image_data: Optional[str] = None   # base64-encoded image for multimodal queries
     # NOTE: people_id is NOT here — extracted from Bearer JWT by get_current_user()
 
     @field_validator("user_input")
@@ -697,6 +698,7 @@ Examples:
                     "business_id": business_id,
                     "thread_id": request.thread_id,
                     "long_term_memory": long_term_memory,
+                    "image_data": request.image_data or None,
                 },
                 config,
                 stream_mode="values",
@@ -915,6 +917,7 @@ async def chat_stream(
                             "business_id": business_id,
                             "thread_id": thread_id,
                             "long_term_memory": long_term_memory,
+                            "image_data": request.image_data or None,
                         },
                         config,
                         stream_mode="values",
@@ -2493,6 +2496,55 @@ async def cassia_thread_delete(
     if not ok:
         return JSONResponse(status_code=404, content={"error": "Thread not found"})
     return {"status": "deleted", "thread_id": thread_id}
+
+
+# ============================================================================
+# WEATHER ALERTS — scheduled job + per-user dry-run
+# ============================================================================
+
+try:
+    from weather_alerts import run as _run_weather_alerts
+    _WEATHER_ALERTS_EP_AVAILABLE = True
+except Exception as _wae_err:
+    print(f"[API] weather_alerts endpoint import failed: {_wae_err}")
+    _WEATHER_ALERTS_EP_AVAILABLE = False
+
+_CRON_SECRET = os.getenv("CRON_SECRET", "")
+
+
+@app.post("/alerts/weather/run")
+async def trigger_weather_alerts(
+    dry_run: bool = Query(False),
+    x_cron_secret: str = Header(default="", alias="X-Cron-Secret"),
+):
+    """Full weather-alert scan across all subscribed users.
+    Secured by X-Cron-Secret header. Trigger from Cloud Scheduler every hour."""
+    if _CRON_SECRET and x_cron_secret != _CRON_SECRET:
+        return JSONResponse(status_code=403, content={"error": "Unauthorized"})
+    if not _WEATHER_ALERTS_EP_AVAILABLE:
+        return JSONResponse(status_code=503, content={"status": "error", "message": "Weather alerts unavailable"})
+    result = _run_weather_alerts(dry_run=dry_run)
+    logger.info(
+        f"[Alerts] Weather scan: scanned={result.get('scanned', 0)}, "
+        f"sent={result.get('sent', 0)}, dry_run={dry_run}"
+    )
+    return result
+
+
+@app.post("/alerts/weather/check/{user_id}")
+async def check_user_weather_alerts(
+    user_id: str,
+    people_id: str = Depends(get_current_user),
+    days_ahead: int = Query(default=2, ge=1, le=5),
+):
+    """Dry-run weather check for the authenticated user's saved push-notification
+    locations. Returns what alerts *would* be sent without actually sending them."""
+    if people_id != user_id:
+        return JSONResponse(status_code=403, content={"error": "Can only check your own alerts"})
+    if not _WEATHER_ALERTS_EP_AVAILABLE:
+        return JSONResponse(status_code=503, content={"status": "error", "message": "Weather alerts unavailable"})
+    result = _run_weather_alerts(dry_run=True, user_id=user_id, days_ahead=days_ahead)
+    return result
 
 
 # ============================================================================

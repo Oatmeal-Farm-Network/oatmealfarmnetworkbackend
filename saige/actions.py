@@ -33,9 +33,11 @@ except ImportError:
     _PMS_AVAILABLE = False
 
 
-DRAFT_TYPE_PRODUCE  = "produce_listing"
-DRAFT_TYPE_EVENT    = "event"
-DRAFT_TYPE_BLOG     = "blog_post"
+DRAFT_TYPE_PRODUCE        = "produce_listing"
+DRAFT_TYPE_MEAT           = "meat_listing"
+DRAFT_TYPE_PROCESSED_FOOD = "processed_food_listing"
+DRAFT_TYPE_EVENT          = "event"
+DRAFT_TYPE_BLOG           = "blog_post"
 
 
 # ---------------------------------------------------------------------------
@@ -452,8 +454,100 @@ def draft_blog_post_tool(
             f"your Saige drafts panel when ready.")
 
 
+@tool
+def draft_meat_listing_tool(
+    ingredient_name: str = "",
+    cut: str = "",
+    quantity: float = 0.0,
+    weight_unit: str = "lb",
+    retail_price: float = 0.0,
+    wholesale_price: float = 0.0,
+    available_date: str = "",
+    people_id: str = "",
+    business_id: int = 0,
+) -> str:
+    """Draft a new meat inventory listing for the farmer's marketplace.
+    Does NOT publish — saves a pending draft for the farmer to approve.
+    Use when the user says "list 50 lbs of ground beef at $8/lb", "put my
+    lamb chops on the marketplace", "add pork loin to my meat inventory".
+    Capture: ingredient_name (e.g. 'beef', 'lamb', 'pork'), optional cut
+    (e.g. 'ground', 'ribeye', 'whole'), quantity + weight_unit (lb/kg/oz),
+    retail_price, optional wholesale_price and available_date (YYYY-MM-DD).
+    people_id/business_id injected from session state."""
+    if not business_id or int(business_id) <= 0:
+        return "I can't draft a listing without knowing which business this is for."
+    if not ingredient_name:
+        return "Tell me what meat you'd like to list (e.g., 'beef', 'lamb', 'pork')."
+    payload = {
+        "IngredientName": str(ingredient_name).strip(),
+        "Cut":            str(cut or "").strip() or None,
+        "Quantity":       float(quantity or 0),
+        "WeightUnit":     str(weight_unit or "lb").strip(),
+        "RetailPrice":    float(retail_price or 0),
+        "WholesalePrice": float(wholesale_price or 0) or None,
+        "AvailableDate":  str(available_date or "").strip() or None,
+        "BusinessID":     int(business_id),
+    }
+    cut_str   = f" {payload['Cut']}" if payload["Cut"] else ""
+    qty_str   = f"{payload['Quantity']:g} {payload['WeightUnit']} of "
+    price_str = f"${payload['RetailPrice']:.2f}/{payload['WeightUnit']}" if payload["RetailPrice"] else "?"
+    summary   = f"Meat: {qty_str}{payload['IngredientName']}{cut_str} @ {price_str}"
+    draft_id  = _insert_draft(people_id or None, int(business_id), DRAFT_TYPE_MEAT, payload, summary)
+    if draft_id is None:
+        return "I couldn't save that draft. Please try again in a moment."
+    return (f"Draft #{draft_id} saved: {summary}. Review and approve it in your "
+            f"Saige drafts panel — nothing is published until you approve.")
+
+
+@tool
+def draft_processed_food_listing_tool(
+    name: str = "",
+    quantity: float = 0.0,
+    retail_price: float = 0.0,
+    wholesale_price: float = 0.0,
+    is_organic: bool = False,
+    is_local: bool = True,
+    notes: str = "",
+    people_id: str = "",
+    business_id: int = 0,
+) -> str:
+    """Draft a new processed / artisan food product listing for the marketplace.
+    Does NOT publish — saves a pending draft for the farmer to approve.
+    Use when the user says "list my strawberry jam at $7 a jar", "add our
+    sourdough bread to the marketplace", "put my goat cheese on sale".
+    Capture: product name, quantity (number of units available), retail_price,
+    optional wholesale_price, whether it's certified organic (is_organic) and/or
+    locally produced (is_local). people_id/business_id injected from state."""
+    if not business_id or int(business_id) <= 0:
+        return "I can't draft a listing without knowing which business this is for."
+    if not name:
+        return "Tell me what product you'd like to list (e.g., 'strawberry jam')."
+    payload = {
+        "Name":           str(name).strip(),
+        "Quantity":       float(quantity or 0),
+        "RetailPrice":    float(retail_price or 0),
+        "WholesalePrice": float(wholesale_price or 0) or None,
+        "IsOrganic":      1 if is_organic else 0,
+        "IsLocal":        1 if is_local else 0,
+        "Notes":          str(notes or "").strip() or None,
+        "BusinessID":     int(business_id),
+    }
+    qty_str   = f"{payload['Quantity']:g} unit(s) of " if payload["Quantity"] else ""
+    price_str = f"${payload['RetailPrice']:.2f}" if payload["RetailPrice"] else "?"
+    tags      = (["organic"] if payload["IsOrganic"] else []) + (["local"] if payload["IsLocal"] else [])
+    tag_str   = f" [{', '.join(tags)}]" if tags else ""
+    summary   = f"Food: {qty_str}{payload['Name']}{tag_str} @ {price_str}"
+    draft_id  = _insert_draft(people_id or None, int(business_id), DRAFT_TYPE_PROCESSED_FOOD, payload, summary)
+    if draft_id is None:
+        return "I couldn't save that draft. Please try again in a moment."
+    return (f"Draft #{draft_id} saved: {summary}. Review and approve it in your "
+            f"Saige drafts panel — nothing is published until you approve.")
+
+
 actions_tools = [
     draft_produce_listing_tool,
+    draft_meat_listing_tool,
+    draft_processed_food_listing_tool,
     draft_event_tool,
     draft_blog_post_tool,
 ]

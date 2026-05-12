@@ -26,6 +26,7 @@ class FarmState(TypedDict, total=False):
     assessment_summary: Optional[str]
     advisory_type: Optional[str]
     long_term_memory: Optional[Dict[str, Any]]
+    image_data: Optional[str]
 
 
 # ============================================================================
