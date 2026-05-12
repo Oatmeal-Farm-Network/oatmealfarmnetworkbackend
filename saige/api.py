@@ -8,9 +8,9 @@ import base64
 import struct
 import asyncio
 import threading
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Query, Request, Depends
+from fastapi import FastAPI, Query, Request, Depends, Header
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
@@ -553,7 +553,10 @@ async def chat(
     if not _skip_history:
         _skip_history = _classify_map_intent_llm(request.user_input)
     if not _skip_history:
-        chat_history.save_message(user_id=user_id, thread_id=request.thread_id, role="user", content=request.user_input)
+        chat_history.save_message(
+            user_id=user_id, thread_id=request.thread_id, role="user", content=request.user_input,
+            business_id=str(business_id) if business_id else None,
+        )
         push_message(thread_id=request.thread_id, message={"role": "user", "content": request.user_input})
 
     try:
@@ -680,24 +683,38 @@ Examples:
 
             events = safe_graph_stream(update, config, stream_mode="values")
         else:
-            # New conversation — seed people_id, business_id, and long-term memory
+            # New conversation — seed people_id, business_id, user name, and memories
             print(f"[API] Starting new conversation for thread {request.thread_id}")
             print(f"[API] people_id={people_id}, business_id={business_id}")
             initial_history = (short_term_history + [f"User: {request.user_input}"])[-SHORT_TERM_N:] if short_term_history else [f"User: {request.user_input}"]
-            if _skip_history:
-                long_term_memory = {}
-                print(f"[API] Skipping long-term memory load (tool-only intent)")
-            else:
+            long_term_memory: Dict[str, Any] = {}
+            org_memory: Dict[str, Any] = {}
+            user_name: Optional[str] = None
+            if not _skip_history:
+                # Fetch user's name from People table
+                try:
+                    from user_profile import get_user_name as _get_user_name
+                    user_name = _get_user_name(user_id) if user_id else None
+                except Exception as _un_err:
+                    logger.debug("[API] user_name fetch failed: %s", _un_err)
+                # Per-user long-term memory
                 long_term_memory = chat_history.get_user_memory(user_id) if user_id else {}
                 if long_term_memory and any(long_term_memory.values()):
                     print(f"[API] Loaded long-term memory: locations={len(long_term_memory.get('locations', []))}, crops={len(long_term_memory.get('crops', []))}, topics={len(long_term_memory.get('recent_topics', []))}")
+                # Org-level memory (all team members' shared context)
+                if business_id:
+                    org_memory = chat_history.get_org_memory(business_id, exclude_user_id=user_id)
+                    if org_memory and any(org_memory.values()):
+                        print(f"[API] Loaded org memory: crops={len(org_memory.get('crops', []))}, issues={len(org_memory.get('known_org_issues', []))}")
             events = safe_graph_stream(
                 {
                     "history": initial_history,
                     "people_id": people_id,
                     "business_id": business_id,
                     "thread_id": request.thread_id,
+                    "user_name": user_name,
                     "long_term_memory": long_term_memory,
+                    "org_memory": org_memory,
                     "image_data": request.image_data or None,
                 },
                 config,
@@ -806,8 +823,29 @@ Examples:
         "crops": final_values.get("crops"),
         "farm_size": final_values.get("farm_size"),
         "assessment_summary": assessment_summary,
+        "recommendations": recommendations[:5] if recommendations else [],
+        "current_issues": final_values.get("current_issues") or [],
+        "advisory_type": advisory_type,
     }
     chat_history.mark_complete(user_id=user_id, thread_id=request.thread_id, advisory_type=advisory_type, farm_context={k: v for k, v in farm_context.items() if v})
+
+    # Data flywheel: extract anonymized learning in background
+    try:
+        from learning import extract_learning_background as _extract_learning
+        from llm import llm as _llm_for_learning
+        _extract_learning(
+            people_id=user_id or "",
+            thread_id=request.thread_id,
+            history=final_values.get("history") or [],
+            diagnosis=diagnosis or "",
+            recommendations=recommendations or [],
+            advisory_type=advisory_type or "",
+            crops=final_values.get("crops") or [],
+            location=final_values.get("location") or "",
+            llm=_llm_for_learning,
+        )
+    except Exception as _lrn_err:
+        logger.warning("[API] Learning extraction init failed: %s", _lrn_err)
 
     print(f"[API] Conversation complete for thread {request.thread_id}")
     return {
@@ -872,7 +910,10 @@ async def chat_stream(
             if not _skip_hist:
                 _skip_hist = _classify_map_intent_llm(request.user_input)
             if not _skip_hist:
-                chat_history.save_message(user_id=user_id, thread_id=thread_id, role="user", content=request.user_input)
+                chat_history.save_message(
+                    user_id=user_id, thread_id=thread_id, role="user", content=request.user_input,
+                    business_id=str(business_id) if business_id else None,
+                )
                 push_message(thread_id=thread_id, message={"role": "user", "content": request.user_input})
 
             try:
@@ -909,14 +950,27 @@ async def chat_stream(
                     events = safe_graph_stream(update, config, stream_mode="values")
                 else:
                     initial_history = (short_term_history + [f"User: {request.user_input}"])[-SHORT_TERM_N:] if short_term_history else [f"User: {request.user_input}"]
-                    long_term_memory = {} if _skip_hist else (chat_history.get_user_memory(user_id) if user_id else {})
+                    _stream_user_name: Optional[str] = None
+                    _stream_ltm: Dict[str, Any] = {}
+                    _stream_org_mem: Dict[str, Any] = {}
+                    if not _skip_hist:
+                        try:
+                            from user_profile import get_user_name as _get_user_name
+                            _stream_user_name = _get_user_name(user_id) if user_id else None
+                        except Exception:
+                            pass
+                        _stream_ltm = chat_history.get_user_memory(user_id) if user_id else {}
+                        if business_id:
+                            _stream_org_mem = chat_history.get_org_memory(business_id, exclude_user_id=user_id)
                     events = safe_graph_stream(
                         {
                             "history": initial_history,
                             "people_id": people_id,
                             "business_id": business_id,
                             "thread_id": thread_id,
-                            "long_term_memory": long_term_memory,
+                            "user_name": _stream_user_name,
+                            "long_term_memory": _stream_ltm,
+                            "org_memory": _stream_org_mem,
                             "image_data": request.image_data or None,
                         },
                         config,
@@ -950,6 +1004,42 @@ async def chat_stream(
             result_holder["diagnosis"] = diagnosis
             result_holder["recommendations"] = recommendations
             result_holder["advisory_type"] = advisory_type
+
+            # Persist farm context + fire data-flywheel extraction
+            if not _skip_hist:
+                _stream_farm_context = {
+                    "location": final_values.get("location"),
+                    "crops": final_values.get("crops"),
+                    "farm_size": final_values.get("farm_size"),
+                    "assessment_summary": final_values.get("assessment_summary", ""),
+                    "recommendations": (recommendations or [])[:5],
+                    "current_issues": final_values.get("current_issues") or [],
+                    "advisory_type": advisory_type,
+                }
+                try:
+                    chat_history.mark_complete(
+                        user_id=user_id, thread_id=thread_id,
+                        advisory_type=advisory_type,
+                        farm_context={k: v for k, v in _stream_farm_context.items() if v},
+                    )
+                except Exception as _mc_err:
+                    logger.warning("[StreamChat] mark_complete failed: %s", _mc_err)
+                try:
+                    from learning import extract_learning_background as _extract_learning
+                    from llm import llm as _llm_for_learning
+                    _extract_learning(
+                        people_id=user_id or "",
+                        thread_id=thread_id,
+                        history=final_values.get("history") or [],
+                        diagnosis=diagnosis or "",
+                        recommendations=recommendations or [],
+                        advisory_type=advisory_type or "",
+                        crops=final_values.get("crops") or [],
+                        location=final_values.get("location") or "",
+                        llm=_llm_for_learning,
+                    )
+                except Exception as _lrn_err:
+                    logger.warning("[StreamChat] Learning extraction init failed: %s", _lrn_err)
         except Exception as _ex:
             logger.error(f"[StreamChat] Error: {_ex}", exc_info=True)
             result_holder["error"] = str(_ex)
@@ -1036,6 +1126,38 @@ async def get_analytics(people_id: str = Depends(get_current_user)):
     if not data:
         return {"status": "no_data", "message": "No analytics data available."}
     return data
+
+
+# ============================================================================
+# FEEDBACK ENDPOINT  (data flywheel quality signal)
+# ============================================================================
+
+class FeedbackRequest(BaseModel):
+    thread_id: str
+    rating: int = Field(description="+1 (helpful) or -1 (not helpful)")
+    comment: Optional[str] = Field(default=None, description="Optional free-text comment")
+
+
+@app.post("/chat/feedback")
+async def submit_chat_feedback(
+    payload: FeedbackRequest,
+    people_id: str = Depends(get_current_user),
+):
+    """
+    Record a thumbs-up (+1) or thumbs-down (-1) on a Saige response.
+    Applies the rating to the most recent anonymized learning extracted from
+    that thread, so helpful answers reinforce the data flywheel and unhelpful
+    ones are gradually downweighted.
+    """
+    if payload.rating not in (1, -1):
+        return JSONResponse(status_code=400, content={"error": "rating must be +1 or -1"})
+    try:
+        from learning import learning_store as _learning_store
+        _learning_store.record_feedback(payload.thread_id, payload.rating)
+    except Exception as _fb_err:
+        logger.warning("[Feedback] Could not apply rating: %s", _fb_err)
+    logger.info("[Feedback] user=%s thread=%s rating=%+d", people_id, payload.thread_id, payload.rating)
+    return {"status": "ok", "thread_id": payload.thread_id, "rating": payload.rating}
 
 
 # ============================================================================

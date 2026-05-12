@@ -11,6 +11,7 @@ class FarmState(TypedDict, total=False):
     people_id: Optional[str]
     business_id: Optional[str]
     thread_id: Optional[str]
+    user_name: Optional[str]           # "Jane Smith" — fetched from People table at session start
     """State for managing farm information and diagnostics"""
     farm_name: Optional[str]
     location: Optional[str]
@@ -25,7 +26,8 @@ class FarmState(TypedDict, total=False):
     recommendations: Optional[List[str]]
     assessment_summary: Optional[str]
     advisory_type: Optional[str]
-    long_term_memory: Optional[Dict[str, Any]]
+    long_term_memory: Optional[Dict[str, Any]]  # per-user memory
+    org_memory: Optional[Dict[str, Any]]         # shared across all org members
     image_data: Optional[str]
 
 

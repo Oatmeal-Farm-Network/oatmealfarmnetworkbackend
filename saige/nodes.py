@@ -383,6 +383,15 @@ except Exception as _e:
     get_my_recent_history_tool = None
     HISTORY_STORE_AVAILABLE = False
 
+try:
+    from jokes import joke_tools, tell_joke_tool
+    JOKES_AVAILABLE = True
+except Exception as _e:
+    print(f"[nodes] jokes unavailable: {_e}")
+    joke_tools = []
+    tell_joke_tool = None
+    JOKES_AVAILABLE = False
+
 VALID_ADVISORY_TYPES = {"weather", "livestock", "crops", "mixed", "news", "bakasura"}
 ADVISORY_TYPE_ALIASES = {
     "crop": "crops",
@@ -1060,8 +1069,14 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
             _answer = f"Your BusinessID is {_bid}." if _bid else "No BusinessID is set in this session. Try opening Saige from your business page."
         else:
             try:
+                _name_hint = state.get("user_name") or ""
+                _name_ctx = (
+                    f"You are talking with {_name_hint}. "
+                    if _name_hint else ""
+                )
                 _resp = llm.invoke(
                     f"{_SAIGE_PERSONA}\n\n"
+                    f"{_name_ctx}"
                     "The user is mid-conversation. Answer the question directly and concisely. "
                     "Do NOT introduce yourself, do NOT greet the user, and do NOT open with phrases like "
                     "'Hello there', 'Hi', 'I'm Saige', or 'your friendly assistant'. "
@@ -1238,16 +1253,29 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
     # 3. Construct Full Prompt
     rag_section = f"RELEVANT KNOWLEDGE BASE:\n{rag_context}" if rag_context else ""
 
+    # Community learnings from data flywheel (cross-user anonymized insights)
+    _community_section = ""
+    try:
+        from learning import get_community_context as _get_community_ctx
+        _community_section = _get_community_ctx(latest_user_message, n=3)
+    except Exception as _lrn_err:
+        pass  # flywheel unavailable — degrade silently
+
     _people_id_ctx = state.get("people_id") or ""
     _business_id_ctx = state.get("business_id") or ""
+    _user_name_ctx = (state.get("user_name") or "").strip()
     identity_section = (
         f"AUTHENTICATED IDENTITY (already known — do NOT ask the user for these):\n"
-        f"- PeopleID: {_people_id_ctx or 'unknown'}\n"
+        + (f"- Name: {_user_name_ctx}\n" if _user_name_ctx else "")
+        + f"- PeopleID: {_people_id_ctx or 'unknown'}\n"
         f"- BusinessID: {_business_id_ctx or 'unknown'}\n"
         "Every tool that needs people_id or business_id receives them automatically from "
         "this session. Call the tool directly — never ask the user to 'link their account' "
         "or provide these IDs. If a tool returns no data, say so plainly; do not blame "
-        "missing authentication."
+        "missing authentication.\n"
+        + (f"Address this farmer by their first name ({_user_name_ctx.split()[0]}) naturally "
+           "when it fits the tone — not on every message, just when it adds warmth."
+           if _user_name_ctx else "")
     )
 
     ltm = state.get("long_term_memory") or {}
@@ -1264,11 +1292,50 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
             parts.append("- Recent concerns they've raised:")
             for t in ltm["recent_topics"]:
                 parts.append(f"  • {(t or '')[:140]}")
+        if ltm.get("known_issues"):
+            parts.append("- Recurring problems on this farm:")
+            for issue in ltm["known_issues"][:5]:
+                parts.append(f"  • {(issue or '')[:120]}")
+        if ltm.get("recent_solutions"):
+            parts.append("- Solutions Saige has previously recommended to this farmer:")
+            for sol in ltm["recent_solutions"][:4]:
+                parts.append(f"  • {(sol or '')[:150]}")
         parts.append(
             "Use these facts naturally — don't re-ask for location/crops you already know. "
+            "Build on past recommendations rather than starting from scratch each time. "
             "If the current message references something previously discussed, carry it forward."
         )
         memory_section = "\n".join(parts)
+
+    # Org-level shared memory (aggregated from all team members of this business)
+    org_mem = state.get("org_memory") or {}
+    org_memory_section = ""
+    if org_mem and any(org_mem.values()):
+        oparts = ["ORG MEMORY (what Saige knows about this farm/organisation from all team members):"]
+        if org_mem.get("locations"):
+            oparts.append(f"- Farm location(s): {', '.join(org_mem['locations'][:4])}")
+        if org_mem.get("crops"):
+            oparts.append(f"- Crops/livestock this farm works with: {', '.join(org_mem['crops'][:12])}")
+        if org_mem.get("farm_sizes"):
+            oparts.append(f"- Farm size(s): {', '.join(org_mem['farm_sizes'][:2])}")
+        if org_mem.get("known_org_issues"):
+            oparts.append("- Issues other team members have raised about this farm:")
+            for issue in org_mem["known_org_issues"][:5]:
+                oparts.append(f"  • {(issue or '')[:120]}")
+        if org_mem.get("org_solutions"):
+            oparts.append("- Solutions that have been recommended to this team:")
+            for sol in org_mem["org_solutions"][:4]:
+                oparts.append(f"  • {(sol or '')[:150]}")
+        if org_mem.get("recent_topics"):
+            oparts.append("- Recent topics the team has asked Saige about:")
+            for t in org_mem["recent_topics"][:4]:
+                oparts.append(f"  • {(t or '')[:120]}")
+        oparts.append(
+            "Use org memory to avoid re-asking about the farm's basic setup. "
+            "If a team member's colleague already established a fact (location, crop list, etc.), "
+            "treat it as known. Keep individual team members' personal contexts separate."
+        )
+        org_memory_section = "\n".join(oparts)
 
     # Build a query-specific directive when the user is asking about their own data
     # so the LLM calls the right tool instead of guessing from training knowledge.
@@ -1354,6 +1421,7 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
 {business_snapshot}
 {_tool_directive}
 {memory_section}
+{org_memory_section}
 {_image_note}
 Farmer's latest message: {latest_user_message}
 Farmer's tracked issues: {', '.join(issues) if issues else 'General inquiry'}
@@ -1366,6 +1434,8 @@ Recent conversation turns:
 {recent_turns}
 
 {rag_section}
+
+{_community_section}
 
 You have access to a weather tool. Use it if weather conditions are critical for the advice
 (e.g., sowing time, heat stress in animals, pest humidity thresholds).
@@ -1517,6 +1587,9 @@ GRANTS & PROGRAMS — personal tracker:
 COLD-CHAIN — predictive shelf life:
 - calculate_shelf_life_tool(vehicle_id, product_type, original_shelf_life_days, lookback_hours, business_id, people_id): compute adjusted shelf life for cargo using Q10 degradation model applied to actual vehicle temperature logs. Returns remaining days, degradation %, excursion time, and recommended action (Normal/Expedite/Express Sale/Discard). Use for "how fresh is my cargo", "did the temperature excursion hurt the lettuce", "what's the shelf life impact", "is the shipment still viable", "how many days does the produce have left".
 
+FUN:
+- tell_joke_tool(): tell the user a random farm or ranch joke they haven't heard before. Tracks history per user so jokes never repeat. Use whenever the user asks for a joke, wants to laugh, or says "tell me something funny". Deliver it in Saige's voice — maybe a short setup like "Alright, here's one:" or "Oh I got one for y'all."
+
 Prioritize the latest user message and any newly provided measurements over older generic context.
 If soil-test values are present, reference them explicitly and avoid repeating unchanged advice.
 
@@ -1573,6 +1646,8 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
         bound_tools.extend(weather_alert_tools)
     if HISTORY_STORE_AVAILABLE:
         bound_tools.extend(history_tools)
+    if JOKES_AVAILABLE:
+        bound_tools.extend(joke_tools)
 
     # ── Intent-based tool pruning ────────────────────────────────────────────
     # After assembling the full tool list, restrict it to only the tools
@@ -2476,6 +2551,14 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
                             "people_id":               str(people_id_for_tools or ""),
                         })
                         grants_context = (grants_context + "\n\n" if grants_context else "") + tool_result
+                    elif tc_name == 'tell_joke_tool' and JOKES_AVAILABLE:
+                        print(f"[Advisory Agent] Executing Tell Joke Tool for people_id={people_id_for_tools}")
+                        tool_result = tell_joke_tool.invoke({
+                            "people_id": str(people_id_for_tools or ""),
+                        })
+                        # Joke is the final response — short-circuit the loop
+                        final_response = tool_result
+                        break
                 continue  # Loop back to LLM with new context
 
             # No tool calls - we have our answer
