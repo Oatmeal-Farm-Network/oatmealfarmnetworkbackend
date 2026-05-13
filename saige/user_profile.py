@@ -88,6 +88,34 @@ def get_org_member_ids(business_id: str) -> List[str]:
     return [str(r["PeopleID"]) for r in rows if r.get("PeopleID")]
 
 
+def get_business_name(business_id: str) -> Optional[str]:
+    """Return the BusinessName for a given BusinessID, or None if not found."""
+    if not business_id:
+        return None
+    rows = _query(
+        "SELECT BusinessName FROM Business WHERE BusinessID = %s",
+        (int(business_id),),
+    )
+    if not rows:
+        return None
+    name = rows[0].get("BusinessName") or rows[0].get("businessname")
+    return str(name).strip() if name else None
+
+
+def get_primary_business_id(people_id: str) -> Optional[str]:
+    """Return the first active BusinessID for this PeopleID, or None if none found."""
+    if not people_id:
+        return None
+    rows = _query(
+        "SELECT TOP 1 BusinessID FROM BusinessAccess WHERE PeopleID = %s AND Active = 1 ORDER BY BusinessID",
+        (int(people_id),),
+    )
+    if not rows:
+        return None
+    bid = rows[0].get("BusinessID") or rows[0].get("businessid")
+    return str(bid) if bid else None
+
+
 def get_org_member_names(business_id: str) -> Dict[str, str]:
     """Return {people_id: 'First Last'} for all active org members."""
     if not business_id:
