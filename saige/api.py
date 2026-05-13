@@ -259,36 +259,47 @@ def _pcm_to_wav(pcm: bytes, sample_rate: int = 24000, channels: int = 1, bits: i
 
 @app.post("/tts")
 async def text_to_speech(body: TTSRequest):
-    """Convert text to speech using Google Gemini TTS with the Aoede voice."""
+    """Convert text to speech using Google Cloud TTS (en-US-Studio-O)."""
     import requests as _req
     api_key = os.getenv("GOOGLE_API_KEY", "")
     if not api_key:
         return JSONResponse(status_code=503, content={"error": "TTS not configured"})
-    url = (
+
+    # ── Primary: Google Cloud TTS — en-US-Studio-O ───────────────────────────
+    cloud_url = f"https://texttospeech.googleapis.com/v1/text:synthesize?key={api_key}"
+    cloud_payload = {
+        "input": {"text": body.text},
+        "voice": {"languageCode": "en-US", "name": "en-US-Studio-O"},
+        "audioConfig": {"audioEncoding": "MP3"},
+    }
+    try:
+        resp = _req.post(cloud_url, json=cloud_payload, timeout=15)
+        resp.raise_for_status()
+        audio_bytes = base64.b64decode(resp.json()["audioContent"])
+        return Response(content=audio_bytes, media_type="audio/mpeg")
+    except Exception as e:
+        logger.warning("[TTS] Cloud TTS failed, falling back to Gemini: %s", e)
+
+    # ── Fallback: Gemini TTS — Zephyr (female) ───────────────────────────────
+    gemini_url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"gemini-2.5-flash-preview-tts:generateContent?key={api_key}"
     )
-    payload = {
+    gemini_payload = {
         "contents": [{"parts": [{"text": body.text}]}],
         "generationConfig": {
             "responseModalities": ["AUDIO"],
-            "speechConfig": {
-                "voiceConfig": {
-                    "prebuiltVoiceConfig": {"voiceName": "Aoede"}
-                }
-            },
+            "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Zephyr"}}},
         },
     }
     try:
-        resp = _req.post(url, json=payload, timeout=30)
+        resp = _req.post(gemini_url, json=gemini_payload, timeout=30)
         resp.raise_for_status()
-        data = resp.json()
-        inline = data["candidates"][0]["content"]["parts"][0]["inlineData"]
-        pcm_bytes = base64.b64decode(inline["data"])
-        wav_bytes = _pcm_to_wav(pcm_bytes)
+        inline = resp.json()["candidates"][0]["content"]["parts"][0]["inlineData"]
+        wav_bytes = _pcm_to_wav(base64.b64decode(inline["data"]))
         return Response(content=wav_bytes, media_type="audio/wav")
     except Exception as e:
-        logger.error(f"[TTS] Gemini TTS error: {e}")
+        logger.error("[TTS] Gemini TTS error: %s", e)
         return JSONResponse(status_code=502, content={"error": "TTS generation failed"})
 
 
@@ -537,6 +548,15 @@ async def chat(
     """Main chat endpoint for farm advisory system."""
     user_id = people_id
     business_id = request.business_id
+    # Auto-resolve business_id from DB when not provided (user on page without ?BusinessID=)
+    if not business_id and people_id:
+        try:
+            from user_profile import get_primary_business_id as _get_biz_id
+            business_id = _get_biz_id(people_id)
+            if business_id:
+                logger.info(f"[API] Auto-resolved business_id={business_id} for people_id={people_id}")
+        except Exception as _biz_err:
+            logger.debug("[API] business_id auto-resolve failed: %s", _biz_err)
 
     # --- Rate limit ---
     allowed, req_count = _check_rate_limit(request.thread_id)
@@ -626,7 +646,9 @@ Examples:
             new_history = (existing_history + [f"User: {request.user_input}"])[-SHORT_TERM_N:]
             parsed_soil_info = _extract_soil_info(request.user_input)
 
-            update = {"history": new_history, "diagnosis": None, "recommendations": [], "advisory_type": None}
+            _joke_kw = ("joke", "something funny", "make me laugh")
+            _followup_advisory = "joke" if any(k in user_input_lower for k in _joke_kw) else None
+            update = {"history": new_history, "diagnosis": None, "recommendations": [], "advisory_type": _followup_advisory}
 
             is_entity_only_answer = (
                 bool(extracted and extracted.is_answer)
@@ -901,6 +923,13 @@ async def chat_stream(
             # Replicate the /chat endpoint logic so the advisory node finds the queue.
             user_id = people_id
             business_id = request.business_id
+            # Auto-resolve business_id from DB when not provided
+            if not business_id and people_id:
+                try:
+                    from user_profile import get_primary_business_id as _get_biz_id
+                    business_id = _get_biz_id(people_id)
+                except Exception:
+                    pass
             turn_start = time.time()
             config = {"configurable": {"thread_id": thread_id}}
             last_n = get_last_n(thread_id, SHORT_TERM_N)
@@ -933,9 +962,11 @@ async def chat_stream(
                 has_completed = (not _skip_hist) and existing_state.get("assessment_summary") and not state.next
                 if has_completed:
                     new_history = (short_term_history or existing_state.get("history", []) + [f"User: {request.user_input}"])[-SHORT_TERM_N:]
+                    _joke_kw = ("joke", "something funny", "make me laugh")
+                    _stream_advisory = "joke" if any(k in request.user_input.lower() for k in _joke_kw) else None
                     update = {
                         "history": new_history, "diagnosis": None, "recommendations": [],
-                        "advisory_type": None,
+                        "advisory_type": _stream_advisory,
                         "current_issues": [request.user_input],
                         "thread_id": thread_id,
                     }

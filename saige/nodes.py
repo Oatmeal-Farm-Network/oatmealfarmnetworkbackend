@@ -392,7 +392,7 @@ except Exception as _e:
     tell_joke_tool = None
     JOKES_AVAILABLE = False
 
-VALID_ADVISORY_TYPES = {"weather", "livestock", "crops", "mixed", "news", "bakasura"}
+VALID_ADVISORY_TYPES = {"weather", "livestock", "crops", "mixed", "news", "bakasura", "joke"}
 ADVISORY_TYPE_ALIASES = {
     "crop": "crops",
     "crops": "crops",
@@ -410,6 +410,9 @@ ADVISORY_TYPE_ALIASES = {
     "bakasura": "bakasura",
     "bakasura-docs": "bakasura",
     "docs": "bakasura",
+    "joke": "joke",
+    "jokes": "joke",
+    "funny": "joke",
 }
 
 
@@ -521,7 +524,7 @@ def _options_are_consistent(question_text: str, options: List[str], answer_slot:
 # ============================================================================
 
 _SAIGE_PERSONA = """
-IDENTITY & VOICE — You are Saige. A woman in her early 40s, Caucasian, with a deep outdoor tan from years of working on farms and ranches. You carry a slight Texan accent — nothing heavy, just enough to add warmth and color to the way you talk.
+IDENTITY & VOICE — You are Saige (pronounced exactly like "Sage" — the herb, rhymes with "page"). A woman in her early 40s, Caucasian, with a deep outdoor tan from years of working on farms and ranches. You carry a slight Texan accent — nothing heavy, just enough to add warmth and color to the way you talk.
 
 ROLE — You are a professional farm and food advisor. You help farmers with planting, growing, harvesting, livestock care, soil health, and marketing. You also help restaurant owners and food suppliers source local ingredients and build farm-to-table connections.
 
@@ -641,13 +644,26 @@ def assessment_node(state: FarmState):
                               "show me where", "move over to", "move the map", "move to the",
                               "map", "zip code", "zipcode",
                               "field", "precision ag", "sensor", "my ranch", "my farm data")
+            _kw_joke       = ("joke", "something funny", "make me laugh", "tell me something funny")
             _kw_general    = ("hello", "hi ", "hey ", "good morning", "good afternoon",
+                              # Saige identity
+                              "what is your name", "what's your name", "whats your name",
+                              "who are you", "what are you", "tell me about yourself",
+                              "introduce yourself", "what can you do", "what can you help",
+                              "how do you work", "how are you",
+                              # User identity
                               "what is my people", "what is my user", "what is my business",
-                              "my businessid", "my peopleid", "my people id", "my business id",
+                              "what is my name", "what's my name", "whats my name",
+                              "my name", "my businessid", "my peopleid", "my people id",
+                              "my business id", "business account", "signed in with",
+                              "which account", "what account",
+                              # Sign-off
                               "thank you", "thanks", "bye", "goodbye")
 
             _ft = None
-            if any(k in msg_lower for k in _kw_general) or len(first_user_message.split()) <= 2:
+            if any(k in msg_lower for k in _kw_joke):
+                _ft = ("joke", [first_user_message], [])
+            elif any(k in msg_lower for k in _kw_general) or len(first_user_message.split()) <= 2:
                 _ft = ("general", [first_user_message], [])
             elif any(k in msg_lower for k in _kw_weather):
                 _ft = ("weather", [first_user_message], [])
@@ -661,6 +677,12 @@ def assessment_node(state: FarmState):
             if _ft is not None:
                 _ft_type, _ft_issues, _ft_items = _ft
                 print(f"[Assessment] Keyword fast-track → {_ft_type} (skipping LLM classify)")
+                if _ft_type == "joke":
+                    return {
+                        "assessment_summary": f"Joke request: {first_user_message}",
+                        "current_issues": _ft_issues,
+                        "advisory_type": "joke",
+                    }
                 if _ft_type == "general":
                     return {
                         "assessment_summary": f"General question: {first_user_message}",
@@ -1052,8 +1074,19 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
 
     # Handle general questions directly without RAG or farming prompts
     _assessment = state.get("assessment_summary", "")
-    if _assessment.startswith("General question:"):
-        print(f"[Advisory Agent] General question - answering directly")
+    _identity_kw = ("what is my name", "what's my name", "whats my name", "my name",
+                    "what is your name", "what's your name", "who are you", "your name",
+                    "tell me about yourself", "introduce yourself", "what can you do",
+                    "business account", "signed in with", "which account", "what account",
+                    "businessid", "business_id", "business id", "my business",
+                    "peopleid", "people_id", "people id", "user id", "userid")
+    _is_general_path = _assessment.startswith("General question:") or (
+        _assessment.startswith("Farmer seeks assistance with:") and
+        any(k in _assessment.lower() for k in _identity_kw) and
+        not any(k in _assessment.lower() for k in ("field", "ndvi", "crop", "livestock", "weather", "soil"))
+    )
+    if _is_general_path:
+        print(f"[Advisory Agent] General/identity question - answering directly")
         _history = state.get("history") or []
         _msg = ""
         for _h in reversed(_history):
@@ -1062,11 +1095,61 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
                 break
         _pid = state.get("people_id")
         _ml = _msg.lower()
-        if any(k in _ml for k in ["peopleid", "people_id", "people id", "user id", "userid", "my id"]):
-            _answer = f"Your PeopleID is {_pid}." if _pid else "Your PeopleID is not available in this context."
-        elif any(k in _ml for k in ["businessid", "business_id", "business id", "my business"]):
-            _bid = state.get("business_id")
-            _answer = f"Your BusinessID is {_bid}." if _bid else "No BusinessID is set in this session. Try opening Saige from your business page."
+
+        # Joke fast-path — call tell_joke_tool directly, no LLM needed
+        if JOKES_AVAILABLE and tell_joke_tool and any(k in _ml for k in ("joke", "something funny", "make me laugh")):
+            print(f"[Advisory Agent] Joke request fast-path for people_id={_pid}")
+            _joke = tell_joke_tool.invoke({"people_id": str(_pid or "")})
+            return {"diagnosis": _joke, "recommendations": []}
+
+        # Saige self-identity — pre-canned, no LLM needed
+        _saige_identity_kw = ("what is your name", "what's your name", "whats your name",
+                              "your name", "who are you", "what are you",
+                              "tell me about yourself", "introduce yourself",
+                              "what can you do", "what can you help", "how do you work")
+        if any(k in _ml for k in _saige_identity_kw):
+            _uname = (state.get("user_name") or "").split()[0] if state.get("user_name") else ""
+            _greeting = f"Hey {_uname}! " if _uname else ""
+            return {
+                "diagnosis": (
+                    f"{_greeting}My name is Saige — pronounced just like 'Sage', the herb. "
+                    "I'm a farm and food advisor. I help farmers with planting, growing, harvesting, "
+                    "livestock care, soil health, field monitoring, and marketing. "
+                    "I can also help restaurant owners and food suppliers connect with local farms. "
+                    "What can I help you with today?"
+                ),
+                "recommendations": [],
+            }
+
+        _wants_pid  = any(k in _ml for k in ["peopleid", "people_id", "people id", "user id", "userid", "my id"])
+        _wants_name = any(k in _ml for k in ["my name", "what is my name", "what's my name"])
+        _wants_biz  = any(k in _ml for k in ["businessid", "business_id", "business id",
+                                              "my business", "business account", "signed in with",
+                                              "which account", "what account"])
+
+        if _wants_pid or _wants_name or _wants_biz:
+            _parts = []
+            if _wants_name:
+                _uname = (state.get("user_name") or "").strip()
+                _parts.append(f"Your name is {_uname}." if _uname else "I don't have your name on file.")
+            if _wants_pid:
+                _parts.append(f"Your PeopleID is {_pid}." if _pid else "Your PeopleID is not available.")
+            if _wants_biz:
+                _bid = (state.get("business_id") or "").strip()
+                if _bid:
+                    _bname = None
+                    try:
+                        from user_profile import get_business_name as _get_bname
+                        _bname = _get_bname(_bid)
+                    except Exception:
+                        pass
+                    if _bname:
+                        _parts.append(f"You're signed in with \"{_bname}\" (BusinessID {_bid}).")
+                    else:
+                        _parts.append(f"You're signed in with BusinessID {_bid}.")
+                else:
+                    _parts.append("No business account is linked to this session.")
+            _answer = " ".join(_parts)
         else:
             try:
                 _name_hint = state.get("user_name") or ""
@@ -1264,11 +1347,22 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
     _people_id_ctx = state.get("people_id") or ""
     _business_id_ctx = state.get("business_id") or ""
     _user_name_ctx = (state.get("user_name") or "").strip()
+    _business_name_ctx = ""
+    if _business_id_ctx:
+        try:
+            from user_profile import get_business_name as _get_bname_ctx
+            _business_name_ctx = _get_bname_ctx(_business_id_ctx) or ""
+        except Exception:
+            pass
+    _biz_label = (
+        f"{_business_name_ctx} (ID {_business_id_ctx})" if _business_name_ctx
+        else (_business_id_ctx or "unknown")
+    )
     identity_section = (
         f"AUTHENTICATED IDENTITY (already known — do NOT ask the user for these):\n"
         + (f"- Name: {_user_name_ctx}\n" if _user_name_ctx else "")
         + f"- PeopleID: {_people_id_ctx or 'unknown'}\n"
-        f"- BusinessID: {_business_id_ctx or 'unknown'}\n"
+        f"- Business: {_biz_label}\n"
         "Every tool that needs people_id or business_id receives them automatically from "
         "this session. Call the tool directly — never ask the user to 'link their account' "
         "or provide these IDs. If a tool returns no data, say so plainly; do not blame "
@@ -2650,6 +2744,16 @@ def news_advisory_node(state: FarmState):
     )
 
 
+def joke_node(state: FarmState):
+    """Dedicated joke node — calls tell_joke_tool directly, zero LLM involvement."""
+    people_id = str(state.get("people_id") or "")
+    print(f"[Joke Node] Serving joke for people_id={people_id or '(anonymous)'}")
+    if not JOKES_AVAILABLE or not tell_joke_tool:
+        return {"diagnosis": "Sorry, my joke book seems to have gone missing — try again in a bit!", "recommendations": []}
+    joke = tell_joke_tool.invoke({"people_id": people_id})
+    return {"diagnosis": joke, "recommendations": []}
+
+
 def mixed_advisory_node(state: FarmState):
     """Integrated advisory using all three RAG collections and weather tool."""
     return run_advisory_agent(
@@ -3040,7 +3144,11 @@ def route_after_assessment(state: FarmState) -> str:
 
 def route_to_advisory(state: FarmState) -> str:
     """Route to appropriate advisory node."""
-    advisory_type = normalize_advisory_type(state.get("advisory_type")) or "crops"
+    # Check raw value first so "joke" isn't lost through normalize (which defaults to None)
+    raw = (state.get("advisory_type") or "").strip().lower()
+    if raw == "joke":
+        return "joke_node"
+    advisory_type = normalize_advisory_type(raw) or "crops"
     if advisory_type == "weather":
         return "weather_advisory_node"
     elif advisory_type == "livestock":
