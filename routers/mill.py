@@ -6,6 +6,7 @@ search, and discussion forums.
 All tables are auto-created (IF NOT EXISTS) so no migration script is needed.
 Auth: reads x-people-id header (set by the frontend alongside Bearer token).
 """
+import re
 from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -117,6 +118,21 @@ with engine.begin() as _c:
             EditedAt      DATETIME NULL
         )
     """))
+    # Add IsFlagged column to threads/posts if not present (idempotent)
+    _c.execute(text("""
+        IF NOT EXISTS (
+            SELECT * FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME='OTFForumThreads' AND COLUMN_NAME='IsFlagged'
+        )
+        ALTER TABLE OTFForumThreads ADD IsFlagged BIT NOT NULL DEFAULT 0
+    """))
+    _c.execute(text("""
+        IF NOT EXISTS (
+            SELECT * FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME='OTFForumPosts' AND COLUMN_NAME='IsFlagged'
+        )
+        ALTER TABLE OTFForumPosts ADD IsFlagged BIT NOT NULL DEFAULT 0
+    """))
     # Seed default forum categories if empty
     _c.execute(text("""
         IF NOT EXISTS (SELECT 1 FROM OTFForumCategories)
@@ -130,6 +146,74 @@ with engine.begin() as _c:
             ('Farm Life',        'General farming lifestyle, community, off-topic',          'farm',       6)
         END
     """))
+
+
+# ── Content moderation ────────────────────────────────────────────────────────
+
+# (word, regex_pattern) — patterns use word boundaries to avoid false positives
+_PROFANITY: list[tuple[str, str]] = [
+    ("f***",     r'\bf+[u\*]+c+k\w*'),
+    ("s***",     r'\bsh[i1!]+t\w*'),
+    ("a**hole",  r'\ba+s+h[o0]+l+[e3]+s?\b'),
+    ("b****rd",  r'\bbast[a@]+rds?\b'),
+    ("b****",    r'\bb[i1!]+tch\w*'),
+    ("c***",     r'\bcunts?\b'),
+    ("c***",     r'\bc[o0]+cks?\b'),
+    ("d***",     r'\bd[i1!]+cks?\b'),
+    ("p****",    r'\bpuss[yi]+\b'),
+    ("m***f***", r'\bm[o0]+th[e3]rf+[u\*]+ck\w*'),
+    ("f***ot",   r'\bf[a@]+gg?[o0]+ts?\b'),
+    ("r*tard",   r'\br[e3]t[a@]rds?\b'),
+    ("wh**e",    r'\bwh[o0]+r[e3]+s?\b'),
+    ("sl**",     r'\bsluts?\b'),
+    ("tw**",     r'\btwats?\b'),
+    ("p***",     r'\bp[i1!]+ss\w*'),
+    ("d**n",     r'\bgodd[a@]+mn\b'),
+    ("d**bass",  r'\bdumb[a@]+ss\w*'),
+    ("j**kass",  r'\bjack[a@]+ss\w*'),
+    ("d**shit",  r'\bdipsh[i1!]+t\b'),
+    ("bulls***", r'\bbullsh[i1!]+t\b'),
+    ("m*fo",     r'\bm[o0]+f[o0]+\b'),
+    ("n*****",   r'\bn[i1!]+gg[ae]rs?\b'),
+    ("cr**",     r'\bcr[a@]+p\b'),
+]
+
+_COMPILED_PROFANITY = [
+    (replacement, re.compile(pattern, re.IGNORECASE))
+    for replacement, pattern in _PROFANITY
+]
+
+_DANGER_PATTERNS = [
+    re.compile(r'\b(kill|murder|shoot|stab|assault)\s+\w*\s*(you|him|her|them|yourself|myself|everyone)\b', re.I),
+    re.compile(r'\b(gonna|going\s+to|will)\s+\w*\s*(kill|hurt|harm|attack|rape)\b', re.I),
+    re.compile(r'\b(bomb|explosive|terrorism|terrorist\s+attack|ied)\b', re.I),
+    re.compile(r'\b(rape|molest)\s+(you|him|her|them|children|kids|a\s+child)\b', re.I),
+    re.compile(r'\bdie\s+(bitch|today|now|you)\b', re.I),
+    re.compile(r'\bI\s+will\s+find\s+(you|your\s+address|where\s+you\s+live)\b', re.I),
+    re.compile(r'\b\d{3}-\d{2}-\d{4}\b'),           # SSN pattern
+]
+
+
+def _redact_profanity(text: str) -> str:
+    """Replace profane words with redacted equivalents."""
+    for replacement, pattern in _COMPILED_PROFANITY:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def _is_dangerous(text: str) -> bool:
+    """Return True if text contains threatening or dangerous content."""
+    return any(p.search(text) for p in _DANGER_PATTERNS)
+
+
+def _moderate(text: str) -> tuple[str, bool]:
+    """
+    Returns (moderated_text, is_flagged).
+    Profanity is redacted automatically; dangerous content sets is_flagged=True.
+    """
+    cleaned = _redact_profanity(text)
+    flagged = _is_dangerous(text)
+    return cleaned, flagged
 
 
 # ── Auth helper ───────────────────────────────────────────────────────────────
@@ -400,12 +484,21 @@ def create_thread(category_id: int, body: dict, db: Session = Depends(get_db), m
     content = (body.get("body") or "").strip()
     if not title or not content:
         raise HTTPException(status_code=400, detail="Title and body required")
+    title_clean, title_flagged   = _moderate(title)
+    content_clean, body_flagged  = _moderate(content)
+    is_flagged = title_flagged or body_flagged
+    if is_flagged:
+        raise HTTPException(
+            status_code=422,
+            detail="Your post contains content that violates community guidelines and cannot be published."
+        )
     author_name = _name(me, db)
     row = db.execute(text("""
-        INSERT INTO OTFForumThreads (CategoryID, Title, Body, AuthorID, AuthorName, LastPostAt)
+        INSERT INTO OTFForumThreads (CategoryID, Title, Body, AuthorID, AuthorName, IsFlagged, LastPostAt)
         OUTPUT INSERTED.ThreadID
-        VALUES (:cat, :title, :body, :me, :name, GETDATE())
-    """), {"cat": category_id, "title": title, "body": content, "me": me, "name": author_name}).fetchone()
+        VALUES (:cat, :title, :body, :me, :name, :flag, GETDATE())
+    """), {"cat": category_id, "title": title_clean, "body": content_clean,
+           "me": me, "name": author_name, "flag": 0}).fetchone()
     db.commit()
     return {"threadId": row[0]}
 
@@ -444,12 +537,18 @@ def reply_to_thread(thread_id: int, body: dict, db: Session = Depends(get_db), m
         raise HTTPException(status_code=404, detail="Thread not found")
     if thread.IsLocked:
         raise HTTPException(status_code=403, detail="Thread is locked")
+    content_clean, is_flagged = _moderate(content)
+    if is_flagged:
+        raise HTTPException(
+            status_code=422,
+            detail="Your reply contains content that violates community guidelines and cannot be published."
+        )
     author_name = _name(me, db)
     row = db.execute(text("""
-        INSERT INTO OTFForumPosts (ThreadID, AuthorID, AuthorName, Body)
+        INSERT INTO OTFForumPosts (ThreadID, AuthorID, AuthorName, Body, IsFlagged)
         OUTPUT INSERTED.PostID
-        VALUES (:t, :me, :name, :body)
-    """), {"t": thread_id, "me": me, "name": author_name, "body": content}).fetchone()
+        VALUES (:t, :me, :name, :body, :flag)
+    """), {"t": thread_id, "me": me, "name": author_name, "body": content_clean, "flag": 0}).fetchone()
     db.execute(text("""
         UPDATE OTFForumThreads
         SET ReplyCount=ReplyCount+1, LastPostAt=GETDATE()
