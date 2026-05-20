@@ -144,10 +144,10 @@ def create_input(payload: dict, db: Session = Depends(get_db)):
         INSERT INTO FarmInput
             (BusinessID, InputName, Category, Unit, CurrentStock, MinStockAlert,
              CostPerUnit, Supplier, StorageLocation, ExpiryDate, LotNumber,
-             REIHours, PHIHours, ActiveIngredient, EPARegNumber, Notes)
+             REIHours, PHIHours, ActiveIngredient, EPARegNumber, Notes, BarcodeID)
         OUTPUT INSERTED.InputID
         VALUES (:bid, :name, :cat, :unit, :stock, :alert, :cost, :supplier,
-                :loc, :exp, :lot, :rei, :phi, :ai, :epa, :notes)
+                :loc, :exp, :lot, :rei, :phi, :ai, :epa, :notes, :barcode)
     """), {
         "bid":      bid,
         "name":     payload.get("input_name", ""),
@@ -165,6 +165,7 @@ def create_input(payload: dict, db: Session = Depends(get_db)):
         "ai":       payload.get("active_ingredient"),
         "epa":      payload.get("epa_reg_number"),
         "notes":    payload.get("notes"),
+        "barcode":  payload.get("barcode_id"),
     }).fetchone()
     db.commit()
     return {"input_id": row[0]}
@@ -190,6 +191,7 @@ def update_input(input_id: int, payload: dict, db: Session = Depends(get_db)):
             ActiveIngredient = :ai,
             EPARegNumber     = :epa,
             Notes            = :notes,
+            BarcodeID        = :barcode,
             UpdatedAt        = GETDATE()
         WHERE InputID = :id AND BusinessID = :bid
     """), {
@@ -209,6 +211,7 @@ def update_input(input_id: int, payload: dict, db: Session = Depends(get_db)):
         "ai":       payload.get("active_ingredient"),
         "epa":      payload.get("epa_reg_number"),
         "notes":    payload.get("notes"),
+        "barcode":  payload.get("barcode_id"),
     })
     db.commit()
     return {"ok": True}
@@ -513,6 +516,7 @@ def _input_row(r) -> dict:
         "phi_hours":        float(r.PHIHours) if r.PHIHours is not None else None,
         "active_ingredient": r.ActiveIngredient,
         "epa_reg_number":   r.EPARegNumber,
+        "barcode_id":       r.BarcodeID,
         "notes":            r.Notes,
         "is_active":        bool(r.IsActive),
         "created_at":       r.CreatedAt.isoformat() if r.CreatedAt else None,
