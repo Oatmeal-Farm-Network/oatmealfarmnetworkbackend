@@ -1,0 +1,304 @@
+"""
+routers/packhouse_qc.py
+Packhouse sorting/grading/packaging workflows and QC inspection templates.
+"""
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+from database import get_db
+from typing import Optional
+import json
+
+router = APIRouter(prefix="/api/packhouse", tags=["packhouse_qc"])
+_ready = False
+
+
+def _ensure(db: Session):
+    global _ready
+    if _ready:
+        return
+    stmts = [
+        """IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='PackhouseBatch')
+        CREATE TABLE PackhouseBatch (
+            BatchID         INT IDENTITY PRIMARY KEY,
+            BusinessID      INT NOT NULL,
+            BatchRef        NVARCHAR(100) NULL,
+            ProductName     NVARCHAR(300) NOT NULL,
+            SourceLotID     NVARCHAR(100) NULL,
+            SupplierName    NVARCHAR(300) NULL,
+            IntakeDate      DATE NOT NULL,
+            IntakeQty       DECIMAL(12,3) NOT NULL,
+            Unit            NVARCHAR(50)  NOT NULL DEFAULT 'kg',
+            Status          NVARCHAR(50)  NOT NULL DEFAULT 'intake',
+            StorageLocation NVARCHAR(200) NULL,
+            Notes           NVARCHAR(MAX) NULL,
+            CreatedAt       DATETIME2 DEFAULT GETDATE(),
+            UpdatedAt       DATETIME2 DEFAULT GETDATE()
+        )""",
+        """IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='PackhouseGrading')
+        CREATE TABLE PackhouseGrading (
+            GradeID         INT IDENTITY PRIMARY KEY,
+            BatchID         INT NOT NULL,
+            GradeName       NVARCHAR(100) NOT NULL,
+            Quantity        DECIMAL(12,3) NOT NULL,
+            Unit            NVARCHAR(50)  NULL,
+            PriceModifier   DECIMAL(6,4) NULL DEFAULT 1.0,
+            PackagingType   NVARCHAR(200) NULL,
+            PackagedUnits   INT NULL,
+            Notes           NVARCHAR(MAX) NULL,
+            CreatedAt       DATETIME2 DEFAULT GETDATE()
+        )""",
+        """IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='QCTemplate')
+        CREATE TABLE QCTemplate (
+            TemplateID   INT IDENTITY PRIMARY KEY,
+            BusinessID   INT NOT NULL,
+            TemplateName NVARCHAR(300) NOT NULL,
+            ProductType  NVARCHAR(200) NULL,
+            CriteriaJSON NVARCHAR(MAX) NULL,
+            IsActive     BIT DEFAULT 1,
+            CreatedAt    DATETIME2 DEFAULT GETDATE()
+        )""",
+        """IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='QCInspection')
+        CREATE TABLE QCInspection (
+            InspectionID    INT IDENTITY PRIMARY KEY,
+            BatchID         INT NOT NULL,
+            TemplateID      INT NULL,
+            BusinessID      INT NOT NULL,
+            InspectionDate  DATE NOT NULL,
+            Inspector       NVARCHAR(200) NULL,
+            OverallResult   NVARCHAR(20)  NOT NULL DEFAULT 'pass',
+            ScoresPct       DECIMAL(5,2) NULL,
+            FindingsJSON    NVARCHAR(MAX) NULL,
+            ActionRequired  NVARCHAR(MAX) NULL,
+            Notes           NVARCHAR(MAX) NULL,
+            CreatedAt       DATETIME2 DEFAULT GETDATE()
+        )""",
+        """IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='PackhousePackaging')
+        CREATE TABLE PackhousePackaging (
+            PackID          INT IDENTITY PRIMARY KEY,
+            BatchID         INT NOT NULL,
+            GradeID         INT NULL,
+            PackDate        DATE NOT NULL,
+            PackagingType   NVARCHAR(200) NOT NULL,
+            UnitsPackaged   INT NULL,
+            QtyPerUnit      DECIMAL(10,3) NULL,
+            Unit            NVARCHAR(50)  NULL,
+            LotCode         NVARCHAR(100) NULL,
+            ExpiryDate      DATE NULL,
+            DestinationMarket NVARCHAR(300) NULL,
+            Notes           NVARCHAR(MAX) NULL,
+            CreatedAt       DATETIME2 DEFAULT GETDATE()
+        )""",
+    ]
+    for s in stmts:
+        db.execute(text(s))
+    db.commit()
+    _ready = True
+
+
+# ─── Batches ─────────────────────────────────────────────────────────────────
+
+@router.get("/batches")
+def list_batches(business_id: int = Query(...), status: Optional[str] = None, db: Session = Depends(get_db)):
+    _ensure(db)
+    q = """
+        SELECT b.*,
+            (SELECT ISNULL(SUM(Quantity),0) FROM PackhouseGrading WHERE BatchID=b.BatchID) AS GradedQty,
+            (SELECT COUNT(*) FROM QCInspection WHERE BatchID=b.BatchID) AS InspectionCount
+        FROM PackhouseBatch b WHERE b.BusinessID=:bid
+    """
+    params = {"bid": business_id}
+    if status:
+        q += " AND b.Status=:st"; params["st"] = status
+    q += " ORDER BY b.IntakeDate DESC"
+    rows = db.execute(text(q), params).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+@router.post("/batches")
+def create_batch(body: dict, db: Session = Depends(get_db)):
+    _ensure(db)
+    count = db.execute(text("SELECT COUNT(*)+1 FROM PackhouseBatch WHERE BusinessID=:bid"), {"bid": body["BusinessID"]}).scalar()
+    batch_ref = f"PH-{body['BusinessID']}-{count:04d}"
+    r = db.execute(text("""
+        INSERT INTO PackhouseBatch (BusinessID,BatchRef,ProductName,SourceLotID,SupplierName,
+            IntakeDate,IntakeQty,Unit,Status,StorageLocation,Notes)
+        OUTPUT INSERTED.BatchID
+        VALUES (:bid,:ref,:prod,:lot,:sup,:dt,:qty,:unit,:st,:loc,:notes)
+    """), {
+        "bid": body["BusinessID"], "ref": batch_ref,
+        "prod": body["ProductName"], "lot": body.get("SourceLotID"),
+        "sup": body.get("SupplierName"), "dt": body["IntakeDate"],
+        "qty": body["IntakeQty"], "unit": body.get("Unit", "kg"),
+        "st": body.get("Status", "intake"), "loc": body.get("StorageLocation"),
+        "notes": body.get("Notes"),
+    }).fetchone()
+    db.commit()
+    return {"BatchID": r[0], "BatchRef": batch_ref}
+
+
+@router.put("/batches/{batch_id}/status")
+def update_batch_status(batch_id: int, body: dict, db: Session = Depends(get_db)):
+    db.execute(text("""
+        UPDATE PackhouseBatch SET Status=:st, UpdatedAt=GETDATE()
+        WHERE BatchID=:bid AND BusinessID=:business_id
+    """), {"st": body["Status"], "bid": batch_id, "business_id": body["BusinessID"]})
+    db.commit()
+    return {"ok": True}
+
+
+# ─── Grading ─────────────────────────────────────────────────────────────────
+
+@router.get("/batches/{batch_id}/grades")
+def get_grades(batch_id: int, db: Session = Depends(get_db)):
+    _ensure(db)
+    rows = db.execute(text("SELECT * FROM PackhouseGrading WHERE BatchID=:bid ORDER BY GradeName"),
+                      {"bid": batch_id}).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+@router.post("/batches/{batch_id}/grades")
+def add_grade(batch_id: int, body: dict, db: Session = Depends(get_db)):
+    _ensure(db)
+    r = db.execute(text("""
+        INSERT INTO PackhouseGrading (BatchID,GradeName,Quantity,Unit,PriceModifier,PackagingType,PackagedUnits,Notes)
+        OUTPUT INSERTED.GradeID
+        VALUES (:bid,:grade,:qty,:unit,:pm,:pt,:pu,:notes)
+    """), {
+        "bid": batch_id, "grade": body["GradeName"], "qty": body["Quantity"],
+        "unit": body.get("Unit"), "pm": body.get("PriceModifier", 1.0),
+        "pt": body.get("PackagingType"), "pu": body.get("PackagedUnits"),
+        "notes": body.get("Notes"),
+    }).fetchone()
+    db.commit()
+    return {"GradeID": r[0]}
+
+
+# ─── QC Templates ─────────────────────────────────────────────────────────────
+
+@router.get("/templates")
+def list_templates(business_id: int = Query(...), db: Session = Depends(get_db)):
+    _ensure(db)
+    rows = db.execute(text("SELECT * FROM QCTemplate WHERE BusinessID=:bid AND IsActive=1 ORDER BY TemplateName"),
+                      {"bid": business_id}).fetchall()
+    result = []
+    for r in rows:
+        d = dict(r._mapping)
+        try:
+            d["Criteria"] = json.loads(d["CriteriaJSON"]) if d.get("CriteriaJSON") else []
+        except Exception:
+            d["Criteria"] = []
+        result.append(d)
+    return result
+
+
+@router.post("/templates")
+def create_template(body: dict, db: Session = Depends(get_db)):
+    _ensure(db)
+    criteria = body.get("Criteria", [])
+    r = db.execute(text("""
+        INSERT INTO QCTemplate (BusinessID,TemplateName,ProductType,CriteriaJSON)
+        OUTPUT INSERTED.TemplateID
+        VALUES (:bid,:name,:pt,:crit)
+    """), {
+        "bid": body["BusinessID"], "name": body["TemplateName"],
+        "pt": body.get("ProductType"), "crit": json.dumps(criteria),
+    }).fetchone()
+    db.commit()
+    return {"TemplateID": r[0]}
+
+
+# ─── Inspections ──────────────────────────────────────────────────────────────
+
+@router.get("/batches/{batch_id}/inspections")
+def get_inspections(batch_id: int, db: Session = Depends(get_db)):
+    _ensure(db)
+    rows = db.execute(text("""
+        SELECT i.*, t.TemplateName
+        FROM QCInspection i
+        LEFT JOIN QCTemplate t ON t.TemplateID=i.TemplateID
+        WHERE i.BatchID=:bid ORDER BY i.InspectionDate DESC
+    """), {"bid": batch_id}).fetchall()
+    result = []
+    for r in rows:
+        d = dict(r._mapping)
+        try:
+            d["Findings"] = json.loads(d["FindingsJSON"]) if d.get("FindingsJSON") else []
+        except Exception:
+            d["Findings"] = []
+        result.append(d)
+    return result
+
+
+@router.post("/batches/{batch_id}/inspections")
+def add_inspection(batch_id: int, body: dict, db: Session = Depends(get_db)):
+    _ensure(db)
+    findings = body.get("Findings", [])
+    r = db.execute(text("""
+        INSERT INTO QCInspection (BatchID,TemplateID,BusinessID,InspectionDate,Inspector,
+            OverallResult,ScoresPct,FindingsJSON,ActionRequired,Notes)
+        OUTPUT INSERTED.InspectionID
+        VALUES (:bid,:tid,:business_id,:dt,:insp,:result,:score,:findings,:action,:notes)
+    """), {
+        "bid": batch_id, "tid": body.get("TemplateID"),
+        "business_id": body["BusinessID"], "dt": body["InspectionDate"],
+        "insp": body.get("Inspector"), "result": body.get("OverallResult", "pass"),
+        "score": body.get("ScoresPct"), "findings": json.dumps(findings),
+        "action": body.get("ActionRequired"), "notes": body.get("Notes"),
+    }).fetchone()
+    db.commit()
+    return {"InspectionID": r[0]}
+
+
+# ─── Packaging ────────────────────────────────────────────────────────────────
+
+@router.get("/batches/{batch_id}/packaging")
+def get_packaging(batch_id: int, db: Session = Depends(get_db)):
+    _ensure(db)
+    rows = db.execute(text("SELECT * FROM PackhousePackaging WHERE BatchID=:bid ORDER BY PackDate DESC"),
+                      {"bid": batch_id}).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+@router.post("/batches/{batch_id}/packaging")
+def add_packaging(batch_id: int, body: dict, db: Session = Depends(get_db)):
+    _ensure(db)
+    r = db.execute(text("""
+        INSERT INTO PackhousePackaging (BatchID,GradeID,PackDate,PackagingType,UnitsPackaged,
+            QtyPerUnit,Unit,LotCode,ExpiryDate,DestinationMarket,Notes)
+        OUTPUT INSERTED.PackID
+        VALUES (:bid,:gid,:dt,:pt,:units,:qpu,:unit,:lot,:exp,:dest,:notes)
+    """), {
+        "bid": batch_id, "gid": body.get("GradeID"), "dt": body["PackDate"],
+        "pt": body["PackagingType"], "units": body.get("UnitsPackaged"),
+        "qpu": body.get("QtyPerUnit"), "unit": body.get("Unit"),
+        "lot": body.get("LotCode"), "exp": body.get("ExpiryDate"),
+        "dest": body.get("DestinationMarket"), "notes": body.get("Notes"),
+    }).fetchone()
+    db.commit()
+    return {"PackID": r[0]}
+
+
+# ─── Summary ─────────────────────────────────────────────────────────────────
+
+@router.get("/summary")
+def packhouse_summary(business_id: int = Query(...), db: Session = Depends(get_db)):
+    _ensure(db)
+    row = db.execute(text("""
+        SELECT
+            COUNT(*) AS TotalBatches,
+            SUM(CASE WHEN Status='intake' THEN 1 ELSE 0 END) AS Intake,
+            SUM(CASE WHEN Status='grading' THEN 1 ELSE 0 END) AS Grading,
+            SUM(CASE WHEN Status='packaging' THEN 1 ELSE 0 END) AS Packaging,
+            SUM(CASE WHEN Status='dispatched' THEN 1 ELSE 0 END) AS Dispatched,
+            ISNULL(SUM(IntakeQty),0) AS TotalIntakeKg
+        FROM PackhouseBatch WHERE BusinessID=:bid
+    """), {"bid": business_id}).fetchone()
+    qc = db.execute(text("""
+        SELECT
+            COUNT(*) AS TotalInspections,
+            SUM(CASE WHEN OverallResult='pass' THEN 1 ELSE 0 END) AS Passed,
+            SUM(CASE WHEN OverallResult='fail' THEN 1 ELSE 0 END) AS Failed
+        FROM QCInspection WHERE BusinessID=:bid
+    """), {"bid": business_id}).fetchone()
+    return {**dict(row._mapping), **dict(qc._mapping)} if row and qc else {}

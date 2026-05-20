@@ -100,6 +100,23 @@ from routers import meetings
 from routers import recipes_batches
 from routers import cold_chain
 from routers import farmer_settlement
+from routers import supply_chain
+from routers import supply_chain_events
+from routers import supply_chain_ai
+from routers import hr
+from routers import farm_inputs
+from routers import crop_budgets
+from routers import harvest_lots
+from routers import farm_infrastructure
+from routers import farm_kpi
+from routers import nursery
+from routers import outgrower
+from routers import procurement
+from routers import work_orders
+from routers import packhouse_qc
+from routers import plant_tagging
+from routers import export_compliance
+from routers import rbac
 
 load_dotenv()
 
@@ -264,6 +281,10 @@ async def _startup_migrations():
             'Properties Management':         'properties',
             'Cold Chain & Logistics':        'cold_chain',
             'Farmer Settlement & Pay':       'farmer_settlement',
+            'Chef Dashboard':                'chef_dashboard',
+            'Pairsley AI (Restaurants)':     'pairsley',
+            'Rosemarie AI (Artisans)':       'rosemarie',
+            'Restaurant Sourcing':           'restaurant_sourcing',
         }
         try:
             with SessionLocal() as _db:
@@ -279,6 +300,22 @@ async def _startup_migrations():
                         _db.execute(
                             _t("UPDATE FeatureCategory SET FeatureKey = :fk WHERE CategoryID = :cid"),
                             {"fk": fk, "cid": row[0]},
+                        )
+                _db.commit()
+        except Exception:
+            pass
+
+        # Idempotently seed CompanySiteManagement with all DEFAULT_FEATURES (IsEnabled=1)
+        try:
+            from routers.company_features import DEFAULT_FEATURES as _DF
+            with SessionLocal() as _db:
+                existing_keys = {r[0] for r in _db.execute(_t("SELECT FeatureKey FROM CompanySiteManagement")).fetchall()}
+                for _key, _name, _monthly, _yearly, _sort in _DF:
+                    if _key not in existing_keys:
+                        _db.execute(
+                            _t("INSERT INTO CompanySiteManagement (FeatureKey, FeatureName, IsEnabled, MonthlyPrice, YearlyPrice, SortOrder) "
+                               "VALUES (:k, :n, 1, :m, :y, :s)"),
+                            {"k": _key, "n": _name, "m": _monthly, "y": _yearly, "s": _sort},
                         )
                 _db.commit()
         except Exception:
@@ -412,6 +449,24 @@ app.include_router(meetings.router)
 app.include_router(recipes_batches.router)
 app.include_router(cold_chain.router)
 app.include_router(farmer_settlement.router)
+app.include_router(supply_chain.router)
+app.include_router(supply_chain_events.router)
+app.include_router(supply_chain_ai.router)
+app.include_router(hr.router)
+app.include_router(farm_inputs.router)
+app.include_router(crop_budgets.router)
+app.include_router(harvest_lots.router)
+app.include_router(farm_infrastructure.router)
+app.include_router(farm_kpi.router)
+app.include_router(nursery.router)
+app.include_router(outgrower.router)
+app.include_router(procurement.router)
+app.include_router(work_orders.router)
+app.include_router(packhouse_qc.router)
+app.include_router(plant_tagging.router)
+app.include_router(export_compliance.router)
+app.include_router(rbac.router)
+app.include_router(rbac.AUDIT_ROUTER)
 
 
 # ── Public testimonials endpoint (used by website blocks) ─────────
