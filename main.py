@@ -362,6 +362,78 @@ async def _startup_migrations():
 
     asyncio.get_event_loop().run_in_executor(None, _seed_prices)
 
+    # ── Expiry reminder loop ─────────────────────────────────────────
+    # Runs once on startup, then every 24 h. Fires notifications for:
+    #   • Farm inputs expiring within 14 days
+    #   • HR certifications expiring within 60 days
+    def _expiry_reminder_loop():
+        import time as _time
+        while True:
+            try:
+                from routers.notifications import notify_business as _nb
+                with SessionLocal() as _db:
+                    # Farm inputs expiring in ≤14 days
+                    inp_rows = _db.execute(__import__('sqlalchemy').text("""
+                        SELECT BusinessID, InputName, ExpiryDate, InputID
+                        FROM FarmInput
+                        WHERE IsActive = 1
+                          AND ExpiryDate IS NOT NULL
+                          AND ExpiryDate > CAST(GETDATE() AS DATE)
+                          AND ExpiryDate <= DATEADD(day, 14, CAST(GETDATE() AS DATE))
+                    """)).fetchall()
+                    seen_biz_input: set = set()
+                    for r in inp_rows:
+                        key = (r.BusinessID, r.InputID)
+                        if key in seen_biz_input:
+                            continue
+                        seen_biz_input.add(key)
+                        _nb(
+                            _db, r.BusinessID,
+                            type="input_expiry_warning",
+                            title=f"Input Expiring Soon: {r.InputName}",
+                            body=f"Expires {r.ExpiryDate} — use or dispose before it expires.",
+                            link_path=f"/farm-inputs?BusinessID={r.BusinessID}",
+                            entity_type="FarmInput",
+                            entity_id=r.InputID,
+                        )
+                    if inp_rows:
+                        _db.commit()
+
+                    # HR certifications expiring in ≤60 days
+                    cert_rows = _db.execute(__import__('sqlalchemy').text("""
+                        SELECT c.BusinessID, e.FirstName + ' ' + e.LastName AS EmployeeName,
+                               c.CertName, c.ExpiryDate, c.CertID
+                        FROM HRCertification c
+                        JOIN HREmployee e ON e.EmployeeID = c.EmployeeID
+                        WHERE c.ExpiryDate IS NOT NULL
+                          AND c.ExpiryDate > CAST(GETDATE() AS DATE)
+                          AND c.ExpiryDate <= DATEADD(day, 60, CAST(GETDATE() AS DATE))
+                    """)).fetchall()
+                    seen_biz_cert: set = set()
+                    for r in cert_rows:
+                        key = (r.BusinessID, r.CertID)
+                        if key in seen_biz_cert:
+                            continue
+                        seen_biz_cert.add(key)
+                        _nb(
+                            _db, r.BusinessID,
+                            type="hr_cert_expiry_warning",
+                            title=f"Certification Expiring: {r.CertName}",
+                            body=f"{r.EmployeeName}'s {r.CertName} expires {r.ExpiryDate}.",
+                            link_path=f"/hr?BusinessID={r.BusinessID}&tab=employees",
+                            entity_type="HRCertification",
+                            entity_id=r.CertID,
+                        )
+                    if cert_rows:
+                        _db.commit()
+            except Exception as _e:
+                print(f"[expiry-reminder] error: {_e}")
+            _time.sleep(86400)  # re-check every 24 h
+
+    import threading as _threading
+    _t = _threading.Thread(target=_expiry_reminder_loop, daemon=True, name="expiry-reminder")
+    _t.start()
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     origin = request.headers.get("origin", "")

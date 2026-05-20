@@ -17,7 +17,7 @@ engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
     echo=False,
     pool_pre_ping=True,
-    pool_recycle=60,      # recycle connections every 60s — prevents stale connections on Cloud Run
+    pool_recycle=1800,    # recycle connections every 30 min; 60s was too short for idle dev sessions
     pool_size=5,
     max_overflow=10,
     connect_args={"timeout": 30, "login_timeout": 15},  # 30s query / 15s login — handles cold starts

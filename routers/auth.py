@@ -349,6 +349,41 @@ def GetAccountHome(BusinessID: int, Db: Session = Depends(get_db)):
 
     B, BT, A = Result
 
+    try:
+        sr = Db.execute(text("""
+            SELECT
+              (SELECT COUNT(*) FROM Field               WHERE BusinessID=:b)                                                                           AS fields,
+              (SELECT COUNT(*) FROM Animals             WHERE BusinessID=:b)                                                                           AS animals,
+              (SELECT COUNT(*) FROM MarketplaceOrderItems WHERE SellerBusinessID=:b AND SellerStatus IN ('pending','confirmed','processing'))           AS pending_orders,
+              (SELECT COUNT(*) FROM OFNEvents WHERE BusinessID=:b AND IsPublished=1 AND (EventStartDate IS NULL OR EventStartDate >= CAST(GETDATE() AS DATE))) AS upcoming_events,
+              (SELECT COUNT(*) FROM blog                WHERE BusinessID=:b AND IsPublished=1)                                                         AS blog_posts,
+              (SELECT COUNT(*) FROM SFProducts          WHERE BusinessID=:b AND Publishproduct=1)                                                      AS products,
+              (SELECT COUNT(*) FROM Services            WHERE BusinessID=:b)                                                                           AS services,
+              (SELECT COUNT(*) FROM Produce             WHERE BusinessID=:b AND IsActive=1)                                                            AS produce,
+              (CASE WHEN EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='OFNAggregatorB2BOrder')
+                    THEN (SELECT COUNT(*) FROM OFNAggregatorB2BOrder WHERE BusinessID=:b AND Status IN ('placed','confirmed','picking','dispatched'))
+                    ELSE 0 END)                                                                                                                        AS aggregator_b2b_open,
+              (CASE WHEN EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='OFNAggregatorFarm')
+                    THEN (SELECT COUNT(*) FROM OFNAggregatorFarm WHERE BusinessID=:b AND Status='active')
+                    ELSE 0 END)                                                                                                                        AS aggregator_farms
+        """), {"b": BusinessID}).fetchone()
+        stats = {
+            "fields":              sr.fields              or 0,
+            "animals":             sr.animals             or 0,
+            "pending_orders":      sr.pending_orders      or 0,
+            "upcoming_events":     sr.upcoming_events     or 0,
+            "blog_posts":          sr.blog_posts          or 0,
+            "products":            sr.products            or 0,
+            "services":            sr.services            or 0,
+            "produce":             sr.produce             or 0,
+            "aggregator_b2b_open": sr.aggregator_b2b_open or 0,
+            "aggregator_farms":    sr.aggregator_farms    or 0,
+        }
+    except Exception:
+        stats = {"fields": 0, "animals": 0, "pending_orders": 0, "upcoming_events": 0,
+                 "blog_posts": 0, "products": 0, "services": 0, "produce": 0,
+                 "aggregator_b2b_open": 0, "aggregator_farms": 0}
+
     return {
         "BusinessID": B.BusinessID,
         "BusinessName": B.BusinessName,
@@ -361,6 +396,7 @@ def GetAccountHome(BusinessID: int, Db: Session = Depends(get_db)):
         "AddressState": A.AddressState if A else None,
         "AddressStreet": A.AddressStreet if A else None,
         "AddressZip": A.AddressZip if A else None,
+        "stats": stats,
     }
 
 

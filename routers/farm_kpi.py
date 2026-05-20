@@ -438,7 +438,7 @@ def create_pest_observation(payload: dict, db: Session = Depends(get_db)):
 
     db.commit()
 
-    # Notify all business members when treatment is required
+    # Notify + auto-create a draft treatment work order when treatment is required
     if payload.get("treatment_required"):
         notify_business(
             db, bid,
@@ -453,6 +453,37 @@ def create_pest_observation(payload: dict, db: Session = Depends(get_db)):
             entity_type="FarmPestObservation",
             entity_id=obs_id,
         )
+        # Auto-create a draft "Treatment" work order linked to this pest observation
+        try:
+            title = f"Treat: {payload.get('pest_name', 'Pest')} — {payload.get('field_name') or payload.get('crop_name', 'Field')}"
+            desc = (
+                f"Auto-generated treatment work order for {payload.get('pest_type', 'pest')} "
+                f"'{payload.get('pest_name', 'Unknown')}'. "
+                f"Severity: {payload.get('severity_level', 'unknown')}. "
+                + (f"Affected area: {payload.get('affected_area')}{payload.get('area_unit', '')}." if payload.get('affected_area') else "")
+            )
+            wo_row = db.execute(text("""
+                INSERT INTO WorkOrder
+                    (BusinessID, FieldID, Location, TaskType, Title, Description, Priority, Status)
+                OUTPUT INSERTED.WOID
+                VALUES (:bid, :fid, :loc, 'spraying', :title, :desc, :pri, 'open')
+            """), {
+                "bid":   bid,
+                "fid":   payload.get("field_id"),
+                "loc":   payload.get("field_name"),
+                "title": title,
+                "desc":  desc,
+                "pri":   "urgent" if payload.get("severity_level") == "critical" else "high",
+            }).fetchone()
+            wo_id = wo_row[0]
+            # Link the pest observation to this work order
+            db.execute(text("""
+                UPDATE FarmPestObservation
+                SET WorkOrderID=:wid, Status='treatment_started'
+                WHERE ObsID=:oid AND BusinessID=:bid
+            """), {"wid": wo_id, "oid": obs_id, "bid": bid})
+        except Exception as _e:
+            print(f"[auto-wo] pest treatment WO creation failed: {_e}")
         db.commit()
 
     return {"obs_id": obs_id}

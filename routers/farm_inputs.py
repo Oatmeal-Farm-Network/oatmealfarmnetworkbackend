@@ -348,7 +348,7 @@ def record_transaction(payload: dict, db: Session = Depends(get_db)):
 
     db.commit()
 
-    # Notify all business members if stock dropped at or below the alert threshold
+    # Notify + auto-reorder when stock drops at or below the alert threshold
     if tx_type in ("use", "dispose") and inp.MinStockAlert is not None and new_stock <= float(inp.MinStockAlert):
         notify_business(
             db, bid,
@@ -359,6 +359,41 @@ def record_transaction(payload: dict, db: Session = Depends(get_db)):
             entity_type="FarmInput",
             entity_id=input_id,
         )
+        # Auto-create a draft reorder PO if none exists in the last 14 days
+        try:
+            tag = f"[auto-reorder-input-{input_id}]"
+            existing = db.execute(text("""
+                SELECT TOP 1 POID FROM PurchaseOrder
+                WHERE BusinessID=:bid AND Status='draft'
+                  AND Notes LIKE :tag AND CreatedAt >= DATEADD(day,-14,GETDATE())
+            """), {"bid": bid, "tag": f"%{tag}%"}).fetchone()
+            if not existing:
+                count = db.execute(text("SELECT COUNT(*)+1 FROM PurchaseOrder WHERE BusinessID=:bid"), {"bid": bid}).scalar()
+                po_num = f"PO-AUTO-{bid}-{count:04d}"
+                reorder_qty = max(float(inp.MinStockAlert) * 2, 1.0)
+                unit_cost = float(inp.CostPerUnit) if inp.CostPerUnit else 0.0
+                line_total = round(reorder_qty * unit_cost, 2)
+                po_row = db.execute(text("""
+                    INSERT INTO PurchaseOrder
+                        (BusinessID, PONumber, SupplierName, Category, OrderDate, Status, Notes)
+                    OUTPUT INSERTED.POID
+                    VALUES (:bid, :pnum, :sup, 'farm_inputs', CAST(GETDATE() AS DATE), 'draft', :notes)
+                """), {
+                    "bid":   bid,
+                    "pnum":  po_num,
+                    "sup":   inp.Supplier or "Unknown Supplier",
+                    "notes": f"{tag} Auto-reorder: {inp.InputName} — stock {new_stock:.2f} {inp.Unit} (min {float(inp.MinStockAlert):.2f})",
+                }).fetchone()
+                po_id = po_row[0]
+                db.execute(text("""
+                    INSERT INTO POLineItem (POID, ItemName, Category, Quantity, Unit, UnitPrice, LineTotal)
+                    VALUES (:pid, :name, 'farm_inputs', :qty, :unit, :up, :lt)
+                """), {"pid": po_id, "name": inp.InputName, "qty": reorder_qty,
+                       "unit": inp.Unit, "up": unit_cost, "lt": line_total})
+                db.execute(text("UPDATE PurchaseOrder SET TotalAmount=:t WHERE POID=:pid"),
+                           {"t": line_total, "pid": po_id})
+        except Exception as _e:
+            print(f"[auto-reorder] skipped: {_e}")
         db.commit()
 
     return {"ok": True, "new_stock": new_stock}
