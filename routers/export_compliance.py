@@ -8,6 +8,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db
 from typing import Optional
+from fastapi.responses import StreamingResponse
+import csv
+import io
 
 router = APIRouter(prefix="/api/export-compliance", tags=["export_compliance"])
 _ready = False
@@ -381,3 +384,45 @@ def export_summary(business_id: int = Query(...), db: Session = Depends(get_db))
         "CertsExpiringIn90Days": certs_expiring[0] if certs_expiring else 0,
         "AvgMarginPct": float(margins[0]) if margins and margins[0] else None,
     }
+
+
+# ─── CSV Export ───────────────────────────────────────────────────────────────
+
+@router.get("/export")
+def export_shipments_csv(business_id: int = Query(...), status: Optional[str] = None,
+                         db: Session = Depends(get_db)):
+    """Download shipment manifest as CSV."""
+    _ensure(db)
+    q = """
+        SELECT ShipmentID, ShipmentRef, ProductName, DestinationCountry, BuyerName,
+               QuantityKg, PackagedUnits, DeclaredValueUSD, ShipmentDate, EstimatedArrival,
+               Status, Incoterms, PortOfLoading, PortOfDischarge,
+               (SELECT COUNT(*) FROM PhytosanitaryCert WHERE ShipmentID=s.ShipmentID) AS PhytoCertCount,
+               (SELECT COUNT(*) FROM CustomsDoc WHERE ShipmentID=s.ShipmentID) AS CustomsDocCount,
+               Notes, CreatedAt
+        FROM ExportShipment s WHERE BusinessID=:bid
+    """
+    params: dict = {"bid": business_id}
+    if status:
+        q += " AND Status=:st"; params["st"] = status
+    q += " ORDER BY ShipmentDate DESC"
+    rows = db.execute(text(q), params).fetchall()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["ShipmentID", "ShipmentRef", "Product", "DestinationCountry", "Buyer",
+                     "QuantityKg", "PackagedUnits", "DeclaredValueUSD", "ShipmentDate",
+                     "EstimatedArrival", "Status", "Incoterms", "PortOfLoading",
+                     "PortOfDischarge", "PhytoCertCount", "CustomsDocCount", "Notes", "CreatedAt"])
+    for r in rows:
+        writer.writerow([r.ShipmentID, r.ShipmentRef, r.ProductName, r.DestinationCountry,
+                         r.BuyerName, r.QuantityKg, r.PackagedUnits, r.DeclaredValueUSD,
+                         r.ShipmentDate, r.EstimatedArrival, r.Status, r.Incoterms,
+                         r.PortOfLoading, r.PortOfDischarge,
+                         r.PhytoCertCount, r.CustomsDocCount, r.Notes, r.CreatedAt])
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=shipments_{business_id}.csv"},
+    )

@@ -4,6 +4,7 @@ from sqlalchemy import text
 from database import get_db
 from typing import Optional
 from datetime import datetime, date
+from routers.notifications import notify_business
 
 router = APIRouter(prefix="/api/farm-kpi", tags=["farm_kpi"])
 
@@ -436,6 +437,24 @@ def create_pest_observation(payload: dict, db: Session = Depends(get_db)):
         })
 
     db.commit()
+
+    # Notify all business members when treatment is required
+    if payload.get("treatment_required"):
+        notify_business(
+            db, bid,
+            type="pest_treatment_required",
+            title=f"Treatment Required: {payload.get('pest_name', 'Pest')}",
+            body=(
+                f"{payload.get('severity_level', 'unknown').title()} severity"
+                + (f" on {payload['field_name']}" if payload.get('field_name') else "")
+                + (f" ({payload['crop_name']})" if payload.get('crop_name') else "")
+            ),
+            link_path=f"/work-orders?BusinessID={bid}",
+            entity_type="FarmPestObservation",
+            entity_id=obs_id,
+        )
+        db.commit()
+
     return {"obs_id": obs_id}
 
 

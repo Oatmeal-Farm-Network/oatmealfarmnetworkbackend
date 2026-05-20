@@ -7,6 +7,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db
 from typing import Optional
+from fastapi.responses import StreamingResponse
+import csv
+import io
 import json
 
 router = APIRouter(prefix="/api/packhouse", tags=["packhouse_qc"])
@@ -302,3 +305,44 @@ def packhouse_summary(business_id: int = Query(...), db: Session = Depends(get_d
         FROM QCInspection WHERE BusinessID=:bid
     """), {"bid": business_id}).fetchone()
     return {**dict(row._mapping), **dict(qc._mapping)} if row and qc else {}
+
+
+# ─── CSV Export ───────────────────────────────────────────────────────────────
+
+@router.get("/export")
+def export_batches_csv(business_id: int = Query(...), status: Optional[str] = None,
+                       db: Session = Depends(get_db)):
+    """Download all packhouse batches with graded qty and inspection count as CSV."""
+    _ensure(db)
+    q = """
+        SELECT b.BatchID, b.BatchRef, b.ProductName, b.SupplierName,
+               b.IntakeDate, b.IntakeQty, b.Unit, b.Status, b.StorageLocation,
+               b.Notes, b.CreatedAt,
+               ISNULL((SELECT SUM(Quantity) FROM PackhouseGrading WHERE BatchID=b.BatchID), 0) AS GradedQty,
+               ISNULL((SELECT COUNT(*) FROM QCInspection WHERE BatchID=b.BatchID), 0) AS InspectionCount,
+               ISNULL((SELECT SUM(CASE WHEN OverallResult='pass' THEN 1 ELSE 0 END)
+                       FROM QCInspection WHERE BatchID=b.BatchID), 0) AS InspectionsPassed
+        FROM PackhouseBatch b WHERE b.BusinessID=:bid
+    """
+    params: dict = {"bid": business_id}
+    if status:
+        q += " AND b.Status=:st"; params["st"] = status
+    q += " ORDER BY b.IntakeDate DESC"
+    rows = db.execute(text(q), params).fetchall()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["BatchID", "BatchRef", "Product", "Supplier", "IntakeDate", "IntakeQty",
+                     "Unit", "Status", "StorageLocation", "GradedQty", "InspectionCount",
+                     "InspectionsPassed", "Notes", "CreatedAt"])
+    for r in rows:
+        writer.writerow([r.BatchID, r.BatchRef, r.ProductName, r.SupplierName,
+                         r.IntakeDate, r.IntakeQty, r.Unit, r.Status, r.StorageLocation,
+                         r.GradedQty, r.InspectionCount, r.InspectionsPassed,
+                         r.Notes, r.CreatedAt])
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=packhouse_batches_{business_id}.csv"},
+    )

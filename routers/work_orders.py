@@ -9,6 +9,7 @@ from sqlalchemy import text
 from database import get_db
 from typing import Optional
 from routers.rbac import record_audit
+from routers.notifications import notify_business
 
 router = APIRouter(prefix="/api/work-orders", tags=["work_orders"])
 _ready = False
@@ -182,6 +183,16 @@ def create_work_order(body: dict, db: Session = Depends(get_db)):
     record_audit(db, body["BusinessID"], body.get("AssignedTo"),
                  "CREATE", "WorkOrder", wo_id,
                  {"task_type": body["TaskType"], "title": body["Title"]})
+    if body.get("AssignedTo"):
+        notify_business(
+            db, body["BusinessID"],
+            type="work_order_assigned",
+            title=f"New Work Order: {body['Title']}",
+            body=f"Assigned to {body['AssignedTo']}",
+            link_path=f"/work-orders?BusinessID={body['BusinessID']}",
+            entity_type="WorkOrder",
+            entity_id=wo_id,
+        )
     db.commit()
     return {"WOID": wo_id}
 

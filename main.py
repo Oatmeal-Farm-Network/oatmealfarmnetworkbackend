@@ -321,6 +321,26 @@ async def _startup_migrations():
         except Exception:
             pass
 
+        # Auto-seed 5 default RBAC roles for every business that has none yet
+        try:
+            from routers.rbac import DEFAULT_ROLES as _DR, _ensure as _rbac_ensure
+            with SessionLocal() as _db:
+                _rbac_ensure(_db)
+                biz_ids = [r[0] for r in _db.execute(_t(
+                    "SELECT BusinessID FROM Business "
+                    "WHERE BusinessID NOT IN (SELECT DISTINCT BusinessID FROM BusinessRole)"
+                )).fetchall()]
+                for _bid in biz_ids:
+                    for _rname, _rdesc in _DR:
+                        _db.execute(_t(
+                            "INSERT INTO BusinessRole (BusinessID, RoleName, Description, IsSystem) "
+                            "VALUES (:bid, :name, :desc, 1)"
+                        ), {"bid": _bid, "name": _rname, "desc": _rdesc})
+                if biz_ids:
+                    _db.commit()
+        except Exception:
+            pass
+
     asyncio.get_event_loop().run_in_executor(None, _run)
 
     # Seed commodity price history if the table is empty (first deploy / cold start).

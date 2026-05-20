@@ -5,6 +5,7 @@ from database import get_db
 from datetime import datetime, date
 from typing import Optional
 import math
+from routers.notifications import notify_business
 
 router = APIRouter(prefix="/api/farm-inputs", tags=["farm_inputs"])
 
@@ -279,7 +280,7 @@ def record_transaction(payload: dict, db: Session = Depends(get_db)):
 
     # Verify the input belongs to this business
     inp = db.execute(
-        text("SELECT CurrentStock, CostPerUnit FROM FarmInput WHERE InputID = :id AND BusinessID = :bid"),
+        text("SELECT CurrentStock, CostPerUnit, MinStockAlert, InputName, Unit FROM FarmInput WHERE InputID = :id AND BusinessID = :bid"),
         {"id": input_id, "bid": bid},
     ).fetchone()
     if not inp:
@@ -346,6 +347,20 @@ def record_transaction(payload: dict, db: Session = Depends(get_db)):
             """), {"q": new_lot_qty, "lid": lot.LotID, "ex": 1 if new_lot_qty <= 0 else 0})
 
     db.commit()
+
+    # Notify all business members if stock dropped at or below the alert threshold
+    if tx_type in ("use", "dispose") and inp.MinStockAlert is not None and new_stock <= float(inp.MinStockAlert):
+        notify_business(
+            db, bid,
+            type="low_stock",
+            title=f"Low Stock: {inp.InputName}",
+            body=f"Stock is {new_stock:.2f} {inp.Unit} (min: {float(inp.MinStockAlert):.2f})",
+            link_path=f"/farm-inputs?BusinessID={bid}",
+            entity_type="FarmInput",
+            entity_id=input_id,
+        )
+        db.commit()
+
     return {"ok": True, "new_stock": new_stock}
 
 

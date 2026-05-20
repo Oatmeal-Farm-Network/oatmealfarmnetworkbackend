@@ -12,6 +12,9 @@ from sqlalchemy import text
 from database import get_db
 from typing import Optional
 from datetime import date, datetime
+from fastapi.responses import StreamingResponse
+import csv
+import io
 
 router = APIRouter(prefix="/api/hr", tags=["hr"])
 _tables_ready = False
@@ -849,3 +852,53 @@ def hr_summary(business_id: int = Query(...), db: Session = Depends(get_db)):
     except Exception:
         return {"active_employees": 0, "seasonal": 0, "pending_tasks": 0,
                 "active_tasks": 0, "pending_leave": 0, "open_pay_periods": 0, "expiring_certs": 0}
+
+
+# ── Payroll CSV Export ────────────────────────────────────────────────────────
+
+@router.get("/payroll/export")
+def export_payroll_csv(business_id: int = Query(...), pay_period_id: Optional[int] = None,
+                       db: Session = Depends(get_db)):
+    """Download payroll summary for a pay period (or all paid periods) as CSV."""
+    _ensure_tables(db)
+    q = """
+        SELECT pp.PeriodLabel, pp.StartDate, pp.EndDate, pp.PaySchedule,
+               e.FirstName + ' ' + e.LastName AS EmployeeName,
+               e.JobTitle, e.PayType, e.Department,
+               ps.RegularHours, ps.OvertimeHours, ps.PieceRateUnits,
+               ps.GrossPay, ps.FederalTax, ps.StateTax,
+               ps.SocialSecurity, ps.Medicare, ps.OtherDeductions, ps.NetPay,
+               ps.PaymentDate, ps.PaymentMethod, ps.Notes
+        FROM HRPaySlip ps
+        JOIN HRPayPeriod pp ON pp.PayPeriodID = ps.PayPeriodID
+        JOIN HREmployee e ON e.EmployeeID = ps.EmployeeID
+        WHERE ps.BusinessID = :bid
+    """
+    params: dict = {"bid": business_id}
+    if pay_period_id:
+        q += " AND ps.PayPeriodID = :pid"; params["pid"] = pay_period_id
+    q += " ORDER BY pp.StartDate DESC, e.LastName, e.FirstName"
+    rows = db.execute(text(q), params).fetchall()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["PeriodLabel", "StartDate", "EndDate", "PaySchedule",
+                     "EmployeeName", "JobTitle", "PayType", "Department",
+                     "RegularHours", "OvertimeHours", "PieceRateUnits",
+                     "GrossPay", "FederalTax", "StateTax", "SocialSecurity",
+                     "Medicare", "OtherDeductions", "NetPay",
+                     "PaymentDate", "PaymentMethod", "Notes"])
+    for r in rows:
+        writer.writerow([r.PeriodLabel, r.StartDate, r.EndDate, r.PaySchedule,
+                         r.EmployeeName, r.JobTitle, r.PayType, r.Department,
+                         r.RegularHours, r.OvertimeHours, r.PieceRateUnits,
+                         r.GrossPay, r.FederalTax, r.StateTax, r.SocialSecurity,
+                         r.Medicare, r.OtherDeductions, r.NetPay,
+                         r.PaymentDate, r.PaymentMethod, r.Notes])
+    buf.seek(0)
+    suffix = f"_period{pay_period_id}" if pay_period_id else ""
+    return StreamingResponse(
+        buf,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=payroll_{business_id}{suffix}.csv"},
+    )
