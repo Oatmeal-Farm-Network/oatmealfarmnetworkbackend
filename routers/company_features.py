@@ -68,6 +68,11 @@ DEFAULT_FEATURES = [
     ("picker_performance",   "Picker Performance Tracking",          0.0, 0.0, 50),
     ("iot_greenhouse",       "IoT Greenhouse Monitoring",            9.0, 90.0, 51),
     ("perishable_traceability", "Perishable Traceability & Compliance", 0.0, 0.0, 52),
+    ("chilling_hours",       "Chilling Hour & Bloom Forecast",       0.0, 0.0, 53),
+    ("grain_bin_monitoring", "Grain Bin & Silo Monitoring",          9.0, 90.0, 54),
+    ("scale_tickets",        "Scale Tickets & Contract Reconciliation", 0.0, 0.0, 55),
+    ("harvest_bins",         "Bin-Level Harvest Traceability",       0.0, 0.0, 56),
+    ("ca_storage",           "CA Cold Storage Management",           9.0, 90.0, 57),
     ("business_directory",   "Business Directory",        0.0,   0.0, 98),
     ("food_system_newsfeed", "Food System Newsfeed",      0.0,   0.0, 99),
 ]

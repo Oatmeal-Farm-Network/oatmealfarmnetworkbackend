@@ -121,6 +121,11 @@ from routers import esci
 from routers import picker_performance
 from routers import iot_greenhouse
 from routers import perishable_trace
+from routers import chilling_hours
+from routers import grain_bin
+from routers import scale_tickets
+from routers import harvest_bins
+from routers import ca_storage
 from routers import rbac
 
 load_dotenv()
@@ -567,6 +572,11 @@ app.include_router(esci.router)
 app.include_router(picker_performance.router)
 app.include_router(iot_greenhouse.router)
 app.include_router(perishable_trace.router)
+app.include_router(chilling_hours.router)
+app.include_router(grain_bin.router)
+app.include_router(scale_tickets.router)
+app.include_router(harvest_bins.router)
+app.include_router(ca_storage.router)
 app.include_router(rbac.router)
 app.include_router(rbac.AUDIT_ROUTER)
 
