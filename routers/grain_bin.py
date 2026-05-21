@@ -62,6 +62,10 @@ def _ensure_tables(db: pyodbc.Connection):
         CreatedAt DATETIME NOT NULL DEFAULT GETDATE()
     )""")
     cur.execute("""
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='GrainBin' AND COLUMN_NAME='WebhookToken')
+    ALTER TABLE GrainBin ADD WebhookToken NVARCHAR(100)
+    """)
+    cur.execute("""
     IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='GrainBinReading')
     CREATE TABLE GrainBinReading (
         ReadingID BIGINT IDENTITY PRIMARY KEY,
@@ -356,3 +360,48 @@ def equilibrium(
         "aeration_recommended": emc < target,
         "note": "Aerate when ambient EMC < target storage moisture to dry grain" if emc < target else "Do not aerate — ambient air is wetter than safe storage target",
     }
+
+
+class WebhookReadingIn(BaseModel):
+    probe_depth: str = "middle"
+    temp_c: Optional[float] = None
+    moisture_percent: Optional[float] = None
+    co2_ppm: Optional[float] = None
+    reading_time: Optional[datetime] = None
+
+
+@router.post("/webhook/readings", status_code=201)
+def webhook_readings(bin_id: int, token: str, body: WebhookReadingIn, db=Depends(get_db)):
+    """IoT device endpoint — no JWT needed, authenticates via per-bin webhook token."""
+    _ensure_tables(db)
+    cur = db.cursor()
+    cur.execute("SELECT BinID, BusinessID, WebhookToken FROM GrainBin WHERE BinID=?", [bin_id])
+    row = cur.fetchone()
+    if not row:
+        raise HTTPException(404, "Bin not found")
+    stored_token = row[2]
+    if not stored_token or stored_token != token:
+        raise HTTPException(403, "Invalid webhook token")
+    bid = row[1]
+    ts = body.reading_time or datetime.utcnow()
+    cur.execute("""
+        INSERT INTO GrainBinReading (BinID,BusinessID,ProbeDepth,TempC,MoisturePercent,CO2PPM,ReadingTime)
+        VALUES (?,?,?,?,?,?,?)
+    """, [bin_id, bid, body.probe_depth, body.temp_c, body.moisture_percent, body.co2_ppm, ts])
+    db.commit()
+    _fire_alerts(db, bid, bin_id)
+    return {"ok": True}
+
+
+@router.patch("/bins/{bin_id}/webhook-token")
+def set_webhook_token(bin_id: int, token: str, db=Depends(get_db), user=Depends(get_current_user)):
+    """Generate or update the webhook token for an IoT-connected bin."""
+    _ensure_tables(db)
+    bid = user["BusinessID"]
+    cur = db.cursor()
+    cur.execute("SELECT BinID FROM GrainBin WHERE BinID=? AND BusinessID=?", [bin_id, bid])
+    if not cur.fetchone():
+        raise HTTPException(404, "Bin not found")
+    cur.execute("UPDATE GrainBin SET WebhookToken=? WHERE BinID=?", [token, bin_id])
+    db.commit()
+    return {"ok": True, "bin_id": bin_id}

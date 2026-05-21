@@ -126,6 +126,7 @@ from routers import grain_bin
 from routers import scale_tickets
 from routers import harvest_bins
 from routers import ca_storage
+from routers import spray_applications
 from routers import rbac
 
 load_dotenv()
@@ -577,6 +578,7 @@ app.include_router(grain_bin.router)
 app.include_router(scale_tickets.router)
 app.include_router(harvest_bins.router)
 app.include_router(ca_storage.router)
+app.include_router(spray_applications.router)
 app.include_router(rbac.router)
 app.include_router(rbac.AUDIT_ROUTER)
 

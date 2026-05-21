@@ -54,6 +54,10 @@ def _ensure_tables(db: pyodbc.Connection):
         CreatedAt DATETIME NOT NULL DEFAULT GETDATE()
     )""")
     cur.execute("""
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='CARoom' AND COLUMN_NAME='WebhookToken')
+    ALTER TABLE CARoom ADD WebhookToken NVARCHAR(100)
+    """)
+    cur.execute("""
     IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='CARoomReading')
     CREATE TABLE CARoomReading (
         ReadingID INT IDENTITY PRIMARY KEY,
@@ -420,3 +424,42 @@ def get_protocol(commodity: str):
         raise HTTPException(404, f"No protocol for '{commodity}'. Available: {', '.join(available)}")
     return {"commodity": commodity, "protocol": proto,
             "note": "Tolerances: O₂/CO₂ ±0.5%, Temp ±0.5°C, RH ±3%"}
+
+
+@router.post("/webhook/rooms/{room_id}/readings", status_code=201)
+def webhook_room_reading(room_id: int, token: str, body: ReadingIn, db=Depends(get_db)):
+    """IoT sensor endpoint — no JWT, authenticates via per-room webhook token."""
+    _ensure_tables(db)
+    cur = db.cursor()
+    cur.execute("SELECT RoomID, BusinessID, WebhookToken FROM CARoom WHERE RoomID=?", [room_id])
+    row = cur.fetchone()
+    if not row:
+        raise HTTPException(404, "Room not found")
+    stored_token = row[2]
+    if not stored_token or stored_token != token:
+        raise HTTPException(403, "Invalid webhook token")
+    bid = row[1]
+    ts = body.reading_time or datetime.utcnow()
+    cur.execute("""
+        INSERT INTO CARoomReading (RoomID,BusinessID,O2Pct,CO2Pct,TempC,HumidityPct,EthylenePPB,Source,ReadingTime)
+        OUTPUT INSERTED.ReadingID VALUES (?,?,?,?,?,?,?,?,?)
+    """, [room_id, bid, body.o2_pct, body.co2_pct, body.temp_c, body.humidity_pct,
+          body.ethylene_ppb, "iot", ts])
+    rid = cur.fetchone()[0]
+    db.commit()
+    _check_ca_alerts(db, bid, room_id, body)
+    return {"reading_id": rid, "ok": True}
+
+
+@router.patch("/rooms/{room_id}/webhook-token")
+def set_room_webhook_token(room_id: int, token: str, db=Depends(get_db), user=Depends(get_current_user)):
+    """Set or rotate the IoT webhook token for a CA room."""
+    _ensure_tables(db)
+    bid = user["BusinessID"]
+    cur = db.cursor()
+    cur.execute("SELECT RoomID FROM CARoom WHERE RoomID=? AND BusinessID=?", [room_id, bid])
+    if not cur.fetchone():
+        raise HTTPException(404, "Room not found")
+    cur.execute("UPDATE CARoom SET WebhookToken=? WHERE RoomID=?", [token, room_id])
+    db.commit()
+    return {"ok": True, "room_id": room_id}

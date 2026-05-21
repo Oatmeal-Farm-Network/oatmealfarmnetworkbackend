@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date, datetime, timedelta
 import pyodbc
+import requests
 from dependencies import get_db, get_current_user
 
 router = APIRouter(prefix="/api/chill", tags=["chilling_hours"])
@@ -298,6 +299,77 @@ def forecast(
         })
 
     return {"field_id": field_id, "season": season, "forecasts": results}
+
+
+@router.post("/import-from-weather", status_code=201)
+def import_from_weather(
+    lat: float,
+    lon: float,
+    field_id: Optional[str] = None,
+    season: Optional[str] = None,
+    days: int = 7,
+    model: str = "simple",
+    db=Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Fetch historical daily min/max temps from Open-Meteo and import as chill readings."""
+    _ensure_tables(db)
+    days = min(max(days, 1), 90)
+    try:
+        resp = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lat, "longitude": lon,
+                "daily": "temperature_2m_max,temperature_2m_min",
+                "temperature_unit": "fahrenheit",
+                "timezone": "auto",
+                "past_days": days,
+                "forecast_days": 0,
+            },
+            timeout=10,
+        )
+    except Exception as e:
+        raise HTTPException(502, f"Open-Meteo unreachable: {e}")
+    if resp.status_code != 200:
+        raise HTTPException(502, f"Open-Meteo error {resp.status_code}")
+
+    dly = resp.json().get("daily", {})
+    dates = dly.get("time", [])
+    highs = dly.get("temperature_2m_max", [])
+    lows  = dly.get("temperature_2m_min", [])
+    if not dates:
+        raise HTTPException(422, "No daily data returned from weather service")
+
+    bid = user["BusinessID"]
+    cur = db.cursor()
+    imported = 0
+    for i, d in enumerate(dates):
+        max_f = highs[i] if highs[i] is not None else 0.0
+        min_f = lows[i]  if lows[i]  is not None else 0.0
+        reading_date = date.fromisoformat(d)
+        units = calc_daily_chill(min_f, max_f, model)
+        s = season or str(reading_date.year)
+        cur.execute("""
+            SELECT ISNULL(SUM(ChillUnitsDay),0) FROM ChillHourReading
+            WHERE BusinessID=? AND ISNULL(FieldID,'')=ISNULL(?,'') AND Season=? AND ReadingDate<?
+        """, [bid, field_id, s, str(reading_date)])
+        cumulative = float(cur.fetchone()[0]) + units
+        cur.execute("""
+            MERGE ChillHourReading AS target
+            USING (SELECT ? AS BusinessID, ? AS FieldID, ? AS ReadingDate) AS src
+            ON target.BusinessID=src.BusinessID AND ISNULL(target.FieldID,'')=ISNULL(src.FieldID,'')
+               AND target.ReadingDate=src.ReadingDate AND target.Model=?
+            WHEN MATCHED THEN UPDATE SET
+                MinTempF=?, MaxTempF=?, ChillUnitsDay=?, CumulativeUnits=?, Season=?
+            WHEN NOT MATCHED THEN INSERT
+                (BusinessID,FieldID,ReadingDate,MinTempF,MaxTempF,ChillUnitsDay,CumulativeUnits,Season,Model)
+                VALUES (?,?,?,?,?,?,?,?,?);
+        """, [bid, field_id, str(reading_date), model,
+              min_f, max_f, units, cumulative, s,
+              bid, field_id, str(reading_date), min_f, max_f, units, cumulative, s, model])
+        imported += 1
+    db.commit()
+    return {"imported": imported, "lat": lat, "lon": lon, "days": days, "model": model}
 
 
 @router.get("/season-comparison")

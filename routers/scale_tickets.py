@@ -345,3 +345,98 @@ def contract_position(contract_id: int, db=Depends(get_db), user=Depends(get_cur
     cols2 = [c[0] for c in cur.description]
     deliveries = [dict(zip(cols2, r)) for r in cur.fetchall()]
     return {"contract": contract, "deliveries": deliveries}
+
+
+def _ensure_posting_table(db):
+    cur = db.cursor()
+    cur.execute("""
+    IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='ScaleTicketAccountingPost')
+    CREATE TABLE ScaleTicketAccountingPost (
+        PostID INT IDENTITY PRIMARY KEY,
+        TicketID INT NOT NULL UNIQUE,
+        BusinessID INT NOT NULL,
+        PostedAt DATETIME NOT NULL DEFAULT GETDATE(),
+        PostedBy NVARCHAR(200),
+        FinalNetTonnes DECIMAL(12,4) NOT NULL,
+        PricePerTonne DECIMAL(12,4) NOT NULL,
+        GrossRevenue DECIMAL(14,2) NOT NULL,
+        FreightCost DECIMAL(12,2) NOT NULL,
+        NetRevenue DECIMAL(14,2) NOT NULL,
+        ReferenceNumber NVARCHAR(60) NOT NULL,
+        Notes NVARCHAR(500)
+    )""")
+    db.commit()
+
+
+@router.post("/tickets/{ticket_id}/post-to-accounting", status_code=201)
+def post_to_accounting(
+    ticket_id: int,
+    notes: Optional[str] = None,
+    db=Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Post a scale ticket to the accounting ledger as a grain sale revenue entry."""
+    _ensure_tables(db)
+    _ensure_posting_table(db)
+    bid = user["BusinessID"]
+    cur = db.cursor()
+
+    # Check not already posted
+    cur.execute("SELECT PostID FROM ScaleTicketAccountingPost WHERE TicketID=? AND BusinessID=?", [ticket_id, bid])
+    if cur.fetchone():
+        raise HTTPException(409, "Ticket already posted to accounting")
+
+    # Get ticket details
+    cur.execute("""
+        SELECT TicketNumber, TicketDate, CommodityName,
+               ROUND(FinalNetKg/1000,4) AS FinalNetTonnes,
+               ISNULL(PricePerTonne,0) AS PricePerTonne,
+               ROUND(FinalNetKg/1000 * ISNULL(PricePerTonne,0),2) AS GrossRevenue,
+               ROUND(FinalNetKg/1000 * FreightCostPerTonne,2) AS FreightCost,
+               ROUND(FinalNetKg/1000 * ISNULL(PricePerTonne,0) - FinalNetKg/1000 * FreightCostPerTonne,2) AS NetRevenue
+        FROM ScaleTicket WHERE TicketID=? AND BusinessID=?
+    """, [ticket_id, bid])
+    row = cur.fetchone()
+    if not row:
+        raise HTTPException(404, "Ticket not found")
+
+    ticket_num, ticket_date, commodity, net_tonnes, price_pt, gross, freight, net = row
+    ref = f"GRAIN-{ticket_id:06d}-{datetime.utcnow().strftime('%Y%m%d')}"
+    posted_by = user.get("email") or user.get("username", "")
+
+    cur.execute("""
+        INSERT INTO ScaleTicketAccountingPost
+            (TicketID,BusinessID,PostedBy,FinalNetTonnes,PricePerTonne,GrossRevenue,
+             FreightCost,NetRevenue,ReferenceNumber,Notes)
+        OUTPUT INSERTED.PostID VALUES (?,?,?,?,?,?,?,?,?,?)
+    """, [ticket_id, bid, posted_by, float(net_tonnes or 0), float(price_pt or 0),
+          float(gross or 0), float(freight or 0), float(net or 0), ref, notes])
+    post_id = cur.fetchone()[0]
+    db.commit()
+    return {
+        "post_id": post_id,
+        "reference_number": ref,
+        "ticket_id": ticket_id,
+        "ticket_number": ticket_num,
+        "commodity": commodity,
+        "final_net_tonnes": float(net_tonnes or 0),
+        "price_per_tonne": float(price_pt or 0),
+        "gross_revenue": float(gross or 0),
+        "freight_cost": float(freight or 0),
+        "net_revenue": float(net or 0),
+        "posted_at": datetime.utcnow().isoformat(),
+    }
+
+
+@router.get("/tickets/{ticket_id}/accounting-post")
+def get_accounting_post(ticket_id: int, db=Depends(get_db), user=Depends(get_current_user)):
+    """Return accounting post record for a ticket, if it exists."""
+    _ensure_posting_table(db)
+    bid = user["BusinessID"]
+    cur = db.cursor()
+    cur.execute("SELECT * FROM ScaleTicketAccountingPost WHERE TicketID=? AND BusinessID=?", [ticket_id, bid])
+    row = cur.fetchone()
+    if not row:
+        return {"posted": False}
+    cols = [c[0] for c in cur.description]
+    return {"posted": True, **dict(zip(cols, row))}

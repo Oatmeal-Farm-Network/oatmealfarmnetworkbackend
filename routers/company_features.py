@@ -73,6 +73,7 @@ DEFAULT_FEATURES = [
     ("scale_tickets",        "Scale Tickets & Contract Reconciliation", 0.0, 0.0, 55),
     ("harvest_bins",         "Bin-Level Harvest Traceability",       0.0, 0.0, 56),
     ("ca_storage",           "CA Cold Storage Management",           9.0, 90.0, 57),
+    ("spray_applications",   "Spray & Chemical Application Log",     0.0,  0.0, 58),
     ("business_directory",   "Business Directory",        0.0,   0.0, 98),
     ("food_system_newsfeed", "Food System Newsfeed",      0.0,   0.0, 99),
 ]
