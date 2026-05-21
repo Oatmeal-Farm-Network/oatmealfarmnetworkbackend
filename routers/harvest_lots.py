@@ -220,6 +220,22 @@ def create_lot(payload: dict, db: Session = Depends(get_db)):
         _insert_input_link(db, lot_id, bid, inp)
 
     db.commit()
+
+    # Sync ActualYield to matching CropBudget
+    try:
+        harvest_year = int(str(payload.get("harvest_date", ""))[:4]) if payload.get("harvest_date") else date.today().year
+        qty = float(payload.get("quantity", 0) or 0)
+        crop = payload.get("crop_name", "")
+        if qty > 0 and crop:
+            db.execute(text("""
+                UPDATE CropBudget
+                SET ActualYield = ISNULL(ActualYield, 0) + :qty, UpdatedAt = GETDATE()
+                WHERE BusinessID = :bid AND CropName = :crop AND CropYear = :yr
+            """), {"qty": qty, "bid": bid, "crop": crop, "yr": harvest_year})
+            db.commit()
+    except Exception as _e:
+        print(f"[harvest-lot] budget yield sync failed: {_e}")
+
     return {"lot_id": lot_id, "lot_number": lot_number}
 
 

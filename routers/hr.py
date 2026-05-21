@@ -827,7 +827,179 @@ def confirm_pay_slips(period_id: int, body: dict, db: Session = Depends(get_db))
     """), {"pid": period_id, "bid": business_id,
            "gross": round(total_gross, 2), "net": round(total_net, 2)})
     db.commit()
+
+    # Post payroll journal entry to Accounting if it's set up
+    _post_payroll_journal_entry(db, business_id, period_id, round(total_gross, 2), round(total_net, 2))
+
+    # Notify
+    try:
+        from routers.notifications import notify_business
+        notify_business(
+            db, business_id, type="payroll_confirmed",
+            title=f"Payroll confirmed: ${round(total_gross, 2):,.2f} gross",
+            body=f"Pay period #{period_id} closed. {len(slips)} employees, ${round(total_net, 2):,.2f} net. Journal entry posted to accounting.",
+            link_path=f"/hr?BusinessID={business_id}&tab=payroll",
+            entity_type="HRPayPeriod", entity_id=period_id,
+        )
+    except Exception:
+        pass
+
     return {"ok": True, "total_gross": round(total_gross, 2), "total_net": round(total_net, 2)}
+
+
+def _post_payroll_journal_entry(db: Session, business_id: int, period_id: int, total_gross: float, total_net: float):
+    """Debit Wages Expense; Credit Wages Payable + Tax Liabilities."""
+    try:
+        # Only proceed if accounting is set up
+        acct_count = db.execute(text("SELECT COUNT(*) FROM Accounts WHERE BusinessID=:bid"), {"bid": business_id}).scalar()
+        if not acct_count:
+            return
+
+        # Find required accounts (best-effort by AccountNumber prefix)
+        wages_acct = db.execute(text("""
+            SELECT TOP 1 AccountID FROM Accounts
+            WHERE BusinessID=:bid AND (AccountNumber LIKE '5%' OR AccountNumber LIKE '6%') AND IsActive=1
+            ORDER BY AccountNumber
+        """), {"bid": business_id}).fetchone()
+        payable_acct = db.execute(text("""
+            SELECT TOP 1 AccountID FROM Accounts
+            WHERE BusinessID=:bid AND AccountNumber LIKE '2%' AND IsActive=1
+            ORDER BY AccountNumber
+        """), {"bid": business_id}).fetchone()
+
+        if not wages_acct or not payable_acct:
+            return
+
+        admin = db.execute(text("""
+            SELECT TOP 1 PeopleID FROM BusinessAccess
+            WHERE BusinessID=:bid AND Active=1 ORDER BY AccessLevelID DESC
+        """), {"bid": business_id}).fetchone()
+        created_by = admin.PeopleID if admin else None
+
+        # Generate JE number
+        count = db.execute(text(
+            "SELECT COUNT(*)+1 FROM JournalEntries WHERE BusinessID=:bid"
+        ), {"bid": business_id}).scalar()
+        je_num = f"JE-PAY-{business_id}-{count:04d}"
+        tax_liability = round(total_gross - total_net, 2)
+
+        je_row = db.execute(text("""
+            INSERT INTO JournalEntries
+                (BusinessID, EntryNumber, EntryDate, Description, Reference, SourceType, SourceID, IsPosted, CreatedBy)
+            OUTPUT INSERTED.JournalEntryID
+            VALUES (:bid, :num, CAST(GETDATE() AS DATE), :desc, :ref, 'Payroll', :srcId, 1, :by)
+        """), {
+            "bid": business_id, "num": je_num,
+            "desc": f"Payroll run — pay period #{period_id}",
+            "ref": f"PAY-PERIOD-{period_id}", "srcId": period_id, "by": created_by,
+        }).fetchone()
+        je_id = je_row.JournalEntryID
+
+        # Debit: Wages Expense (full gross)
+        db.execute(text("""
+            INSERT INTO JournalEntryLines
+                (JournalEntryID, BusinessID, AccountID, DebitAmount, CreditAmount, Description, LineOrder)
+            VALUES (:je, :bid, :acct, :amt, 0, :desc, 0)
+        """), {"je": je_id, "bid": business_id, "acct": wages_acct.AccountID,
+               "amt": total_gross, "desc": f"Wages expense — period #{period_id}"})
+
+        # Credit: Wages Payable (net pay owed to employees)
+        db.execute(text("""
+            INSERT INTO JournalEntryLines
+                (JournalEntryID, BusinessID, AccountID, DebitAmount, CreditAmount, Description, LineOrder)
+            VALUES (:je, :bid, :acct, 0, :amt, :desc, 1)
+        """), {"je": je_id, "bid": business_id, "acct": payable_acct.AccountID,
+               "amt": total_net, "desc": f"Net wages payable — period #{period_id}"})
+
+        # Credit: Tax Liabilities (gross - net)
+        if tax_liability > 0:
+            db.execute(text("""
+                INSERT INTO JournalEntryLines
+                    (JournalEntryID, BusinessID, AccountID, DebitAmount, CreditAmount, Description, LineOrder)
+                VALUES (:je, :bid, :acct, 0, :amt, :desc, 2)
+            """), {"je": je_id, "bid": business_id, "acct": payable_acct.AccountID,
+                   "amt": tax_liability, "desc": f"Payroll tax liabilities — period #{period_id}"})
+        db.commit()
+    except Exception as _e:
+        print(f"[payroll-je] {_e}")
+
+
+@router.get("/payroll-summary")
+def payroll_summary(
+    business_id: int = Query(...),
+    period_start: str = Query(...),
+    period_end: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    """Attendance-based payroll estimate for a date range — no pay slips created."""
+    _ensure_tables(db)
+
+    employees = db.execute(text("""
+        SELECT e.EmployeeID, e.FirstName, e.LastName, e.PayType, e.HourlyRate,
+               e.SalaryRate, e.PaySchedule, e.PieceRateAmount, e.Department, e.JobTitle,
+               ISNULL(SUM(a.HoursWorked), 0) AS TotalHours,
+               COUNT(a.AttendanceID) AS AttendanceDays
+        FROM HREmployee e
+        LEFT JOIN HRAttendance a ON a.EmployeeID = e.EmployeeID AND a.BusinessID = e.BusinessID
+            AND a.WorkDate >= :start AND a.WorkDate <= :end
+        WHERE e.BusinessID = :bid AND e.IsActive = 1
+        GROUP BY e.EmployeeID, e.FirstName, e.LastName, e.PayType, e.HourlyRate,
+                 e.SalaryRate, e.PaySchedule, e.PieceRateAmount, e.Department, e.JobTitle
+        ORDER BY e.LastName, e.FirstName
+    """), {"bid": business_id, "start": period_start, "end": period_end}).fetchall()
+
+    rows = []
+    total_gross = 0.0
+    total_net = 0.0
+
+    for emp in employees:
+        hours = float(emp.TotalHours or 0)
+        gross = 0.0
+        pay_type = emp.PayType or "hourly"
+        if pay_type == "hourly":
+            gross = hours * float(emp.HourlyRate or 0)
+        elif pay_type == "salary":
+            # Pro-rate monthly salary by business days
+            import calendar
+            try:
+                y1, m1 = int(period_start[:4]), int(period_start[5:7])
+                y2, m2 = int(period_end[:4]), int(period_end[5:7])
+                # Approximate: monthly / 22 * days in period
+                from datetime import date as _date
+                days = (_date(y2, m2, int(period_end[8:10])) - _date(y1, m1, int(period_start[8:10]))).days + 1
+                monthly = float(emp.SalaryRate or 0)
+                gross = monthly / 22 * min(days, 22)
+            except Exception:
+                gross = float(emp.SalaryRate or 0)
+        elif pay_type == "piece_rate":
+            gross = hours * float(emp.PieceRateAmount or 0)
+
+        taxes = gross * (0.12 + 0.05 + 0.062 + 0.0145)
+        net = gross - taxes
+        total_gross += gross
+        total_net += net
+
+        rows.append({
+            "employee_id":    emp.EmployeeID,
+            "employee_name":  f"{emp.FirstName} {emp.LastName}",
+            "department":     emp.Department,
+            "job_title":      emp.JobTitle,
+            "pay_type":       pay_type,
+            "total_hours":    round(hours, 2),
+            "attendance_days":int(emp.AttendanceDays or 0),
+            "gross_pay":      round(gross, 2),
+            "estimated_taxes":round(taxes, 2),
+            "net_pay":        round(net, 2),
+        })
+
+    return {
+        "period_start":  period_start,
+        "period_end":    period_end,
+        "employee_count":len(rows),
+        "total_gross":   round(total_gross, 2),
+        "total_net":     round(total_net, 2),
+        "rows":          rows,
+    }
 
 
 # ── Summary / Dashboard ───────────────────────────────────────────────────────

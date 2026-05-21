@@ -92,11 +92,84 @@ def _ensure(db: Session):
             Notes           NVARCHAR(MAX) NULL,
             CreatedAt       DATETIME2 DEFAULT GETDATE()
         )""",
+        # Link ExportShipment back to the source packhouse batch
+        """IF NOT EXISTS (
+            SELECT 1 FROM sys.columns
+            WHERE object_id=OBJECT_ID('ExportShipment') AND name='PackhouseBatchID'
+        ) ALTER TABLE ExportShipment ADD PackhouseBatchID INT NULL""",
     ]
     for s in stmts:
         db.execute(text(s))
     db.commit()
     _ready = True
+
+
+def _auto_create_export_shipment(db: Session, batch_id: int, business_id: int):
+    """When a packhouse batch is dispatched, create a draft ExportShipment pre-filled with batch data."""
+    try:
+        # Skip if ExportShipment table doesn't exist yet (export_compliance module not init'd)
+        tbl = db.execute(text(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='ExportShipment'"
+        )).scalar()
+        if not tbl:
+            return
+
+        # Skip if a shipment already exists for this batch
+        existing = db.execute(text(
+            "SELECT TOP 1 ShipmentID FROM ExportShipment WHERE PackhouseBatchID=:bid AND BusinessID=:business_id"
+        ), {"bid": batch_id, "business_id": business_id}).fetchone()
+        if existing:
+            return
+
+        # Load batch + grading totals
+        batch = db.execute(text("""
+            SELECT b.*,
+                   ISNULL(SUM(g.Quantity), b.IntakeQty) AS TotalGraded,
+                   ISNULL(SUM(g.PackagedUnits), 0)      AS TotalUnits,
+                   MAX(g.Unit)                          AS GradeUnit
+            FROM PackhouseBatch b
+            LEFT JOIN PackhouseGrading g ON g.BatchID = b.BatchID
+            WHERE b.BatchID=:bid AND b.BusinessID=:business_id
+            GROUP BY b.BatchID, b.BusinessID, b.BatchRef, b.ProductName, b.SourceLotID,
+                     b.SupplierName, b.IntakeDate, b.IntakeQty, b.Unit, b.Status,
+                     b.StorageLocation, b.Notes, b.CreatedAt, b.UpdatedAt
+        """), {"bid": batch_id, "business_id": business_id}).fetchone()
+
+        if not batch:
+            return
+
+        # Auto-generate shipment ref
+        count = db.execute(
+            text("SELECT COUNT(*)+1 FROM ExportShipment WHERE BusinessID=:bid"), {"bid": business_id}
+        ).scalar()
+        ship_ref = f"SHIP-{business_id}-{count:04d}"
+
+        db.execute(text("""
+            INSERT INTO ExportShipment
+                (BusinessID, ShipmentRef, ProductName, HarvestLotID, QuantityKg, PackagedUnits,
+                 Status, PackhouseBatchID, Notes, DestinationCountry)
+            VALUES (:bid, :ref, :product, :lot, :qty, :units,
+                    'draft', :batch_id, :notes, 'TBD')
+        """), {
+            "bid": business_id, "ref": ship_ref,
+            "product": batch.ProductName,
+            "lot": batch.SourceLotID,
+            "qty": float(batch.TotalGraded or batch.IntakeQty or 0),
+            "units": int(batch.TotalUnits or 0),
+            "batch_id": batch_id,
+            "notes": f"Auto-created from packhouse batch {batch.BatchRef or batch_id} on dispatch.",
+        })
+
+        from routers.notifications import notify_business
+        notify_business(
+            db, business_id, type="export_shipment_drafted",
+            title=f"Draft export shipment created: {ship_ref}",
+            body=f"{batch.ProductName} batch {batch.BatchRef or batch_id} dispatched. Shipment {ship_ref} is ready to fill in.",
+            link_path=f"/export-compliance?BusinessID={business_id}",
+            entity_type="ExportShipment",
+        )
+    except Exception as _e:
+        print(f"[dispatch-shipment] auto-create failed: {_e}")
 
 
 # ─── Batches ─────────────────────────────────────────────────────────────────
@@ -142,11 +215,16 @@ def create_batch(body: dict, db: Session = Depends(get_db)):
 
 @router.put("/batches/{batch_id}/status")
 def update_batch_status(batch_id: int, body: dict, db: Session = Depends(get_db)):
+    bid = body["BusinessID"]
+    new_status = body["Status"]
     db.execute(text("""
         UPDATE PackhouseBatch SET Status=:st, UpdatedAt=GETDATE()
-        WHERE BatchID=:bid AND BusinessID=:business_id
-    """), {"st": body["Status"], "bid": batch_id, "business_id": body["BusinessID"]})
+        WHERE BatchID=:batch_id AND BusinessID=:bid
+    """), {"st": new_status, "batch_id": batch_id, "bid": bid})
     db.commit()
+    if new_status == "dispatched":
+        _auto_create_export_shipment(db, batch_id, bid)
+        db.commit()
     return {"ok": True}
 
 
@@ -249,8 +327,47 @@ def add_inspection(batch_id: int, body: dict, db: Session = Depends(get_db)):
         "score": body.get("ScoresPct"), "findings": json.dumps(findings),
         "action": body.get("ActionRequired"), "notes": body.get("Notes"),
     }).fetchone()
+    inspection_id = r[0]
     db.commit()
-    return {"InspectionID": r[0]}
+
+    # Auto-create FarmAlert + notification on QC failure
+    if body.get("OverallResult", "pass") == "fail":
+        try:
+            batch = db.execute(text(
+                "SELECT ProductName, BusinessID, BatchRef FROM PackhouseBatch WHERE BatchID=:bid"
+            ), {"bid": batch_id}).fetchone()
+            if batch:
+                fa_exists = db.execute(text(
+                    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='FarmAlert'"
+                )).scalar()
+                if fa_exists:
+                    db.execute(text("""
+                        INSERT INTO FarmAlert
+                            (BusinessID, AlertType, Severity, Title, Message, Source, SourceID, IsRead)
+                        VALUES (:bid, 'qc_failure', 'critical', :title, :msg, 'packhouse_qc', :sid, 0)
+                    """), {
+                        "bid":   batch.BusinessID,
+                        "title": f"QC Failure: {batch.ProductName}",
+                        "msg":   (
+                            f"Batch {batch.BatchRef or batch_id} failed QC on {body.get('InspectionDate')}. "
+                            f"Score: {body.get('ScoresPct','N/A')}%. "
+                            + (f"Action required: {body.get('ActionRequired')}" if body.get('ActionRequired') else "")
+                        ),
+                        "sid": inspection_id,
+                    })
+                from routers.notifications import notify_business
+                notify_business(
+                    db, batch.BusinessID, type="qc_failure",
+                    title=f"QC Failure: {batch.ProductName}",
+                    body=f"Batch {batch.BatchRef or batch_id} failed inspection. {body.get('ActionRequired','Review required.')}",
+                    link_path=f"/packhouse?BusinessID={batch.BusinessID}",
+                    entity_type="QCInspection", entity_id=inspection_id,
+                )
+                db.commit()
+        except Exception as _e:
+            print(f"[qc-fail-alert] {_e}")
+
+    return {"InspectionID": inspection_id}
 
 
 # ─── Packaging ────────────────────────────────────────────────────────────────

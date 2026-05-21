@@ -1067,6 +1067,210 @@ def _list_farm_inputs_for_thaiyme(db: Session, business_id: int, category: Optio
     return {"business_id": business_id, "inputs": [dict(r._mapping) for r in rows]}
 
 
+def _query_farmer_balance(db: Session, business_id: int, farmer_name=None) -> dict:
+    q = """
+        SELECT f.FarmerName,
+               COUNT(d.DeliveryID)           AS DeliveryCount,
+               ISNULL(SUM(d.NetPayment), 0)  AS TotalPending,
+               ISNULL(SUM(d.GrossPayment),0) AS TotalGross,
+               ISNULL(SUM(d.InputDeductions),0) AS TotalDeductions
+        FROM (
+            SELECT d.DeliveryID, d.FarmerID, d.NetPayment, d.GrossPayment, d.InputDeductions
+            FROM OutgrowerDelivery d
+            WHERE d.BusinessID=:bid AND d.PaymentStatus='pending'
+        ) d
+        JOIN OutgrowerFarmer f ON f.FarmerID=d.FarmerID AND f.BusinessID=:bid
+    """
+    params: dict = {"bid": business_id}
+    if farmer_name:
+        q += " WHERE f.FullName LIKE :name"; params["name"] = f"%{farmer_name}%"
+    q += " GROUP BY f.FarmerName ORDER BY TotalPending DESC"
+    try:
+        rows = db.execute(text(q), params).fetchall()
+        return {
+            "farmers": [{"farmer": r.FarmerName, "deliveries": r.DeliveryCount,
+                         "pending_payment": float(r.TotalPending),
+                         "gross": float(r.TotalGross), "deductions": float(r.TotalDeductions)}
+                        for r in rows],
+            "total_pending": float(sum(float(r.TotalPending) for r in rows)),
+        }
+    except Exception as _e:
+        return {"error": str(_e)}
+
+
+def _query_contract_summary(db: Session, business_id: int, crop_name=None) -> dict:
+    q = """
+        SELECT c.CropName, c.Season, c.Status,
+               ISNULL(c.TargetQtyKg, 0) AS TargetQty,
+               ISNULL(SUM(d.NetWeightKg), 0) AS DeliveredQty,
+               COUNT(DISTINCT c.FarmerID) AS FarmerCount,
+               ISNULL(SUM(d.NetPayment), 0) AS TotalPaid,
+               SUM(CASE WHEN d.PaymentStatus='pending' THEN d.NetPayment ELSE 0 END) AS PendingPayment
+        FROM OutgrowerContract c
+        LEFT JOIN OutgrowerDelivery d ON d.ContractID=c.ContractID AND d.BusinessID=c.BusinessID
+        WHERE c.BusinessID=:bid
+    """
+    params: dict = {"bid": business_id}
+    if crop_name:
+        q += " AND c.CropName LIKE :cn"; params["cn"] = f"%{crop_name}%"
+    q += " GROUP BY c.CropName, c.Season, c.Status, c.TargetQtyKg ORDER BY c.CropName"
+    try:
+        rows = db.execute(text(q), params).fetchall()
+        return {"contracts": [{"crop": r.CropName, "season": r.Season, "status": r.Status,
+                                "target_kg": float(r.TargetQty), "delivered_kg": float(r.DeliveredQty),
+                                "pct_complete": round(float(r.DeliveredQty) / max(float(r.TargetQty), 1) * 100, 1),
+                                "farmers": int(r.FarmerCount), "total_paid": float(r.TotalPaid),
+                                "pending_payment": float(r.PendingPayment)}
+                               for r in rows]}
+    except Exception as _e:
+        return {"error": str(_e)}
+
+
+def _query_payroll_summary(db: Session, business_id: int, period_start=None, period_end=None) -> dict:
+    from datetime import date as _date, timedelta
+    today = _date.today()
+    start = period_start or str(today - timedelta(days=14))
+    end   = period_end   or str(today)
+    try:
+        rows = db.execute(text("""
+            SELECT e.FirstName + ' ' + e.LastName AS EmployeeName,
+                   e.PayType, e.HourlyRate, e.SalaryRate,
+                   ISNULL(SUM(a.HoursWorked), 0) AS TotalHours,
+                   COUNT(a.AttendanceID) AS AttendanceDays
+            FROM HREmployee e
+            LEFT JOIN HRAttendance a ON a.EmployeeID=e.EmployeeID AND a.BusinessID=e.BusinessID
+                AND a.WorkDate >= :start AND a.WorkDate <= :end
+            WHERE e.BusinessID=:bid AND e.IsActive=1
+            GROUP BY e.EmployeeID, e.FirstName, e.LastName, e.PayType, e.HourlyRate, e.SalaryRate
+            ORDER BY e.LastName, e.FirstName
+        """), {"bid": business_id, "start": start, "end": end}).fetchall()
+        summary = []
+        total_gross = 0.0
+        for r in rows:
+            hrs = float(r.TotalHours or 0)
+            gross = hrs * float(r.HourlyRate or 0) if r.PayType == "hourly" else float(r.SalaryRate or 0)
+            net = gross * (1 - 0.2495)
+            total_gross += gross
+            summary.append({"employee": r.EmployeeName, "pay_type": r.PayType,
+                             "total_hours": round(hrs, 2), "attendance_days": int(r.AttendanceDays or 0),
+                             "gross_pay": round(gross, 2), "est_net_pay": round(net, 2)})
+        return {"period": f"{start} → {end}", "employees": len(summary),
+                "total_gross": round(total_gross, 2),
+                "est_total_net": round(total_gross * 0.7505, 2), "rows": summary}
+    except Exception as _e:
+        return {"error": str(_e)}
+
+
+def _query_export_shipments(db: Session, business_id: int, status: Optional[str] = None) -> dict:
+    try:
+        where = "WHERE BusinessID=:bid"
+        params: dict = {"bid": business_id}
+        if status:
+            where += " AND Status=:st"
+            params["st"] = status
+        rows = db.execute(text(f"""
+            SELECT TOP 20 ShipmentID, ShipmentRef, Commodity, DestinationCountry,
+                   QuantityKg, TotalValueUSD, Status, ShipmentDate, ActualArrivalDate
+            FROM ExportShipment {where}
+            ORDER BY ShipmentDate DESC
+        """), params).fetchall()
+        return {"shipments": [
+            {"shipment_id": r.ShipmentID, "ref": r.ShipmentRef, "commodity": r.Commodity,
+             "destination": r.DestinationCountry, "quantity_kg": float(r.QuantityKg or 0),
+             "total_value_usd": float(r.TotalValueUSD or 0), "status": r.Status,
+             "shipment_date": str(r.ShipmentDate)[:10] if r.ShipmentDate else None,
+             "arrival_date": str(r.ActualArrivalDate)[:10] if r.ActualArrivalDate else None}
+            for r in rows
+        ], "count": len(rows)}
+    except Exception as _e:
+        return {"error": str(_e)}
+
+
+def _query_supplier_scorecard(db: Session, business_id: int, limit: int = 10) -> dict:
+    try:
+        rows = db.execute(text("""
+            SELECT TOP (:lim) po.SupplierName,
+                   COUNT(DISTINCT po.POID) AS TotalPOs,
+                   ISNULL(SUM(po.TotalAmount), 0) AS TotalSpend,
+                   SUM(CASE WHEN r.ReceivedDate IS NOT NULL AND po.ExpectedDelivery IS NOT NULL
+                                 AND r.ReceivedDate <= po.ExpectedDelivery THEN 1 ELSE 0 END) AS OnTime,
+                   SUM(CASE WHEN r.ReceivedDate IS NOT NULL THEN 1 ELSE 0 END) AS TotalRecv
+            FROM PurchaseOrder po
+            LEFT JOIN POReceipt r ON r.POID = po.POID
+            WHERE po.BusinessID = :bid
+            GROUP BY po.SupplierName
+            ORDER BY TotalSpend DESC
+        """), {"bid": business_id, "lim": limit}).fetchall()
+        vendors = []
+        for r in rows:
+            total_recv = r.TotalRecv or 0
+            on_time = r.OnTime or 0
+            on_time_pct = round(on_time / total_recv * 100, 1) if total_recv > 0 else None
+            vendors.append({
+                "supplier": r.SupplierName, "total_pos": r.TotalPOs,
+                "total_spend": float(r.TotalSpend or 0),
+                "on_time_pct": on_time_pct,
+            })
+        return {"vendors": vendors, "count": len(vendors)}
+    except Exception as _e:
+        return {"error": str(_e)}
+
+
+def _query_contract_dashboard_thaiyme(db: Session, business_id: int) -> dict:
+    try:
+        rows = db.execute(text("""
+            SELECT oc.CropName, of2.FullName AS FarmerName,
+                   oc.TargetQtyKg,
+                   ISNULL(SUM(od.NetWeightKg), 0) AS DeliveredKg,
+                   oc.Status
+            FROM OutgrowerContract oc
+            JOIN OutgrowerFarmer of2 ON of2.FarmerID = oc.FarmerID
+            LEFT JOIN OutgrowerDelivery od ON od.ContractID = oc.ContractID
+            WHERE oc.BusinessID = :bid
+            GROUP BY oc.ContractID, oc.CropName, of2.FullName, oc.TargetQtyKg, oc.Status
+            ORDER BY oc.ContractID DESC
+        """), {"bid": business_id}).fetchall()
+        contracts = []
+        total_target = total_delivered = 0
+        for r in rows:
+            target = float(r.TargetQtyKg or 0)
+            delivered = float(r.DeliveredKg or 0)
+            total_target += target
+            total_delivered += delivered
+            contracts.append({
+                "farmer": r.FarmerName, "crop": r.CropName,
+                "target_kg": target, "delivered_kg": delivered,
+                "utilization_pct": round(delivered / target * 100, 1) if target > 0 else 0,
+                "status": r.Status,
+            })
+        return {
+            "contracts": contracts[:15],
+            "total_target_kg": total_target,
+            "total_delivered_kg": total_delivered,
+            "overall_utilization_pct": round(total_delivered / total_target * 100, 1) if total_target > 0 else 0,
+        }
+    except Exception as _e:
+        return {"error": str(_e)}
+
+
+def _list_pending_po_approvals(db: Session, business_id: int) -> dict:
+    try:
+        rows = db.execute(text("""
+            SELECT POID, PONumber, SupplierName, TotalAmount, OrderDate, Category, Notes
+            FROM PurchaseOrder
+            WHERE BusinessID=:bid AND Status='pending_approval'
+            ORDER BY OrderDate DESC
+        """), {"bid": business_id}).fetchall()
+        return {"pending_approvals": [
+            {"po_id": r.POID, "po_number": r.PONumber, "supplier": r.SupplierName,
+             "amount": float(r.TotalAmount or 0), "order_date": str(r.OrderDate),
+             "category": r.Category}
+            for r in rows
+        ], "count": len(rows)}
+    except Exception as _e:
+        return {"error": str(_e)}
+
+
 # ── Gemini function-calling tool registry ────────────────────────────
 # Each entry: { decl: FunctionDeclaration, run: callable, requires: ('biz'|'event'),
 #               mutating: bool }. Mutating tools never execute directly — they
@@ -1171,6 +1375,66 @@ def _build_tool_registry(
                 "hours_worked":  {"type_": "NUMBER",  "description": "Hours worked (decimal, e.g. 7.5)."},
                 "task_type":     {"type_": "STRING",  "description": "Task category: field_work, packhouse, maintenance, admin, transport, other."},
                 "notes":         {"type_": "STRING",  "description": "Optional notes."},
+            },
+            "run": None,
+            "mutating": True,
+        }
+
+        # ── Outgrower tools ──────────────────────────────────────────────────
+        registry["query_farmer_balance"] = {
+            "desc": "Show pending payment balances for outgrower farmers — total pending NetPayment across all deliveries not yet paid. Optionally filter by farmer name. Use when asked 'how much do we owe farmers', 'farmer payment summary', 'outgrower balances'.",
+            "params": {"farmer_name": {"type_": "STRING", "description": "Optional: filter by farmer name (partial match)."}},
+            "run": lambda farmer_name=None, **_: _query_farmer_balance(db, business_id, farmer_name),
+            "mutating": False,
+        }
+        registry["query_contract_summary"] = {
+            "desc": "Show outgrower contract progress — target vs delivered quantity, payment status, and active farmer count. Use for 'outgrower progress', 'how much crop has been delivered', 'contract status'.",
+            "params": {"crop_name": {"type_": "STRING", "description": "Optional: filter by crop name."}},
+            "run": lambda crop_name=None, **_: _query_contract_summary(db, business_id, crop_name),
+            "mutating": False,
+        }
+        registry["propose_delivery_settlement"] = {
+            "desc": "Propose marking an outgrower delivery as paid and posting the settlement to accounting. Returns a confirmation card — user must approve. Use when asked to 'pay farmer', 'settle delivery', 'mark delivery #X as paid'.",
+            "params": {
+                "delivery_id":   {"type_": "INTEGER", "description": "DeliveryID of the delivery to settle."},
+                "payment_date":  {"type_": "STRING",  "description": "Payment date in YYYY-MM-DD format (defaults to today)."},
+            },
+            "run": None,
+            "mutating": True,
+        }
+
+        # ── Payroll tools ────────────────────────────────────────────────────
+        registry["query_payroll_summary"] = {
+            "desc": "Show estimated payroll for a date range based on attendance records — gross pay, net pay, and per-employee breakdown. Use when asked 'what's the payroll cost this period', 'how much do we owe in wages', 'payroll estimate for week of...'.",
+            "params": {
+                "period_start": {"type_": "STRING", "description": "Start date YYYY-MM-DD."},
+                "period_end":   {"type_": "STRING", "description": "End date YYYY-MM-DD."},
+            },
+            "run": lambda period_start=None, period_end=None, **_: _query_payroll_summary(db, business_id, period_start, period_end),
+            "mutating": False,
+        }
+
+        # ── Procurement approval tools ────────────────────────────────────────
+        registry["list_pending_po_approvals"] = {
+            "desc": "List purchase orders currently awaiting manager approval. Shows PO number, supplier, amount, and date. Use when asked 'any POs to approve', 'pending purchase orders', 'what needs approval'.",
+            "params": {},
+            "run": lambda **_: _list_pending_po_approvals(db, business_id),
+            "mutating": False,
+        }
+        registry["propose_approve_po"] = {
+            "desc": "Propose approving a pending purchase order and posting it as an accounting bill. Returns a confirmation card. Use when the user says 'approve PO #X', 'sign off on purchase order'.",
+            "params": {
+                "po_id":       {"type_": "INTEGER", "description": "POID of the purchase order to approve."},
+                "approved_by": {"type_": "STRING",  "description": "Name of the approver."},
+            },
+            "run": None,
+            "mutating": True,
+        }
+        registry["propose_reject_po"] = {
+            "desc": "Propose rejecting a pending purchase order with a reason. Returns a confirmation card. Use when the user says 'reject PO #X', 'decline this PO'.",
+            "params": {
+                "po_id":  {"type_": "INTEGER", "description": "POID of the purchase order to reject."},
+                "reason": {"type_": "STRING",  "description": "Reason for rejection."},
             },
             "run": None,
             "mutating": True,
@@ -1319,6 +1583,39 @@ def _build_tool_registry(
             "mutating": True,
         }
 
+        # ── Export shipment tools ────────────────────────────────────────────
+        registry["query_export_shipments"] = {
+            "desc": "List recent export shipments with status, commodity, destination, quantity, and value. Optional status filter (customs_pending/shipped/delivered/recalled). Use when asked 'what's the status of our exports', 'pending shipments', 'what was delivered last month'.",
+            "params": {"status": {"type_": "STRING", "description": "Optional status filter: customs_pending, shipped, delivered, recalled."}},
+            "run": lambda status=None, **_: _query_export_shipments(db, business_id, status),
+            "mutating": False,
+        }
+        registry["propose_mark_shipment_delivered"] = {
+            "desc": "Propose marking an export shipment as delivered with an actual arrival date. This triggers revenue recognition in accounting. Returns a confirmation card — user must approve. Use when asked to 'mark shipment X as arrived', 'confirm delivery of shipment #Y'.",
+            "params": {
+                "shipment_id":         {"type_": "INTEGER", "description": "ShipmentID to mark as delivered."},
+                "actual_arrival_date": {"type_": "STRING",  "description": "Actual arrival date in YYYY-MM-DD format (defaults to today)."},
+            },
+            "run": None,
+            "mutating": True,
+        }
+
+        # ── Supplier scorecard tools ─────────────────────────────────────────
+        registry["query_supplier_scorecard"] = {
+            "desc": "Show vendor performance scorecard — on-time delivery rate and total spend per supplier. Use when asked 'how are our suppliers performing', 'which vendor has the best on-time rate', 'supplier scorecard'.",
+            "params": {"limit": {"type_": "INTEGER", "description": "Max vendors to return (default 10)."}},
+            "run": lambda limit=10, **_: _query_supplier_scorecard(db, business_id, int(limit or 10)),
+            "mutating": False,
+        }
+
+        # ── Contract farming dashboard tools ─────────────────────────────────
+        registry["query_contract_dashboard"] = {
+            "desc": "Show outgrower contract dashboard — per-contract target vs delivered quantity and utilization %, plus overall totals. Use when asked 'contract utilization', 'how much crop has been delivered against contracts', 'outgrower dashboard'.",
+            "params": {},
+            "run": lambda **_: _query_contract_dashboard_thaiyme(db, business_id),
+            "mutating": False,
+        }
+
     return registry
 
 
@@ -1366,6 +1663,44 @@ def _make_proposal(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
             "method": "POST",
             "body": {k: v for k, v in args.items() if v is not None},
             "summary": f"Log attendance: {args.get('worker_name')} — {args.get('hours_worked')}h on {args.get('work_date')}.",
+        }
+    if tool_name == "propose_delivery_settlement":
+        did = args.get("delivery_id")
+        pdate = args.get("payment_date") or str(__import__("datetime").date.today())
+        return {
+            "kind": "delivery_settlement",
+            "endpoint": f"/api/thaiyme/agri/outgrower/settle/{did}",
+            "method": "POST",
+            "body": {"delivery_id": did, "payment_date": pdate},
+            "summary": f"Mark outgrower delivery #{did} as paid on {pdate} and post accounting bill.",
+        }
+    if tool_name == "propose_approve_po":
+        po_id = args.get("po_id")
+        return {
+            "kind": "approve_po",
+            "endpoint": f"/api/thaiyme/procurement/approve/{po_id}",
+            "method": "POST",
+            "body": {"po_id": po_id, "approved_by": args.get("approved_by", "Thaiyme-assisted approval")},
+            "summary": f"Approve PO #{po_id} and post accounting bill to vendor.",
+        }
+    if tool_name == "propose_reject_po":
+        po_id = args.get("po_id")
+        return {
+            "kind": "reject_po",
+            "endpoint": f"/api/thaiyme/procurement/reject/{po_id}",
+            "method": "POST",
+            "body": {"po_id": po_id, "reason": args.get("reason", "")},
+            "summary": f"Reject PO #{po_id}. Reason: {args.get('reason','')}",
+        }
+    if tool_name == "propose_mark_shipment_delivered":
+        sid = args.get("shipment_id")
+        arrival = args.get("actual_arrival_date") or str(__import__("datetime").date.today())
+        return {
+            "kind": "mark_shipment_delivered",
+            "endpoint": f"/api/export-compliance/shipments/{sid}/status",
+            "method": "PUT",
+            "body": {"status": "delivered", "actual_arrival_date": arrival},
+            "summary": f"Mark export shipment #{sid} as delivered on {arrival}. This will trigger revenue recognition in accounting.",
         }
     return {"kind": "unknown", "summary": f"Proposal for {tool_name}"}
 
@@ -1709,6 +2044,67 @@ def confirm_proposal(
         db.commit()
         return {"ok": True, "executed": {"worker": b.get("worker_name"), "date": b.get("work_date")}}
 
+    # ── Outgrower delivery settlement ────────────────────────────────────
+    if ep.startswith("/api/thaiyme/agri/outgrower/settle/") and method == "POST":
+        _check_business_access(db, current_user.PeopleID, int(b.get("business_id", business_id or 0)), min_level=2)
+        delivery_id = int(ep.split("/")[-1])
+        bid = int(b.get("business_id", business_id or 0))
+        db.execute(text("""
+            UPDATE OutgrowerDelivery SET PaymentStatus='paid', PaymentDate=:dt
+            WHERE DeliveryID=:did AND BusinessID=:bid
+        """), {"dt": b.get("payment_date"), "did": delivery_id, "bid": bid})
+        db.commit()
+        # Post accounting bill
+        from routers.outgrower import _auto_settle_to_accounting
+        _auto_settle_to_accounting(db, delivery_id, bid)
+        db.commit()
+        return {"ok": True, "executed": {"delivery_id": delivery_id, "payment_date": b.get("payment_date")}}
+
+    # ── Procurement PO approval ──────────────────────────────────────────
+    if ep.startswith("/api/thaiyme/procurement/approve/") and method == "POST":
+        _check_business_access(db, current_user.PeopleID, int(b.get("business_id", business_id or 0)), min_level=2)
+        po_id = int(ep.split("/")[-1])
+        bid = int(b.get("business_id", business_id or 0))
+        db.execute(text("""
+            UPDATE PurchaseOrder SET Status='approved', ApprovedBy=:by, ApprovedAt=GETDATE(), UpdatedAt=GETDATE()
+            WHERE POID=:pid AND BusinessID=:bid
+        """), {"by": b.get("approved_by", "Thaiyme"), "pid": po_id, "bid": bid})
+        db.commit()
+        from routers.procurement import _sync_po_to_accounting_bill
+        _sync_po_to_accounting_bill(db, po_id, bid)
+        db.commit()
+        try:
+            from routers.notifications import notify_business
+            po = db.execute(text("SELECT PONumber, SupplierName, TotalAmount FROM PurchaseOrder WHERE POID=:pid"), {"pid": po_id}).fetchone()
+            if po:
+                notify_business(db, bid, type="po_approved", title=f"PO approved: {po.PONumber}",
+                                body=f"{po.SupplierName} — ${float(po.TotalAmount or 0):,.2f} approved via Thaiyme. Bill posted.",
+                                link_path=f"/procurement?BusinessID={bid}", entity_type="PurchaseOrder", entity_id=po_id)
+        except Exception:
+            pass
+        return {"ok": True, "executed": {"po_id": po_id, "status": "approved"}}
+
+    if ep.startswith("/api/thaiyme/procurement/reject/") and method == "POST":
+        _check_business_access(db, current_user.PeopleID, int(b.get("business_id", business_id or 0)), min_level=2)
+        po_id = int(ep.split("/")[-1])
+        bid = int(b.get("business_id", business_id or 0))
+        db.execute(text("""
+            UPDATE PurchaseOrder SET Status='rejected',
+                Notes=ISNULL(Notes,'')+' [Rejected via Thaiyme: '+ISNULL(:reason,'')+']', UpdatedAt=GETDATE()
+            WHERE POID=:pid AND BusinessID=:bid
+        """), {"reason": b.get("reason"), "pid": po_id, "bid": bid})
+        db.commit()
+        try:
+            from routers.notifications import notify_business
+            po = db.execute(text("SELECT PONumber, SupplierName FROM PurchaseOrder WHERE POID=:pid"), {"pid": po_id}).fetchone()
+            if po:
+                notify_business(db, bid, type="po_rejected", title=f"PO rejected: {po.PONumber}",
+                                body=f"{po.SupplierName} PO rejected via Thaiyme. Reason: {b.get('reason','N/A')}",
+                                link_path=f"/procurement?BusinessID={bid}", entity_type="PurchaseOrder", entity_id=po_id)
+        except Exception:
+            pass
+        return {"ok": True, "executed": {"po_id": po_id, "status": "rejected"}}
+
     raise HTTPException(400, f"Proposal endpoint not whitelisted: {ep}")
 
 
@@ -1785,6 +2181,27 @@ def suggestions(
             "Any active pest observations?",
             "What's running low on inputs?",
             "Show me any urgent work orders",
+        ]
+    elif business_id and (page or "").lower() in ("outgrower", "outgrower-management"):
+        chips = [
+            "What's our total pending farmer payment balance?",
+            "Show me contract delivery progress for maize",
+            "Mark delivery #__ as paid",
+            "Which farmers have pending payments?",
+        ]
+    elif business_id and (page or "").lower() == "procurement":
+        chips = [
+            "Any purchase orders waiting for approval?",
+            "Approve PO #__ — signed off by manager",
+            "Reject PO #__ — over budget",
+            "What's our total open procurement spend?",
+        ]
+    elif business_id and (page or "").lower() in ("hr", "payroll"):
+        chips = [
+            "What's the estimated payroll cost for this week?",
+            "Show me attendance hours for the past 14 days",
+            "Log 8 hours for John Smith today",
+            "How many employees are active?",
         ]
     else:
         chips = [
