@@ -118,6 +118,9 @@ from routers import plant_tagging
 from routers import export_compliance
 from routers import supplier_scorecard
 from routers import esci
+from routers import picker_performance
+from routers import iot_greenhouse
+from routers import perishable_trace
 from routers import rbac
 
 load_dotenv()
@@ -561,6 +564,9 @@ app.include_router(plant_tagging.router)
 app.include_router(export_compliance.router)
 app.include_router(supplier_scorecard.router)
 app.include_router(esci.router)
+app.include_router(picker_performance.router)
+app.include_router(iot_greenhouse.router)
+app.include_router(perishable_trace.router)
 app.include_router(rbac.router)
 app.include_router(rbac.AUDIT_ROUTER)
 

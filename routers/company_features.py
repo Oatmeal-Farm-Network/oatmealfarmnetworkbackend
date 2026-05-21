@@ -64,7 +64,10 @@ DEFAULT_FEATURES = [
     ("work_orders",          "Work Orders & Field Crews", 0.0,   0.0, 46),
     ("packhouse_qc",         "Packhouse & QC Inspection", 0.0,   0.0, 47),
     ("plant_tagging",        "Plant Tagging & Asset Geo", 0.0,   0.0, 48),
-    ("export_compliance",    "Export Compliance & Traceability", 0.0, 0.0, 49),
+    ("export_compliance",    "Export Compliance & Traceability",     0.0, 0.0, 49),
+    ("picker_performance",   "Picker Performance Tracking",          0.0, 0.0, 50),
+    ("iot_greenhouse",       "IoT Greenhouse Monitoring",            9.0, 90.0, 51),
+    ("perishable_traceability", "Perishable Traceability & Compliance", 0.0, 0.0, 52),
     ("business_directory",   "Business Directory",        0.0,   0.0, 98),
     ("food_system_newsfeed", "Food System Newsfeed",      0.0,   0.0, 99),
 ]
