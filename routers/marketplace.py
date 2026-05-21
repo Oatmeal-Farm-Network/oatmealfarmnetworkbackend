@@ -194,6 +194,31 @@ with engine.begin() as _conn:
         END
     """))
 
+# ── Auto-create MarketplacePriceTiers table ──────────────────────────────────
+with engine.begin() as _conn:
+    _conn.execute(text("""
+        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='MarketplacePriceTiers')
+        CREATE TABLE MarketplacePriceTiers (
+            TierID      INT IDENTITY(1,1) PRIMARY KEY,
+            ListingType NVARCHAR(20) NOT NULL,
+            SourceID    INT NOT NULL,
+            MinQty      DECIMAL(10,2) NOT NULL,
+            TierPrice   DECIMAL(10,2) NOT NULL,
+            CreatedAt   DATETIME NOT NULL DEFAULT GETDATE()
+        )
+    """))
+
+# ── Add partial-fulfillment columns to MarketplaceOrderItems (idempotent) ────
+with engine.begin() as _conn:
+    for _col, _ddl in [
+        ('PartialFulfillmentOk', 'BIT NOT NULL DEFAULT 0'),
+        ('FulfilledQuantity',    'DECIMAL(10,2) NULL'),
+    ]:
+        _conn.execute(text(f"""
+            IF NOT EXISTS (SELECT 1 FROM sys.columns WHERE Name='{_col}' AND Object_ID=Object_ID('MarketplaceOrderItems'))
+                ALTER TABLE MarketplaceOrderItems ADD {_col} {_ddl}
+        """))
+
 # ── Add restaurant-profile columns to Business table (nullable, idempotent) ──
 with engine.begin() as _conn:
     for col, ddl in [
@@ -224,18 +249,20 @@ class CartItem(BaseModel):
     Quantity:  float
 
 class PlaceOrderRequest(BaseModel):
-    BuyerPeopleID:        int
-    BuyerBusinessID:      Optional[int]  = None
-    DeliveryMethod:       str            = "pickup"
-    DeliveryAddress:      Optional[str]  = None
-    DeliveryNotes:        Optional[str]  = None
-    RequestedDeliveryDate: Optional[date] = None
-    items:                List[CartItem]
+    BuyerPeopleID:          int
+    BuyerBusinessID:        Optional[int]  = None
+    DeliveryMethod:         str            = "pickup"
+    DeliveryAddress:        Optional[str]  = None
+    DeliveryNotes:          Optional[str]  = None
+    RequestedDeliveryDate:  Optional[date] = None
+    PartialFulfillmentOk:   bool           = False
+    items:                  List[CartItem]
 
 class SellerActionRequest(BaseModel):
-    SellerStatus:     str
-    RejectionReason:  Optional[str]  = None
+    SellerStatus:          str
+    RejectionReason:       Optional[str]  = None
     EstimatedDeliveryDate: Optional[date] = None
+    FulfilledQuantity:     Optional[float] = None
 
 class ShipItemRequest(BaseModel):
     TrackingNumber: Optional[str] = None
@@ -574,6 +601,24 @@ def get_catalog(
         from database import get_db as get_db_factory
         background_tasks.add_task(ensure_images_for_catalog, items_needing_images, get_db_factory)
 
+    # ── Attach volume price tiers to each listing ─────────────────────────────
+    if results:
+        _type_to_ids: dict = {}
+        for _item in results:
+            _type_to_ids.setdefault(_item["ProductType"], []).append(_item["SourceID"])
+        _tier_index: dict = {}
+        for _pt, _ids in _type_to_ids.items():
+            _safe_ids = ",".join(str(int(i)) for i in _ids)
+            _tier_rows = db.execute(text(f"""
+                SELECT SourceID, MinQty, TierPrice FROM MarketplacePriceTiers
+                WHERE ListingType = :lt AND SourceID IN ({_safe_ids}) ORDER BY MinQty ASC
+            """), {"lt": _pt}).fetchall()
+            for _t in _tier_rows:
+                _key = f"{_pt}:{_t.SourceID}"
+                _tier_index.setdefault(_key, []).append({"MinQty": float(_t.MinQty), "TierPrice": float(_t.TierPrice)})
+        for _item in results:
+            _item["PriceTiers"] = _tier_index.get(f"{_item['ProductType']}:{_item['SourceID']}", [])
+
     return translate_list(results, ["Description"], lang, db)
 
 
@@ -786,11 +831,26 @@ def place_order(req: PlaceOrderRequest, db: Session = Depends(get_db)):
         l = dict(listing._mapping)
         qty = float(item.Quantity)
 
-        # Services are bookings, not inventory — skip the quantity-available check.
-        if prefix != "S" and qty > float(l["QuantityAvailable"]):
-            raise HTTPException(400, f"Only {l['QuantityAvailable']} available for '{l['Title']}'")
+        # Services are bookings — no inventory check. Others support partial fulfillment.
+        avail = float(l["QuantityAvailable"]) if l["QuantityAvailable"] is not None else 0.0
+        if prefix != "S" and qty > avail:
+            if req.PartialFulfillmentOk and avail > 0:
+                qty = avail
+            else:
+                raise HTTPException(400, f"Only {l['QuantityAvailable']} available for '{l['Title']}'")
 
-        unit_price   = float(l["UnitPrice"])
+        unit_price = float(l["UnitPrice"])
+        # Apply volume tier pricing if configured for this listing
+        _tier_type = {"P": "produce", "M": "meat", "F": "processed_food", "G": "product", "S": "service"}.get(prefix)
+        if _tier_type:
+            _tiers = db.execute(text("""
+                SELECT MinQty, TierPrice FROM MarketplacePriceTiers
+                WHERE ListingType = :lt AND SourceID = :sid ORDER BY MinQty DESC
+            """), {"lt": _tier_type, "sid": source_id}).fetchall()
+            for _t in _tiers:
+                if qty >= float(_t.MinQty):
+                    unit_price = float(_t.TierPrice)
+                    break
         line_total   = round(unit_price * qty, 2)
         platform_cut = round(line_total * 0.025, 2)
         seller_payout = round(line_total - platform_cut, 2)
@@ -804,6 +864,7 @@ def place_order(req: PlaceOrderRequest, db: Session = Depends(get_db)):
             "unit_price":     unit_price,
             "line_total":     line_total,
             "seller_payout":  seller_payout,
+            "partial_ok":     req.PartialFulfillmentOk,
         })
 
     platform_fee = round(subtotal * 0.025, 2)
@@ -859,12 +920,12 @@ def place_order(req: PlaceOrderRequest, db: Session = Depends(get_db)):
                 OrderID, ListingID, SellerBusinessID,
                 ProductTitle, ProductType, SellerName,
                 Quantity, UnitPrice, LineTotal, SellerPayout, PlatformFee,
-                SellerStatus, CreatedAt, UpdatedAt
+                SellerStatus, PartialFulfillmentOk, CreatedAt, UpdatedAt
             ) VALUES (
                 :order_id, :listing_id, :seller_bid,
                 :title, :product_type, :seller_name,
                 :quantity, :unit_price, :line_total, :seller_payout, :platform_fee,
-                'pending', GETDATE(), GETDATE()
+                'pending', :partial_ok, GETDATE(), GETDATE()
             )
         """), {
             "order_id":     order_id,
@@ -878,6 +939,7 @@ def place_order(req: PlaceOrderRequest, db: Session = Depends(get_db)):
             "line_total":   oi["line_total"],
             "seller_payout": oi["seller_payout"],
             "platform_fee": round(oi["line_total"] * 0.025, 2),
+            "partial_ok":   1 if oi["partial_ok"] else 0,
         })
 
         # Decrement inventory in source table
@@ -1090,6 +1152,87 @@ def seller_ship_v2(body: dict, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
+@marketplace_router.get("/seller/analytics")
+def seller_analytics(business_id: int, db: Session = Depends(get_db)):
+    """Revenue, top buyers, repeat order rate for the seller dashboard."""
+    # Overall KPIs
+    overall = db.execute(text("""
+        SELECT
+            ISNULL(SUM(oi.LineTotal), 0)  AS TotalRevenue,
+            COUNT(DISTINCT o.OrderID)      AS TotalOrders,
+            ISNULL(AVG(oi.LineTotal), 0)   AS AvgOrderValue,
+            ISNULL(SUM(CASE WHEN YEAR(o.CreatedAt)=YEAR(GETDATE()) AND MONTH(o.CreatedAt)=MONTH(GETDATE())
+                            THEN oi.LineTotal ELSE 0 END), 0) AS RevenueThisMonth
+        FROM MarketplaceOrderItems oi
+        JOIN MarketplaceOrders o ON oi.OrderID = o.OrderID
+        WHERE oi.SellerBusinessID = :bid AND oi.SellerStatus NOT IN ('rejected')
+    """), {"bid": business_id}).fetchone()
+
+    # Monthly revenue — last 12 full months
+    monthly_rows = db.execute(text("""
+        SELECT YEAR(o.CreatedAt) AS yr, MONTH(o.CreatedAt) AS mo,
+               ISNULL(SUM(oi.LineTotal), 0) AS Revenue,
+               COUNT(DISTINCT o.OrderID) AS Orders
+        FROM MarketplaceOrderItems oi
+        JOIN MarketplaceOrders o ON oi.OrderID = o.OrderID
+        WHERE oi.SellerBusinessID = :bid
+          AND oi.SellerStatus NOT IN ('rejected')
+          AND o.CreatedAt >= DATEADD(MONTH, -11, DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1))
+        GROUP BY YEAR(o.CreatedAt), MONTH(o.CreatedAt)
+        ORDER BY yr, mo
+    """), {"bid": business_id}).fetchall()
+
+    # Top 5 buyers by spend
+    top_buyers = db.execute(text("""
+        SELECT TOP 5
+            o.BuyerName, o.BuyerEmail,
+            COUNT(DISTINCT o.OrderID) AS OrderCount,
+            ISNULL(SUM(oi.LineTotal), 0) AS TotalSpend
+        FROM MarketplaceOrderItems oi
+        JOIN MarketplaceOrders o ON oi.OrderID = o.OrderID
+        WHERE oi.SellerBusinessID = :bid AND oi.SellerStatus NOT IN ('rejected')
+        GROUP BY o.BuyerName, o.BuyerEmail
+        ORDER BY TotalSpend DESC
+    """), {"bid": business_id}).fetchall()
+
+    # Repeat order rate
+    repeat = db.execute(text("""
+        SELECT
+            COUNT(*) AS TotalBuyers,
+            SUM(CASE WHEN order_count > 1 THEN 1 ELSE 0 END) AS RepeatBuyers
+        FROM (
+            SELECT o.BuyerPeopleID, COUNT(DISTINCT o.OrderID) AS order_count
+            FROM MarketplaceOrderItems oi
+            JOIN MarketplaceOrders o ON oi.OrderID = o.OrderID
+            WHERE oi.SellerBusinessID = :bid AND oi.SellerStatus NOT IN ('rejected')
+            GROUP BY o.BuyerPeopleID
+        ) bc
+    """), {"bid": business_id}).fetchone()
+
+    total_buyers  = repeat.TotalBuyers  if repeat else 0
+    repeat_buyers = repeat.RepeatBuyers if repeat else 0
+    repeat_rate   = round((repeat_buyers / total_buyers * 100), 1) if total_buyers else 0.0
+
+    return {
+        "overall": {
+            "TotalRevenue":    float(overall.TotalRevenue),
+            "TotalOrders":     overall.TotalOrders,
+            "AvgOrderValue":   float(overall.AvgOrderValue),
+            "RevenueThisMonth": float(overall.RevenueThisMonth),
+        },
+        "monthly": [
+            {"yr": r.yr, "mo": r.mo, "Revenue": float(r.Revenue), "Orders": r.Orders}
+            for r in monthly_rows
+        ],
+        "topBuyers": [
+            {"name": r.BuyerName, "email": r.BuyerEmail, "orders": r.OrderCount, "spend": float(r.TotalSpend)}
+            for r in top_buyers
+        ],
+        "repeatRate": repeat_rate,
+        "totalBuyers": total_buyers,
+    }
+
+
 @marketplace_router.get("/seller/orders")
 def get_seller_orders(business_id: int, db: Session = Depends(get_db)):
     items = db.execute(text("""
@@ -1123,6 +1266,40 @@ def seller_item_action(order_item_id: int, req: SellerActionRequest, db: Session
         raise HTTPException(400, f"Item is already '{item.SellerStatus}'")
     if req.SellerStatus not in ("confirmed", "rejected"):
         raise HTTPException(400, "Status must be 'confirmed' or 'rejected'")
+
+    # Partial fulfillment: seller specifies a smaller fulfilled qty than ordered
+    if req.SellerStatus == "confirmed" and req.FulfilledQuantity is not None:
+        fq = float(req.FulfilledQuantity)
+        orig_qty = float(item.Quantity)
+        if 0 < fq < orig_qty:
+            unit_price = float(item.UnitPrice)
+            new_line = round(fq * unit_price, 2)
+            db.execute(text("""
+                UPDATE MarketplaceOrderItems
+                SET Quantity = :qty, FulfilledQuantity = :fq,
+                    LineTotal = :lt, SellerPayout = :sp, PlatformFee = :pf,
+                    SellerStatus = 'confirmed', EstimatedDeliveryDate = :edd, UpdatedAt = GETDATE()
+                WHERE OrderItemID = :oiid
+            """), {
+                "qty": fq, "fq": fq, "lt": new_line,
+                "sp": round(new_line * 0.975, 2), "pf": round(new_line * 0.025, 2),
+                "edd": req.EstimatedDeliveryDate, "oiid": order_item_id,
+            })
+            # Restore unfulfilled remainder to source inventory
+            remainder = orig_qty - fq
+            _lid = item.ListingID
+            _pfx = str(_lid)[0].upper()
+            _sid = int(str(_lid)[1:])
+            if _pfx == "P":
+                db.execute(text("UPDATE Produce SET Quantity = Quantity + :qty WHERE ProduceID = :sid"), {"qty": remainder, "sid": _sid})
+            elif _pfx == "M":
+                db.execute(text("UPDATE MeatInventory SET Quantity = Quantity + :qty WHERE MeatInventoryID = :sid"), {"qty": remainder, "sid": _sid})
+            elif _pfx == "F":
+                db.execute(text("UPDATE ProcessedFood SET Quantity = Quantity + :qty WHERE ProcessedFoodID = :sid"), {"qty": remainder, "sid": _sid})
+            elif _pfx == "G":
+                db.execute(text("UPDATE SFProducts SET ProdQuantityAvailable = ProdQuantityAvailable + :qty WHERE ProdID = :sid"), {"qty": remainder, "sid": _sid})
+            db.commit()
+            return {"message": "Item partially fulfilled", "FulfilledQuantity": fq, "OrderID": item.OrderID}
 
     db.execute(text("""
         UPDATE MarketplaceOrderItems
@@ -1285,16 +1462,68 @@ def get_seller_listings(business_id: int, db: Session = Depends(get_db)):
 
 
 # ─────────────────────────────────────────────
+# PRICE TIERS  (B2B volume discounts per listing)
+# ─────────────────────────────────────────────
+
+_TIER_PREFIX_MAP = {"P": "produce", "M": "meat", "F": "processed_food", "G": "product", "S": "service"}
+
+
+def _parse_listing_id(listing_id: str):
+    if not listing_id or len(listing_id) < 2:
+        raise HTTPException(400, "Invalid listing ID")
+    prefix = listing_id[0].upper()
+    listing_type = _TIER_PREFIX_MAP.get(prefix)
+    if not listing_type:
+        raise HTTPException(400, f"Unknown listing type prefix: {prefix}")
+    try:
+        source_id = int(listing_id[1:])
+    except ValueError:
+        raise HTTPException(400, "Invalid listing ID format")
+    return listing_type, source_id
+
+
+@marketplace_router.get("/tiers/{listing_id}")
+def get_price_tiers(listing_id: str, db: Session = Depends(get_db)):
+    """Return volume price tiers for a listing (public)."""
+    listing_type, source_id = _parse_listing_id(listing_id)
+    rows = db.execute(text("""
+        SELECT TierID, MinQty, TierPrice FROM MarketplacePriceTiers
+        WHERE ListingType = :lt AND SourceID = :sid ORDER BY MinQty ASC
+    """), {"lt": listing_type, "sid": source_id}).fetchall()
+    return [{"TierID": r.TierID, "MinQty": float(r.MinQty), "TierPrice": float(r.TierPrice)} for r in rows]
+
+
+@marketplace_router.put("/tiers/{listing_id}")
+def set_price_tiers(listing_id: str, tiers: list, db: Session = Depends(get_db)):
+    """Replace all volume price tiers for a listing (seller-facing)."""
+    listing_type, source_id = _parse_listing_id(listing_id)
+    db.execute(text("DELETE FROM MarketplacePriceTiers WHERE ListingType = :lt AND SourceID = :sid"),
+               {"lt": listing_type, "sid": source_id})
+    for tier in tiers:
+        min_qty = tier.get("MinQty") if isinstance(tier, dict) else getattr(tier, "MinQty", None)
+        tier_price = tier.get("TierPrice") if isinstance(tier, dict) else getattr(tier, "TierPrice", None)
+        if min_qty is None or tier_price is None:
+            continue
+        db.execute(text("""
+            INSERT INTO MarketplacePriceTiers (ListingType, SourceID, MinQty, TierPrice)
+            VALUES (:lt, :sid, :min_qty, :tier_price)
+        """), {"lt": listing_type, "sid": source_id, "min_qty": float(min_qty), "tier_price": float(tier_price)})
+    db.commit()
+    return {"ok": True, "count": len(tiers)}
+
+
+# ─────────────────────────────────────────────
 # CHECKOUT  (server-side cart sync flow)
 # ─────────────────────────────────────────────
 
 class CheckoutRequest(BaseModel):
-    BuyerPeopleID:         int
-    BuyerBusinessID:       Optional[int]  = None
-    DeliveryMethod:        str            = "pickup"
-    DeliveryAddress:       Optional[str]  = None
-    DeliveryNotes:         Optional[str]  = None
-    RequestedDeliveryDate: Optional[date] = None
+    BuyerPeopleID:          int
+    BuyerBusinessID:        Optional[int]  = None
+    DeliveryMethod:         str            = "pickup"
+    DeliveryAddress:        Optional[str]  = None
+    DeliveryNotes:          Optional[str]  = None
+    RequestedDeliveryDate:  Optional[date] = None
+    PartialFulfillmentOk:   bool           = False
 
 
 @marketplace_router.post("/checkout")
@@ -1316,6 +1545,7 @@ def checkout(req: CheckoutRequest, db: Session = Depends(get_db)):
         DeliveryAddress=req.DeliveryAddress,
         DeliveryNotes=req.DeliveryNotes,
         RequestedDeliveryDate=req.RequestedDeliveryDate,
+        PartialFulfillmentOk=req.PartialFulfillmentOk,
         items=items,
     )
     result = place_order(order_req, db)
@@ -1761,22 +1991,51 @@ def _unescape(s) -> str:
     return str(s).replace("''", "'")
 
 
-_GCS_PREFIX = "https://storage.googleapis.com/oatmeal-farm-network-images/"
+_GCS_ANIMALS = "https://storage.googleapis.com/oatmeal-farm-network-images/Animals"
+_OLD_DOMAINS  = [
+    'oatmealfarmnetwork.com', 'livestockofamerica.com',
+    'livestockoftheworld.com', 'alpacainfinity.com',
+    'globallivestocksolutions.com',
+]
+
+import re as _re
+
+def _fix_animal_url(url: str | None) -> str | None:
+    """Normalise any photo URL to a GCS URL, mirroring livestock.py _fix_image_url."""
+    if not url:
+        return None
+    url = url.strip()
+    if len(url) < 4:
+        return None
+    if url.lower().startswith('http'):
+        url = _re.sub(r'^http:', 'https:', url, flags=_re.IGNORECASE)
+        for domain in _OLD_DOMAINS:
+            if domain in url.lower():
+                filename = url.split('/')[-1].strip()
+                if filename and len(filename) > 3:
+                    return f"{_GCS_ANIMALS}/{filename}"
+        return url  # already a full URL (including valid GCS URLs)
+    if url.lower().startswith('/uploads/'):
+        filename = url[9:].strip()
+        if filename and len(filename) > 3:
+            return f"{_GCS_ANIMALS}/{filename}"
+        return None
+    if '/' not in url and len(url) > 4:
+        return f"{_GCS_ANIMALS}/{url}"
+    filename = url.split('/')[-1].strip()
+    if filename and len(filename) > 3:
+        return f"{_GCS_ANIMALS}/{filename}"
+    return None
+
 
 def _animal_photo(row) -> str | None:
-    """Return the first confirmed GCS URL for a listing card, or None.
-
-    Only values that are already GCS URLs are trusted — old-style filenames
-    or upload paths may not exist in the bucket and would cause 404s.
-    """
+    """Return the best available photo URL for a listing card, normalised to GCS."""
     for field in ('ListPageImage', 'Photo1', 'Photo2', 'Photo3', 'Photo4',
                   'Photo5', 'Photo6', 'Photo7', 'Photo8'):
         v = getattr(row, field, None)
-        if not v:
-            continue
-        s = str(v).strip()
-        if s and s.startswith(_GCS_PREFIX):
-            return s
+        url = _fix_animal_url(str(v) if v else None)
+        if url:
+            return url
     return None
 
 

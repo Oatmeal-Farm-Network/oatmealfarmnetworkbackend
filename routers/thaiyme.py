@@ -1002,6 +1002,71 @@ def _field_indices_series_for_thaiyme(field_id: int, index: str = "NDVI", days: 
     )
 
 
+# ── AgriERP tool reads / writes ──────────────────────────────────────
+
+def _farm_ops_snapshot(db: Session, business_id: int) -> Dict[str, Any]:
+    """Compact farm-operations snapshot for Thaiyme context."""
+    out: Dict[str, Any] = {"business_id": business_id}
+    try:
+        wo = db.execute(text("""
+            SELECT COUNT(*) AS Total,
+                   SUM(CASE WHEN Status='open' THEN 1 ELSE 0 END) AS Open,
+                   SUM(CASE WHEN Status='in_progress' THEN 1 ELSE 0 END) AS InProgress,
+                   SUM(CASE WHEN DueDate < CAST(GETDATE() AS DATE)
+                            AND Status NOT IN ('completed','cancelled') THEN 1 ELSE 0 END) AS Overdue
+            FROM WorkOrder WHERE BusinessID=:bid
+        """), {"bid": business_id}).fetchone()
+        out["work_orders"] = {
+            "open": int(wo.Open or 0),
+            "in_progress": int(wo.InProgress or 0),
+            "overdue": int(wo.Overdue or 0),
+        }
+    except Exception: pass
+    try:
+        recent_wo = db.execute(text("""
+            SELECT TOP 5 WOID, Title, TaskType, Status, AssignedTo, DueDate, Priority
+            FROM WorkOrder WHERE BusinessID=:bid
+            ORDER BY CreatedAt DESC
+        """), {"bid": business_id}).fetchall()
+        out["recent_work_orders"] = [dict(r._mapping) for r in recent_wo]
+    except Exception: pass
+    try:
+        low = db.execute(text("""
+            SELECT TOP 10 InputID, InputName, Category, Unit, CurrentStock, MinStockAlert, Supplier
+            FROM FarmInput
+            WHERE BusinessID=:bid AND IsActive=1
+              AND MinStockAlert IS NOT NULL AND CurrentStock <= MinStockAlert
+            ORDER BY (CurrentStock - MinStockAlert) ASC
+        """), {"bid": business_id}).fetchall()
+        out["low_stock_inputs"] = [dict(r._mapping) for r in low]
+    except Exception: pass
+    try:
+        pests = db.execute(text("""
+            SELECT TOP 5 ObsID, FieldName, CropName, PestName, SeverityLevel,
+                         TreatmentRequired, Status, ObservationDate
+            FROM FarmPestObservation
+            WHERE BusinessID=:bid AND Status NOT IN ('treated','resolved')
+            ORDER BY CASE SeverityLevel WHEN 'critical' THEN 1 WHEN 'high' THEN 2 ELSE 3 END
+        """), {"bid": business_id}).fetchall()
+        out["active_pest_observations"] = [dict(r._mapping) for r in pests]
+    except Exception: pass
+    return out
+
+
+def _list_farm_inputs_for_thaiyme(db: Session, business_id: int, category: Optional[str] = None) -> Dict[str, Any]:
+    q = """
+        SELECT TOP 20 InputID, InputName, Category, Unit, CurrentStock,
+                      MinStockAlert, Supplier, StorageLocation, BarcodeID
+        FROM FarmInput WHERE BusinessID=:bid AND IsActive=1
+    """
+    params: Dict[str, Any] = {"bid": business_id}
+    if category:
+        q += " AND Category=:cat"; params["cat"] = category
+    q += " ORDER BY Category, InputName"
+    rows = db.execute(text(q), params).fetchall()
+    return {"business_id": business_id, "inputs": [dict(r._mapping) for r in rows]}
+
+
 # ── Gemini function-calling tool registry ────────────────────────────
 # Each entry: { decl: FunctionDeclaration, run: callable, requires: ('biz'|'event'),
 #               mutating: bool }. Mutating tools never execute directly — they
@@ -1057,6 +1122,58 @@ def _build_tool_registry(
             "params": {},
             "run": lambda **_: _order_analytics(db, business_id),
             "mutating": False,
+        }
+
+        # ── AgriERP tools ────────────────────────────────────────────
+        registry["farm_ops_snapshot"] = {
+            "desc": "Farm operations snapshot — open/overdue work orders, recent work orders, low-stock inputs, and active pest observations needing treatment. Use when asked about field operations status, what's urgent on the farm, what work orders are open, or what's running low.",
+            "params": {},
+            "run": lambda **_: _farm_ops_snapshot(db, business_id),
+            "mutating": False,
+        }
+        registry["list_farm_inputs"] = {
+            "desc": "List farm inputs (seeds, chemicals, fertilizers, equipment consumables) with current stock levels. Optional category filter: seed, fertilizer, chemical, fuel, equipment, livestock_supply, packaging, other.",
+            "params": {"category": {"type_": "STRING", "description": "Optional category filter (seed, fertilizer, chemical, fuel, equipment, livestock_supply, packaging, other)."}},
+            "run": lambda category=None, **_: _list_farm_inputs_for_thaiyme(db, business_id, category),
+            "mutating": False,
+        }
+        registry["propose_create_work_order"] = {
+            "desc": "Propose creating a new work order for a field task. Returns a confirmation card — the user must approve before it's created. Use when asked to 'create a work order', 'schedule a task', 'assign field work', etc.",
+            "params": {
+                "title":       {"type_": "STRING",  "description": "Short title for the work order (required)."},
+                "task_type":   {"type_": "STRING",  "description": "Task type: planting, spraying, irrigation, harvesting, maintenance, scouting, transplanting, other."},
+                "assigned_to": {"type_": "STRING",  "description": "Name of the person assigned."},
+                "due_date":    {"type_": "STRING",  "description": "Due date in YYYY-MM-DD format."},
+                "priority":    {"type_": "STRING",  "description": "Priority: low, normal, high, urgent."},
+                "description": {"type_": "STRING",  "description": "Optional detailed description."},
+                "location":    {"type_": "STRING",  "description": "Field name or location."},
+            },
+            "run": None,
+            "mutating": True,
+        }
+        registry["propose_log_input_usage"] = {
+            "desc": "Propose recording a farm input usage (consumption) transaction — e.g. 'we used 50kg of Roundup on field 3'. Returns a confirmation card. Use when the user says they applied, used, or consumed an input.",
+            "params": {
+                "input_id":   {"type_": "INTEGER", "description": "InputID of the farm input being consumed (get from list_farm_inputs if unsure)."},
+                "quantity":   {"type_": "NUMBER",  "description": "Amount consumed (in the input's unit)."},
+                "field_name": {"type_": "STRING",  "description": "Name of the field where it was applied."},
+                "crop_name":  {"type_": "STRING",  "description": "Crop name (optional)."},
+                "notes":      {"type_": "STRING",  "description": "Optional notes."},
+            },
+            "run": None,
+            "mutating": True,
+        }
+        registry["propose_log_attendance"] = {
+            "desc": "Propose logging employee attendance / hours worked for a day. Returns a confirmation card. Use when the user says 'log hours for', 'record attendance', 'mark X worked today', etc.",
+            "params": {
+                "worker_name":   {"type_": "STRING",  "description": "Employee full name."},
+                "work_date":     {"type_": "STRING",  "description": "Work date in YYYY-MM-DD format."},
+                "hours_worked":  {"type_": "NUMBER",  "description": "Hours worked (decimal, e.g. 7.5)."},
+                "task_type":     {"type_": "STRING",  "description": "Task category: field_work, packhouse, maintenance, admin, transport, other."},
+                "notes":         {"type_": "STRING",  "description": "Optional notes."},
+            },
+            "run": None,
+            "mutating": True,
         }
 
         # Lead-retrieval tools (exhibitor side) — scoped to the focused business
@@ -1225,6 +1342,30 @@ def _make_proposal(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
             "method": "DELETE",
             "body": {},
             "summary": f"Cancel and delete registration #{rid}.",
+        }
+    if tool_name == "propose_create_work_order":
+        return {
+            "kind": "create_work_order",
+            "endpoint": "/api/thaiyme/agri/work-order",
+            "method": "POST",
+            "body": {k: v for k, v in args.items() if v is not None},
+            "summary": f"Create work order: \"{args.get('title', '(untitled)')}\" — {args.get('task_type','task')}, assigned to {args.get('assigned_to','(unassigned)')}, due {args.get('due_date','TBD')}.",
+        }
+    if tool_name == "propose_log_input_usage":
+        return {
+            "kind": "log_input_usage",
+            "endpoint": "/api/thaiyme/agri/input-usage",
+            "method": "POST",
+            "body": {k: v for k, v in args.items() if v is not None},
+            "summary": f"Log usage: {args.get('quantity')} units of input #{args.get('input_id')} on {args.get('field_name','field')}.",
+        }
+    if tool_name == "propose_log_attendance":
+        return {
+            "kind": "log_attendance",
+            "endpoint": "/api/thaiyme/agri/attendance",
+            "method": "POST",
+            "body": {k: v for k, v in args.items() if v is not None},
+            "summary": f"Log attendance: {args.get('worker_name')} — {args.get('hours_worked')}h on {args.get('work_date')}.",
         }
     return {"kind": "unknown", "summary": f"Proposal for {tool_name}"}
 
@@ -1496,6 +1637,78 @@ def confirm_proposal(
             return {"ok": True, "executed": _cancel_registration(db, reg_id)}
         raise HTTPException(400, f"Unsupported method {method} for registrations.")
 
+    # ── AgriERP: create work order ────────────────────────────────────
+    if ep == "/api/thaiyme/agri/work-order" and method == "POST":
+        b = proposal.body
+        business_id = b.get("business_id") or b.get("BusinessID")
+        if not business_id:
+            raise HTTPException(400, "business_id required in proposal body")
+        _check_business_access(db, current_user.PeopleID, int(business_id), min_level=2)
+        r = db.execute(text("""
+            INSERT INTO WorkOrder (BusinessID,TaskType,Title,Description,Priority,
+                Status,AssignedTo,DueDate,Location)
+            OUTPUT INSERTED.WOID
+            VALUES (:bid,:tt,:title,:desc,:pri,'open',:at,:dd,:loc)
+        """), {
+            "bid":   int(business_id),
+            "tt":    b.get("task_type", "other"),
+            "title": b.get("title", "Untitled"),
+            "desc":  b.get("description"),
+            "pri":   b.get("priority", "normal"),
+            "at":    b.get("assigned_to"),
+            "dd":    b.get("due_date"),
+            "loc":   b.get("location"),
+        }).fetchone()
+        db.commit()
+        return {"ok": True, "executed": {"WOID": r[0], "title": b.get("title")}}
+
+    # ── AgriERP: log farm input usage ─────────────────────────────────
+    if ep == "/api/thaiyme/agri/input-usage" and method == "POST":
+        b = proposal.body
+        business_id = b.get("business_id") or b.get("BusinessID")
+        if not business_id:
+            raise HTTPException(400, "business_id required in proposal body")
+        _check_business_access(db, current_user.PeopleID, int(business_id), min_level=2)
+        # Delegate to farm_inputs record_transaction logic via direct SQL
+        inp = db.execute(text(
+            "SELECT CurrentStock, CostPerUnit, MinStockAlert, InputName, Unit FROM FarmInput "
+            "WHERE InputID=:iid AND BusinessID=:bid"
+        ), {"iid": b.get("input_id"), "bid": int(business_id)}).fetchone()
+        if not inp:
+            raise HTTPException(404, "Input not found")
+        qty = float(b.get("quantity", 0))
+        new_stock = max(0.0, float(inp.CurrentStock) - qty)
+        db.execute(text("UPDATE FarmInput SET CurrentStock=:s, UpdatedAt=GETDATE() WHERE InputID=:iid AND BusinessID=:bid"),
+                   {"s": new_stock, "iid": b.get("input_id"), "bid": int(business_id)})
+        db.execute(text("""
+            INSERT INTO FarmInputTransaction (InputID,BusinessID,TxType,Quantity,CropName,FieldID,Notes)
+            VALUES (:iid,:bid,'use',:qty,:crop,NULL,:notes)
+        """), {"iid": b.get("input_id"), "bid": int(business_id), "qty": qty,
+               "crop": b.get("crop_name"), "notes": b.get("notes") or f"Logged via Thaiyme on {b.get('field_name','field')}"})
+        db.commit()
+        return {"ok": True, "executed": {"new_stock": new_stock, "input_id": b.get("input_id")}}
+
+    # ── AgriERP: log attendance ───────────────────────────────────────
+    if ep == "/api/thaiyme/agri/attendance" and method == "POST":
+        b = proposal.body
+        business_id = b.get("business_id") or b.get("BusinessID")
+        if not business_id:
+            raise HTTPException(400, "business_id required in proposal body")
+        _check_business_access(db, current_user.PeopleID, int(business_id), min_level=2)
+        db.execute(text("""
+            INSERT INTO HRAttendance (BusinessID,WorkerName,WorkDate,HoursWorked,TaskType,Notes,Status)
+            VALUES (:bid,:name,:dt,:hrs,:tt,:notes,'present')
+        """), {
+            "bid":   int(business_id),
+            "name":  b.get("worker_name"),
+            "dt":    b.get("work_date"),
+            "hrs":   float(b.get("hours_worked", 0)),
+            "tt":    b.get("task_type", "field_work"),
+            "notes": b.get("notes"),
+        })
+        db.commit()
+        return {"ok": True, "executed": {"worker": b.get("worker_name"), "date": b.get("work_date")}}
+
     raise HTTPException(400, f"Proposal endpoint not whitelisted: {ep}")
 
 
@@ -1544,6 +1757,34 @@ def suggestions(
             "Which invoices are overdue?",
             "What payments came in this month?",
             "Find a customer named __",
+        ]
+    elif business_id and (page or "").lower() in ("work-orders", "work_orders"):
+        chips = [
+            "What's the farm operations status?",
+            "Create a work order: spray field 3 for aphids, due tomorrow",
+            "What work orders are overdue?",
+            "Log 8 hours for Maria on planting today",
+        ]
+    elif business_id and (page or "").lower() in ("farm-inputs", "farm_inputs"):
+        chips = [
+            "What inputs are running low?",
+            "Log usage: we used 50kg of Roundup on field 3",
+            "Show me all chemical inputs",
+            "What's our inventory status?",
+        ]
+    elif business_id and (page or "").lower() == "hr":
+        chips = [
+            "Log attendance: 8 hours for John Smith today",
+            "How many employees are active?",
+            "What tasks are pending?",
+            "Log 6 hours for Maria on harvesting, field work",
+        ]
+    elif business_id and (page or "").lower() in ("farm-kpi", "packhouse-qc", "harvest-lots", "crop-budgets"):
+        chips = [
+            "What's the farm operations status?",
+            "Any active pest observations?",
+            "What's running low on inputs?",
+            "Show me any urgent work orders",
         ]
     else:
         chips = [

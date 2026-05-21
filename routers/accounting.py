@@ -11,6 +11,7 @@ from database import get_db
 from auth import get_current_user
 import models
 import datetime
+from routers.rbac import record_audit
 
 router = APIRouter(prefix="/api/accounting", tags=["accounting"])
 
@@ -666,6 +667,8 @@ def create_invoice(
         )
 
     _create_invoice_journal_entry(invoice_id, bid, access["people_id"], db)
+    record_audit(db, bid, access["people_id"], "CREATE", "Invoice", invoice_id,
+                 {"number": invoice_number, "total": total_amount})
     db.commit()
     return {"InvoiceID": invoice_id, "InvoiceNumber": invoice_number, "TotalAmount": total_amount}
 
@@ -1249,6 +1252,277 @@ def get_farmer_payouts(
 # POST /api/accounting/seed-oatmeal-ai
 # ────────────────────────────────────────────────────────────────
 
+# ────────────────────────────────────────────────────────────────
+# JOB COSTING  (per-field / per-crop / per-season cost centres)
+# ────────────────────────────────────────────────────────────────
+
+_job_tables_ready = False
+
+def _ensure_job_tables(db: Session):
+    global _job_tables_ready
+    if _job_tables_ready:
+        return
+    db.execute(text("""
+        IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='CostJob')
+        CREATE TABLE CostJob (
+            JobID        INT IDENTITY PRIMARY KEY,
+            BusinessID   INT           NOT NULL,
+            JobName      NVARCHAR(300) NOT NULL,
+            JobType      NVARCHAR(50)  NOT NULL DEFAULT 'field',
+            FieldRef     NVARCHAR(200) NULL,
+            CropName     NVARCHAR(200) NULL,
+            Season       NVARCHAR(100) NULL,
+            StartDate    DATE          NULL,
+            EndDate      DATE          NULL,
+            BudgetAmount DECIMAL(14,2) NULL,
+            Status       NVARCHAR(30)  NOT NULL DEFAULT 'active',
+            Notes        NVARCHAR(MAX) NULL,
+            CreatedAt    DATETIME2     DEFAULT GETDATE(),
+            UpdatedAt    DATETIME2     DEFAULT GETDATE()
+        )
+    """))
+    db.execute(text("""
+        IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='CostAllocation')
+        CREATE TABLE CostAllocation (
+            AllocationID   INT IDENTITY PRIMARY KEY,
+            JobID          INT           NOT NULL,
+            BusinessID     INT           NOT NULL,
+            CostCategory   NVARCHAR(100) NOT NULL,
+            Description    NVARCHAR(500) NULL,
+            Amount         DECIMAL(14,2) NOT NULL,
+            CostDate       DATE          NOT NULL,
+            SourceType     NVARCHAR(50)  NULL,
+            SourceID       INT           NULL,
+            CreatedAt      DATETIME2     DEFAULT GETDATE()
+        )
+    """))
+    db.commit()
+    _job_tables_ready = True
+
+
+@router.get("/jobs")
+def list_jobs(access=Depends(require_accounting_access), db: Session = Depends(get_db)):
+    _ensure_job_tables(db)
+    bid = access["business_id"]
+    rows = db.execute(text("""
+        SELECT j.*,
+               ISNULL(SUM(a.Amount), 0) AS ActualCost
+        FROM CostJob j
+        LEFT JOIN CostAllocation a ON a.JobID = j.JobID
+        WHERE j.BusinessID = :bid
+        GROUP BY j.JobID, j.BusinessID, j.JobName, j.JobType, j.FieldRef, j.CropName,
+                 j.Season, j.StartDate, j.EndDate, j.BudgetAmount, j.Status, j.Notes,
+                 j.CreatedAt, j.UpdatedAt
+        ORDER BY j.StartDate DESC, j.JobID DESC
+    """), {"bid": bid}).fetchall()
+    result = []
+    for r in rows:
+        row = dict(r._mapping)
+        for f in ["BudgetAmount", "ActualCost"]:
+            if row.get(f) is not None:
+                row[f] = float(row[f])
+        result.append(row)
+    return result
+
+
+@router.post("/jobs")
+def create_job(body: dict, access=Depends(require_accounting_access), db: Session = Depends(get_db)):
+    _ensure_job_tables(db)
+    bid = access["business_id"]
+    r = db.execute(text("""
+        INSERT INTO CostJob (BusinessID, JobName, JobType, FieldRef, CropName, Season,
+                             StartDate, EndDate, BudgetAmount, Status, Notes)
+        OUTPUT INSERTED.JobID
+        VALUES (:bid, :name, :jtype, :fref, :crop, :season,
+                :sd, :ed, :budget, :status, :notes)
+    """), {
+        "bid": bid, "name": body["JobName"], "jtype": body.get("JobType", "field"),
+        "fref": body.get("FieldRef"), "crop": body.get("CropName"), "season": body.get("Season"),
+        "sd": body.get("StartDate"), "ed": body.get("EndDate"),
+        "budget": body.get("BudgetAmount"), "status": body.get("Status", "active"),
+        "notes": body.get("Notes"),
+    }).fetchone()
+    record_audit(db, bid, access.get("people_id"), "CREATE", "CostJob", r[0],
+                 {"name": body["JobName"], "type": body.get("JobType", "field")})
+    db.commit()
+    return {"JobID": r[0]}
+
+
+@router.put("/jobs/{job_id}")
+def update_job(job_id: int, body: dict, access=Depends(require_accounting_access), db: Session = Depends(get_db)):
+    bid = access["business_id"]
+    db.execute(text("""
+        UPDATE CostJob SET JobName=:name, JobType=:jtype, FieldRef=:fref, CropName=:crop,
+            Season=:season, StartDate=:sd, EndDate=:ed, BudgetAmount=:budget,
+            Status=:status, Notes=:notes, UpdatedAt=GETDATE()
+        WHERE JobID=:jid AND BusinessID=:bid
+    """), {
+        "name": body.get("JobName"), "jtype": body.get("JobType", "field"),
+        "fref": body.get("FieldRef"), "crop": body.get("CropName"), "season": body.get("Season"),
+        "sd": body.get("StartDate"), "ed": body.get("EndDate"), "budget": body.get("BudgetAmount"),
+        "status": body.get("Status", "active"), "notes": body.get("Notes"),
+        "jid": job_id, "bid": bid,
+    })
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/jobs/{job_id}")
+def delete_job(job_id: int, access=Depends(require_accounting_access), db: Session = Depends(get_db)):
+    bid = access["business_id"]
+    db.execute(text("DELETE FROM CostAllocation WHERE JobID=:jid AND BusinessID=:bid"), {"jid": job_id, "bid": bid})
+    db.execute(text("DELETE FROM CostJob WHERE JobID=:jid AND BusinessID=:bid"), {"jid": job_id, "bid": bid})
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/jobs/{job_id}/allocations")
+def list_allocations(job_id: int, access=Depends(require_accounting_access), db: Session = Depends(get_db)):
+    _ensure_job_tables(db)
+    bid = access["business_id"]
+    rows = db.execute(text("""
+        SELECT * FROM CostAllocation
+        WHERE JobID=:jid AND BusinessID=:bid
+        ORDER BY CostDate DESC, AllocationID DESC
+    """), {"jid": job_id, "bid": bid}).fetchall()
+    result = []
+    for r in rows:
+        row = dict(r._mapping)
+        if row.get("Amount") is not None:
+            row["Amount"] = float(row["Amount"])
+        result.append(row)
+    return result
+
+
+@router.post("/jobs/{job_id}/allocations")
+def add_allocation(job_id: int, body: dict, access=Depends(require_accounting_access), db: Session = Depends(get_db)):
+    _ensure_job_tables(db)
+    bid = access["business_id"]
+    r = db.execute(text("""
+        INSERT INTO CostAllocation (JobID, BusinessID, CostCategory, Description, Amount,
+                                    CostDate, SourceType, SourceID)
+        OUTPUT INSERTED.AllocationID
+        VALUES (:jid, :bid, :cat, :desc, :amt, :dt, :stype, :sid)
+    """), {
+        "jid": job_id, "bid": bid, "cat": body["CostCategory"],
+        "desc": body.get("Description"), "amt": float(body["Amount"]),
+        "dt": body["CostDate"], "stype": body.get("SourceType"), "sid": body.get("SourceID"),
+    }).fetchone()
+    db.commit()
+    return {"AllocationID": r[0]}
+
+
+@router.delete("/jobs/{job_id}/allocations/{alloc_id}")
+def delete_allocation(job_id: int, alloc_id: int, access=Depends(require_accounting_access), db: Session = Depends(get_db)):
+    bid = access["business_id"]
+    db.execute(text("DELETE FROM CostAllocation WHERE AllocationID=:aid AND JobID=:jid AND BusinessID=:bid"),
+               {"aid": alloc_id, "jid": job_id, "bid": bid})
+    db.commit()
+    return {"ok": True}
+
+
+@router.get("/jobs/{job_id}/report")
+def job_report(job_id: int, access=Depends(require_accounting_access), db: Session = Depends(get_db)):
+    """Per-job P&L: budget vs actual, breakdown by cost category."""
+    _ensure_job_tables(db)
+    bid = access["business_id"]
+    job = db.execute(text("SELECT * FROM CostJob WHERE JobID=:jid AND BusinessID=:bid"),
+                     {"jid": job_id, "bid": bid}).fetchone()
+    if not job:
+        raise HTTPException(404, "Job not found")
+    by_cat = db.execute(text("""
+        SELECT CostCategory, SUM(Amount) AS Total
+        FROM CostAllocation
+        WHERE JobID=:jid AND BusinessID=:bid
+        GROUP BY CostCategory
+        ORDER BY Total DESC
+    """), {"jid": job_id, "bid": bid}).fetchall()
+    total_actual = sum(float(r.Total) for r in by_cat)
+    budget = float(job.BudgetAmount or 0)
+    return {
+        "job": dict(job._mapping),
+        "total_actual": total_actual,
+        "budget": budget,
+        "variance": budget - total_actual,
+        "by_category": [{"category": r.CostCategory, "total": float(r.Total)} for r in by_cat],
+    }
+
+
+# ────────────────────────────────────────────────────────────────
+# AGRICULTURE CHART OF ACCOUNTS SEEDER
+# ────────────────────────────────────────────────────────────────
+
+AG_COA = [
+    # (AccountNumber, Name, AccountType, Description)
+    ("4100", "Crop Sales Revenue",           "Revenue",         "Sales of harvested crops"),
+    ("4110", "Livestock Sales Revenue",      "Revenue",         "Proceeds from livestock sales"),
+    ("4120", "Government Grants & Subsidies","Revenue",         "Agricultural subsidies and grant income"),
+    ("4130", "Agro-Processing Revenue",      "Revenue",         "Value-added processing and packaging"),
+    ("4140", "Contract Farming Income",      "Revenue",         "Outgrower and buy-back income"),
+    ("5100", "Seed & Planting Material",     "Cost of Goods Sold","Cost of seeds, seedlings, cuttings"),
+    ("5110", "Fertilizer & Soil Amendments", "Cost of Goods Sold","NPK, lime, compost, foliar feeds"),
+    ("5120", "Crop Protection (Pesticides)", "Cost of Goods Sold","Herbicides, fungicides, insecticides"),
+    ("5130", "Irrigation Costs",             "Cost of Goods Sold","Water abstraction, pumping, drip tape"),
+    ("5140", "Harvest & Packaging Costs",    "Cost of Goods Sold","Picking, grading, bins, boxes"),
+    ("5150", "Field Labor (Direct)",         "Cost of Goods Sold","Casual and permanent field labor"),
+    ("5160", "Machinery Hire & Fuel",        "Cost of Goods Sold","Tractor hire, fuel for field operations"),
+    ("5170", "Cold Chain & Transport",       "Cost of Goods Sold","Cold store, refrigerated transport"),
+    ("6100", "Farm Management Salaries",     "Expense",         "Permanent staff and management payroll"),
+    ("6110", "Land Rent & Lease",            "Expense",         "Lease payments for farmland"),
+    ("6120", "Farm Insurance",               "Expense",         "Crop, equipment, and liability insurance"),
+    ("6130", "Equipment Depreciation",       "Expense",         "Straight-line depreciation on machinery"),
+    ("6140", "Repairs & Maintenance",        "Expense",         "Equipment and infrastructure upkeep"),
+    ("6150", "Certification & Compliance",   "Expense",         "GlobalG.A.P., organic, audit fees"),
+    ("6160", "Agronomist & Consulting Fees", "Expense",         "Technical advisory and soil testing"),
+    ("6170", "Storage & Warehousing",        "Expense",         "On-farm and third-party storage"),
+    ("6180", "Export & Customs Fees",        "Expense",         "Phytosanitary certs, customs clearance"),
+    ("1300", "Crop Inventory (Growing)",     "Asset",           "Standing crops not yet harvested"),
+    ("1310", "Harvested Crop Inventory",     "Asset",           "Harvested produce awaiting sale"),
+    ("1320", "Input Inventory (Chemicals)",  "Asset",           "Agrochemicals and fertilizers on hand"),
+    ("1500", "Land & Improvements",          "Asset",           "Land at cost plus clearing and drainage"),
+    ("1510", "Farm Buildings & Structures",  "Asset",           "Packhouses, stores, irrigation infrastructure"),
+    ("1520", "Farm Machinery & Equipment",   "Asset",           "Tractors, implements, irrigation equipment"),
+    ("2100", "Input Supplier Payables",      "Liability",       "Amounts owed to seed/chemical suppliers"),
+]
+
+
+@router.post("/seed-ag-accounts")
+def seed_ag_accounts(access=Depends(require_accounting_access), db: Session = Depends(get_db)):
+    """Idempotently insert agriculture-specific accounts into the chart of accounts."""
+    bid = access["business_id"]
+    # Get account type ID map
+    type_rows = db.execute(text("SELECT AccountTypeID, Name FROM AccountTypes WHERE BusinessID=:bid"),
+                            {"bid": bid}).fetchall()
+    if not type_rows:
+        return {"inserted": 0, "message": "Run /setup first to create chart of accounts."}
+    type_map = {r.Name: r.AccountTypeID for r in type_rows}
+
+    existing_nums = {
+        r[0] for r in db.execute(
+            text("SELECT AccountNumber FROM Accounts WHERE BusinessID=:bid"), {"bid": bid}
+        ).fetchall()
+    }
+
+    inserted = []
+    for num, name, atype, desc in AG_COA:
+        if num in existing_nums:
+            continue
+        type_id = type_map.get(atype)
+        if not type_id:
+            continue
+        db.execute(text("""
+            INSERT INTO Accounts (BusinessID, AccountNumber, Name, AccountTypeID, Description, IsActive)
+            VALUES (:bid, :num, :name, :tid, :desc, 1)
+        """), {"bid": bid, "num": num, "name": name, "tid": type_id, "desc": desc})
+        inserted.append(num)
+
+    db.commit()
+    return {"inserted": len(inserted), "accounts": inserted,
+            "skipped": len(AG_COA) - len(inserted)}
+
+
+# ────────────────────────────────────────────────────────────────
+
 @router.post("/seed-oatmeal-ai")
 def seed_oatmeal_ai(db: Session = Depends(get_db)):
     """
@@ -1278,3 +1552,109 @@ def seed_oatmeal_ai(db: Session = Depends(get_db)):
     ).fetchone()
     db.commit()
     return {"message": "Oatmeal AI business created.", "BusinessID": new_biz.BusinessID}
+
+
+# ─── Multi-Currency Exchange Rates ───────────────────────────────────────────
+
+_fx_ready = False
+
+SEED_RATES = [
+    ("USD", "US Dollar",          1.0000),
+    ("EUR", "Euro",               0.9200),
+    ("GBP", "British Pound",      0.7900),
+    ("CAD", "Canadian Dollar",    1.3600),
+    ("AUD", "Australian Dollar",  1.5300),
+    ("MXN", "Mexican Peso",      17.1500),
+    ("JPY", "Japanese Yen",     149.5000),
+    ("CNY", "Chinese Yuan",       7.2400),
+    ("BRL", "Brazilian Real",     4.9700),
+    ("ZAR", "South African Rand",18.7000),
+    ("INR", "Indian Rupee",      83.1000),
+    ("KES", "Kenyan Shilling",   130.000),
+    ("GHS", "Ghanaian Cedi",     13.4000),
+    ("NGN", "Nigerian Naira",   1580.00),
+    ("TZS", "Tanzanian Shilling",2530.0),
+    ("UGX", "Ugandan Shilling",  3740.0),
+    ("ETB", "Ethiopian Birr",    113.000),
+    ("NZD", "New Zealand Dollar", 1.6300),
+]
+
+
+def _ensure_fx(db: Session):
+    global _fx_ready
+    if _fx_ready:
+        return
+    db.execute(text("""
+        IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='ExchangeRate')
+        CREATE TABLE ExchangeRate (
+            CurrencyCode NVARCHAR(3)   NOT NULL PRIMARY KEY,
+            CurrencyName NVARCHAR(100) NOT NULL,
+            RateToUSD    DECIMAL(18,6) NOT NULL DEFAULT 1,
+            UpdatedAt    DATETIME2     DEFAULT GETDATE()
+        )
+    """))
+    db.commit()
+    _fx_ready = True
+
+
+@router.get("/currencies")
+def list_currencies(db: Session = Depends(get_db)):
+    """Return all currency codes with their USD exchange rates."""
+    _ensure_fx(db)
+    rows = db.execute(text("SELECT * FROM ExchangeRate ORDER BY CurrencyCode")).fetchall()
+    if not rows:
+        # Auto-seed on first call
+        for code, name, rate in SEED_RATES:
+            db.execute(text("""
+                IF NOT EXISTS (SELECT 1 FROM ExchangeRate WHERE CurrencyCode=:c)
+                INSERT INTO ExchangeRate (CurrencyCode, CurrencyName, RateToUSD)
+                VALUES (:c, :n, :r)
+            """), {"c": code, "n": name, "r": rate})
+        db.commit()
+        rows = db.execute(text("SELECT * FROM ExchangeRate ORDER BY CurrencyCode")).fetchall()
+    return [dict(r._mapping) for r in rows]
+
+
+@router.put("/currencies/{code}")
+def update_currency_rate(code: str, body: dict, db: Session = Depends(get_db)):
+    """Update the exchange rate for a currency code (rate relative to USD)."""
+    _ensure_fx(db)
+    code = code.upper()
+    exists = db.execute(text("SELECT 1 FROM ExchangeRate WHERE CurrencyCode=:c"), {"c": code}).fetchone()
+    if exists:
+        db.execute(text("""
+            UPDATE ExchangeRate SET RateToUSD=:r, CurrencyName=:n, UpdatedAt=GETDATE()
+            WHERE CurrencyCode=:c
+        """), {"c": code, "r": body["rate_to_usd"], "n": body.get("currency_name", code)})
+    else:
+        db.execute(text("""
+            INSERT INTO ExchangeRate (CurrencyCode, CurrencyName, RateToUSD)
+            VALUES (:c, :n, :r)
+        """), {"c": code, "n": body.get("currency_name", code), "r": body["rate_to_usd"]})
+    db.commit()
+    return {"ok": True, "code": code}
+
+
+@router.post("/currencies/convert")
+def convert_currency(body: dict, db: Session = Depends(get_db)):
+    """Convert an amount between two currencies via USD as pivot.
+    body: { amount, from_currency, to_currency }"""
+    _ensure_fx(db)
+    amount = float(body.get("amount", 0))
+    from_c = body.get("from_currency", "USD").upper()
+    to_c   = body.get("to_currency", "USD").upper()
+    if from_c == to_c:
+        return {"result": amount, "from": from_c, "to": to_c, "rate": 1.0}
+    rates = {r.CurrencyCode: float(r.RateToUSD)
+             for r in db.execute(text(
+                 "SELECT CurrencyCode, RateToUSD FROM ExchangeRate WHERE CurrencyCode IN (:f, :t)"
+             ), {"f": from_c, "t": to_c}).fetchall()}
+    if from_c not in rates or to_c not in rates:
+        raise HTTPException(404, "Unknown currency code")
+    usd_amount = amount / rates[from_c]
+    result = usd_amount * rates[to_c]
+    return {
+        "result": round(result, 4),
+        "from": from_c, "to": to_c,
+        "rate": round(rates[to_c] / rates[from_c], 6),
+    }

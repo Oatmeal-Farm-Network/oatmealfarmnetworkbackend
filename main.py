@@ -100,6 +100,23 @@ from routers import meetings
 from routers import recipes_batches
 from routers import cold_chain
 from routers import farmer_settlement
+from routers import supply_chain
+from routers import supply_chain_events
+from routers import supply_chain_ai
+from routers import hr
+from routers import farm_inputs
+from routers import crop_budgets
+from routers import harvest_lots
+from routers import farm_infrastructure
+from routers import farm_kpi
+from routers import nursery
+from routers import outgrower
+from routers import procurement
+from routers import work_orders
+from routers import packhouse_qc
+from routers import plant_tagging
+from routers import export_compliance
+from routers import rbac
 
 load_dotenv()
 
@@ -264,6 +281,10 @@ async def _startup_migrations():
             'Properties Management':         'properties',
             'Cold Chain & Logistics':        'cold_chain',
             'Farmer Settlement & Pay':       'farmer_settlement',
+            'Chef Dashboard':                'chef_dashboard',
+            'Pairsley AI (Restaurants)':     'pairsley',
+            'Rosemarie AI (Artisans)':       'rosemarie',
+            'Restaurant Sourcing':           'restaurant_sourcing',
         }
         try:
             with SessionLocal() as _db:
@@ -281,6 +302,42 @@ async def _startup_migrations():
                             {"fk": fk, "cid": row[0]},
                         )
                 _db.commit()
+        except Exception:
+            pass
+
+        # Idempotently seed CompanySiteManagement with all DEFAULT_FEATURES (IsEnabled=1)
+        try:
+            from routers.company_features import DEFAULT_FEATURES as _DF
+            with SessionLocal() as _db:
+                existing_keys = {r[0] for r in _db.execute(_t("SELECT FeatureKey FROM CompanySiteManagement")).fetchall()}
+                for _key, _name, _monthly, _yearly, _sort in _DF:
+                    if _key not in existing_keys:
+                        _db.execute(
+                            _t("INSERT INTO CompanySiteManagement (FeatureKey, FeatureName, IsEnabled, MonthlyPrice, YearlyPrice, SortOrder) "
+                               "VALUES (:k, :n, 1, :m, :y, :s)"),
+                            {"k": _key, "n": _name, "m": _monthly, "y": _yearly, "s": _sort},
+                        )
+                _db.commit()
+        except Exception:
+            pass
+
+        # Auto-seed 5 default RBAC roles for every business that has none yet
+        try:
+            from routers.rbac import DEFAULT_ROLES as _DR, _ensure as _rbac_ensure
+            with SessionLocal() as _db:
+                _rbac_ensure(_db)
+                biz_ids = [r[0] for r in _db.execute(_t(
+                    "SELECT BusinessID FROM Business "
+                    "WHERE BusinessID NOT IN (SELECT DISTINCT BusinessID FROM BusinessRole)"
+                )).fetchall()]
+                for _bid in biz_ids:
+                    for _rname, _rdesc in _DR:
+                        _db.execute(_t(
+                            "INSERT INTO BusinessRole (BusinessID, RoleName, Description, IsSystem) "
+                            "VALUES (:bid, :name, :desc, 1)"
+                        ), {"bid": _bid, "name": _rname, "desc": _rdesc})
+                if biz_ids:
+                    _db.commit()
         except Exception:
             pass
 
@@ -304,6 +361,78 @@ async def _startup_migrations():
             print(f"[startup] price seed skipped: {_e}")
 
     asyncio.get_event_loop().run_in_executor(None, _seed_prices)
+
+    # ── Expiry reminder loop ─────────────────────────────────────────
+    # Runs once on startup, then every 24 h. Fires notifications for:
+    #   • Farm inputs expiring within 14 days
+    #   • HR certifications expiring within 60 days
+    def _expiry_reminder_loop():
+        import time as _time
+        while True:
+            try:
+                from routers.notifications import notify_business as _nb
+                with SessionLocal() as _db:
+                    # Farm inputs expiring in ≤14 days
+                    inp_rows = _db.execute(__import__('sqlalchemy').text("""
+                        SELECT BusinessID, InputName, ExpiryDate, InputID
+                        FROM FarmInput
+                        WHERE IsActive = 1
+                          AND ExpiryDate IS NOT NULL
+                          AND ExpiryDate > CAST(GETDATE() AS DATE)
+                          AND ExpiryDate <= DATEADD(day, 14, CAST(GETDATE() AS DATE))
+                    """)).fetchall()
+                    seen_biz_input: set = set()
+                    for r in inp_rows:
+                        key = (r.BusinessID, r.InputID)
+                        if key in seen_biz_input:
+                            continue
+                        seen_biz_input.add(key)
+                        _nb(
+                            _db, r.BusinessID,
+                            type="input_expiry_warning",
+                            title=f"Input Expiring Soon: {r.InputName}",
+                            body=f"Expires {r.ExpiryDate} — use or dispose before it expires.",
+                            link_path=f"/farm-inputs?BusinessID={r.BusinessID}",
+                            entity_type="FarmInput",
+                            entity_id=r.InputID,
+                        )
+                    if inp_rows:
+                        _db.commit()
+
+                    # HR certifications expiring in ≤60 days
+                    cert_rows = _db.execute(__import__('sqlalchemy').text("""
+                        SELECT c.BusinessID, e.FirstName + ' ' + e.LastName AS EmployeeName,
+                               c.CertName, c.ExpiryDate, c.CertID
+                        FROM HRCertification c
+                        JOIN HREmployee e ON e.EmployeeID = c.EmployeeID
+                        WHERE c.ExpiryDate IS NOT NULL
+                          AND c.ExpiryDate > CAST(GETDATE() AS DATE)
+                          AND c.ExpiryDate <= DATEADD(day, 60, CAST(GETDATE() AS DATE))
+                    """)).fetchall()
+                    seen_biz_cert: set = set()
+                    for r in cert_rows:
+                        key = (r.BusinessID, r.CertID)
+                        if key in seen_biz_cert:
+                            continue
+                        seen_biz_cert.add(key)
+                        _nb(
+                            _db, r.BusinessID,
+                            type="hr_cert_expiry_warning",
+                            title=f"Certification Expiring: {r.CertName}",
+                            body=f"{r.EmployeeName}'s {r.CertName} expires {r.ExpiryDate}.",
+                            link_path=f"/hr?BusinessID={r.BusinessID}&tab=employees",
+                            entity_type="HRCertification",
+                            entity_id=r.CertID,
+                        )
+                    if cert_rows:
+                        _db.commit()
+            except Exception as _e:
+                print(f"[expiry-reminder] error: {_e}")
+            _time.sleep(86400)  # re-check every 24 h
+
+    import threading as _threading
+    _t = _threading.Thread(target=_expiry_reminder_loop, daemon=True, name="expiry-reminder")
+    _t.start()
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
@@ -412,6 +541,24 @@ app.include_router(meetings.router)
 app.include_router(recipes_batches.router)
 app.include_router(cold_chain.router)
 app.include_router(farmer_settlement.router)
+app.include_router(supply_chain.router)
+app.include_router(supply_chain_events.router)
+app.include_router(supply_chain_ai.router)
+app.include_router(hr.router)
+app.include_router(farm_inputs.router)
+app.include_router(crop_budgets.router)
+app.include_router(harvest_lots.router)
+app.include_router(farm_infrastructure.router)
+app.include_router(farm_kpi.router)
+app.include_router(nursery.router)
+app.include_router(outgrower.router)
+app.include_router(procurement.router)
+app.include_router(work_orders.router)
+app.include_router(packhouse_qc.router)
+app.include_router(plant_tagging.router)
+app.include_router(export_compliance.router)
+app.include_router(rbac.router)
+app.include_router(rbac.AUDIT_ROUTER)
 
 
 # ── Public testimonials endpoint (used by website blocks) ─────────

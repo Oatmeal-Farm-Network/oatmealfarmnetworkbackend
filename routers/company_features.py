@@ -1,8 +1,13 @@
+import time
 from fastapi import APIRouter, Depends, Query
 from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db
+
+# Simple in-memory TTL cache: {business_id_or_None: (result, expires_at)}
+_features_cache: dict = {}
+_FEATURES_TTL = 60  # seconds
 
 router = APIRouter(prefix="/api/company", tags=["company"])
 
@@ -43,8 +48,23 @@ DEFAULT_FEATURES = [
     ("forums",               "Forums",                    0.0,   0.0, 31),
     ("meetings",             "Meetings",                  0.0,   0.0, 32),
     ("food_aggregation",     "Food Aggregation Hub",      0.0,   0.0, 33),
-    ("cold_chain",           "Cold Chain & Logistics",   29.0, 290.0, 34),
-    ("farmer_settlement",    "Farmer Settlement & Pay",  19.0, 190.0, 35),
+    ("cold_chain",               "Cold Chain & Logistics",              29.0, 290.0, 34),
+    ("farmer_settlement",        "Farmer Settlement & Pay",             19.0, 190.0, 35),
+    ("enterprise_supply_chain",  "Enterprise Supply Chain Intelligence",49.0, 490.0, 36),
+    ("hr_management",            "HR & Workforce Management",           19.0, 190.0, 37),
+    ("farm_inputs",              "Farm Inputs & Chemical Inventory",     0.0,   0.0, 38),
+    ("crop_budgeting",           "Crop Budgeting & Actuals",             0.0,   0.0, 39),
+    ("traceability",             "Harvest Lot Traceability",             0.0,   0.0, 40),
+    ("farm_infrastructure",      "Farm Infrastructure & Maintenance",    0.0,   0.0, 41),
+    ("farm_kpi",                 "Farm KPI Dashboard & Alerts",          0.0,   0.0, 42),
+    # ── New AgriERP modules ──────────────────────────────────────────────────
+    ("nursery_management",   "Nursery & Early Growth",    0.0,   0.0, 43),
+    ("outgrower_management", "Contract Farming / Outgrower", 0.0, 0.0, 44),
+    ("procurement",          "Purchase & Procurement",    0.0,   0.0, 45),
+    ("work_orders",          "Work Orders & Field Crews", 0.0,   0.0, 46),
+    ("packhouse_qc",         "Packhouse & QC Inspection", 0.0,   0.0, 47),
+    ("plant_tagging",        "Plant Tagging & Asset Geo", 0.0,   0.0, 48),
+    ("export_compliance",    "Export Compliance & Traceability", 0.0, 0.0, 49),
     ("business_directory",   "Business Directory",        0.0,   0.0, 98),
     ("food_system_newsfeed", "Food System Newsfeed",      0.0,   0.0, 99),
 ]
@@ -121,6 +141,18 @@ def get_features(
     2. Subscription package features (if business has a SubscriptionTier set).
     3. Site-wide CompanySiteManagement flags (fallback).
     """
+    cache_key = business_id
+    now = time.time()
+    cached = _features_cache.get(cache_key)
+    if cached and now < cached[1]:
+        return cached[0]
+
+    result = _get_features_uncached(business_id, db)
+    _features_cache[cache_key] = (result, now + _FEATURES_TTL)
+    return result
+
+
+def _get_features_uncached(business_id: Optional[int], db: Session):
     if business_id is not None:
         # 1. Check per-business admin service overrides first
         overrides = _business_service_overrides(business_id, db)

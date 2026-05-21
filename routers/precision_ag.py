@@ -14,6 +14,33 @@ from geo_utils import polygon_area_hectares
 
 router = APIRouter(prefix="/api", tags=["precision-ag"])
 
+# ── FieldProfile table (lazy create) ─────────────────────────────────────────
+_field_profile_ready = False
+
+def _ensure_field_profile_table(db: Session):
+    global _field_profile_ready
+    if _field_profile_ready:
+        return
+    db.execute(text("""
+        IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'FieldProfile')
+        CREATE TABLE FieldProfile (
+            ProfileID        INT IDENTITY(1,1) PRIMARY KEY,
+            FieldID          INT NOT NULL,
+            BusinessID       INT NOT NULL,
+            SoilType         NVARCHAR(100),
+            DrainageClass    NVARCHAR(100),
+            SlopePercent     DECIMAL(5,2),
+            Topography       NVARCHAR(100),
+            OrganicMatterPct DECIMAL(5,2),
+            PhLevel          DECIMAL(4,2),
+            FieldNotes       NVARCHAR(MAX),
+            PhotoUrls        NVARCHAR(MAX),
+            UpdatedAt        DATETIME DEFAULT GETDATE()
+        )
+    """))
+    db.commit()
+    _field_profile_ready = True
+
 CROP_MONITOR_URL = os.getenv(
     "CROP_MONITOR_URL",
     "https://oatmealfarmnetworkcropmonitorbackend-git-802455386518.us-central1.run.app"
@@ -200,7 +227,98 @@ def delete_field(field_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/dashboard/summary")
+class FieldProfileUpsert(BaseModel):
+    soil_type:          Optional[str] = None
+    drainage_class:     Optional[str] = None
+    slope_percent:      Optional[float] = None
+    topography:         Optional[str] = None
+    organic_matter_pct: Optional[float] = None
+    ph_level:           Optional[float] = None
+    field_notes:        Optional[str] = None
+    photo_urls:         Optional[str] = None
+
+
+@router.get("/fields/{field_id}/profile")
+def get_field_profile(field_id: int, db: Session = Depends(get_db)):
+    try:
+        _ensure_field_profile_table(db)
+        row = db.execute(text("""
+            SELECT SoilType, DrainageClass, SlopePercent, Topography,
+                   OrganicMatterPct, PhLevel, FieldNotes, PhotoUrls, UpdatedAt
+            FROM FieldProfile WHERE FieldID = :fid
+        """), {"fid": field_id}).fetchone()
+        if not row:
+            return {}
+        return {
+            "soil_type":          row.SoilType,
+            "drainage_class":     row.DrainageClass,
+            "slope_percent":      float(row.SlopePercent) if row.SlopePercent is not None else None,
+            "topography":         row.Topography,
+            "organic_matter_pct": float(row.OrganicMatterPct) if row.OrganicMatterPct is not None else None,
+            "ph_level":           float(row.PhLevel) if row.PhLevel is not None else None,
+            "field_notes":        row.FieldNotes,
+            "photo_urls":         row.PhotoUrls,
+            "updated_at":         row.UpdatedAt.isoformat() if row.UpdatedAt else None,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/fields/{field_id}/profile")
+def upsert_field_profile(field_id: int, body: FieldProfileUpsert, business_id: int, db: Session = Depends(get_db)):
+    try:
+        _ensure_field_profile_table(db)
+        existing = db.execute(text("SELECT ProfileID FROM FieldProfile WHERE FieldID = :fid"), {"fid": field_id}).fetchone()
+        if existing:
+            db.execute(text("""
+                UPDATE FieldProfile SET
+                    SoilType         = :soil_type,
+                    DrainageClass    = :drainage_class,
+                    SlopePercent     = :slope_percent,
+                    Topography       = :topography,
+                    OrganicMatterPct = :organic_matter_pct,
+                    PhLevel          = :ph_level,
+                    FieldNotes       = :field_notes,
+                    PhotoUrls        = :photo_urls,
+                    UpdatedAt        = GETDATE()
+                WHERE FieldID = :fid
+            """), {
+                "fid":               field_id,
+                "soil_type":          body.soil_type,
+                "drainage_class":     body.drainage_class,
+                "slope_percent":      body.slope_percent,
+                "topography":         body.topography,
+                "organic_matter_pct": body.organic_matter_pct,
+                "ph_level":           body.ph_level,
+                "field_notes":        body.field_notes,
+                "photo_urls":         body.photo_urls,
+            })
+        else:
+            db.execute(text("""
+                INSERT INTO FieldProfile (FieldID, BusinessID, SoilType, DrainageClass, SlopePercent,
+                    Topography, OrganicMatterPct, PhLevel, FieldNotes, PhotoUrls)
+                VALUES (:fid, :bid, :soil_type, :drainage_class, :slope_percent,
+                    :topography, :organic_matter_pct, :ph_level, :field_notes, :photo_urls)
+            """), {
+                "fid":               field_id,
+                "bid":               business_id,
+                "soil_type":          body.soil_type,
+                "drainage_class":     body.drainage_class,
+                "slope_percent":      body.slope_percent,
+                "topography":         body.topography,
+                "organic_matter_pct": body.organic_matter_pct,
+                "ph_level":           body.ph_level,
+                "field_notes":        body.field_notes,
+                "photo_urls":         body.photo_urls,
+            })
+        db.commit()
+        return {"ok": True}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/precision-ag/dashboard/summary")
 def get_dashboard_summary(business_id: int, db: Session = Depends(get_db)):
     try:
         field_count = (
