@@ -348,6 +348,21 @@ def record_transaction(payload: dict, db: Session = Depends(get_db)):
 
     db.commit()
 
+    # Sync ActualCost to matching CropBudget on usage transactions
+    if tx_type in ("use", "dispose") and payload.get("crop_name") and total_cost:
+        try:
+            from datetime import date as _date
+            app_date = payload.get("application_date", "")
+            cost_year = int(str(app_date)[:4]) if app_date and len(str(app_date)) >= 4 else _date.today().year
+            db.execute(text("""
+                UPDATE CropBudget
+                SET ActualCost = ISNULL(ActualCost, 0) + :cost, UpdatedAt = GETDATE()
+                WHERE BusinessID = :bid AND CropName = :crop AND CropYear = :yr
+            """), {"cost": float(total_cost), "bid": bid, "crop": payload["crop_name"], "yr": cost_year})
+            db.commit()
+        except Exception as _e:
+            print(f"[input-usage] budget cost sync failed: {_e}")
+
     # Notify + auto-reorder when stock drops at or below the alert threshold
     if tx_type in ("use", "dispose") and inp.MinStockAlert is not None and new_stock <= float(inp.MinStockAlert):
         notify_business(

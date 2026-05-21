@@ -19,6 +19,11 @@ def _ensure(db: Session):
     if _ready:
         return
     stmts = [
+        # SettlementBillID added here — idempotent
+        """IF NOT EXISTS (
+            SELECT 1 FROM sys.columns
+            WHERE object_id=OBJECT_ID('OutgrowerDelivery') AND name='SettlementBillID'
+        ) ALTER TABLE OutgrowerDelivery ADD SettlementBillID INT NULL""",
         """IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='OutgrowerFarmer')
         CREATE TABLE OutgrowerFarmer (
             FarmerID          INT IDENTITY PRIMARY KEY,
@@ -300,12 +305,143 @@ def create_delivery(body: dict, db: Session = Depends(get_db)):
     return {"DeliveryID": r[0]}
 
 
+def _auto_settle_to_accounting(db: Session, delivery_id: int, business_id: int):
+    """Create a paid Bill in Accounting for this outgrower delivery settlement."""
+    try:
+        # Skip if accounting hasn't been set up for this business
+        acct_count = db.execute(
+            text("SELECT COUNT(*) FROM Accounts WHERE BusinessID=:bid"), {"bid": business_id}
+        ).scalar()
+        if not acct_count:
+            return
+
+        # Load delivery + farmer + contract
+        row = db.execute(text("""
+            SELECT d.*, f.FullName AS FarmerName, f.Phone AS FarmerPhone,
+                   f.Email AS FarmerEmail, c.CropName, c.Season
+            FROM OutgrowerDelivery d
+            JOIN OutgrowerFarmer f ON f.FarmerID = d.FarmerID
+            JOIN OutgrowerContract c ON c.ContractID = d.ContractID
+            WHERE d.DeliveryID=:did AND d.BusinessID=:bid
+        """), {"did": delivery_id, "bid": business_id}).fetchone()
+        if not row:
+            return
+
+        # Skip if bill already linked
+        if row.SettlementBillID:
+            return
+
+        net_pay   = float(row.NetPayment   or 0)
+        gross_pay = float(row.GrossPayment or 0)
+        deduct    = float(row.InputDeductions or 0)
+
+        # Find or create AccountingVendor for this farmer
+        vendor = db.execute(text("""
+            SELECT TOP 1 VendorID FROM AccountingVendors
+            WHERE BusinessID=:bid AND DisplayName=:name AND IsActive=1
+        """), {"bid": business_id, "name": row.FarmerName}).fetchone()
+
+        if vendor:
+            vendor_id = vendor.VendorID
+        else:
+            v_row = db.execute(text("""
+                INSERT INTO AccountingVendors
+                    (BusinessID, DisplayName, CompanyName, Phone, Email, PaymentTerms, Notes)
+                OUTPUT INSERTED.VendorID
+                VALUES (:bid, :name, :name, :phone, :email, 'Immediate', 'Auto-created from outgrower settlement')
+            """), {
+                "bid": business_id, "name": row.FarmerName,
+                "phone": row.FarmerPhone, "email": row.FarmerEmail,
+            }).fetchone()
+            vendor_id = v_row.VendorID
+
+        # Auto-generate bill number
+        count = db.execute(
+            text("SELECT COUNT(*)+1 FROM Bills WHERE BusinessID=:bid"), {"bid": business_id}
+        ).scalar()
+        bill_num = f"SETTLE-{business_id}-{count:04d}"
+
+        # Get a crop-purchases expense account (5xxx range preferred)
+        crop_acct = db.execute(text("""
+            SELECT TOP 1 AccountID FROM Accounts
+            WHERE BusinessID=:bid AND AccountNumber LIKE '5%' AND IsActive=1
+            ORDER BY AccountNumber
+        """), {"bid": business_id}).fetchone()
+        acct_id = crop_acct.AccountID if crop_acct else None
+
+        # Get a responsible user (highest-access member of the business)
+        admin = db.execute(text("""
+            SELECT TOP 1 PeopleID FROM BusinessAccess
+            WHERE BusinessID=:bid AND Active=1
+            ORDER BY AccessLevelID DESC
+        """), {"bid": business_id}).fetchone()
+        created_by = admin.PeopleID if admin else None
+
+        desc_main = (
+            f"Outgrower settlement: {row.CropName} delivery {row.DeliveryDate} "
+            f"— {row.NetWeightKg or ''} kg net, grade {row.QualityGrade or 'N/A'}"
+        )
+        notes = f"DeliveryID:{delivery_id} | ContractID:{row.ContractID} | Ticket:{row.WeighbridgeTicket or ''}"
+
+        b_row = db.execute(text("""
+            INSERT INTO Bills
+                (BusinessID, VendorID, BillNumber, BillDate, DueDate, Status,
+                 SubTotal, TaxAmount, TotalAmount, BalanceDue, Notes, CreatedBy)
+            OUTPUT INSERTED.BillID
+            VALUES (:bid, :vid, :num, CAST(GETDATE() AS DATE), CAST(GETDATE() AS DATE),
+                    'Paid', :sub, 0, :total, 0, :notes, :by)
+        """), {
+            "bid": business_id, "vid": vendor_id, "num": bill_num,
+            "sub": net_pay, "total": net_pay, "notes": notes, "by": created_by,
+        }).fetchone()
+        bill_id = b_row.BillID
+
+        # Line 1: gross crop purchase
+        db.execute(text("""
+            INSERT INTO BillLines
+                (BillID, BusinessID, AccountID, Description, Quantity, UnitPrice, TaxAmount, LineTotal, LineOrder)
+            VALUES (:bill, :bid, :acct, :desc, 1, :price, 0, :price, 0)
+        """), {"bill": bill_id, "bid": business_id, "acct": acct_id,
+               "desc": f"Crop purchase: {row.CropName} {row.NetWeightKg or ''}kg @ {row.PricePerKg or 0}/kg",
+               "price": gross_pay})
+
+        # Line 2: input deductions (negative) if any
+        if deduct > 0:
+            db.execute(text("""
+                INSERT INTO BillLines
+                    (BillID, BusinessID, AccountID, Description, Quantity, UnitPrice, TaxAmount, LineTotal, LineOrder)
+                VALUES (:bill, :bid, :acct, :desc, 1, :price, 0, :price, 1)
+            """), {"bill": bill_id, "bid": business_id, "acct": acct_id,
+                   "desc": "Less: input cost recovery deduction",
+                   "price": -deduct})
+
+        # Link bill back to delivery
+        db.execute(text("""
+            UPDATE OutgrowerDelivery SET SettlementBillID=:bid2
+            WHERE DeliveryID=:did AND BusinessID=:bid
+        """), {"bid2": bill_id, "did": delivery_id, "bid": business_id})
+
+        # Notify
+        from routers.notifications import notify_business
+        notify_business(
+            db, business_id, type="outgrower_settlement_posted",
+            title=f"Settlement posted: {row.FarmerName}",
+            body=f"{row.CropName} delivery settled. Net payment: {net_pay:.2f}. Bill {bill_num} created.",
+            link_path=f"/accounting?tab=bills&BusinessID={business_id}",
+            entity_type="Bill", entity_id=bill_id,
+        )
+    except Exception as _e:
+        print(f"[outgrower-settle] accounting sync failed: {_e}")
+
+
 @router.put("/deliveries/{delivery_id}/pay")
 def mark_paid(delivery_id: int, body: dict, db: Session = Depends(get_db)):
     db.execute(text("""
         UPDATE OutgrowerDelivery SET PaymentStatus='paid', PaymentDate=:dt
         WHERE DeliveryID=:did AND BusinessID=:bid
     """), {"dt": body.get("PaymentDate"), "did": delivery_id, "bid": body["BusinessID"]})
+    db.commit()
+    _auto_settle_to_accounting(db, delivery_id, body["BusinessID"])
     db.commit()
     return {"ok": True}
 
@@ -331,4 +467,68 @@ def outgrower_summary(business_id: int = Query(...), db: Session = Depends(get_d
         "ActiveContracts": contracts[1] if contracts else 0,
         "TotalDeliveredKg": float(deliveries[0]) if deliveries else 0,
         "TotalPaid": float(deliveries[1]) if deliveries else 0,
+    }
+
+
+# ─── Contract dashboard ───────────────────────────────────────────────────────
+
+@router.get("/contract-dashboard")
+def contract_dashboard(business_id: int = Query(...), db: Session = Depends(get_db)):
+    _ensure(db)
+    rows = db.execute(text("""
+        SELECT oc.ContractID, oc.CropName, oc.Season, oc.TargetQtyKg,
+               of2.FullName AS FarmerName, of2.FarmerID,
+               ISNULL(SUM(od.NetWeightKg), 0)  AS DeliveredKg,
+               COUNT(od.DeliveryID)             AS DeliveryCount,
+               oc.Status                        AS ContractStatus,
+               CONVERT(varchar(10), oc.StartDate, 120)  AS StartDate,
+               CONVERT(varchar(10), oc.EndDate,   120)  AS EndDate,
+               ISNULL(SUM(CASE WHEN od.PaymentStatus='pending' THEN od.NetPayment ELSE 0 END), 0) AS PendingPaymentAmt,
+               COUNT(CASE WHEN od.PaymentStatus='pending' THEN 1 END) AS PendingDeliveries
+        FROM OutgrowerContract oc
+        JOIN OutgrowerFarmer of2 ON of2.FarmerID = oc.FarmerID
+        LEFT JOIN OutgrowerDelivery od ON od.ContractID = oc.ContractID
+        WHERE oc.BusinessID = :bid
+        GROUP BY oc.ContractID, oc.CropName, oc.Season, oc.TargetQtyKg,
+                 of2.FullName, of2.FarmerID, oc.Status, oc.StartDate, oc.EndDate
+        ORDER BY oc.ContractID DESC
+    """), {"bid": business_id}).fetchall()
+
+    contracts = []
+    total_target = total_delivered = total_pending_amt = 0
+    for r in rows:
+        m = dict(r._mapping)
+        target = float(m.get("TargetQtyKg") or 0)
+        delivered = float(m.get("DeliveredKg") or 0)
+        utilization = round(delivered / target * 100, 1) if target > 0 else 0
+        pending_amt = float(m.get("PendingPaymentAmt") or 0)
+        total_target += target
+        total_delivered += delivered
+        total_pending_amt += pending_amt
+        contracts.append({
+            "contract_id": m["ContractID"],
+            "crop_name": m["CropName"],
+            "season": m["Season"],
+            "target_kg": target,
+            "delivered_kg": delivered,
+            "utilization_pct": utilization,
+            "delivery_count": m.get("DeliveryCount", 0),
+            "contract_status": m["ContractStatus"],
+            "start_date": m.get("StartDate"),
+            "end_date": m.get("EndDate"),
+            "farmer_name": m["FarmerName"],
+            "farmer_id": m["FarmerID"],
+            "pending_payment_amt": pending_amt,
+            "pending_deliveries": m.get("PendingDeliveries", 0) or 0,
+        })
+
+    return {
+        "contracts": contracts,
+        "totals": {
+            "total_contracts": len(contracts),
+            "total_target_kg": total_target,
+            "total_delivered_kg": total_delivered,
+            "overall_utilization_pct": round(total_delivered / total_target * 100, 1) if total_target > 0 else 0,
+            "total_pending_payment": total_pending_amt,
+        },
     }

@@ -10,6 +10,8 @@ from database import get_db
 from typing import Optional
 from datetime import date
 
+APPROVAL_THRESHOLD = 1000.0  # POs at or above this total auto-require approval
+
 router = APIRouter(prefix="/api/procurement", tags=["procurement"])
 _ready = False
 
@@ -161,8 +163,28 @@ def create_order(body: dict, db: Session = Depends(get_db)):
         })
 
     _recompute_total(po_id, db)
+
+    # Auto-escalate to pending_approval if total >= threshold
+    total_row = db.execute(text("SELECT TotalAmount FROM PurchaseOrder WHERE POID=:pid"), {"pid": po_id}).fetchone()
+    total_val = float(total_row.TotalAmount or 0) if total_row else 0
+    if total_val >= APPROVAL_THRESHOLD and body.get("Status", "draft") not in ("approved", "issued"):
+        db.execute(text("""
+            UPDATE PurchaseOrder SET Status='pending_approval', UpdatedAt=GETDATE() WHERE POID=:pid
+        """), {"pid": po_id})
+        try:
+            from routers.notifications import notify_business
+            notify_business(
+                db, body["BusinessID"], type="po_approval_required",
+                title=f"PO approval required: {po_num}",
+                body=f"{body['SupplierName']} — ${total_val:,.2f}. Pending manager approval before issuing.",
+                link_path=f"/procurement?BusinessID={body['BusinessID']}&filter=pending_approval",
+                entity_type="PurchaseOrder", entity_id=po_id,
+            )
+        except Exception:
+            pass
+
     db.commit()
-    return {"POID": po_id, "PONumber": po_num}
+    return {"POID": po_id, "PONumber": po_num, "RequiresApproval": total_val >= APPROVAL_THRESHOLD}
 
 
 @router.put("/orders/{po_id}")
@@ -187,21 +209,138 @@ def update_order(po_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.post("/orders/{po_id}/approve")
 def approve_order(po_id: int, body: dict, db: Session = Depends(get_db)):
+    bid = body["BusinessID"]
     db.execute(text("""
         UPDATE PurchaseOrder SET Status='approved', ApprovedBy=:by, ApprovedAt=GETDATE(), UpdatedAt=GETDATE()
         WHERE POID=:pid AND BusinessID=:bid
-    """), {"by": body.get("ApprovedBy"), "pid": po_id, "bid": body["BusinessID"]})
+    """), {"by": body.get("ApprovedBy"), "pid": po_id, "bid": bid})
     db.commit()
+
+    # Post accounting Bill for the PO amount
+    _sync_po_to_accounting_bill(db, po_id, bid)
+    db.commit()
+
+    try:
+        from routers.notifications import notify_business
+        po = db.execute(text("SELECT PONumber, SupplierName, TotalAmount FROM PurchaseOrder WHERE POID=:pid"),
+                        {"pid": po_id}).fetchone()
+        if po:
+            notify_business(
+                db, bid, type="po_approved",
+                title=f"PO approved: {po.PONumber}",
+                body=f"{po.SupplierName} — ${float(po.TotalAmount or 0):,.2f} approved by {body.get('ApprovedBy','manager')}. Bill posted to accounting.",
+                link_path=f"/procurement?BusinessID={bid}",
+                entity_type="PurchaseOrder", entity_id=po_id,
+            )
+    except Exception:
+        pass
+
     return {"ok": True}
+
+
+def _sync_po_to_accounting_bill(db: Session, po_id: int, business_id: int):
+    """Create an Open Bill in Accounting for an approved PO (find-or-create vendor)."""
+    try:
+        acct_count = db.execute(text("SELECT COUNT(*) FROM Accounts WHERE BusinessID=:bid"), {"bid": business_id}).scalar()
+        if not acct_count:
+            return
+        # Skip if a bill already links to this PO
+        existing = db.execute(text(
+            "SELECT COUNT(*) FROM Bills WHERE BusinessID=:bid AND Notes LIKE :tag"
+        ), {"bid": business_id, "tag": f"%[PO:{po_id}]%"}).scalar()
+        if existing:
+            return
+
+        po = db.execute(text("SELECT * FROM PurchaseOrder WHERE POID=:pid AND BusinessID=:bid"),
+                        {"pid": po_id, "bid": business_id}).fetchone()
+        lines = db.execute(text("SELECT * FROM POLineItem WHERE POID=:pid ORDER BY LineID"), {"pid": po_id}).fetchall()
+        if not po:
+            return
+
+        # Find or create vendor
+        vendor = db.execute(text("""
+            SELECT TOP 1 VendorID FROM AccountingVendors
+            WHERE BusinessID=:bid AND DisplayName=:name AND IsActive=1
+        """), {"bid": business_id, "name": po.SupplierName}).fetchone()
+        if vendor:
+            vendor_id = vendor.VendorID
+        else:
+            v = db.execute(text("""
+                INSERT INTO AccountingVendors
+                    (BusinessID, DisplayName, CompanyName, Email, PaymentTerms, Notes)
+                OUTPUT INSERTED.VendorID
+                VALUES (:bid, :name, :name, :email, 'Net30', 'Auto-created from PO approval')
+            """), {"bid": business_id, "name": po.SupplierName, "email": po.SupplierEmail}).fetchone()
+            vendor_id = v.VendorID
+
+        # Get expense account (5xxx)
+        exp_acct = db.execute(text("""
+            SELECT TOP 1 AccountID FROM Accounts
+            WHERE BusinessID=:bid AND AccountNumber LIKE '5%' AND IsActive=1
+            ORDER BY AccountNumber
+        """), {"bid": business_id}).fetchone()
+        acct_id = exp_acct.AccountID if exp_acct else None
+
+        admin = db.execute(text("""
+            SELECT TOP 1 PeopleID FROM BusinessAccess WHERE BusinessID=:bid AND Active=1 ORDER BY AccessLevelID DESC
+        """), {"bid": business_id}).fetchone()
+        created_by = admin.PeopleID if admin else None
+
+        count = db.execute(text("SELECT COUNT(*)+1 FROM Bills WHERE BusinessID=:bid"), {"bid": business_id}).scalar()
+        bill_num = f"BILL-PO-{business_id}-{count:04d}"
+        total_amt = float(po.TotalAmount or 0)
+
+        b = db.execute(text("""
+            INSERT INTO Bills
+                (BusinessID, VendorID, BillNumber, BillDate, DueDate, Status,
+                 SubTotal, TaxAmount, TotalAmount, BalanceDue, Notes, CreatedBy)
+            OUTPUT INSERTED.BillID
+            VALUES (:bid, :vid, :num, CAST(GETDATE() AS DATE),
+                    DATEADD(day,30,CAST(GETDATE() AS DATE)),
+                    'Open', :sub, 0, :total, :total, :notes, :by)
+        """), {
+            "bid": business_id, "vid": vendor_id, "num": bill_num,
+            "sub": total_amt, "total": total_amt,
+            "notes": f"[PO:{po_id}] Auto-created on PO approval — {po.PONumber}",
+            "by": created_by,
+        }).fetchone()
+        bill_id = b.BillID
+
+        for i, line in enumerate(lines):
+            db.execute(text("""
+                INSERT INTO BillLines
+                    (BillID, BusinessID, AccountID, Description, Quantity, UnitPrice, TaxAmount, LineTotal, LineOrder)
+                VALUES (:bid2, :bid, :acct, :desc, :qty, :price, 0, :lt, :order)
+            """), {
+                "bid2": bill_id, "bid": business_id, "acct": acct_id,
+                "desc": line.ItemName, "qty": float(line.Quantity),
+                "price": float(line.UnitPrice), "lt": float(line.LineTotal), "order": i,
+            })
+    except Exception as _e:
+        print(f"[po-approve-bill] {_e}")
 
 
 @router.post("/orders/{po_id}/reject")
 def reject_order(po_id: int, body: dict, db: Session = Depends(get_db)):
+    bid = body["BusinessID"]
     db.execute(text("""
         UPDATE PurchaseOrder SET Status='rejected', Notes=ISNULL(Notes,'')+' [Rejected: '+ISNULL(:reason,'')+']', UpdatedAt=GETDATE()
         WHERE POID=:pid AND BusinessID=:bid
-    """), {"reason": body.get("Reason"), "pid": po_id, "bid": body["BusinessID"]})
+    """), {"reason": body.get("Reason"), "pid": po_id, "bid": bid})
     db.commit()
+    try:
+        from routers.notifications import notify_business
+        po = db.execute(text("SELECT PONumber, SupplierName FROM PurchaseOrder WHERE POID=:pid"), {"pid": po_id}).fetchone()
+        if po:
+            notify_business(
+                db, bid, type="po_rejected",
+                title=f"PO rejected: {po.PONumber}",
+                body=f"{po.SupplierName} PO was rejected. Reason: {body.get('Reason','N/A')}",
+                link_path=f"/procurement?BusinessID={bid}",
+                entity_type="PurchaseOrder", entity_id=po_id,
+            )
+    except Exception:
+        pass
     return {"ok": True}
 
 

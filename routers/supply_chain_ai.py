@@ -107,35 +107,37 @@ def _ser(row) -> dict:
 
 def _dashboard_kpis(db: Session, business_id: int) -> Dict[str, Any]:
     try:
+        from routers.esci import _ensure_tables as _ensure_esci
+        _ensure_esci(db)
+    except Exception:
+        pass
+    try:
         suppliers = db.execute(text(
-            "SELECT COUNT(1) AS n FROM ESCI_SupplierProfile WHERE BusinessID=:bid AND IsActive=1"
-        ), {"bid": business_id}).fetchone()
-        contracts = db.execute(text(
-            "SELECT COUNT(1) AS n FROM ESCI_Contract WHERE BusinessID=:bid AND Status='active'"
+            "SELECT COUNT(1) AS n FROM ESCISupplier WHERE BusinessID=:bid AND IsActive=1"
         ), {"bid": business_id}).fetchone()
         in_transit = db.execute(text(
-            "SELECT COUNT(1) AS n FROM ESCI_Shipment WHERE BusinessID=:bid AND Status='in_transit'"
+            "SELECT COUNT(1) AS n FROM ESCIShipment WHERE BusinessID=:bid AND Status='in_transit'"
         ), {"bid": business_id}).fetchone()
         open_exc = db.execute(text(
             "SELECT COUNT(1) AS total, "
             "SUM(CASE WHEN Severity='critical' THEN 1 ELSE 0 END) AS critical "
-            "FROM ESCI_Exception WHERE BusinessID=:bid AND Status='open'"
+            "FROM ESCIException WHERE BusinessID=:bid AND Status NOT IN ('resolved')"
         ), {"bid": business_id}).fetchone()
         quality = db.execute(text("""
             SELECT COUNT(1) AS total,
                    SUM(CASE WHEN PassFail='pass' THEN 1 ELSE 0 END) AS passed
-              FROM ESCI_QualityTest
-             WHERE BusinessID=:bid AND TestedAt >= DATEADD(day,-30,GETDATE())
+              FROM ESCIQualityTest
+             WHERE BusinessID=:bid AND CreatedAt >= DATEADD(day,-30,GETDATE())
         """), {"bid": business_id}).fetchone()
         margin = db.execute(text("""
-            SELECT AVG(CAST(MarginPct AS FLOAT)) AS avg_margin_pct
-              FROM ESCI_MarginRecord
-             WHERE BusinessID=:bid AND PeriodStart >= DATEADD(day,-90,GETDATE())
+            SELECT AVG(CAST(MarginPercent AS FLOAT)) AS avg_margin_pct
+              FROM ESCIMarginRecord
+             WHERE BusinessID=:bid AND PurchaseDate >= DATEADD(day,-90,CAST(GETDATE() AS DATE))
         """), {"bid": business_id}).fetchone()
         overdue = db.execute(text("""
-            SELECT COUNT(1) AS n FROM ESCI_Shipment
+            SELECT COUNT(1) AS n FROM ESCIShipment
              WHERE BusinessID=:bid AND Status IN ('pending','in_transit')
-               AND ExpectedDate < CAST(GETDATE() AS DATE)
+               AND ExpectedArrival < CAST(GETDATE() AS DATE)
         """), {"bid": business_id}).fetchone()
 
         qt = int(quality.total) if quality else 0
@@ -143,7 +145,6 @@ def _dashboard_kpis(db: Session, business_id: int) -> Dict[str, Any]:
 
         return {
             "suppliers_active":      int(suppliers.n) if suppliers else 0,
-            "contracts_active":      int(contracts.n) if contracts else 0,
             "shipments_in_transit":  int(in_transit.n) if in_transit else 0,
             "exceptions_open":       int(open_exc.total) if open_exc else 0,
             "exceptions_critical":   int(open_exc.critical) if open_exc else 0,
@@ -161,21 +162,23 @@ def _list_exceptions(db: Session, business_id: int, status: Optional[str] = "ope
     try:
         where = ["e.BusinessID = :bid"]
         params: Dict[str, Any] = {"bid": business_id}
-        if status:
+        if status == "open":
+            where.append("e.Status NOT IN ('resolved')")
+        elif status:
             where.append("e.Status = :st"); params["st"] = status
         if severity:
             where.append("e.Severity = :sev"); params["sev"] = severity
         rows = db.execute(text(f"""
             SELECT TOP 20
-                   e.ExceptionID, e.ExceptionType, e.Severity, e.Status,
-                   e.Title, e.Detail, e.DetectedAt, e.AssignedTo,
-                   sp.SupplierName, s.ProductName AS ShipmentProduct
-              FROM ESCI_Exception e
-              LEFT JOIN ESCI_SupplierProfile sp ON sp.SupplierID = e.SupplierID
-              LEFT JOIN ESCI_Shipment s ON s.ShipmentID = e.ShipmentID
+                   e.ExceptionID, e.Category AS ExceptionType, e.Severity, e.Status,
+                   e.Title, e.Description AS Detail, e.CreatedAt AS DetectedAt, e.AssignedTo,
+                   sup.SupplierName, s.Commodity AS ShipmentProduct
+              FROM ESCIException e
+              LEFT JOIN ESCISupplier sup ON sup.SupplierID = e.SupplierID
+              LEFT JOIN ESCIShipment s ON s.ShipmentID = e.ShipmentID
              WHERE {' AND '.join(where)}
              ORDER BY CASE e.Severity WHEN 'critical' THEN 1 WHEN 'high' THEN 2
-                      WHEN 'medium' THEN 3 ELSE 4 END, e.DetectedAt DESC
+                      WHEN 'medium' THEN 3 ELSE 4 END, e.CreatedAt DESC
         """), params).fetchall()
         return {"exceptions": [_ser(r) for r in rows], "count": len(rows)}
     except Exception as e:
@@ -192,15 +195,14 @@ def _shipment_status(db: Session, business_id: int, status: Optional[str] = None
             where.append("s.Status = :st"); params["st"] = status
         rows = db.execute(text(f"""
             SELECT TOP 25
-                   s.ShipmentID, s.ShipmentRef, s.ProductName, s.Status,
-                   s.OrderedQty, s.ReceivedQty, s.Unit,
-                   s.ExpectedDate, s.ReceivedDate,
-                   s.OriginLocation, s.DestLocation,
-                   sp.SupplierName
-              FROM ESCI_Shipment s
-              LEFT JOIN ESCI_SupplierProfile sp ON sp.SupplierID = s.SupplierID
+                   s.ShipmentID, s.ShipmentRef, s.Commodity, s.Status,
+                   s.QuantityKg, s.ExpectedArrival, s.ActualArrival,
+                   s.Origin, s.Destination,
+                   sup.SupplierName
+              FROM ESCIShipment s
+              LEFT JOIN ESCISupplier sup ON sup.SupplierID = s.SupplierID
              WHERE {' AND '.join(where)}
-             ORDER BY s.ExpectedDate ASC
+             ORDER BY s.ExpectedArrival ASC
         """), params).fetchall()
         return {"shipments": [_ser(r) for r in rows], "count": len(rows), "days": days}
     except Exception as e:
@@ -212,25 +214,26 @@ def _quality_summary(db: Session, business_id: int, days: int = 30) -> Dict[str,
         overall = db.execute(text("""
             SELECT COUNT(1) AS total,
                    SUM(CASE WHEN PassFail='pass' THEN 1 ELSE 0 END) AS passed,
-                   AVG(CAST(DefectPct AS FLOAT)) AS avg_defect_pct
-              FROM ESCI_QualityTest
-             WHERE BusinessID=:bid AND TestedAt >= DATEADD(day,-:d,GETDATE())
+                   AVG(CAST(ImpuritiesPercent AS FLOAT)) AS avg_defect_pct
+              FROM ESCIQualityTest
+             WHERE BusinessID=:bid AND CreatedAt >= DATEADD(day,-:d,GETDATE())
         """), {"bid": business_id, "d": days}).fetchone()
         by_grade = db.execute(text("""
-            SELECT Grade, COUNT(1) AS n FROM ESCI_QualityTest
-             WHERE BusinessID=:bid AND TestedAt >= DATEADD(day,-:d,GETDATE())
+            SELECT Grade, COUNT(1) AS n FROM ESCIQualityTest
+             WHERE BusinessID=:bid AND CreatedAt >= DATEADD(day,-:d,GETDATE())
                AND Grade IS NOT NULL
              GROUP BY Grade ORDER BY Grade
         """), {"bid": business_id, "d": days}).fetchall()
         recent_fails = db.execute(text("""
-            SELECT TOP 5 qt.TestID, qt.PassFail, qt.Grade, qt.DefectPct, qt.TestedAt,
-                   s.ProductName, sp.SupplierName
-              FROM ESCI_QualityTest qt
-              LEFT JOIN ESCI_Shipment s ON s.ShipmentID = qt.ShipmentID
-              LEFT JOIN ESCI_SupplierProfile sp ON sp.SupplierID = s.SupplierID
+            SELECT TOP 5 qt.TestID, qt.PassFail, qt.Grade,
+                   qt.ImpuritiesPercent AS DefectPct, qt.CreatedAt AS TestedAt,
+                   s.Commodity AS ProductName, sup.SupplierName
+              FROM ESCIQualityTest qt
+              LEFT JOIN ESCIShipment s ON s.ShipmentID = qt.ShipmentID
+              LEFT JOIN ESCISupplier sup ON sup.SupplierID = qt.SupplierID
              WHERE qt.BusinessID=:bid AND qt.PassFail='fail'
-               AND qt.TestedAt >= DATEADD(day,-:d,GETDATE())
-             ORDER BY qt.TestedAt DESC
+               AND qt.CreatedAt >= DATEADD(day,-:d,GETDATE())
+             ORDER BY qt.CreatedAt DESC
         """), {"bid": business_id, "d": days}).fetchall()
         total = int(overall.total) if overall else 0
         pass_rate = round(int(overall.passed)/total*100,1) if total > 0 else None
@@ -249,32 +252,32 @@ def _quality_summary(db: Session, business_id: int, days: int = 30) -> Dict[str,
 def _margin_analysis(db: Session, business_id: int, days: int = 90) -> Dict[str, Any]:
     try:
         overall = db.execute(text("""
-            SELECT AVG(CAST(MarginPct AS FLOAT)) AS avg_pct,
-                   MIN(CAST(MarginPct AS FLOAT)) AS min_pct,
-                   MAX(CAST(MarginPct AS FLOAT)) AS max_pct,
+            SELECT AVG(CAST(MarginPercent AS FLOAT)) AS avg_pct,
+                   MIN(CAST(MarginPercent AS FLOAT)) AS min_pct,
+                   MAX(CAST(MarginPercent AS FLOAT)) AS max_pct,
                    COUNT(1) AS records
-              FROM ESCI_MarginRecord
-             WHERE BusinessID=:bid AND PeriodStart >= DATEADD(day,-:d,GETDATE())
+              FROM ESCIMarginRecord
+             WHERE BusinessID=:bid AND PurchaseDate >= DATEADD(day,-:d,CAST(GETDATE() AS DATE))
         """), {"bid": business_id, "d": days}).fetchone()
         by_cat = db.execute(text("""
-            SELECT ProductCategory, AVG(CAST(MarginPct AS FLOAT)) AS avg_pct,
+            SELECT Category AS ProductCategory, AVG(CAST(MarginPercent AS FLOAT)) AS avg_pct,
                    COUNT(1) AS records
-              FROM ESCI_MarginRecord
-             WHERE BusinessID=:bid AND PeriodStart >= DATEADD(day,-:d,GETDATE())
-               AND ProductCategory IS NOT NULL
-             GROUP BY ProductCategory
+              FROM ESCIMarginRecord
+             WHERE BusinessID=:bid AND PurchaseDate >= DATEADD(day,-:d,CAST(GETDATE() AS DATE))
+               AND Category IS NOT NULL
+             GROUP BY Category
              ORDER BY avg_pct ASC
         """), {"bid": business_id, "d": days}).fetchall()
         low_margin = db.execute(text("""
-            SELECT TOP 5 ProductName, ProductCategory,
-                   CAST(MarginPct AS FLOAT) AS MarginPct,
-                   CAST(LandedCostUnit AS FLOAT) AS LandedCostUnit,
-                   CAST(SalePriceUnit AS FLOAT) AS SalePriceUnit,
-                   PeriodStart
-              FROM ESCI_MarginRecord
-             WHERE BusinessID=:bid AND PeriodStart >= DATEADD(day,-:d,GETDATE())
-               AND MarginPct < 15
-             ORDER BY MarginPct ASC
+            SELECT TOP 5 Commodity AS ProductName, Category AS ProductCategory,
+                   CAST(MarginPercent AS FLOAT) AS MarginPct,
+                   CAST(CostPerKg AS FLOAT) AS LandedCostUnit,
+                   CAST(SalesPricePerKg AS FLOAT) AS SalePriceUnit,
+                   PurchaseDate AS PeriodStart
+              FROM ESCIMarginRecord
+             WHERE BusinessID=:bid AND PurchaseDate >= DATEADD(day,-:d,CAST(GETDATE() AS DATE))
+               AND MarginPercent < 15
+             ORDER BY MarginPercent ASC
         """), {"bid": business_id, "d": days}).fetchall()
         return {
             "period_days":   days,
@@ -294,16 +297,16 @@ def _demand_supply_gap(db: Session, business_id: int, weeks_ahead: int = 4) -> D
         today = datetime.date.today()
         future = today + datetime.timedelta(weeks=weeks_ahead)
         demand = db.execute(text("""
-            SELECT ProductName, SUM(ForecastQty) AS forecast_demand, Unit
-              FROM ESCI_DemandForecast
-             WHERE BusinessID=:bid AND PeriodStart BETWEEN :s AND :e
-             GROUP BY ProductName, Unit
+            SELECT Commodity AS ProductName, SUM(DemandKg) AS forecast_demand
+              FROM ESCIDemandForecast
+             WHERE BusinessID=:bid AND ForecastDate BETWEEN :s AND :e
+             GROUP BY Commodity
         """), {"bid": business_id, "s": today.isoformat(), "e": future.isoformat()}).fetchall()
         supply = db.execute(text("""
-            SELECT ProductName, SUM(ForecastQty) AS forecast_supply, Unit
-              FROM ESCI_YieldForecast
-             WHERE BusinessID=:bid AND HarvestStart BETWEEN :s AND :e
-             GROUP BY ProductName, Unit
+            SELECT Commodity AS ProductName, SUM(ExpectedYieldKg) AS forecast_supply
+              FROM ESCIYieldForecast
+             WHERE BusinessID=:bid AND ForecastDate BETWEEN :s AND :e
+             GROUP BY Commodity
         """), {"bid": business_id, "s": today.isoformat(), "e": future.isoformat()}).fetchall()
         supply_map = {r.ProductName.lower(): float(r.forecast_supply) for r in supply}
         gaps = []
@@ -312,7 +315,7 @@ def _demand_supply_gap(db: Session, business_id: int, weeks_ahead: int = 4) -> D
             gap = float(d.forecast_demand) - sup
             gaps.append({
                 "product": d.ProductName,
-                "unit": d.Unit,
+                "unit": "kg",
                 "demand": float(d.forecast_demand),
                 "supply": sup,
                 "gap": gap,
@@ -336,8 +339,8 @@ def _market_price_benchmark(db: Session, business_id: int,
         if commodity:
             where += " AND Commodity LIKE :com"; params["com"] = f"%{commodity}%"
         rows = db.execute(text(f"""
-            SELECT TOP 20 Commodity, PriceDate, PricePerUnit, Unit, Market, Source
-              FROM ESCI_MarketPrice {where}
+            SELECT TOP 20 Commodity, PriceDate, PricePerKg AS PricePerUnit, Source AS Market, Region
+              FROM ESCIMarketPrice {where}
              ORDER BY PriceDate DESC
         """), params).fetchall()
         return {"market_prices": [_ser(r) for r in rows], "count": len(rows)}
@@ -353,22 +356,20 @@ def _supplier_scorecard(db: Session, business_id: int,
         if supplier_id:
             where += " AND sp.SupplierID=:sid"; params["sid"] = supplier_id
         rows = db.execute(text(f"""
-            SELECT sp.SupplierID, sp.SupplierName, sp.Country, sp.Region,
-                   sp.CertifiedOrganic, sp.CertifiedGAP, sp.GlobalGAP,
+            SELECT sp.SupplierID, sp.SupplierName, sp.Country, sp.Category,
                    COUNT(DISTINCT s.ShipmentID) AS total_shipments,
-                   SUM(CASE WHEN s.Status='received' THEN 1 ELSE 0 END) AS received,
-                   SUM(CASE WHEN s.Status='rejected' THEN 1 ELSE 0 END) AS rejected,
-                   AVG(CASE WHEN s.ReceivedDate IS NOT NULL AND s.ExpectedDate IS NOT NULL
-                            THEN CAST(DATEDIFF(day, s.ExpectedDate, s.ReceivedDate) AS FLOAT)
+                   SUM(CASE WHEN s.Status='delivered' THEN 1 ELSE 0 END) AS received,
+                   SUM(CASE WHEN s.Status='cancelled' THEN 1 ELSE 0 END) AS rejected,
+                   AVG(CASE WHEN s.ActualArrival IS NOT NULL AND s.ExpectedArrival IS NOT NULL
+                            THEN CAST(DATEDIFF(day, s.ExpectedArrival, s.ActualArrival) AS FLOAT)
                             ELSE NULL END) AS avg_delay_days,
                    COUNT(DISTINCT qt.TestID) AS quality_tests,
                    SUM(CASE WHEN qt.PassFail='fail' THEN 1 ELSE 0 END) AS quality_fails
-              FROM ESCI_SupplierProfile sp
-              LEFT JOIN ESCI_Shipment s ON s.SupplierID=sp.SupplierID AND s.BusinessID=sp.BusinessID
-              LEFT JOIN ESCI_QualityTest qt ON qt.ShipmentID=s.ShipmentID
+              FROM ESCISupplier sp
+              LEFT JOIN ESCIShipment s ON s.SupplierID=sp.SupplierID AND s.BusinessID=sp.BusinessID
+              LEFT JOIN ESCIQualityTest qt ON qt.SupplierID=sp.SupplierID
              {where}
-             GROUP BY sp.SupplierID, sp.SupplierName, sp.Country, sp.Region,
-                      sp.CertifiedOrganic, sp.CertifiedGAP, sp.GlobalGAP
+             GROUP BY sp.SupplierID, sp.SupplierName, sp.Country, sp.Category
              ORDER BY sp.SupplierName
         """), params).fetchall()
         return {"suppliers": [_ser(r) for r in rows], "count": len(rows)}
@@ -380,12 +381,12 @@ def _supplier_scorecard(db: Session, business_id: int,
 
 def _update_shipment_status(db: Session, business_id: int, shipment_id: int,
                              new_status: str, notes: Optional[str] = None) -> Dict[str, Any]:
-    valid = {"pending", "in_transit", "received", "rejected", "cancelled"}
+    valid = {"pending", "in_transit", "delivered", "delayed", "cancelled"}
     if new_status not in valid:
         return {"error": f"Invalid status '{new_status}'. Must be one of: {', '.join(sorted(valid))}."}
     try:
         row = db.execute(text(
-            "SELECT ShipmentID, Status, ProductName FROM ESCI_Shipment "
+            "SELECT ShipmentID, Status, Commodity FROM ESCIShipment "
             "WHERE ShipmentID=:sid AND BusinessID=:bid"
         ), {"sid": shipment_id, "bid": business_id}).fetchone()
         if not row:
@@ -393,23 +394,23 @@ def _update_shipment_status(db: Session, business_id: int, shipment_id: int,
         old_status = row.Status
         extra_set = ""
         extra_params: Dict[str, Any] = {}
-        if new_status in ("received", "rejected"):
-            extra_set = ", ReceivedDate=CAST(GETDATE() AS DATE)"
+        if new_status == "delivered":
+            extra_set = ", ActualArrival=CAST(GETDATE() AS DATE)"
         if notes:
             extra_set += ", Notes=:notes"
             extra_params["notes"] = notes[:500]
         db.execute(text(
-            f"UPDATE ESCI_Shipment SET Status=:st, UpdatedAt=GETDATE(){extra_set} "
+            f"UPDATE ESCIShipment SET Status=:st, UpdatedAt=GETDATE(){extra_set} "
             "WHERE ShipmentID=:sid AND BusinessID=:bid"
         ), {"st": new_status, "sid": shipment_id, "bid": business_id, **extra_params})
         db.commit()
         return {
             "ok": True,
             "shipment_id": shipment_id,
-            "product": row.ProductName,
+            "product": row.Commodity,
             "old_status": old_status,
             "new_status": new_status,
-            "message": f"Shipment {shipment_id} ({row.ProductName}) status updated: {old_status} → {new_status}.",
+            "message": f"Shipment {shipment_id} ({row.Commodity}) status updated: {old_status} → {new_status}.",
         }
     except Exception as e:
         return {"error": f"Failed to update shipment: {e}"}
@@ -428,17 +429,17 @@ def _create_exception_tool(db: Session, business_id: int, exception_type: str,
         return {"error": f"Invalid severity '{severity}'. Must be one of: {', '.join(sorted(valid_sev))}."}
     try:
         db.execute(text("""
-            INSERT INTO ESCI_Exception
-                (BusinessID, ShipmentID, SupplierID, ExceptionType, Severity,
-                 Status, Title, Detail, DetectedAt)
-            VALUES (:bid, :sid, :spid, :etype, :sev, 'open', :title, :detail, GETDATE())
+            INSERT INTO ESCIException
+                (BusinessID, ShipmentID, SupplierID, Category, Severity,
+                 Status, Title, Description)
+            VALUES (:bid, :sid, :spid, :etype, :sev, 'open', :title, :detail)
         """), {
             "bid": business_id, "sid": shipment_id, "spid": supplier_id,
             "etype": exception_type, "sev": severity,
             "title": title[:200], "detail": detail[:1000],
         })
         db.commit()
-        exc_id = db.execute(text("SELECT MAX(ExceptionID) AS id FROM ESCI_Exception WHERE BusinessID=:bid"),
+        exc_id = db.execute(text("SELECT MAX(ExceptionID) AS id FROM ESCIException WHERE BusinessID=:bid"),
                             {"bid": business_id}).scalar()
         return {
             "ok": True,
@@ -453,7 +454,7 @@ def _resolve_exception_tool(db: Session, business_id: int, exception_id: int,
                              resolution_notes: str) -> Dict[str, Any]:
     try:
         row = db.execute(text(
-            "SELECT ExceptionID, Status, Title FROM ESCI_Exception "
+            "SELECT ExceptionID, Status, Title FROM ESCIException "
             "WHERE ExceptionID=:eid AND BusinessID=:bid"
         ), {"eid": exception_id, "bid": business_id}).fetchone()
         if not row:
@@ -461,9 +462,9 @@ def _resolve_exception_tool(db: Session, business_id: int, exception_id: int,
         if row.Status == "resolved":
             return {"error": f"Exception {exception_id} is already resolved."}
         db.execute(text("""
-            UPDATE ESCI_Exception
-               SET Status='resolved', ResolvedAt=GETDATE(),
-                   ResolutionNotes=:notes, UpdatedAt=GETDATE()
+            UPDATE ESCIException
+               SET Status='resolved', ResolvedAt=GETDATE(), UpdatedAt=GETDATE(),
+                   Description = ISNULL(Description,'') + CHAR(10) + '[Resolution: ' + :notes + ']'
              WHERE ExceptionID=:eid AND BusinessID=:bid
         """), {"notes": resolution_notes[:1000], "eid": exception_id, "bid": business_id})
         db.commit()
@@ -481,13 +482,13 @@ def _assign_exception_tool(db: Session, business_id: int, exception_id: int,
                             assigned_to: str) -> Dict[str, Any]:
     try:
         row = db.execute(text(
-            "SELECT ExceptionID, Title, AssignedTo FROM ESCI_Exception "
+            "SELECT ExceptionID, Title, AssignedTo FROM ESCIException "
             "WHERE ExceptionID=:eid AND BusinessID=:bid"
         ), {"eid": exception_id, "bid": business_id}).fetchone()
         if not row:
             return {"error": f"Exception {exception_id} not found for this business."}
         db.execute(text(
-            "UPDATE ESCI_Exception SET AssignedTo=:at, UpdatedAt=GETDATE() "
+            "UPDATE ESCIException SET AssignedTo=:at, UpdatedAt=GETDATE() "
             "WHERE ExceptionID=:eid AND BusinessID=:bid"
         ), {"at": assigned_to[:100], "eid": exception_id, "bid": business_id})
         db.commit()
@@ -510,7 +511,7 @@ def _update_exception_severity(db: Session, business_id: int, exception_id: int,
         return {"error": f"Invalid severity '{new_severity}'. Must be one of: {', '.join(sorted(valid))}."}
     try:
         row = db.execute(text(
-            "SELECT ExceptionID, Severity, Title FROM ESCI_Exception "
+            "SELECT ExceptionID, Severity, Title FROM ESCIException "
             "WHERE ExceptionID=:eid AND BusinessID=:bid"
         ), {"eid": exception_id, "bid": business_id}).fetchone()
         if not row:
@@ -518,9 +519,9 @@ def _update_exception_severity(db: Session, business_id: int, exception_id: int,
         old_sev = row.Severity
         notes_append = f"\n[Severity changed {old_sev}→{new_severity}: {reason}]" if reason else f"\n[Severity changed {old_sev}→{new_severity}]"
         db.execute(text("""
-            UPDATE ESCI_Exception
+            UPDATE ESCIException
                SET Severity=:sev, UpdatedAt=GETDATE(),
-                   Detail = ISNULL(Detail,'') + :note
+                   Description = ISNULL(Description,'') + :note
              WHERE ExceptionID=:eid AND BusinessID=:bid
         """), {"sev": new_severity, "note": notes_append[:500],
                "eid": exception_id, "bid": business_id})
@@ -611,10 +612,10 @@ def _build_tool_registry(business_id: Optional[int], db: Session) -> Dict[str, D
 
     # ── Write tools ──────────────────────────────────────────────────────────
     registry["update_shipment_status"] = {
-        "desc": "Update the status of a shipment (pending → in_transit → received / rejected / cancelled). Use when the user says 'mark shipment X as received', 'update shipment status', 'shipment arrived', 'reject shipment'. Requires ShipmentID (integer).",
+        "desc": "Update the status of a shipment (pending → in_transit → delivered / delayed / cancelled). Use when the user says 'mark shipment X as delivered', 'update shipment status', 'shipment arrived', 'flag shipment as delayed'. Requires ShipmentID (integer).",
         "params": {
             "shipment_id": {"type_": "INTEGER", "description": "The ShipmentID to update (required)."},
-            "new_status":  {"type_": "STRING",  "description": "New status: pending, in_transit, received, rejected, or cancelled."},
+            "new_status":  {"type_": "STRING",  "description": "New status: pending, in_transit, delivered, delayed, or cancelled."},
             "notes":       {"type_": "STRING",  "description": "Optional notes to append to the shipment record."},
         },
         "run": lambda shipment_id, new_status, notes=None, **_: _update_shipment_status(

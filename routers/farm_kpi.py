@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db
 from typing import Optional
 from datetime import datetime, date
 from routers.notifications import notify_business
+import csv, io
 
 router = APIRouter(prefix="/api/farm-kpi", tags=["farm_kpi"])
 
@@ -685,4 +686,189 @@ def _pest_row(r) -> dict:
         "work_order_id":    r.WorkOrderID,
         "status":           r.Status,
         "created_at":       r.CreatedAt.isoformat() if r.CreatedAt else None,
+    }
+
+
+# ── Farm P&L Report ───────────────────────────────────────────────────────────
+
+@router.get("/pnl")
+def farm_pnl_report(
+    business_id: int = Query(...),
+    crop_year: Optional[int] = None,
+    crop_name: Optional[str] = None,
+    field_id: Optional[int] = None,
+    fmt: Optional[str] = Query(None, alias="format"),
+    db: Session = Depends(get_db),
+):
+    """
+    Per-crop P&L combining CropBudget (planned vs actual), FarmInputTransaction usage costs,
+    and WorkOrder actual costs keyed by FieldID.
+    """
+    _ensure_tables(db)
+
+    year_filter = crop_year or date.today().year
+
+    # ── Base: one row per CropBudget ─────────────────────────────────────────
+    q_params: dict = {"bid": business_id, "yr": year_filter}
+    budget_sql = """
+        SELECT
+            b.BudgetID, b.FieldID, ISNULL(b.FieldName,'') AS FieldName,
+            b.CropName, b.CropYear, b.Season,
+            ISNULL(b.PlantedAcres,0)    AS PlantedAcres,
+            ISNULL(b.ExpectedYield,0)   AS ExpectedYield,
+            ISNULL(b.ActualYield,0)     AS ActualYield,
+            ISNULL(b.YieldUnit,'')      AS YieldUnit,
+            ISNULL(b.BudgetedRevenue,0) AS BudgetedRevenue,
+            ISNULL(b.ActualRevenue,0)   AS ActualRevenue,
+            ISNULL(b.BudgetedCost,0)    AS BudgetedCost,
+            ISNULL(b.ActualCost,0)      AS BudgetActualCost,
+            b.Status
+        FROM CropBudget b
+        WHERE b.BusinessID=:bid AND b.CropYear=:yr
+    """
+    if crop_name:
+        budget_sql += " AND b.CropName=:cn"; q_params["cn"] = crop_name
+    if field_id:
+        budget_sql += " AND b.FieldID=:fid"; q_params["fid"] = field_id
+    budget_sql += " ORDER BY b.CropName, b.FieldName"
+
+    budgets = db.execute(text(budget_sql), q_params).fetchall()
+
+    # ── Input usage costs by crop_name + field_id ────────────────────────────
+    input_costs = db.execute(text("""
+        SELECT
+            CropName,
+            FieldID,
+            ISNULL(SUM(TotalCost),0) AS InputCost
+        FROM FarmInputTransaction
+        WHERE BusinessID=:bid
+          AND TxType='usage'
+          AND YEAR(CreatedAt)=:yr
+        GROUP BY CropName, FieldID
+    """), {"bid": business_id, "yr": year_filter}).fetchall()
+
+    input_cost_map: dict = {}
+    for ic in input_costs:
+        key = (ic.CropName or "", ic.FieldID)
+        input_cost_map[key] = float(ic.InputCost or 0)
+
+    # ── Work order actual costs by field_id ──────────────────────────────────
+    wo_costs = db.execute(text("""
+        SELECT
+            FieldID,
+            ISNULL(SUM(ActualCost),0) AS WOCost
+        FROM WorkOrder
+        WHERE BusinessID=:bid
+          AND YEAR(CreatedAt)=:yr
+          AND ActualCost IS NOT NULL
+        GROUP BY FieldID
+    """), {"bid": business_id, "yr": year_filter}).fetchall()
+
+    wo_cost_map: dict = {(wc.FieldID): float(wc.WOCost or 0) for wc in wo_costs}
+
+    # ── Harvest lots by crop_name + field_id ─────────────────────────────────
+    harvest_rows = db.execute(text("""
+        SELECT
+            CropName, FieldID,
+            ISNULL(SUM(Quantity),0) AS HarvestQty,
+            MAX(Unit) AS Unit
+        FROM HarvestLot
+        WHERE BusinessID=:bid AND YEAR(HarvestDate)=:yr
+        GROUP BY CropName, FieldID
+    """), {"bid": business_id, "yr": year_filter}).fetchall()
+
+    harvest_map: dict = {}
+    for hr in harvest_rows:
+        key = (hr.CropName or "", hr.FieldID)
+        harvest_map[key] = {"qty": float(hr.HarvestQty or 0), "unit": hr.Unit or ""}
+
+    # ── Assemble rows ─────────────────────────────────────────────────────────
+    rows = []
+    for b in budgets:
+        key_exact = (b.CropName, b.FieldID)
+        key_crop  = (b.CropName, None)
+
+        # Prefer exact field match; fall back to crop-only
+        inp_cost = input_cost_map.get(key_exact, 0) or input_cost_map.get(key_crop, 0)
+        wo_cost  = wo_cost_map.get(b.FieldID, 0)
+        harvest  = harvest_map.get(key_exact) or harvest_map.get(key_crop) or {}
+
+        total_actual_cost   = float(b.BudgetActualCost) + inp_cost + wo_cost
+        budgeted_profit     = float(b.BudgetedRevenue) - float(b.BudgetedCost)
+        actual_profit       = float(b.ActualRevenue)   - total_actual_cost
+        profit_variance     = actual_profit - budgeted_profit
+
+        rows.append({
+            "budget_id":         b.BudgetID,
+            "crop_name":         b.CropName,
+            "field_name":        b.FieldName,
+            "field_id":          b.FieldID,
+            "crop_year":         b.CropYear,
+            "season":            b.Season,
+            "planted_acres":     float(b.PlantedAcres),
+            "expected_yield":    float(b.ExpectedYield),
+            "actual_yield":      float(b.ActualYield) or harvest.get("qty", 0),
+            "yield_unit":        b.YieldUnit or harvest.get("unit", ""),
+            "budgeted_revenue":  float(b.BudgetedRevenue),
+            "actual_revenue":    float(b.ActualRevenue),
+            "budgeted_cost":     float(b.BudgetedCost),
+            "budget_actual_cost":float(b.BudgetActualCost),
+            "input_usage_cost":  inp_cost,
+            "work_order_cost":   wo_cost,
+            "total_actual_cost": total_actual_cost,
+            "budgeted_profit":   budgeted_profit,
+            "actual_profit":     actual_profit,
+            "profit_variance":   profit_variance,
+            "status":            b.Status,
+        })
+
+    # ── Totals ────────────────────────────────────────────────────────────────
+    def _sum(field): return round(sum(r[field] for r in rows), 2)
+    totals = {
+        "budgeted_revenue":  _sum("budgeted_revenue"),
+        "actual_revenue":    _sum("actual_revenue"),
+        "budgeted_cost":     _sum("budgeted_cost"),
+        "total_actual_cost": _sum("total_actual_cost"),
+        "budgeted_profit":   _sum("budgeted_profit"),
+        "actual_profit":     _sum("actual_profit"),
+        "profit_variance":   _sum("profit_variance"),
+    }
+
+    # ── CSV export ────────────────────────────────────────────────────────────
+    if fmt == "csv":
+        out = io.StringIO()
+        fields = [
+            "crop_name","field_name","season","planted_acres",
+            "expected_yield","actual_yield","yield_unit",
+            "budgeted_revenue","actual_revenue",
+            "budgeted_cost","total_actual_cost",
+            "budgeted_profit","actual_profit","profit_variance","status",
+        ]
+        writer = csv.DictWriter(out, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+        # Totals row
+        writer.writerow({
+            "crop_name": "TOTAL", "field_name": "", "season": "", "planted_acres": "",
+            "expected_yield": "", "actual_yield": "", "yield_unit": "",
+            "budgeted_revenue": totals["budgeted_revenue"],
+            "actual_revenue":   totals["actual_revenue"],
+            "budgeted_cost":    totals["budgeted_cost"],
+            "total_actual_cost":totals["total_actual_cost"],
+            "budgeted_profit":  totals["budgeted_profit"],
+            "actual_profit":    totals["actual_profit"],
+            "profit_variance":  totals["profit_variance"],
+            "status": "",
+        })
+        return Response(
+            content=out.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=farm_pnl_{year_filter}.csv"},
+        )
+
+    return {
+        "report_date": date.today().isoformat(),
+        "crop_year":   year_filter,
+        "rows":        rows,
+        "totals":      totals,
     }

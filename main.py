@@ -116,6 +116,8 @@ from routers import work_orders
 from routers import packhouse_qc
 from routers import plant_tagging
 from routers import export_compliance
+from routers import supplier_scorecard
+from routers import esci
 from routers import rbac
 
 load_dotenv()
@@ -557,6 +559,8 @@ app.include_router(work_orders.router)
 app.include_router(packhouse_qc.router)
 app.include_router(plant_tagging.router)
 app.include_router(export_compliance.router)
+app.include_router(supplier_scorecard.router)
+app.include_router(esci.router)
 app.include_router(rbac.router)
 app.include_router(rbac.AUDIT_ROUTER)
 
