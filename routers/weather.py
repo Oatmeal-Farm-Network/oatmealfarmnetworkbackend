@@ -1,7 +1,76 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends, Query
+from sqlalchemy.orm import Session
+from sqlalchemy import text
+from typing import Optional
 import requests
+from database import get_db
 
 router = APIRouter(prefix="/api", tags=["weather"])
+
+
+def _ensure_location_table(db: Session):
+    db.execute(text("""
+        IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'BusinessLocation')
+        CREATE TABLE BusinessLocation (
+            LocationID   INT IDENTITY(1,1) PRIMARY KEY,
+            BusinessID   INT NOT NULL,
+            Latitude     DECIMAL(9,6) NOT NULL,
+            Longitude    DECIMAL(9,6) NOT NULL,
+            LocationName NVARCHAR(200),
+            Timezone     NVARCHAR(100) DEFAULT 'auto',
+            UpdatedAt    DATETIME2 DEFAULT GETDATE()
+        )
+    """))
+    db.commit()
+
+
+@router.get("/weather/location")
+def get_weather_location(business_id: int = Query(...), db: Session = Depends(get_db)):
+    _ensure_location_table(db)
+    row = db.execute(
+        text("SELECT Latitude, Longitude, LocationName, Timezone FROM BusinessLocation WHERE BusinessID = :bid"),
+        {"bid": business_id},
+    ).fetchone()
+    if not row:
+        return None
+    return {"latitude": float(row[0]), "longitude": float(row[1]),
+            "location_name": row[2], "timezone": row[3] or "auto"}
+
+
+@router.post("/weather/location")
+def save_weather_location(
+    business_id: int,
+    latitude: float,
+    longitude: float,
+    location_name: Optional[str] = None,
+    timezone: Optional[str] = "auto",
+    db: Session = Depends(get_db),
+):
+    _ensure_location_table(db)
+    existing = db.execute(
+        text("SELECT LocationID FROM BusinessLocation WHERE BusinessID = :bid"),
+        {"bid": business_id},
+    ).fetchone()
+    if existing:
+        db.execute(
+            text("""
+                UPDATE BusinessLocation
+                SET Latitude = :lat, Longitude = :lon, LocationName = :name,
+                    Timezone = :tz, UpdatedAt = GETDATE()
+                WHERE BusinessID = :bid
+            """),
+            {"lat": latitude, "lon": longitude, "name": location_name, "tz": timezone, "bid": business_id},
+        )
+    else:
+        db.execute(
+            text("""
+                INSERT INTO BusinessLocation (BusinessID, Latitude, Longitude, LocationName, Timezone)
+                VALUES (:bid, :lat, :lon, :name, :tz)
+            """),
+            {"bid": business_id, "lat": latitude, "lon": longitude, "name": location_name, "tz": timezone},
+        )
+    db.commit()
+    return {"ok": True}
 
 _WMO = {
     0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",

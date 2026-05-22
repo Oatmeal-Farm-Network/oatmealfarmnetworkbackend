@@ -127,6 +127,21 @@ from routers import scale_tickets
 from routers import harvest_bins
 from routers import ca_storage
 from routers import spray_applications
+from routers import scouting
+from routers import irrigation
+from routers import equipment_maintenance
+from routers import soil_tests
+from routers import cash_flow
+from routers import field_activity
+from routers import yield_records
+from routers import reports
+from routers import field_health
+from routers import nutrients
+from routers import farm_pl
+from routers import document_vault
+from routers import crop_planning
+from routers import seed_varieties
+from routers import farm_safety
 from routers import rbac
 
 load_dotenv()
@@ -579,6 +594,21 @@ app.include_router(scale_tickets.router)
 app.include_router(harvest_bins.router)
 app.include_router(ca_storage.router)
 app.include_router(spray_applications.router)
+app.include_router(scouting.router)
+app.include_router(irrigation.router)
+app.include_router(equipment_maintenance.router)
+app.include_router(soil_tests.router)
+app.include_router(cash_flow.router)
+app.include_router(field_activity.router)
+app.include_router(yield_records.router)
+app.include_router(reports.router)
+app.include_router(field_health.router)
+app.include_router(nutrients.router)
+app.include_router(farm_pl.router)
+app.include_router(document_vault.router)
+app.include_router(crop_planning.router)
+app.include_router(seed_varieties.router)
+app.include_router(farm_safety.router)
 app.include_router(rbac.router)
 app.include_router(rbac.AUDIT_ROUTER)
 
