@@ -90,6 +90,13 @@ DEFAULT_FEATURES = [
     ("crop_planning",        "Crop Planning Calendar",                0.0,  0.0, 72),
     ("seed_varieties",       "Seed & Variety Management",             0.0,  0.0, 73),
     ("farm_safety",          "Farm Safety & Incident Log",            0.0,  0.0, 74),
+    ("buyer_crm",            "Buyer & Customer CRM",                  0.0,  0.0, 75),
+    ("compliance_audit",     "Compliance & Audit Manager",            0.0,  0.0, 76),
+    ("harvest_scheduling",   "Harvest Scheduling & Labor Planner",    0.0,  0.0, 77),
+    ("price_list",           "Price List & Quote Builder",            0.0,  0.0, 78),
+    ("farm_stand",           "Farm Stand & Market POS",               0.0,  0.0, 79),
+    ("delivery_routes",      "Delivery Route Planner",                0.0,  0.0, 80),
+    ("agro_consultations",   "Agronomist Consultation Log",           0.0,  0.0, 81),
     ("business_directory",   "Business Directory",        0.0,   0.0, 98),
     ("food_system_newsfeed", "Food System Newsfeed",      0.0,   0.0, 99),
 ]
