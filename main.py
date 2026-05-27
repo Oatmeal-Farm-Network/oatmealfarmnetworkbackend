@@ -142,6 +142,13 @@ from routers import document_vault
 from routers import crop_planning
 from routers import seed_varieties
 from routers import farm_safety
+from routers import buyer_crm
+from routers import compliance_audit
+from routers import harvest_scheduling
+from routers import price_list
+from routers import farm_stand
+from routers import delivery_routes
+from routers import agro_consultations
 from routers import rbac
 
 load_dotenv()
@@ -609,6 +616,13 @@ app.include_router(document_vault.router)
 app.include_router(crop_planning.router)
 app.include_router(seed_varieties.router)
 app.include_router(farm_safety.router)
+app.include_router(buyer_crm.router)
+app.include_router(compliance_audit.router)
+app.include_router(harvest_scheduling.router)
+app.include_router(price_list.router)
+app.include_router(farm_stand.router)
+app.include_router(delivery_routes.router)
+app.include_router(agro_consultations.router)
 app.include_router(rbac.router)
 app.include_router(rbac.AUDIT_ROUTER)
 
