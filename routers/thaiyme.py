@@ -87,6 +87,85 @@ def _firestore():
     return _firestore_client
 
 
+# Default Firestore DB — agent_briefings written here by Cassia (separate from Artemis)
+_firestore_default_client = None
+
+def _firestore_default():
+    global _firestore_default_client
+    if _firestore_default_client:
+        return _firestore_default_client
+    try:
+        from google.cloud import firestore
+        if GCP_CREDS:
+            from google.oauth2 import service_account
+            creds = service_account.Credentials.from_service_account_file(
+                GCP_CREDS, scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+            _firestore_default_client = firestore.Client(
+                project=GCP_PROJECT, credentials=creds
+            )
+        else:
+            _firestore_default_client = firestore.Client(project=GCP_PROJECT)
+        logger.info("[Thaiyme] Firestore (default) connected")
+    except Exception as e:
+        logger.warning("[Thaiyme] Default Firestore unavailable: %s", e)
+    return _firestore_default_client
+
+
+def _get_onboarding_context(business_id: int) -> str:
+    """Fetch the Cassia-written onboarding briefing for this business.
+
+    Reads from two Firestore documents in the default database:
+    - agent_briefings/business_{id}   — freetext briefing (written by Cassia)
+    - org_profiles/{id}               — canonical structured profile (mirrored by Cassia)
+
+    Returns a combined plain-text context string or '' if nothing is found.
+    """
+    if not business_id:
+        return ""
+    db = _firestore_default()
+    if not db:
+        return ""
+
+    text = ""
+    structured: dict = {}
+
+    try:
+        snap = db.collection("agent_briefings").document(
+            f"business_{business_id}"
+        ).get()
+        if snap.exists:
+            text = (snap.to_dict() or {}).get("text", "")
+    except Exception as e:
+        logger.debug("[Thaiyme] agent_briefings fetch error: %s", e)
+
+    try:
+        snap2 = db.collection("org_profiles").document(str(business_id)).get()
+        if snap2.exists:
+            structured = snap2.to_dict() or {}
+    except Exception as e:
+        logger.debug("[Thaiyme] org_profiles fetch error: %s", e)
+
+    # Append structured fields not already expressed in the text briefing
+    extras: list[str] = []
+    if structured.get("plan_tier"):
+        extras.append(f"• Subscription tier: {structured['plan_tier']}")
+    if structured.get("business_type"):
+        extras.append(f"• Business type: {structured['business_type']}")
+    if structured.get("revenue_model"):
+        extras.append(f"• Revenue model: {structured['revenue_model']}")
+    if structured.get("cuisine_type"):
+        extras.append(f"• Cuisine type: {structured['cuisine_type']}")
+    if structured.get("sourcing_prefs"):
+        extras.append(f"• Sourcing preferences: {structured['sourcing_prefs']}")
+
+    if extras:
+        supplement = "\n".join(extras)
+        text = f"{text}\n{supplement}".strip() if text else supplement
+
+    return text
+
+
 # ── Redaction layer ──────────────────────────────────────────────────
 # Run on every payload built from SQL before it hits the LLM. Velarian-style:
 # the LLM never sees full SSNs, PANs, or routing numbers — and customer PII
@@ -1707,12 +1786,22 @@ def _make_proposal(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
 
 # ── System prompt ────────────────────────────────────────────────────
 
-def _system_prompt(rag: str, page_context: str, tool_names: List[str]) -> str:
+def _system_prompt(
+    rag: str,
+    page_context: str,
+    tool_names: List[str],
+    onboarding_context: str = "",
+) -> str:
     tool_help = ", ".join(tool_names) if tool_names else "(no tools available on this surface)"
+    onboarding_block = (
+        f"\nONBOARDING PROFILE (captured when this operator set up their account — "
+        f"treat these facts as already established; do not ask them to re-explain "
+        f"their crops, fields, channels, or operational challenge):\n{onboarding_context}\n"
+    ) if onboarding_context else ""
     return f"""You are {AGENT_NAME}, a calm, expert business operations advisor for the OatmealFarmNetwork directory. You help operators of any business type — farms, ranches, restaurants, fiber producers, services, event hosts — run their business well.
 
 Tone: warm, concise, and practical. Speak in plain English. Lead with the answer, then back it up with one or two specifics. Never speculate about numbers — call a tool first.
-
+{onboarding_block}
 Tool-use rules:
 - Available tools this turn: {tool_help}.
 - When the user asks anything quantitative or specific to their books / event registrations, CALL THE RELEVANT TOOL FIRST instead of guessing. Then summarize the result in one short paragraph.
@@ -1903,6 +1992,9 @@ def chat(
     # RAG
     rag = _rag_search(user_msg)
 
+    # Onboarding context from Cassia post-checkout discovery (business-scoped only)
+    onboarding_ctx = _get_onboarding_context(body.business_id) if body.business_id else ""
+
     # Tool registry — let Gemini decide what to call
     registry = _build_tool_registry(body.business_id, body.event_id, db, current_user.PeopleID)
 
@@ -1917,7 +2009,7 @@ def chat(
     )
     history = _load_recent_messages(current_user.PeopleID, scope)
 
-    system = _system_prompt(rag, body.page or "", list(registry.keys()))
+    system = _system_prompt(rag, body.page or "", list(registry.keys()), onboarding_ctx)
     result = _call_gemini_with_tools(system, history, user_msg, registry)
     reply = result["content"]
 

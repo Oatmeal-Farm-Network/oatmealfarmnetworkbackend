@@ -1401,7 +1401,7 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
         )
         memory_section = "\n".join(parts)
 
-    # Org-level shared memory (aggregated from all team members of this business)
+    # Org-level shared memory (aggregated from all team members + Cassia onboarding profile)
     org_mem = state.get("org_memory") or {}
     org_memory_section = ""
     if org_mem and any(org_mem.values()):
@@ -1412,6 +1412,21 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
             oparts.append(f"- Crops/livestock this farm works with: {', '.join(org_mem['crops'][:12])}")
         if org_mem.get("farm_sizes"):
             oparts.append(f"- Farm size(s): {', '.join(org_mem['farm_sizes'][:2])}")
+        # Structured fields seeded by Cassia onboarding
+        if org_mem.get("channels"):
+            ch = org_mem["channels"]
+            oparts.append(f"- Sales channels: {', '.join(ch) if isinstance(ch, list) else ch}")
+        if org_mem.get("headache"):
+            oparts.append(f"- Stated top operational challenge: {org_mem['headache'][:200]}")
+        if org_mem.get("plan_tier"):
+            oparts.append(f"- Subscription tier: {org_mem['plan_tier']}")
+        if org_mem.get("revenue_model"):
+            oparts.append(f"- Revenue model: {org_mem['revenue_model']}")
+        if org_mem.get("uses_agronomist") is not None:
+            agro_str = "works with outside agronomists" if org_mem["uses_agronomist"] else "manages agronomy in-house"
+            oparts.append(f"- Agronomy approach: {agro_str}")
+        if org_mem.get("business_type"):
+            oparts.append(f"- Business type: {org_mem['business_type']}")
         if org_mem.get("known_org_issues"):
             oparts.append("- Issues other team members have raised about this farm:")
             for issue in org_mem["known_org_issues"][:5]:
@@ -1430,6 +1445,17 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
             "treat it as known. Keep individual team members' personal contexts separate."
         )
         org_memory_section = "\n".join(oparts)
+
+    # Onboarding context from Cassia post-checkout discovery interview
+    onboarding_section = ""
+    _onboarding_ctx = ltm.get("onboarding_context", "") if ltm else ""
+    if _onboarding_ctx:
+        onboarding_section = (
+            "ONBOARDING PROFILE (captured when this farmer set up their account — "
+            "treat these facts as already established; do not ask the farmer to re-explain "
+            "their crops, fields, channels, or main challenge):\n"
+            + _onboarding_ctx
+        )
 
     # Build a query-specific directive when the user is asking about their own data
     # so the LLM calls the right tool instead of guessing from training knowledge.
@@ -1514,6 +1540,7 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
 {identity_section}
 {business_snapshot}
 {_tool_directive}
+{onboarding_section}
 {memory_section}
 {org_memory_section}
 {_image_note}

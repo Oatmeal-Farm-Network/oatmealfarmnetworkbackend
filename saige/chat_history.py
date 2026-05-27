@@ -37,6 +37,30 @@ from config import (
     THREADS_COLLECTION,
 )
 
+# ── Org-profile collection ────────────────────────────────────────────────────
+# Formal schema for the Cassia-seeded onboarding profile. Written once at
+# account setup, merged into get_org_memory() so all agents inherit it.
+ORG_PROFILES_COLLECTION = "org_profiles"
+
+# Canonical field names — all agents read these keys from get_org_memory().
+# Validate writes against this to avoid drift across agents.
+_ORG_PROFILE_FIELDS = frozenset({
+    # identity
+    "business_id", "people_id", "business_type", "plan_tier",
+    # agronomic
+    "crops", "field_count", "size_ha", "uses_agronomist", "location",
+    # commercial
+    "channels", "revenue_model",
+    # operational
+    "headache",
+    # agent-specific
+    "brand_context",   # Lavendir website builder
+    "cuisine_type",    # Pairsley — restaurants only
+    "sourcing_prefs",  # Pairsley — restaurants only
+    # meta
+    "seeded_at", "updated_at",
+})
+
 if FIRESTORE_AVAILABLE:
     from google.cloud import firestore
 
@@ -365,8 +389,30 @@ class ChatHistory:
         exclude_user_id: skip this user's own threads (their personal memory is loaded
         separately via get_user_memory and we don't want to double-count it here).
         """
-        if self.threads_col is None or not business_id:
+        if not business_id:
             return {}
+
+        # Load Cassia-seeded onboarding profile first so conversation-derived
+        # facts augment (rather than replace) the structured baseline.
+        seeded_profile: Dict[str, Any] = self.get_org_profile(business_id)
+
+        if self.threads_col is None:
+            # Return the seeded profile alone when Firestore threads are offline.
+            return {
+                "locations": [],
+                "crops": list(seeded_profile.get("crops") or []),
+                "farm_sizes": [],
+                "recent_topics": [],
+                "org_solutions": [],
+                "known_org_issues": [],
+                "seeded_profile": seeded_profile,
+                "channels": seeded_profile.get("channels") or [],
+                "plan_tier": seeded_profile.get("plan_tier") or "",
+                "revenue_model": seeded_profile.get("revenue_model") or "",
+                "uses_agronomist": seeded_profile.get("uses_agronomist"),
+                "headache": seeded_profile.get("headache") or "",
+                "business_type": seeded_profile.get("business_type") or "",
+            }
         try:
             # Single equality filter on business_id — no composite index needed.
             # Filter status and sort in Python to avoid Firestore index requirements.
@@ -375,13 +421,17 @@ class ChatHistory:
                 .where("business_id", "==", str(business_id))
                 .limit(max_threads)
             )
+            # Pre-seed crops from the structured profile so the list is populated
+            # even for businesses with no completed conversations yet.
             locations: List[str] = []
-            crops: List[str] = []
+            seed_crops: List[str] = list(seeded_profile.get("crops") or [])
+            crops: List[str] = list(seed_crops)
             farm_sizes: List[str] = []
             recent_topics: List[str] = []
             org_solutions: List[str] = []
             known_org_issues: List[str] = []
             seen_loc, seen_crop, seen_size = set(), set(), set()
+            seen_crop = set(c.lower() for c in seed_crops)
             seen_issues: set = set()
 
             docs = sorted(
@@ -400,8 +450,8 @@ class ChatHistory:
                 if loc and loc not in seen_loc:
                     locations.append(loc); seen_loc.add(loc)
                 for c in (ctx.get("crops") or []):
-                    if c not in seen_crop:
-                        crops.append(c); seen_crop.add(c)
+                    if c.lower() not in seen_crop:
+                        crops.append(c); seen_crop.add(c.lower())
                 fs = ctx.get("farm_size")
                 if fs and fs not in seen_size:
                     farm_sizes.append(fs); seen_size.add(fs)
@@ -423,9 +473,71 @@ class ChatHistory:
                 "recent_topics": recent_topics[:6],
                 "org_solutions": org_solutions[:6],
                 "known_org_issues": list(known_org_issues)[:10],
+                # Structured fields from Cassia onboarding (if seeded)
+                "seeded_profile": seeded_profile,
+                "channels": seeded_profile.get("channels") or [],
+                "plan_tier": seeded_profile.get("plan_tier") or "",
+                "revenue_model": seeded_profile.get("revenue_model") or "",
+                "uses_agronomist": seeded_profile.get("uses_agronomist"),
+                "headache": seeded_profile.get("headache") or "",
+                "business_type": seeded_profile.get("business_type") or "",
             }
         except Exception as e:
             logger.error("[ChatHistory] get_org_memory error: %s", e)
+            return {}
+
+    # ------------------------------------------------------------------
+    # Org profile (Cassia-seeded structured onboarding data)
+    # ------------------------------------------------------------------
+
+    def save_org_memory_profile(
+        self, business_id: str, data: Dict[str, Any]
+    ) -> bool:
+        """Write Cassia's structured onboarding profile for this business.
+
+        Seeds get_org_memory() before any conversations have happened so Saige,
+        Thaiyme, Lavendir, and Pairsley all inherit the farmer's stated crops,
+        channels, headache, and plan tier from day one.
+        """
+        db = self.firestore_db
+        if not db or not business_id:
+            return False
+        try:
+            profile: Dict[str, Any] = {
+                k: v for k, v in data.items() if k in _ORG_PROFILE_FIELDS
+            }
+            profile["business_id"] = int(business_id)
+            profile["updated_at"] = time.time()
+            if "seeded_at" not in profile:
+                profile["seeded_at"] = time.time()
+            db.collection(ORG_PROFILES_COLLECTION).document(str(business_id)).set(
+                profile, merge=True
+            )
+            logger.info(
+                "[ChatHistory] Saved org_profile for business %s", business_id
+            )
+            return True
+        except Exception as e:
+            logger.error("[ChatHistory] save_org_memory_profile error: %s", e)
+            return False
+
+    def get_org_profile(self, business_id: str) -> Dict[str, Any]:
+        """Read the Cassia-seeded onboarding profile for a business.
+
+        Returns an empty dict if no profile has been written yet.
+        """
+        db = self.firestore_db
+        if not db or not business_id:
+            return {}
+        try:
+            snap = (
+                db.collection(ORG_PROFILES_COLLECTION)
+                .document(str(business_id))
+                .get()
+            )
+            return snap.to_dict() or {} if snap.exists else {}
+        except Exception as e:
+            logger.error("[ChatHistory] get_org_profile error: %s", e)
             return {}
 
     def get_messages(
