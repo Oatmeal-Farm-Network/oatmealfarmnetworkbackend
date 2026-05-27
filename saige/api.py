@@ -728,6 +728,21 @@ Examples:
                     org_memory = chat_history.get_org_memory(business_id, exclude_user_id=user_id)
                     if org_memory and any(org_memory.values()):
                         print(f"[API] Loaded org memory: crops={len(org_memory.get('crops', []))}, issues={len(org_memory.get('known_org_issues', []))}")
+                # Onboarding context written by Cassia post-checkout discovery
+                if business_id:
+                    try:
+                        _fs_db = getattr(chat_history, "firestore_db", None)
+                        if _fs_db:
+                            _snap = _fs_db.collection("agent_briefings").document(
+                                f"business_{business_id}"
+                            ).get()
+                            if _snap.exists:
+                                _ob_text = (_snap.to_dict() or {}).get("text", "")
+                                if _ob_text:
+                                    long_term_memory["onboarding_context"] = _ob_text
+                                    print(f"[API] Loaded onboarding context for business {business_id}")
+                    except Exception as _ob_err:
+                        logger.debug("[API] onboarding context fetch failed: %s", _ob_err)
             events = safe_graph_stream(
                 {
                     "history": initial_history,
@@ -2611,6 +2626,197 @@ async def cassia_chat(
     return result
 
 
+class CassiaCheckoutRequest(BaseModel):
+    tier:         str   = "starter"
+    categories:   list  = []
+    lineItems:    list  = []
+    monthlyTotal: float = 0.0
+    annualPrice:  int   = 0
+    successUrl:   str   = ""
+    cancelUrl:    str   = ""
+    businessId:   Optional[int] = None
+
+
+_STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+_OFN_BASE_URL      = os.getenv("OFN_BASE_URL", "https://oatmealfarmnetwork.com")
+
+# Fallback annual prices when Stripe price IDs are not configured
+_CASSIA_TIER_AMOUNTS: dict = {
+    "starter":      700_00,   # cents
+    "professional": 1_700_00,
+    "enterprise":   4_100_00,
+}
+_CASSIA_TIER_NAMES: dict = {
+    "starter":      "OFN Starter Annual",
+    "professional": "OFN Professional Annual",
+    "enterprise":   "OFN Enterprise Annual",
+}
+
+
+@app.post("/cassia/checkout")
+async def cassia_checkout(
+    req: CassiaCheckoutRequest,
+    people_id: str = Depends(get_current_user),
+):
+    """Create a Stripe Checkout Session for an OFN annual subscription chosen via Cassia.
+
+    Looks up the Stripe price ID from the SubscriptionLevels table (keyed by tier name).
+    Falls back to a one-time `payment` session using the canonical annual amount when no
+    pre-configured price ID exists.  Returns { stripeUrl } or { stripeUrl: null } for the
+    free/hobby tier so the frontend can skip directly to the account page."""
+    tier = (req.tier or "starter").lower().strip()
+
+    # Free plan — no Stripe session needed
+    if req.monthlyTotal == 0 and req.annualPrice == 0:
+        return {"stripeUrl": None}
+
+    if not _STRIPE_SECRET_KEY:
+        # Stripe not configured — let the frontend bypass to account
+        return {"stripeUrl": None}
+
+    try:
+        import stripe as _stripe
+        _stripe.api_key = _STRIPE_SECRET_KEY
+
+        annual_cents = (
+            req.annualPrice * 100
+            if req.annualPrice > 0
+            else _CASSIA_TIER_AMOUNTS.get(tier, int(req.monthlyTotal * 12 * 100))
+        )
+        tier_label = _CASSIA_TIER_NAMES.get(tier, f"OFN {tier.capitalize()} Annual")
+
+        success_url = req.successUrl or f"{_OFN_BASE_URL}/cassia?subscribed=1"
+        cancel_url  = req.cancelUrl  or f"{_OFN_BASE_URL}/cassia"
+
+        # Attempt to find a pre-configured annual Stripe price via SubscriptionLevels
+        price_id: Optional[str] = None
+        try:
+            from database import SessionLocal
+            from sqlalchemy import text as _text
+            with SessionLocal() as _db:
+                row = _db.execute(
+                    _text(
+                        "SELECT StripeAPIID, StripeAPIIDTest FROM SubscriptionLevels "
+                        "WHERE LOWER(SubscriptionTier) = :t OR LOWER(SubscriptionTitle) LIKE :tl"
+                    ),
+                    {"t": tier, "tl": f"%{tier}%"},
+                ).fetchone()
+                if row:
+                    from routers.platform_settings import get_stripe_config
+                    cfg = get_stripe_config(_db)
+                    is_test = bool(cfg.get("StripeTestMode", True))
+                    price_id = row[1] if is_test else row[0]
+        except Exception:
+            pass  # Fall through to one-time payment below
+
+        if price_id:
+            # Recurring subscription session using a pre-configured Stripe price
+            metadata = {"tier": tier, "people_id": str(people_id)}
+            if req.businessId:
+                metadata["business_id"] = str(req.businessId)
+            session = _stripe.checkout.Session.create(
+                mode="subscription",
+                line_items=[{"price": price_id, "quantity": 1}],
+                metadata=metadata,
+                success_url=success_url + "&session_id={CHECKOUT_SESSION_ID}",
+                cancel_url=cancel_url,
+            )
+        else:
+            # One-time annual payment (no pre-configured Stripe price required)
+            metadata = {"tier": tier, "people_id": str(people_id)}
+            if req.businessId:
+                metadata["business_id"] = str(req.businessId)
+            session = _stripe.checkout.Session.create(
+                mode="payment",
+                line_items=[{
+                    "quantity": 1,
+                    "price_data": {
+                        "currency": "usd",
+                        "unit_amount": annual_cents,
+                        "product_data": {
+                            "name": tier_label,
+                            "description": f"Annual OFN platform subscription — {', '.join(req.categories[:4]) or 'all features'}",
+                        },
+                    },
+                }],
+                metadata=metadata,
+                success_url=success_url + "&session_id={CHECKOUT_SESSION_ID}",
+                cancel_url=cancel_url,
+            )
+
+        return {"stripeUrl": session.url}
+
+    except Exception as e:
+        print(f"[cassia_checkout] Stripe error: {e}")
+        # Non-fatal — let the frontend handle missing stripeUrl gracefully
+        return {"stripeUrl": None}
+
+
+_STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_CASSIA_WEBHOOK_SECRET", "")
+
+
+@app.post("/cassia/checkout/webhook")
+async def cassia_checkout_webhook(request: Request):
+    """Stripe webhook — fires after a Cassia-initiated checkout.session.completed.
+
+    Verifies the Stripe signature, then:
+      1. Updates Business.SubscriptionTier in SQL.
+      2. Writes plan_tier to the org_profiles Firestore doc (via Cassia's ChatHistory).
+    Returns 200 immediately so Stripe does not retry."""
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+
+    try:
+        import stripe as _stripe
+        _stripe.api_key = _STRIPE_SECRET_KEY
+
+        if _STRIPE_WEBHOOK_SECRET:
+            event = _stripe.Webhook.construct_event(payload, sig_header, _STRIPE_WEBHOOK_SECRET)
+        else:
+            # Dev-mode fallback — no signature check (never do this in production)
+            event = json.loads(payload)
+    except Exception as e:
+        print(f"[cassia_webhook] signature/parse error: {e}")
+        return Response(status_code=400)
+
+    if event.get("type") != "checkout.session.completed":
+        return Response(status_code=200)
+
+    session   = event.get("data", {}).get("object", {})
+    metadata  = session.get("metadata") or {}
+    tier      = (metadata.get("tier") or "starter").lower().strip()
+    biz_id    = metadata.get("business_id")
+
+    if not biz_id:
+        return Response(status_code=200)
+
+    biz_id_int = int(biz_id)
+
+    # 1. Update SQL
+    try:
+        from database import SessionLocal
+        from sqlalchemy import text as _text
+        with SessionLocal() as _db:
+            _db.execute(
+                _text("UPDATE Business SET SubscriptionTier = :t WHERE BusinessID = :b"),
+                {"t": tier, "b": biz_id_int},
+            )
+            _db.commit()
+    except Exception as e:
+        print(f"[cassia_webhook] SQL update error: {e}")
+
+    # 2. Update Firestore org_profiles
+    if _CASSIA_AVAILABLE:
+        try:
+            _cassia.cassia_chat_history.save_org_memory_profile(
+                str(biz_id_int), {"plan_tier": tier}
+            )
+        except Exception as e:
+            print(f"[cassia_webhook] Firestore update error: {e}")
+
+    return Response(status_code=200)
+
+
 @app.get("/cassia/threads")
 async def cassia_threads(
     people_id: str = Depends(get_current_user),
@@ -2663,6 +2869,47 @@ except Exception as _wae_err:
     _WEATHER_ALERTS_EP_AVAILABLE = False
 
 _CRON_SECRET = os.getenv("CRON_SECRET", "")
+
+_FARM_DIGEST_AVAILABLE = False
+try:
+    from farm_digest import run_digest as _run_farm_digest
+    _FARM_DIGEST_AVAILABLE = True
+except Exception as _fde:
+    print(f"[API] farm_digest unavailable: {_fde}")
+
+
+@app.post("/cron/farm-digest")
+async def trigger_farm_digest(
+    dry_run: bool = Query(False),
+    business_id: Optional[int] = Query(None, alias="BusinessID"),
+    x_cron_secret: str = Header(default="", alias="X-Cron-Secret"),
+):
+    """Personalized farm-health digest.
+    Scans all agent_briefings Firestore docs, generates an LLM insight for each
+    business with new precision-ag alerts, and pushes it to the farmer's device(s).
+    Secured by X-Cron-Secret header. Trigger from Cloud Scheduler (daily)."""
+    if _CRON_SECRET and x_cron_secret != _CRON_SECRET:
+        return JSONResponse(status_code=403, content={"error": "Unauthorized"})
+    if not _FARM_DIGEST_AVAILABLE:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "message": "Farm digest unavailable"},
+        )
+    fs_db = getattr(chat_history, "firestore_db", None)
+    result = _run_farm_digest(
+        firestore_db=fs_db,
+        dry_run=dry_run,
+        business_id_filter=business_id,
+    )
+    logger.info(
+        "[Digest] Farm digest: scanned=%d sent=%d skipped=%d errors=%d dry_run=%s",
+        result.get("scanned", 0),
+        result.get("sent", 0),
+        result.get("skipped", 0),
+        result.get("errors", 0),
+        dry_run,
+    )
+    return result
 
 
 @app.post("/alerts/weather/run")
