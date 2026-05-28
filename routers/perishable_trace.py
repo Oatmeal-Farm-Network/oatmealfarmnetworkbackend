@@ -1,10 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException
+﻿from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 from datetime import date, datetime, timedelta
-import pyodbc
-from dependencies import get_db, get_current_user
+from dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/trace", tags=["perishable_trace"])
 
@@ -24,7 +23,7 @@ STAGE_ORDER = {s: i for i, s in enumerate(STAGES)}
 COMPLIANCE_TYPES = {"fertilizer", "pesticide", "water", "harvest", "other"}
 
 
-def _ensure_tables(db: pyodbc.Connection):
+def _ensure_tables(db):
     global _ddl_done
     if _ddl_done:
         return
@@ -86,7 +85,7 @@ class ComplianceIn(BaseModel):
 
 
 @router.post("/checkpoint", status_code=201)
-def record_checkpoint(body: CheckpointIn, db=Depends(get_db), user=Depends(get_current_user)):
+def record_checkpoint(body: CheckpointIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     if body.stage not in STAGE_ORDER:
@@ -112,7 +111,7 @@ def record_checkpoint(body: CheckpointIn, db=Depends(get_db), user=Depends(get_c
 
 
 @router.get("/lot/{lot_id}")
-def lot_timeline(lot_id: int, db=Depends(get_db), user=Depends(get_current_user)):
+def lot_timeline(lot_id: int, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cursor = db.cursor()
@@ -182,7 +181,7 @@ def list_compliance(
     record_type: Optional[str] = None,
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     _ensure_tables(db)
@@ -208,7 +207,7 @@ def list_compliance(
 
 
 @router.post("/compliance-records", status_code=201)
-def create_compliance(body: ComplianceIn, db=Depends(get_db), user=Depends(get_current_user)):
+def create_compliance(body: ComplianceIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     if body.record_type not in COMPLIANCE_TYPES:
@@ -228,7 +227,7 @@ def create_compliance(body: ComplianceIn, db=Depends(get_db), user=Depends(get_c
 
 
 @router.get("/overdue")
-def overdue_lots(hours_threshold: int = 4, db=Depends(get_db), user=Depends(get_current_user)):
+def overdue_lots(hours_threshold: int = 4, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     """Lots stuck at cooling_entry or cooling_exit longer than hours_threshold without progression."""
     _ensure_tables(db)
     bid = user["BusinessID"]
@@ -260,7 +259,7 @@ def generate_compliance_report(
     lot_id: Optional[int] = None,
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     """Generate a compliance report for a lot or date range."""

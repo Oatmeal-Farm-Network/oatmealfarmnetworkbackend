@@ -1,9 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
+﻿from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date, datetime
-import pyodbc
-from dependencies import get_db, get_current_user
+from dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/equipment-maintenance", tags=["equipment_maintenance"])
 _ddl_done = False
@@ -13,7 +12,7 @@ SERVICE_TYPES = ["oil_change", "filter_change", "grease_service", "tyre_rotation
                  "hydraulic_service", "belt_replacement", "major_overhaul", "pre_season", "repair", "other"]
 
 
-def _ensure_tables(db: pyodbc.Connection):
+def _ensure_tables(db):
     global _ddl_done
     if _ddl_done:
         return
@@ -132,7 +131,7 @@ class FuelIn(BaseModel):
 
 
 @router.get("/fleet")
-def list_fleet(db=Depends(get_db), user=Depends(get_current_user)):
+def list_fleet(db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -159,7 +158,7 @@ def list_fleet(db=Depends(get_db), user=Depends(get_current_user)):
 
 
 @router.post("/fleet", status_code=201)
-def add_equipment(body: EquipmentIn, db=Depends(get_db), user=Depends(get_current_user)):
+def add_equipment(body: EquipmentIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -181,7 +180,7 @@ def add_equipment(body: EquipmentIn, db=Depends(get_db), user=Depends(get_curren
 
 
 @router.post("/fleet/{equipment_id}/service", status_code=201)
-def log_service(equipment_id: int, body: ServiceIn, db=Depends(get_db), user=Depends(get_current_user)):
+def log_service(equipment_id: int, body: ServiceIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -217,7 +216,7 @@ def log_service(equipment_id: int, body: ServiceIn, db=Depends(get_db), user=Dep
 
 
 @router.get("/fleet/{equipment_id}/service")
-def equipment_service_history(equipment_id: int, db=Depends(get_db), user=Depends(get_current_user)):
+def equipment_service_history(equipment_id: int, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -227,7 +226,7 @@ def equipment_service_history(equipment_id: int, db=Depends(get_db), user=Depend
 
 
 @router.post("/fleet/{equipment_id}/fuel", status_code=201)
-def log_fuel(equipment_id: int, body: FuelIn, db=Depends(get_db), user=Depends(get_current_user)):
+def log_fuel(equipment_id: int, body: FuelIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -250,7 +249,7 @@ def log_fuel(equipment_id: int, body: FuelIn, db=Depends(get_db), user=Depends(g
 
 
 @router.get("/fleet/{equipment_id}/fuel")
-def equipment_fuel_history(equipment_id: int, days: int = 90, db=Depends(get_db), user=Depends(get_current_user)):
+def equipment_fuel_history(equipment_id: int, days: int = 90, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -261,7 +260,7 @@ def equipment_fuel_history(equipment_id: int, days: int = 90, db=Depends(get_db)
 
 
 @router.get("/dashboard")
-def dashboard(db=Depends(get_db), user=Depends(get_current_user)):
+def dashboard(db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -287,7 +286,7 @@ def dashboard(db=Depends(get_db), user=Depends(get_current_user)):
 
 
 @router.get("/due-alerts")
-def due_alerts(db=Depends(get_db), user=Depends(get_current_user)):
+def due_alerts(db=Depends(get_raw_conn), user=Depends(get_current_user)):
     """Equipment overdue or due within 14 days / 50 hours."""
     _ensure_tables(db)
     bid = user["BusinessID"]

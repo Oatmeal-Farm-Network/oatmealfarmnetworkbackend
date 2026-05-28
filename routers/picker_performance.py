@@ -1,15 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException
+﻿from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from datetime import date, datetime
-import pyodbc
-from dependencies import get_db, get_current_user
+from dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/picker", tags=["picker_performance"])
 
 _ddl_done = False
 
-def _ensure_tables(db: pyodbc.Connection):
+def _ensure_tables(db):
     global _ddl_done
     if _ddl_done:
         return
@@ -111,7 +110,7 @@ def list_sessions(
     picking_date: Optional[date] = None,
     variety: Optional[str] = None,
     limit: int = 50,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     _ensure_tables(db)
@@ -143,7 +142,7 @@ def list_sessions(
 
 
 @router.post("/sessions", status_code=201)
-def create_session(body: SessionIn, db=Depends(get_db), user=Depends(get_current_user)):
+def create_session(body: SessionIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cursor = db.cursor()
@@ -176,7 +175,7 @@ def create_session(body: SessionIn, db=Depends(get_db), user=Depends(get_current
 
 
 @router.patch("/sessions/{session_id}")
-def close_session(session_id: int, body: SessionClose, db=Depends(get_db), user=Depends(get_current_user)):
+def close_session(session_id: int, body: SessionClose, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cursor = db.cursor()
@@ -201,7 +200,7 @@ def close_session(session_id: int, body: SessionClose, db=Depends(get_db), user=
 
 
 @router.post("/dropoff", status_code=201)
-def record_dropoff(body: DropOffIn, db=Depends(get_db), user=Depends(get_current_user)):
+def record_dropoff(body: DropOffIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cursor = db.cursor()
@@ -229,7 +228,7 @@ def picker_performance(
     variety: Optional[str] = None,
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     _ensure_tables(db)
@@ -270,7 +269,7 @@ def picker_performance(
 def leaderboard(
     picking_date: Optional[date] = None,
     variety: Optional[str] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     _ensure_tables(db)
@@ -305,7 +304,7 @@ def leaderboard(
 
 
 @router.get("/piece-rates")
-def list_piece_rates(variety: Optional[str] = None, db=Depends(get_db), user=Depends(get_current_user)):
+def list_piece_rates(variety: Optional[str] = None, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cursor = db.cursor()
@@ -318,7 +317,7 @@ def list_piece_rates(variety: Optional[str] = None, db=Depends(get_db), user=Dep
 
 
 @router.put("/piece-rates")
-def upsert_piece_rate(body: PieceRateIn, db=Depends(get_db), user=Depends(get_current_user)):
+def upsert_piece_rate(body: PieceRateIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cursor = db.cursor()
@@ -348,7 +347,7 @@ def upsert_piece_rate(body: PieceRateIn, db=Depends(get_db), user=Depends(get_cu
 def payroll_summary(
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     _ensure_tables(db)

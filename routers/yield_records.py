@@ -1,15 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException
+﻿from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date, datetime
-import pyodbc
-from dependencies import get_db, get_current_user
+from dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/yield-records", tags=["yield_records"])
 _ddl_done = False
 
 
-def _ensure_tables(db: pyodbc.Connection):
+def _ensure_tables(db):
     global _ddl_done
     if _ddl_done:
         return
@@ -77,7 +76,7 @@ class YieldIn(BaseModel):
 
 
 @router.post("/records", status_code=201)
-def create_record(body: YieldIn, db=Depends(get_db), user=Depends(get_current_user)):
+def create_record(body: YieldIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -113,7 +112,7 @@ def list_records(
     season: Optional[str] = None,
     field_id: Optional[str] = None,
     crop_name: Optional[str] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     _ensure_tables(db)
@@ -136,7 +135,7 @@ def list_records(
 
 
 @router.get("/vs-budget")
-def vs_budget(season: Optional[str] = None, db=Depends(get_db), user=Depends(get_current_user)):
+def vs_budget(season: Optional[str] = None, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     """Actual yield vs crop budget target per field/crop."""
     _ensure_tables(db)
     bid = user["BusinessID"]
@@ -178,7 +177,7 @@ def vs_budget(season: Optional[str] = None, db=Depends(get_db), user=Depends(get
 
 
 @router.get("/season-summary")
-def season_summary(db=Depends(get_db), user=Depends(get_current_user)):
+def season_summary(db=Depends(get_raw_conn), user=Depends(get_current_user)):
     """Totals by crop and season."""
     _ensure_tables(db)
     bid = user["BusinessID"]
@@ -202,7 +201,7 @@ def season_summary(db=Depends(get_db), user=Depends(get_current_user)):
 
 
 @router.delete("/records/{yield_id}")
-def delete_record(yield_id: int, db=Depends(get_db), user=Depends(get_current_user)):
+def delete_record(yield_id: int, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()

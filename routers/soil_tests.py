@@ -1,9 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
+﻿from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date
-import pyodbc
-from dependencies import get_db, get_current_user
+from dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/soil-tests", tags=["soil_tests"])
 _ddl_done = False
@@ -43,7 +42,7 @@ def _rate(nutrient: str, value: float) -> str:
     return "very_high"
 
 
-def _ensure_tables(db: pyodbc.Connection):
+def _ensure_tables(db):
     global _ddl_done
     if _ddl_done:
         return
@@ -116,7 +115,7 @@ class TestIn(BaseModel):
 
 
 @router.post("/tests", status_code=201)
-def create_test(body: TestIn, db=Depends(get_db), user=Depends(get_current_user)):
+def create_test(body: TestIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -147,7 +146,7 @@ def list_tests(
     field_id: Optional[str] = None,
     from_date: Optional[date] = None,
     limit: int = 100,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     _ensure_tables(db)
@@ -173,7 +172,7 @@ def list_tests(
 
 
 @router.get("/tests/{test_id}")
-def get_test(test_id: int, db=Depends(get_db), user=Depends(get_current_user)):
+def get_test(test_id: int, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -191,7 +190,7 @@ def get_test(test_id: int, db=Depends(get_db), user=Depends(get_current_user)):
 
 
 @router.get("/by-field")
-def by_field(db=Depends(get_db), user=Depends(get_current_user)):
+def by_field(db=Depends(get_raw_conn), user=Depends(get_current_user)):
     """Latest test per field with deficiency count."""
     _ensure_tables(db)
     bid = user["BusinessID"]
@@ -215,7 +214,7 @@ def by_field(db=Depends(get_db), user=Depends(get_current_user)):
 def trends(
     field_id: Optional[str] = None,
     nutrient: Optional[str] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     """Nutrient value trends over time for a field."""
@@ -246,7 +245,7 @@ def trends(
 
 
 @router.get("/deficiency-report")
-def deficiency_report(db=Depends(get_db), user=Depends(get_current_user)):
+def deficiency_report(db=Depends(get_raw_conn), user=Depends(get_current_user)):
     """Most recent test per field — nutrients rated very_low or low."""
     _ensure_tables(db)
     bid = user["BusinessID"]

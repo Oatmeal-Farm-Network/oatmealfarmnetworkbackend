@@ -1,10 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException
+﻿from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date, datetime, timedelta
-import pyodbc
 import requests
-from dependencies import get_db, get_current_user
+from dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/chill", tags=["chilling_hours"])
 _ddl_done = False
@@ -30,7 +29,7 @@ def calc_daily_chill(min_f: float, max_f: float, model: str) -> float:
         return _utah_units(avg) * 24
     return _simple_units(avg) * 24
 
-def _ensure_tables(db: pyodbc.Connection):
+def _ensure_tables(db):
     global _ddl_done
     if _ddl_done:
         return
@@ -107,7 +106,7 @@ class CultivarIn(BaseModel):
 
 
 @router.post("/readings", status_code=201)
-def ingest_readings(body: BulkReadingsIn, db=Depends(get_db), user=Depends(get_current_user)):
+def ingest_readings(body: BulkReadingsIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -145,7 +144,7 @@ def accumulation(
     field_id: Optional[str] = None,
     season: Optional[str] = None,
     model: str = "simple",
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     _ensure_tables(db)
@@ -168,7 +167,7 @@ def accumulation(
 
 
 @router.get("/dashboard")
-def dashboard(season: Optional[str] = None, db=Depends(get_db), user=Depends(get_current_user)):
+def dashboard(season: Optional[str] = None, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     season = season or str(date.today().year)
@@ -195,7 +194,7 @@ def dashboard(season: Optional[str] = None, db=Depends(get_db), user=Depends(get
 
 
 @router.get("/cultivars")
-def list_cultivars(db=Depends(get_db), user=Depends(get_current_user)):
+def list_cultivars(db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -204,7 +203,7 @@ def list_cultivars(db=Depends(get_db), user=Depends(get_current_user)):
     return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 @router.post("/cultivars", status_code=201)
-def create_cultivar(body: CultivarIn, db=Depends(get_db), user=Depends(get_current_user)):
+def create_cultivar(body: CultivarIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -226,7 +225,7 @@ def forecast(
     field_id: Optional[str] = None,
     cultivar_id: Optional[int] = None,
     season: Optional[str] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     """Predict bloom date: when chill requirement is met + GDD accumulation estimate."""
@@ -309,7 +308,7 @@ def import_from_weather(
     season: Optional[str] = None,
     days: int = 7,
     model: str = "simple",
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     """Fetch historical daily min/max temps from Open-Meteo and import as chill readings."""
@@ -373,7 +372,7 @@ def import_from_weather(
 
 
 @router.get("/season-comparison")
-def season_comparison(field_id: Optional[str] = None, db=Depends(get_db), user=Depends(get_current_user)):
+def season_comparison(field_id: Optional[str] = None, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     """Compare chill accumulation across seasons."""
     _ensure_tables(db)
     bid = user["BusinessID"]

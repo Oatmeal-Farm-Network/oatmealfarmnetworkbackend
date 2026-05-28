@@ -1,15 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException
+﻿from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from datetime import date, datetime
-import pyodbc
-from dependencies import get_db, get_current_user
+from dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/scale-tickets", tags=["scale_tickets"])
 _ddl_done = False
 
 
-def _ensure_tables(db: pyodbc.Connection):
+def _ensure_tables(db):
     global _ddl_done
     if _ddl_done:
         return
@@ -124,7 +123,7 @@ def list_tickets(
     to_date: Optional[date] = None,
     elevator: Optional[str] = None,
     limit: int = 100,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     _ensure_tables(db)
@@ -154,7 +153,7 @@ def list_tickets(
 
 
 @router.post("/tickets", status_code=201)
-def create_ticket(body: TicketIn, db=Depends(get_db), user=Depends(get_current_user)):
+def create_ticket(body: TicketIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -176,7 +175,7 @@ def create_ticket(body: TicketIn, db=Depends(get_db), user=Depends(get_current_u
 
 
 @router.get("/tickets/{ticket_id}/margin")
-def ticket_margin(ticket_id: int, db=Depends(get_db), user=Depends(get_current_user)):
+def ticket_margin(ticket_id: int, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -210,7 +209,7 @@ def summary(
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
     commodity: Optional[str] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     _ensure_tables(db)
@@ -242,7 +241,7 @@ def summary(
 
 
 @router.get("/contracts")
-def list_contracts(commodity: Optional[str] = None, status: Optional[str] = None, db=Depends(get_db), user=Depends(get_current_user)):
+def list_contracts(commodity: Optional[str] = None, status: Optional[str] = None, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -270,7 +269,7 @@ def list_contracts(commodity: Optional[str] = None, status: Optional[str] = None
 
 
 @router.post("/contracts", status_code=201)
-def create_contract(body: ContractIn, db=Depends(get_db), user=Depends(get_current_user)):
+def create_contract(body: ContractIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -289,7 +288,7 @@ def create_contract(body: ContractIn, db=Depends(get_db), user=Depends(get_curre
 
 
 @router.post("/contracts/{contract_id}/apply-delivery", status_code=201)
-def apply_delivery(contract_id: int, body: DeliveryIn, db=Depends(get_db), user=Depends(get_current_user)):
+def apply_delivery(contract_id: int, body: DeliveryIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -320,7 +319,7 @@ def apply_delivery(contract_id: int, body: DeliveryIn, db=Depends(get_db), user=
 
 
 @router.get("/contracts/{contract_id}/position")
-def contract_position(contract_id: int, db=Depends(get_db), user=Depends(get_current_user)):
+def contract_position(contract_id: int, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -372,7 +371,7 @@ def _ensure_posting_table(db):
 def post_to_accounting(
     ticket_id: int,
     notes: Optional[str] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     """Post a scale ticket to the accounting ledger as a grain sale revenue entry."""
@@ -429,7 +428,7 @@ def post_to_accounting(
 
 
 @router.get("/tickets/{ticket_id}/accounting-post")
-def get_accounting_post(ticket_id: int, db=Depends(get_db), user=Depends(get_current_user)):
+def get_accounting_post(ticket_id: int, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     """Return accounting post record for a ticket, if it exists."""
     _ensure_posting_table(db)
     bid = user["BusinessID"]
