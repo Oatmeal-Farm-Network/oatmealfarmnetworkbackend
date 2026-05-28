@@ -1,10 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException
+﻿from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, timedelta
 import math
-import pyodbc
-from dependencies import get_db, get_current_user
+from dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/grain-bin", tags=["grain_bin"])
 _ddl_done = False
@@ -40,7 +39,7 @@ def calc_emc(commodity: str, temp_c: float, rh_pct: float) -> Optional[float]:
         return None
 
 
-def _ensure_tables(db: pyodbc.Connection):
+def _ensure_tables(db):
     global _ddl_done
     if _ddl_done:
         return
@@ -180,7 +179,7 @@ def _fire_alerts(db, bid: int, bin_id: int):
 
 
 @router.get("/bins")
-def list_bins(db=Depends(get_db), user=Depends(get_current_user)):
+def list_bins(db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -190,7 +189,7 @@ def list_bins(db=Depends(get_db), user=Depends(get_current_user)):
 
 
 @router.post("/bins", status_code=201)
-def create_bin(body: BinIn, db=Depends(get_db), user=Depends(get_current_user)):
+def create_bin(body: BinIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -206,7 +205,7 @@ def create_bin(body: BinIn, db=Depends(get_db), user=Depends(get_current_user)):
 
 
 @router.post("/readings", status_code=201)
-def ingest_readings(body: BulkReadingsIn, db=Depends(get_db), user=Depends(get_current_user)):
+def ingest_readings(body: BulkReadingsIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -225,7 +224,7 @@ def ingest_readings(body: BulkReadingsIn, db=Depends(get_db), user=Depends(get_c
 
 
 @router.get("/readings/{bin_id}")
-def bin_readings(bin_id: int, hours: int = 48, db=Depends(get_db), user=Depends(get_current_user)):
+def bin_readings(bin_id: int, hours: int = 48, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -243,7 +242,7 @@ def bin_readings(bin_id: int, hours: int = 48, db=Depends(get_db), user=Depends(
 
 
 @router.get("/dashboard")
-def dashboard(db=Depends(get_db), user=Depends(get_current_user)):
+def dashboard(db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -271,7 +270,7 @@ def dashboard(db=Depends(get_db), user=Depends(get_current_user)):
 
 
 @router.get("/alerts")
-def list_alerts(acknowledged: Optional[bool] = None, db=Depends(get_db), user=Depends(get_current_user)):
+def list_alerts(acknowledged: Optional[bool] = None, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -291,7 +290,7 @@ def list_alerts(acknowledged: Optional[bool] = None, db=Depends(get_db), user=De
 
 
 @router.patch("/alerts/{alert_id}/acknowledge")
-def ack_alert(alert_id: int, acknowledged_by: Optional[str] = None, db=Depends(get_db), user=Depends(get_current_user)):
+def ack_alert(alert_id: int, acknowledged_by: Optional[str] = None, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -305,7 +304,7 @@ def ack_alert(alert_id: int, acknowledged_by: Optional[str] = None, db=Depends(g
 
 
 @router.post("/aeration-log", status_code=201)
-def log_aeration(body: AerationLogIn, db=Depends(get_db), user=Depends(get_current_user)):
+def log_aeration(body: AerationLogIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -321,7 +320,7 @@ def log_aeration(body: AerationLogIn, db=Depends(get_db), user=Depends(get_curre
 
 
 @router.get("/aeration-log")
-def get_aeration_log(bin_id: Optional[int] = None, db=Depends(get_db), user=Depends(get_current_user)):
+def get_aeration_log(bin_id: Optional[int] = None, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -338,7 +337,7 @@ def equilibrium(
     commodity: str,
     temp_c: float,
     humidity_pct: float,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     """Calculate equilibrium moisture content for safe storage."""
@@ -371,7 +370,7 @@ class WebhookReadingIn(BaseModel):
 
 
 @router.post("/webhook/readings", status_code=201)
-def webhook_readings(bin_id: int, token: str, body: WebhookReadingIn, db=Depends(get_db)):
+def webhook_readings(bin_id: int, token: str, body: WebhookReadingIn, db=Depends(get_raw_conn)):
     """IoT device endpoint — no JWT needed, authenticates via per-bin webhook token."""
     _ensure_tables(db)
     cur = db.cursor()
@@ -394,7 +393,7 @@ def webhook_readings(bin_id: int, token: str, body: WebhookReadingIn, db=Depends
 
 
 @router.patch("/bins/{bin_id}/webhook-token")
-def set_webhook_token(bin_id: int, token: str, db=Depends(get_db), user=Depends(get_current_user)):
+def set_webhook_token(bin_id: int, token: str, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     """Generate or update the webhook token for an IoT-connected bin."""
     _ensure_tables(db)
     bid = user["BusinessID"]

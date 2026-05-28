@@ -1,15 +1,14 @@
-from fastapi import APIRouter, Depends
+﻿from fastapi import APIRouter, Depends
 from typing import Optional
 from datetime import date, datetime
 from dateutil.relativedelta import relativedelta
-import pyodbc
-from dependencies import get_db, get_current_user
+from dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/cash-flow", tags=["cash_flow"])
 _ddl_done = False
 
 
-def _ensure_tables(db: pyodbc.Connection):
+def _ensure_tables(db):
     global _ddl_done
     if _ddl_done:
         return
@@ -41,7 +40,7 @@ def _month_key(d) -> str:
 @router.get("/forecast")
 def forecast(
     months: int = 12,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     """
@@ -163,7 +162,7 @@ def forecast(
 def list_entries(
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     _ensure_tables(db)
@@ -188,7 +187,7 @@ class EntryIn(BaseModel):
 
 
 @router.post("/entries", status_code=201)
-def create_entry(body: EntryIn, db=Depends(get_db), user=Depends(get_current_user)):
+def create_entry(body: EntryIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -202,7 +201,7 @@ def create_entry(body: EntryIn, db=Depends(get_db), user=Depends(get_current_use
 
 
 @router.delete("/entries/{entry_id}")
-def delete_entry(entry_id: int, db=Depends(get_db), user=Depends(get_current_user)):
+def delete_entry(entry_id: int, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()

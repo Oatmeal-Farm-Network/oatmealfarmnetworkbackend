@@ -1,9 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
+﻿from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, timedelta
-import pyodbc
-from dependencies import get_db, get_current_user
+from dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/iot", tags=["iot_greenhouse"])
 
@@ -12,7 +11,7 @@ _ddl_done = False
 SENSOR_TYPES = {"temperature", "humidity", "light", "moisture", "co2", "ph"}
 
 
-def _ensure_tables(db: pyodbc.Connection):
+def _ensure_tables(db):
     global _ddl_done
     if _ddl_done:
         return
@@ -136,7 +135,7 @@ def _check_thresholds(db, bid: int, sensor_id: int, value: float, unit: Optional
 
 
 @router.get("/sensors")
-def list_sensors(zone: Optional[str] = None, sensor_type: Optional[str] = None, db=Depends(get_db), user=Depends(get_current_user)):
+def list_sensors(zone: Optional[str] = None, sensor_type: Optional[str] = None, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cursor = db.cursor()
@@ -152,7 +151,7 @@ def list_sensors(zone: Optional[str] = None, sensor_type: Optional[str] = None, 
 
 
 @router.post("/sensors", status_code=201)
-def create_sensor(body: SensorIn, db=Depends(get_db), user=Depends(get_current_user)):
+def create_sensor(body: SensorIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     if body.sensor_type not in SENSOR_TYPES:
@@ -169,7 +168,7 @@ def create_sensor(body: SensorIn, db=Depends(get_db), user=Depends(get_current_u
 
 
 @router.patch("/sensors/{sensor_id}")
-def update_sensor(sensor_id: int, body: SensorUpdate, db=Depends(get_db), user=Depends(get_current_user)):
+def update_sensor(sensor_id: int, body: SensorUpdate, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cursor = db.cursor()
@@ -192,7 +191,7 @@ def update_sensor(sensor_id: int, body: SensorUpdate, db=Depends(get_db), user=D
 
 
 @router.post("/readings", status_code=201)
-def ingest_readings(body: BulkReadingsIn, db=Depends(get_db), user=Depends(get_current_user)):
+def ingest_readings(body: BulkReadingsIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cursor = db.cursor()
@@ -213,7 +212,7 @@ def ingest_readings(body: BulkReadingsIn, db=Depends(get_db), user=Depends(get_c
 def sensor_readings(
     sensor_id: int,
     hours: int = 24,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     _ensure_tables(db)
@@ -234,7 +233,7 @@ def sensor_readings(
 
 
 @router.get("/dashboard")
-def dashboard(db=Depends(get_db), user=Depends(get_current_user)):
+def dashboard(db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cursor = db.cursor()
@@ -280,7 +279,7 @@ def sensor_trends(
     sensor_type: Optional[str] = None,
     zone: Optional[str] = None,
     hours: int = 48,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     _ensure_tables(db)
@@ -319,7 +318,7 @@ def sensor_trends(
 def list_alerts(
     acknowledged: Optional[bool] = None,
     severity: Optional[str] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     _ensure_tables(db)
@@ -348,7 +347,7 @@ def list_alerts(
 
 
 @router.patch("/alerts/{alert_id}/acknowledge")
-def acknowledge_alert(alert_id: int, body: AlertAck, db=Depends(get_db), user=Depends(get_current_user)):
+def acknowledge_alert(alert_id: int, body: AlertAck, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cursor = db.cursor()
@@ -364,7 +363,7 @@ def acknowledge_alert(alert_id: int, body: AlertAck, db=Depends(get_db), user=De
 
 
 @router.get("/thresholds")
-def list_thresholds(sensor_id: Optional[int] = None, db=Depends(get_db), user=Depends(get_current_user)):
+def list_thresholds(sensor_id: Optional[int] = None, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cursor = db.cursor()
@@ -385,7 +384,7 @@ def list_thresholds(sensor_id: Optional[int] = None, db=Depends(get_db), user=De
 
 
 @router.put("/thresholds")
-def upsert_threshold(body: ThresholdIn, db=Depends(get_db), user=Depends(get_current_user)):
+def upsert_threshold(body: ThresholdIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cursor = db.cursor()

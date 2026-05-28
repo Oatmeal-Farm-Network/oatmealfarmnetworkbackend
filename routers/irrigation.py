@@ -1,9 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
+﻿from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date, datetime
-import pyodbc
-from dependencies import get_db, get_current_user
+from dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/irrigation", tags=["irrigation"])
 _ddl_done = False
@@ -12,7 +11,7 @@ IRRIGATION_TYPES = ["drip", "sprinkler", "pivot", "flood", "furrow", "subsurface
 WATER_SOURCES = ["bore", "dam", "river", "canal", "municipal", "recycled", "rainwater"]
 
 
-def _ensure_tables(db: pyodbc.Connection):
+def _ensure_tables(db):
     global _ddl_done
     if _ddl_done:
         return
@@ -127,7 +126,7 @@ class ScheduleIn(BaseModel):
 
 
 @router.get("/zones")
-def list_zones(db=Depends(get_db), user=Depends(get_current_user)):
+def list_zones(db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -147,7 +146,7 @@ def list_zones(db=Depends(get_db), user=Depends(get_current_user)):
 
 
 @router.post("/zones", status_code=201)
-def create_zone(body: ZoneIn, db=Depends(get_db), user=Depends(get_current_user)):
+def create_zone(body: ZoneIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -165,7 +164,7 @@ def create_zone(body: ZoneIn, db=Depends(get_db), user=Depends(get_current_user)
 
 
 @router.post("/zones/{zone_id}/events", status_code=201)
-def log_event(zone_id: int, body: EventIn, db=Depends(get_db), user=Depends(get_current_user)):
+def log_event(zone_id: int, body: EventIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -198,7 +197,7 @@ def log_event(zone_id: int, body: EventIn, db=Depends(get_db), user=Depends(get_
 
 
 @router.get("/zones/{zone_id}/events")
-def zone_events(zone_id: int, days: int = 30, db=Depends(get_db), user=Depends(get_current_user)):
+def zone_events(zone_id: int, days: int = 30, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -212,7 +211,7 @@ def zone_events(zone_id: int, days: int = 30, db=Depends(get_db), user=Depends(g
 
 
 @router.post("/zones/{zone_id}/moisture", status_code=201)
-def log_moisture(zone_id: int, body: MoistureIn, db=Depends(get_db), user=Depends(get_current_user)):
+def log_moisture(zone_id: int, body: MoistureIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -230,7 +229,7 @@ def log_moisture(zone_id: int, body: MoistureIn, db=Depends(get_db), user=Depend
 
 
 @router.post("/webhook/zones/{zone_id}/moisture", status_code=201)
-def webhook_moisture(zone_id: int, token: str, body: MoistureIn, db=Depends(get_db)):
+def webhook_moisture(zone_id: int, token: str, body: MoistureIn, db=Depends(get_raw_conn)):
     """IoT soil moisture sensor endpoint — token auth, no JWT."""
     _ensure_tables(db)
     cur = db.cursor()
@@ -250,7 +249,7 @@ def webhook_moisture(zone_id: int, token: str, body: MoistureIn, db=Depends(get_
 
 
 @router.patch("/zones/{zone_id}/webhook-token")
-def set_webhook_token(zone_id: int, token: str, db=Depends(get_db), user=Depends(get_current_user)):
+def set_webhook_token(zone_id: int, token: str, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -263,7 +262,7 @@ def set_webhook_token(zone_id: int, token: str, db=Depends(get_db), user=Depends
 
 
 @router.get("/dashboard")
-def dashboard(db=Depends(get_db), user=Depends(get_current_user)):
+def dashboard(db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -305,7 +304,7 @@ def dashboard(db=Depends(get_db), user=Depends(get_current_user)):
 def water_budget(
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     _ensure_tables(db)

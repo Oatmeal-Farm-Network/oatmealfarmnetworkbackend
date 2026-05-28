@@ -1,9 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
+﻿from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date, datetime
-import pyodbc
-from dependencies import get_db, get_current_user
+from dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/field-activity", tags=["field_activity"])
 _ddl_done = False
@@ -15,7 +14,7 @@ ACTIVITY_TYPES = [
 ]
 
 
-def _ensure_tables(db: pyodbc.Connection):
+def _ensure_tables(db):
     global _ddl_done
     if _ddl_done:
         return
@@ -77,7 +76,7 @@ class ActivityIn(BaseModel):
 
 
 @router.post("/activities", status_code=201)
-def create_activity(body: ActivityIn, db=Depends(get_db), user=Depends(get_current_user)):
+def create_activity(body: ActivityIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -106,7 +105,7 @@ def list_activities(
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
     limit: int = 200,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     _ensure_tables(db)
@@ -132,7 +131,7 @@ def list_activities(
 
 
 @router.delete("/activities/{activity_id}")
-def delete_activity(activity_id: int, db=Depends(get_db), user=Depends(get_current_user)):
+def delete_activity(activity_id: int, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -142,7 +141,7 @@ def delete_activity(activity_id: int, db=Depends(get_db), user=Depends(get_curre
 
 
 @router.get("/by-field")
-def by_field(db=Depends(get_db), user=Depends(get_current_user)):
+def by_field(db=Depends(get_raw_conn), user=Depends(get_current_user)):
     """Activity count and latest date per field for the current year."""
     _ensure_tables(db)
     bid = user["BusinessID"]
@@ -166,7 +165,7 @@ def by_field(db=Depends(get_db), user=Depends(get_current_user)):
 @router.get("/timeline")
 def timeline(
     days: int = 90,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     """Recent activities grouped by date, most recent first."""
@@ -188,7 +187,7 @@ def timeline(
 
 
 @router.get("/summary")
-def summary(season: Optional[int] = None, db=Depends(get_db), user=Depends(get_current_user)):
+def summary(season: Optional[int] = None, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     year = season or datetime.utcnow().year

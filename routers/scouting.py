@@ -1,9 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
+﻿from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date, datetime
-import pyodbc
-from dependencies import get_db, get_current_user
+from dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/scouting", tags=["scouting"])
 _ddl_done = False
@@ -12,7 +11,7 @@ CATEGORIES = ["pest", "disease", "weed", "nutrient_deficiency", "other"]
 SEVERITIES = {0: "None", 1: "Trace", 2: "Low", 3: "Moderate", 4: "High", 5: "Critical"}
 
 
-def _ensure_tables(db: pyodbc.Connection):
+def _ensure_tables(db):
     global _ddl_done
     if _ddl_done:
         return
@@ -94,7 +93,7 @@ class RecordIn(BaseModel):
 
 
 @router.post("/records", status_code=201)
-def create_record(body: RecordIn, db=Depends(get_db), user=Depends(get_current_user)):
+def create_record(body: RecordIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -133,7 +132,7 @@ def list_records(
     from_date: Optional[date] = None,
     spray_recommended: Optional[bool] = None,
     limit: int = 100,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     _ensure_tables(db)
@@ -163,7 +162,7 @@ def list_records(
 
 
 @router.get("/records/{record_id}")
-def get_record(record_id: int, db=Depends(get_db), user=Depends(get_current_user)):
+def get_record(record_id: int, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -180,7 +179,7 @@ def get_record(record_id: int, db=Depends(get_db), user=Depends(get_current_user
 
 
 @router.patch("/records/{record_id}/complete")
-def complete_record(record_id: int, linked_spray_id: Optional[int] = None, db=Depends(get_db), user=Depends(get_current_user)):
+def complete_record(record_id: int, linked_spray_id: Optional[int] = None, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -194,7 +193,7 @@ def complete_record(record_id: int, linked_spray_id: Optional[int] = None, db=De
 
 
 @router.get("/active-threats")
-def active_threats(db=Depends(get_db), user=Depends(get_current_user)):
+def active_threats(db=Depends(get_raw_conn), user=Depends(get_current_user)):
     """Return high/critical severity observations from the last 30 days."""
     _ensure_tables(db)
     bid = user["BusinessID"]
@@ -213,7 +212,7 @@ def active_threats(db=Depends(get_db), user=Depends(get_current_user)):
 
 
 @router.get("/alerts")
-def list_alerts(db=Depends(get_db), user=Depends(get_current_user)):
+def list_alerts(db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -226,7 +225,7 @@ def list_alerts(db=Depends(get_db), user=Depends(get_current_user)):
 
 
 @router.patch("/alerts/{alert_id}/acknowledge")
-def ack_alert(alert_id: int, db=Depends(get_db), user=Depends(get_current_user)):
+def ack_alert(alert_id: int, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -237,7 +236,7 @@ def ack_alert(alert_id: int, db=Depends(get_db), user=Depends(get_current_user))
 
 
 @router.get("/summary")
-def summary(season: Optional[str] = None, db=Depends(get_db), user=Depends(get_current_user)):
+def summary(season: Optional[str] = None, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     year = int(season) if season else date.today().year

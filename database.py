@@ -49,3 +49,18 @@ def get_db_cursor():
         login_timeout=10,
     )
     return conn.cursor(as_dict=True)
+
+
+def get_raw_conn():
+    conn = pymssql.connect(
+        server=os.getenv("DB_SERVER"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        database=os.getenv("DB_NAME"),
+        timeout=30,
+        login_timeout=15,
+    )
+    try:
+        yield conn
+    finally:
+        conn.close()

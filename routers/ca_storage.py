@@ -1,9 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
+﻿from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date, datetime
-import pyodbc
-from dependencies import get_db, get_current_user
+from dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/ca-storage", tags=["ca_storage"])
 _ddl_done = False
@@ -30,7 +29,7 @@ CA_PROTOCOLS = {
 ALERT_TYPES = ["o2_drift", "co2_drift", "temp_drift", "humidity_drift", "ethylene_high", "seal_breach"]
 
 
-def _ensure_tables(db: pyodbc.Connection):
+def _ensure_tables(db):
     global _ddl_done
     if _ddl_done:
         return
@@ -205,7 +204,7 @@ def _check_ca_alerts(db, bid: int, room_id: int, reading: ReadingIn):
 
 
 @router.get("/rooms")
-def list_rooms(db=Depends(get_db), user=Depends(get_current_user)):
+def list_rooms(db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -215,7 +214,7 @@ def list_rooms(db=Depends(get_db), user=Depends(get_current_user)):
 
 
 @router.post("/rooms", status_code=201)
-def create_room(body: RoomIn, db=Depends(get_db), user=Depends(get_current_user)):
+def create_room(body: RoomIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -232,7 +231,7 @@ def create_room(body: RoomIn, db=Depends(get_db), user=Depends(get_current_user)
 
 
 @router.patch("/rooms/{room_id}")
-def update_room(room_id: int, body: RoomUpdate, db=Depends(get_db), user=Depends(get_current_user)):
+def update_room(room_id: int, body: RoomUpdate, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -255,7 +254,7 @@ def update_room(room_id: int, body: RoomUpdate, db=Depends(get_db), user=Depends
 
 
 @router.post("/rooms/{room_id}/readings", status_code=201)
-def ingest_readings(room_id: int, body: ReadingIn, db=Depends(get_db), user=Depends(get_current_user)):
+def ingest_readings(room_id: int, body: ReadingIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -275,7 +274,7 @@ def ingest_readings(room_id: int, body: ReadingIn, db=Depends(get_db), user=Depe
 
 
 @router.get("/rooms/{room_id}/readings")
-def room_readings(room_id: int, hours: int = 48, db=Depends(get_db), user=Depends(get_current_user)):
+def room_readings(room_id: int, hours: int = 48, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -289,7 +288,7 @@ def room_readings(room_id: int, hours: int = 48, db=Depends(get_db), user=Depend
 
 
 @router.get("/dashboard")
-def dashboard(db=Depends(get_db), user=Depends(get_current_user)):
+def dashboard(db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -319,7 +318,7 @@ def dashboard(db=Depends(get_db), user=Depends(get_current_user)):
 
 
 @router.get("/alerts")
-def list_alerts(acknowledged: Optional[bool] = None, db=Depends(get_db), user=Depends(get_current_user)):
+def list_alerts(acknowledged: Optional[bool] = None, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -339,7 +338,7 @@ def list_alerts(acknowledged: Optional[bool] = None, db=Depends(get_db), user=De
 
 
 @router.patch("/alerts/{alert_id}/acknowledge")
-def ack_alert(alert_id: int, acknowledged_by: Optional[str] = None, db=Depends(get_db), user=Depends(get_current_user)):
+def ack_alert(alert_id: int, acknowledged_by: Optional[str] = None, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -352,7 +351,7 @@ def ack_alert(alert_id: int, acknowledged_by: Optional[str] = None, db=Depends(g
 
 
 @router.post("/rooms/{room_id}/lots", status_code=201)
-def assign_lot(room_id: int, body: LotAssignIn, db=Depends(get_db), user=Depends(get_current_user)):
+def assign_lot(room_id: int, body: LotAssignIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -381,7 +380,7 @@ def update_lot_assignment(
     exit_weight_kg: Optional[float] = None,
     quality_notes: Optional[str] = None,
     status: Optional[str] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     _ensure_tables(db)
@@ -403,7 +402,7 @@ def update_lot_assignment(
 
 
 @router.get("/rooms/{room_id}/lots")
-def room_lots(room_id: int, db=Depends(get_db), user=Depends(get_current_user)):
+def room_lots(room_id: int, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -427,7 +426,7 @@ def get_protocol(commodity: str):
 
 
 @router.post("/webhook/rooms/{room_id}/readings", status_code=201)
-def webhook_room_reading(room_id: int, token: str, body: ReadingIn, db=Depends(get_db)):
+def webhook_room_reading(room_id: int, token: str, body: ReadingIn, db=Depends(get_raw_conn)):
     """IoT sensor endpoint — no JWT, authenticates via per-room webhook token."""
     _ensure_tables(db)
     cur = db.cursor()
@@ -452,7 +451,7 @@ def webhook_room_reading(room_id: int, token: str, body: ReadingIn, db=Depends(g
 
 
 @router.patch("/rooms/{room_id}/webhook-token")
-def set_room_webhook_token(room_id: int, token: str, db=Depends(get_db), user=Depends(get_current_user)):
+def set_room_webhook_token(room_id: int, token: str, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     """Set or rotate the IoT webhook token for a CA room."""
     _ensure_tables(db)
     bid = user["BusinessID"]

@@ -1,9 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
+﻿from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
-import pyodbc
-from dependencies import get_db, get_current_user
+from dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/harvest-bins", tags=["harvest_bins"])
 _ddl_done = False
@@ -15,7 +14,7 @@ STAGES = [
 BIN_TYPES = ["standard", "macro", "lug", "half_bin", "pallet_bin", "field_crate"]
 
 
-def _ensure_tables(db: pyodbc.Connection):
+def _ensure_tables(db):
     global _ddl_done
     if _ddl_done:
         return
@@ -112,7 +111,7 @@ def list_bins(
     variety: Optional[str] = None,
     lot_id: Optional[int] = None,
     stage: Optional[str] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     _ensure_tables(db)
@@ -134,7 +133,7 @@ def list_bins(
 
 
 @router.post("/bins", status_code=201)
-def create_bin(body: BinIn, db=Depends(get_db), user=Depends(get_current_user)):
+def create_bin(body: BinIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -153,7 +152,7 @@ def create_bin(body: BinIn, db=Depends(get_db), user=Depends(get_current_user)):
 
 
 @router.post("/bins/bulk-register", status_code=201)
-def bulk_register(body: BulkRegisterIn, db=Depends(get_db), user=Depends(get_current_user)):
+def bulk_register(body: BulkRegisterIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -175,7 +174,7 @@ def bulk_register(body: BulkRegisterIn, db=Depends(get_db), user=Depends(get_cur
 
 
 @router.get("/bins/{barcode}")
-def get_bin_by_barcode(barcode: str, db=Depends(get_db), user=Depends(get_current_user)):
+def get_bin_by_barcode(barcode: str, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -206,7 +205,7 @@ def get_bin_by_barcode(barcode: str, db=Depends(get_db), user=Depends(get_curren
 
 
 @router.post("/bins/{barcode}/step", status_code=201)
-def record_step(barcode: str, body: StepIn, db=Depends(get_db), user=Depends(get_current_user)):
+def record_step(barcode: str, body: StepIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     if body.stage not in STAGES:
@@ -231,7 +230,7 @@ def record_step(barcode: str, body: StepIn, db=Depends(get_db), user=Depends(get
 
 
 @router.post("/bins/{barcode}/package", status_code=201)
-def record_package(barcode: str, body: PackageIn, db=Depends(get_db), user=Depends(get_current_user)):
+def record_package(barcode: str, body: PackageIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -251,7 +250,7 @@ def record_package(barcode: str, body: PackageIn, db=Depends(get_db), user=Depen
 
 
 @router.get("/lot/{lot_id}/bins")
-def lot_bins(lot_id: int, db=Depends(get_db), user=Depends(get_current_user)):
+def lot_bins(lot_id: int, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -270,7 +269,7 @@ def lot_bins(lot_id: int, db=Depends(get_db), user=Depends(get_current_user)):
 
 
 @router.get("/dashboard")
-def dashboard(db=Depends(get_db), user=Depends(get_current_user)):
+def dashboard(db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()

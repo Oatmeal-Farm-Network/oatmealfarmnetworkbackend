@@ -1,9 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
+﻿from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date, datetime
-import pyodbc
-from dependencies import get_db, get_current_user
+from dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/spray", tags=["spray_applications"])
 _ddl_done = False
@@ -13,7 +12,7 @@ APPLICATION_METHODS = ["ground_boom", "air_blast", "aerial", "banded", "hand_spr
 ENTRY_RESTRICTION = [0, 4, 12, 24, 48, 72, 168]  # REI hours
 
 
-def _ensure_tables(db: pyodbc.Connection):
+def _ensure_tables(db):
     global _ddl_done
     if _ddl_done:
         return
@@ -136,7 +135,7 @@ class ApplicationIn(BaseModel):
 # ── Chemical product library ──────────────────────────────────────────────────
 
 @router.get("/products")
-def list_products(db=Depends(get_db), user=Depends(get_current_user)):
+def list_products(db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -146,7 +145,7 @@ def list_products(db=Depends(get_db), user=Depends(get_current_user)):
 
 
 @router.post("/products", status_code=201)
-def create_product(body: ProductIn, db=Depends(get_db), user=Depends(get_current_user)):
+def create_product(body: ProductIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -165,7 +164,7 @@ def create_product(body: ProductIn, db=Depends(get_db), user=Depends(get_current
 
 
 @router.patch("/products/{product_id}")
-def update_product(product_id: int, body: ProductIn, db=Depends(get_db), user=Depends(get_current_user)):
+def update_product(product_id: int, body: ProductIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -188,7 +187,7 @@ def update_product(product_id: int, body: ProductIn, db=Depends(get_db), user=De
 # ── Spray applications ────────────────────────────────────────────────────────
 
 @router.post("/applications", status_code=201)
-def create_application(body: ApplicationIn, db=Depends(get_db), user=Depends(get_current_user)):
+def create_application(body: ApplicationIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -245,7 +244,7 @@ def list_applications(
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
     limit: int = 100,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     _ensure_tables(db)
@@ -274,7 +273,7 @@ def list_applications(
 
 
 @router.get("/applications/{app_id}")
-def get_application(app_id: int, db=Depends(get_db), user=Depends(get_current_user)):
+def get_application(app_id: int, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -296,7 +295,7 @@ def get_application(app_id: int, db=Depends(get_db), user=Depends(get_current_us
 
 
 @router.patch("/applications/{app_id}/complete")
-def mark_complete(app_id: int, db=Depends(get_db), user=Depends(get_current_user)):
+def mark_complete(app_id: int, db=Depends(get_raw_conn), user=Depends(get_current_user)):
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
@@ -312,7 +311,7 @@ def mark_complete(app_id: int, db=Depends(get_db), user=Depends(get_current_user
 def phi_calendar(
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     """Return applications with upcoming PHI dates for harvest planning."""
@@ -337,7 +336,7 @@ def phi_calendar(
 def summary(
     field_id: Optional[str] = None,
     season: Optional[str] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     _ensure_tables(db)

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Report & Export Center — returns CSV downloads for key farm records.
 No new tables needed; aggregates existing data.
 """
@@ -7,10 +7,9 @@ import io
 from datetime import date, datetime
 from typing import Optional
 
-import pyodbc
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
-from dependencies import get_db, get_current_user
+from dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
@@ -32,7 +31,7 @@ def _csv_response(rows: list, headers: list, filename: str) -> StreamingResponse
 def spray_register(
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     """Chemical spray register — all applications with products in date range."""
@@ -71,7 +70,7 @@ def spray_register(
 def soil_tests_export(
     field_id: Optional[str] = None,
     from_date: Optional[date] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     bid = user["BusinessID"]
@@ -110,7 +109,7 @@ def soil_tests_export(
 def cash_flow_export(
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     bid = user["BusinessID"]
@@ -135,7 +134,7 @@ def cash_flow_export(
 def equipment_service_export(
     equipment_id: Optional[int] = None,
     from_date: Optional[date] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     bid = user["BusinessID"]
@@ -174,7 +173,7 @@ def equipment_service_export(
 @router.get("/yield-variance")
 def yield_variance_export(
     season: Optional[str] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     bid = user["BusinessID"]
@@ -212,7 +211,7 @@ def field_activity_export(
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
     field_id: Optional[str] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     bid = user["BusinessID"]
@@ -249,7 +248,7 @@ def field_activity_export(
 def scouting_export(
     from_date: Optional[date] = None,
     to_date: Optional[date] = None,
-    db=Depends(get_db),
+    db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
     bid = user["BusinessID"]
