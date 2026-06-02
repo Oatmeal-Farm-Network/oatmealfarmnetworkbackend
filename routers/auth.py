@@ -1085,6 +1085,9 @@ class BusinessMemberUpdateRequest(BaseModel):
     AccessLevelID: int = None
     Role: str = None
     Active: int = None
+    PeopleFirstName: str = None
+    PeopleLastName: str = None
+    PeopleEmail: str = None
 
 
 def _require_business_owner(db: Session, people_id: int, business_id: int):
@@ -1212,13 +1215,45 @@ def update_business_member(business_access_id: int, payload: BusinessMemberUpdat
         elif payload.Active == 1:
             access.RevokedAt = None
 
+    # Update the linked person's name/email if provided. These live on the
+    # People record (shared across the person's whole account), not BusinessAccess.
+    person = None
+    if (payload.PeopleFirstName is not None
+            or payload.PeopleLastName is not None
+            or payload.PeopleEmail is not None):
+        person = db.query(models.People).filter(
+            models.People.PeopleID == access.PeopleID
+        ).first()
+        if person:
+            if payload.PeopleFirstName is not None:
+                person.PeopleFirstName = payload.PeopleFirstName.strip()
+            if payload.PeopleLastName is not None:
+                person.PeopleLastName = payload.PeopleLastName.strip()
+            if payload.PeopleEmail is not None:
+                new_email = payload.PeopleEmail.strip().lower()
+                if new_email and new_email != (person.PeopleEmail or "").lower():
+                    clash = db.query(models.People).filter(
+                        models.People.PeopleEmail == new_email,
+                        models.People.PeopleID != person.PeopleID,
+                    ).first()
+                    if clash:
+                        raise HTTPException(status_code=409, detail="That email is already in use by another account.")
+                    person.PeopleEmail = new_email
+
     db.commit()
     db.refresh(access)
+    if person is None:
+        person = db.query(models.People).filter(
+            models.People.PeopleID == access.PeopleID
+        ).first()
     return {
         "BusinessAccessID": access.BusinessAccessID,
         "AccessLevelID": access.AccessLevelID,
         "Role": access.Role,
         "Active": access.Active,
+        "PeopleFirstName": person.PeopleFirstName if person else None,
+        "PeopleLastName": person.PeopleLastName if person else None,
+        "PeopleEmail": person.PeopleEmail if person else None,
     }
 
 
