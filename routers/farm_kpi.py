@@ -588,6 +588,40 @@ def kpi_dashboard(business_id: int = Query(...), db: Session = Depends(get_db)):
     }
 
 
+@router.get("/summary")
+def kpi_summary(business_id: int = Query(...), db: Session = Depends(get_db)):
+    """Lightweight operations + alert summary for the account home dashboard."""
+    _ensure_tables(db)
+    try:
+        alert_counts = db.execute(text("""
+            SELECT
+                SUM(CASE WHEN Severity='critical' THEN 1 ELSE 0 END) AS critical_count
+            FROM FarmAlert
+            WHERE BusinessID=:bid AND IsRead=0 AND IsDismissed=0
+              AND (ExpiresAt IS NULL OR ExpiresAt > GETDATE())
+        """), {"bid": business_id}).fetchone()
+        active_pests = db.execute(text(
+            "SELECT COUNT(*) FROM FarmPestObservation WHERE BusinessID=:bid AND Status IN ('observed','monitoring')"
+        ), {"bid": business_id}).scalar() or 0
+        low_stock = db.execute(text(
+            "SELECT COUNT(*) FROM FarmInput WHERE BusinessID=:bid AND IsActive=1 AND MinStockAlert IS NOT NULL AND CurrentStock<=MinStockAlert"
+        ), {"bid": business_id}).scalar() or 0
+        overdue_maint = db.execute(text(
+            "SELECT COUNT(*) FROM FarmMaintenanceSchedule s JOIN FarmAsset a ON a.AssetID=s.AssetID"
+            " WHERE s.BusinessID=:bid AND s.IsActive=1 AND s.NextDueDate<GETDATE() AND a.IsActive=1"
+        ), {"bid": business_id}).scalar() or 0
+    except Exception:
+        return {"operations": {}, "alerts": {}}
+    return {
+        "operations": {
+            "active_pests":        active_pests,
+            "low_stock_inputs":    low_stock,
+            "overdue_maintenance": overdue_maint,
+        },
+        "alerts": {"critical": alert_counts.critical_count or 0 if alert_counts else 0},
+    }
+
+
 # ── Serializers ───────────────────────────────────────────────────────────────
 
 def _kpi_status(kpi) -> str:

@@ -104,8 +104,11 @@ def _ensure(db: Session):
         )""",
     ]
     for s in stmts:
-        db.execute(text(s))
-    db.commit()
+        try:
+            db.execute(text(s))
+            db.commit()
+        except Exception:
+            db.rollback()
     _ready = True
 
 
