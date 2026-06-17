@@ -1,5 +1,7 @@
 # Saige — AI Agricultural Advisory Assistant
 
+> Part of the [oatmealfarmnetworkbackend](https://github.com/Oatmeal-Farm-Network/oatmealfarmnetworkbackend) repo. For backend setup and how to run the full OFN stack locally, see the [backend README](../README.md) and [docs/SYSTEM.md](../docs/SYSTEM.md).
+
 A conversational AI system that provides farm-specific advice across livestock, crops, weather, and mixed topics. Built with LangGraph, FastAPI, and Google Gemini AI, backed by Firestore RAG and Redis for short-term memory.
 
 ## Table of Contents
@@ -12,8 +14,8 @@ A conversational AI system that provides farm-specific advice across livestock, 
 - [Chat History & Message Buffer](#chat-history--message-buffer)
 - [API Reference](#api-reference)
 - [Configuration](#configuration)
-- [Prerequisites & Installation](#prerequisites--installation)
-- [Running the Application](#running-the-application)
+- [Setup](#setup)
+- [Running Saige](#running-saige)
 - [Technologies Used](#technologies-used)
 - [Security Notes](#security-notes)
 
@@ -40,7 +42,7 @@ Supported advisory domains:
 ## Architecture
 
 ```
-Frontend (Next.js/React)
+Frontend (React/Vite)
         │
         ▼
 FastAPI REST API  (api.py)
@@ -304,7 +306,7 @@ DB_PASSWORD=
 DB_NAME=
 
 # --- API ---
-FRONTEND_URL=http://localhost:3000
+FRONTEND_URL=http://localhost:5173
 ALLOW_ALL_ORIGINS=false
 
 # --- Safety controls ---
@@ -344,44 +346,28 @@ SYNC_INTERVAL_HOURS=24
 | `MAX_MESSAGE_CHARS` | `4000` | Max chars per user message |
 | `RATE_LIMIT_MAX_REQUESTS` | `20` | Rate limit — max requests per window |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate limit — window size in seconds |
-| `FRONTEND_URL` | `http://localhost:3000` | Allowed CORS origin |
+| `FRONTEND_URL` | `http://localhost:5173` | Allowed CORS origin |
 | `ALLOW_ALL_ORIGINS` | `false` | Allow all CORS origins |
 
 ---
 
-## Prerequisites & Installation
+## Setup
 
 ### Prerequisites
 
 - Python 3.11+
-- Redis 7+ (or GCP Memorystore)
-- Google Cloud project with Firestore and Vertex AI enabled (for RAG)
-- Node.js 18+ (for the frontend)
+- Redis 7+ (or GCP Memorystore) — `docker compose up -d redis` in this directory
+- Google Cloud project with Firestore and Vertex AI enabled (for RAG), or `GOOGLE_API_KEY` for the Developer API
 
-### Backend Setup
+### Install
 
-```bash
-# From the repo root
-python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-
-# Copy and fill in your env vars
-cp .env.example .env
-```
-
-### Frontend Setup
-
-```bash
-cd frontend
-npm install
-```
+Dependencies are installed from the **repo root** (`pip install -r requirements.txt`). Create a `.env` file in this directory (see [Configuration](#configuration) below).
 
 ---
 
-## Running the Application
+## Running Saige
 
-### Backend
+### Standalone
 
 ```bash
 # From the saige/ directory
@@ -390,14 +376,9 @@ uvicorn api:app --reload --port 8000
 
 API available at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`.
 
-### Frontend
+### Mounted under the unified backend
 
-```bash
-cd frontend
-npm run dev
-```
-
-Frontend available at `http://localhost:3000`.
+When running `server_all.py` from the repo root, Saige is served at `/saige/*` (e.g. `http://localhost:8000/saige/health`). See [docs/SYSTEM.md](../docs/SYSTEM.md).
 
 ### Utility Scripts
 
@@ -425,7 +406,7 @@ python sync_embeddings.py
 | Database | Azure SQL / pymssql |
 | Authentication | `python-jose` (JWT HS256 Bearer tokens) |
 | Validation | Pydantic v2 |
-| Frontend | Next.js, React 19, TypeScript, Tailwind CSS |
+| Frontend | React 19, Vite, Tailwind CSS ([frontend repo](https://github.com/Oatmeal-Farm-Network/oatmealfarmnetwork)) |
 
 ---
 
