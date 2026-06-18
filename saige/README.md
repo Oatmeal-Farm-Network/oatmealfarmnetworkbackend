@@ -150,14 +150,14 @@ START → assessment_node ──(complete?)──▶ routing_node
 
 All RAG retrieval uses Firestore vector search with `text-embedding-004` embeddings (top-K = 10).
 
-| Collection constant | Firestore collection | Used by |
-|---|---|---|
-| `LIVESTOCK_KNOWLEDGE_COLLECTION` | `livestock_knowledge` | `livestock_advisory_node` |
-| `PLANT_KNOWLEDGE_COLLECTION` | `plant_knowledge` | `crop_advisory_node` |
-| `BAKASURA_DOCS_COLLECTION` | `bakasura-docs` | `bakasura_advisory_node` |
-| `NEWS_ARTICLES_COLLECTION` | `news_articles` | `news_advisory_node` |
+| Collection constant | Firestore collection | Used by | Purpose |
+|---|---|---|---|
+| `LIVESTOCK_KNOWLEDGE_COLLECTION` | `livestock_knowledge` | `livestock_advisory_node` | Breed info, health, husbandry |
+| `PLANT_KNOWLEDGE_COLLECTION` | `plant_knowledge` | `crop_advisory_node` | Disease ID, soil, agronomy |
+| `BAKASURA_DOCS_COLLECTION` | `bakasura-docs` | `bakasura_advisory_node` | Products, services, equipment |
+| `NEWS_ARTICLES_COLLECTION` | `news_articles` | `news_advisory_node` | Market prices, agricultural news |
 
-`mixed_advisory_node` queries **all three** advisory collections (`livestock_knowledge`, `plant_knowledge`, `bakasura-docs`).
+**Mixed Advisory:** `mixed_advisory_node` queries **all advisory collections** (`livestock_knowledge`, `plant_knowledge`, `bakasura-docs`) to synthesize advice across multiple domains. Example: "My cattle are losing weight and I think it's the new corn I planted" triggers mixed routing to search both livestock and crop knowledge bases.
 
 RAG is enabled only when `FIRESTORE_AVAILABLE` and the full RAG dependency stack (pymssql, VertexAI embeddings) is installed. Both degrade gracefully when unavailable.
 

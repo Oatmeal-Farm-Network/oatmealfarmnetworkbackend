@@ -4,29 +4,202 @@ A comprehensive FastAPI backend for the Oatmeal Farm Network platform, providing
 
 ## Overview
 
-This backend powers the Oatmeal Farm Network platform with modular APIs for:
+This is a comprehensive, enterprise-scale backend for the Oatmeal Farm Network platform—a complete agricultural technology ecosystem serving farmers, agribusinesses, and supply chain participants. It includes **137+ API routers** and **2,000+ endpoints** organized across 15+ major domains.
 
-- **Authentication & User Management** — JWT-based auth, user profiles, password recovery
-- **Farm Operations** — livestock management, crop/plant knowledge, produce tracking, processed foods
-- **Agricultural Services** — weather data, precision agriculture, crop rotation planning
-- **Marketplace** — product catalog, Stripe payments, vendor management
-- **Content Management** — blogging, events, website builder, company features
+**Core capabilities:**
+
+- **Authentication & User Management** — JWT-based auth, user profiles, password recovery, platform subscriptions
+- **Livestock & Animal Management** — breed tracking, herd health, reproduction, meat processing, animal records
+- **Crop & Field Management** — precision agriculture, crop planning, soil testing, yield tracking, pest scouting, irrigation
+- **Harvest & Produce** — produce tracking, harvest lots, cold chain logistics, perishable traceability, grain storage
+- **Marketplace & E-Commerce** — product catalog, equipment rental, Stripe payments, vendor management, farm stand sales
+- **Supply Chain** — delivery routing, supplier management, buyer CRM, procurement, provenance tracking
+- **Events & Community** — multi-event management (auctions, fiber arts, conferences, competitions), sponsorships, vendor fairs
+- **Financial & Accounting** — cash flow, crop budgets, farmer settlement, pricing, ESG reports
+- **Content Management** — website builder, blogging, company features, news, document vault
+- **HR & Operations** — job board, work orders, equipment maintenance, farm safety, notifications
+- **Sustainability** — ESG reporting, certifications, compliance auditing, export regulations
 - **AI Advisory System** — intelligent farm guidance via LangGraph and Google Gemini (`saige/` subdirectory)
 
 ## Project Structure
 
 ```
 .
-├── routers/                         # API endpoint modules (25+ routers)
-│   ├── auth.py                      # JWT authentication
-│   ├── businesses.py                # Business/vendor management
-│   ├── livestock.py                 # Animal management & knowledge
-│   ├── plant_knowledgebase.py       # Crop & plant guidance
-│   ├── produce.py                   # Produce tracking
-│   ├── marketplace.py               # E-commerce operations
-│   ├── weather.py                   # Weather data integration
-│   ├── precision_ag.py              # Precision agriculture tools
-│   └── [20+ more routers]           # See routers/ directory
+├── routers/                         # API endpoint modules (137+ routers organized by domain)
+│   │
+│   ├── Core Business & Operations
+│   │   ├── auth.py                  # JWT authentication
+│   │   ├── businesses.py            # Business/vendor management
+│   │   ├── users.py                 # User profiles & account management
+│   │   ├── dashboard.py             # User dashboards
+│   │   ├── platform_settings.py     # Platform configuration
+│   │   ├── platform_subscriptions.py # Subscription management
+│   │   └── platform_services.py     # Platform services
+│   │
+│   ├── Livestock & Animal Management
+│   │   ├── livestock.py             # Animal management & knowledge base
+│   │   ├── animals.py               # Detailed animal records
+│   │   ├── herd_health.py           # Herd health tracking & reproduction
+│   │   ├── meat.py                  # Meat processing & tracking
+│   │   ├── processed_food.py        # Food processing workflows
+│   │   └── ranches.py               # Ranch/facility management
+│   │
+│   ├── Crops & Plant Management
+│   │   ├── plant_knowledgebase.py   # Crop disease & agronomy guidance
+│   │   ├── crop_planning.py         # Crop planning workflows
+│   │   ├── crop_rotation.py         # Crop rotation optimization
+│   │   ├── crop_summary.py          # Crop status summaries
+│   │   ├── crop_monitor_proxy.py    # Crop monitoring integration
+│   │   ├── crop_budgets.py          # Crop budget planning
+│   │   ├── seed_varieties.py        # Seed & variety management
+│   │   ├── soil_tests.py            # Soil testing & analysis
+│   │   └── chilling_hours.py        # Chilling hour tracking
+│   │
+│   ├── Precision Agriculture & Field Management
+│   │   ├── precision_ag.py          # Core precision AG tools
+│   │   ├── precision_ag_features.py # Advanced PA features
+│   │   ├── field_maturity.py        # Field maturity assessment
+│   │   ├── field_assessment_report.py # Field assessment reports
+│   │   ├── field_health.py          # Field health monitoring
+│   │   ├── field_health_alerts.py   # Health alerts & warnings
+│   │   ├── field_activity.py        # Field activity logging
+│   │   ├── climate_forecast.py      # Weather & climate forecasting
+│   │   ├── weather.py               # Weather data integration
+│   │   ├── irrigation.py            # Irrigation management
+│   │   ├── spray_applications.py    # Pesticide/spray tracking
+│   │   ├── scouting.py              # Field scouting reports
+│   │   ├── harvest_scheduling.py    # Harvest scheduling
+│   │   └── yield_records.py         # Yield tracking & analysis
+│   │
+│   ├── Produce & Harvest Management
+│   │   ├── produce.py               # Produce tracking
+│   │   ├── harvest_lots.py          # Harvest lot management
+│   │   ├── harvest_bins.py          # Harvest bin tracking
+│   │   ├── grain_bin.py             # Grain storage management
+│   │   ├── scale_tickets.py         # Weighing & scale data
+│   │   └── ingredient_knowledgebase.py # Food processing knowledge
+│   │
+│   ├── Cold Chain & Perishables
+│   │   ├── cold_chain.py            # Cold chain logistics
+│   │   ├── perishable_trace.py      # Perishable traceability
+│   │   ├── ca_storage.py            # Controlled atmosphere storage
+│   │   └── chilling_hours.py        # Chilling requirements
+│   │
+│   ├── Marketplace & E-Commerce
+│   │   ├── marketplace.py           # E-commerce operations
+│   │   ├── marketplace_catalog.py   # Product catalog management
+│   │   ├── equipment_marketplace.py # Equipment rental/sales
+│   │   ├── food_wanted.py           # Food sourcing platform
+│   │   ├── sfproducts.py            # San Francisco region products
+│   │   ├── stripe_payments.py       # Stripe payment integration
+│   │   └── price_list.py            # Dynamic pricing
+│   │
+│   ├── Supply Chain & Distribution
+│   │   ├── supply_chain.py          # Supply chain management
+│   │   ├── supply_chain_events.py   # SC event tracking
+│   │   ├── supply_chain_ai.py       # AI-powered SC insights
+│   │   ├── delivery_routes.py       # Delivery routing
+│   │   ├── buyer_crm.py             # Buyer relationship management
+│   │   ├── supplier_directory.py    # Supplier management
+│   │   ├── supplier_scorecard.py    # Supplier performance
+│   │   ├── procurement.py           # Procurement workflows
+│   │   ├── farm_inputs.py           # Input sourcing & inventory
+│   │   ├── farm_stand.py            # Direct farm sales
+│   │   └── provenance.py            # Product provenance tracking
+│   │
+│   ├── Events & Community
+│   │   ├── events.py                # Main event management
+│   │   ├── event_features.py        # Event feature configuration
+│   │   ├── event_registration_cart.py # Registration shopping cart
+│   │   ├── event_checkin.py         # Event check-in
+│   │   ├── event_analytics.py       # Event analytics
+│   │   ├── event_exports.py         # Event data exports
+│   │   ├── event_booth_services.py  # Booth management
+│   │   ├── event_floor_plan.py      # Floor plan visualization
+│   │   ├── event_meals.py           # Event catering/meals
+│   │   ├── event_mailing_list.py    # Event mailing lists
+│   │   ├── event_sponsorship.py     # Sponsorship management
+│   │   ├── event_promo_codes.py     # Promotional codes
+│   │   ├── event_waitlist.py        # Waitlist management
+│   │   ├── event_leads.py           # Lead capture
+│   │   ├── event_testimonials.py    # Testimonials/feedback
+│   │   ├── event_coi.py             # Conflict of interest
+│   │   ├── event_fiber_arts.py      # Fiber arts event
+│   │   ├── event_fleece.py          # Fleece festival
+│   │   ├── event_halter.py          # Halter show event
+│   │   ├── event_auction.py         # Auction event
+│   │   ├── event_vendor_fair.py     # Vendor fair
+│   │   ├── event_dining.py          # Dining event
+│   │   ├── event_farm_tour.py       # Farm tour
+│   │   ├── event_competition.py     # Competition event
+│   │   ├── event_conference.py      # Conference
+│   │   ├── event_broadcast.py       # Live broadcast
+│   │   ├── event_simple.py          # Simple event
+│   │   ├── event_spinoff.py         # Spinoff event
+│   │   ├── my_registrations.py      # User event registrations
+│   │   └── associations.py          # Member associations
+│   │
+│   ├── Financial & Accounting
+│   │   ├── accounting.py            # General accounting
+│   │   ├── cash_flow.py             # Cash flow tracking
+│   │   ├── crop_budgets.py          # Crop budget planning
+│   │   ├── farm_pl.py               # Farm profit & loss
+│   │   ├── farmer_settlement.py     # Farmer payment settlement
+│   │   ├── price_list.py            # Product pricing
+│   │   └── stripe_payments.py       # Payment processing
+│   │
+│   ├── Content & Web Management
+│   │   ├── website_builder.py       # Website builder
+│   │   ├── website_ai.py            # AI-powered website features
+│   │   ├── blog.py                  # Blog management
+│   │   ├── company_features.py      # Company feature pages
+│   │   ├── news.py                  # News & updates
+│   │   ├── scraper_knowledge.py     # Web scraping service
+│   │   ├── recipes_batches.py       # Recipe & batch management
+│   │   └── document_vault.py        # Document storage
+│   │
+│   ├── HR & Administrative
+│   │   ├── hr.py                    # Human resources
+│   │   ├── job_board.py             # Job listings
+│   │   ├── work_orders.py           # Work order management
+│   │   ├── equipment_maintenance.py # Equipment maintenance
+│   │   ├── farm_infrastructure.py   # Infrastructure management
+│   │   ├── farm_safety.py           # Safety management
+│   │   ├── notifications.py         # User notifications
+│   │   └── meetings.py              # Meeting coordination
+│   │
+│   ├── Sustainability & Impact
+│   │   ├── esg_reports.py           # ESG reporting
+│   │   ├── certifications.py        # Organic/certification tracking
+│   │   ├── compliance_audit.py      # Compliance auditing
+│   │   ├── export_compliance.py     # Export regulations
+│   │   └── esci.py                  # Environmental sustainability
+│   │
+│   ├── Advanced Operations
+│   │   ├── csa.py                   # CSA program management
+│   │   ├── csa_advanced.py          # Advanced CSA features
+│   │   ├── land_leasing.py          # Land lease management
+│   │   ├── grants.py                # Grant tracking
+│   │   ├── education.py             # Educational programs
+│   │   ├── mill.py                  # Grain mill operations
+│   │   ├── outgrower.py             # Outgrower program
+│   │   ├── packhouse_qc.py          # Pack house quality control
+│   │   ├── nursery.py               # Plant nursery
+│   │   ├── plant_tagging.py         # Plant identification
+│   │   ├── iot_greenhouse.py        # IoT greenhouse monitoring
+│   │   ├── picker_performance.py    # Harvest worker performance
+│   │   ├── farm_kpi.py              # Farm KPI tracking
+│   │   ├── market_alerts.py         # Market price alerts
+│   │   ├── commodity_history.py     # Commodity price history
+│   │   ├── field_health_alerts.py   # Field health warnings
+│   │   ├── thaiyme.py               # Specialty crop (Thai herbs)
+│   │   ├── food_aggregator.py       # Food aggregation
+│   │   └── reports.py               # Custom reporting
+│   │
+│   └── Misc & Support
+│       ├── forgot_password.py       # Password recovery
+│       ├── services.py              # Platform services
+│       └── nutrients.py             # Nutrient management
 │
 ├── saige/                           # AI Agricultural Advisory System
 │   ├── api.py                       # FastAPI endpoints for Saige
@@ -35,15 +208,34 @@ This backend powers the Oatmeal Farm Network platform with modular APIs for:
 │   ├── rag.py                       # Firestore RAG/vector search
 │   ├── llm.py                       # Google Gemini LLM integration
 │   ├── redis_client.py              # Redis connection & pooling
+│   ├── chat_history.py              # Firestore chat persistence
+│   ├── message_buffer.py            # Redis message buffer
+│   ├── models.py                    # FarmState & Pydantic models
+│   ├── config.py                    # Configuration & feature flags
+│   ├── jwt_auth.py                  # JWT verification
+│   ├── weather.py                   # Weather API integration
+│   ├── database.py                  # Azure SQL helpers
+│   ├── seed_firestore.py            # Firestore data seeding
+│   ├── sync_embeddings.py           # Embedding synchronization
+│   ├── test_*.py                    # Integration & unit tests
 │   └── README.md                    # Full Saige documentation
 │
+├── migrations/                      # Database schema migrations
+│   └── *.sql                        # SQL migration scripts
+│
 ├── main.py                          # FastAPI app initialization & middleware
-├── models.py                        # SQLAlchemy & Pydantic models
+├── models.py                        # SQLAlchemy & Pydantic models (50k+ lines)
 ├── database.py                      # Azure SQL database connection
+├── auth.py                          # Authentication utilities
+├── marketplace_*.py                 # Marketplace utilities
+├── marketplace_stripe.py            # Stripe integration
+├── event_emails.py                  # Event notification emails
+├── external_apis.py                 # Third-party API integrations
 ├── requirements.txt                 # Python dependencies
 ├── Dockerfile                       # Cloud Run deployment
 ├── cloudbuild.yaml                  # GCP Cloud Build pipeline
-└── .env.example                     # Environment variables template
+├── .env.example                     # Environment variables template
+└── server_all.py                    # Unified server launcher
 ```
 
 ## Quick Start
@@ -99,30 +291,32 @@ See [`saige/README.md`](saige/README.md) for full Saige setup and configuration.
 
 All endpoints require JWT authentication via `Authorization: Bearer <token>` header (except health checks).
 
-### Core APIs
+With **137+ routers**, there are **2,000+ endpoints** across the platform. Key endpoint categories:
 
-| Module | Endpoints | Purpose |
-|---|---|---|
-| **auth** | `/auth/register`, `/auth/login`, `/auth/verify` | User authentication & JWT management |
-| **users** | `/users/{id}`, `/users/me` | User profiles & account management |
-| **businesses** | `/businesses`, `/businesses/{id}` | Vendor & farm business management |
-| **livestock** | `/livestock`, `/livestock/{id}` | Animal records & knowledge base |
-| **produce** | `/produce`, `/produce/{id}` | Harvest & produce tracking |
-| **plant_knowledgebase** | `/plant-kb/` | Crop disease & agronomy guidance |
-| **weather** | `/weather/forecast` | Weather data & forecasts |
-| **marketplace** | `/marketplace/products`, `/marketplace/orders` | E-commerce operations |
-| **precision_ag** | `/precision-ag/` | Soil analysis, field mapping tools |
-| **crop_rotation** | `/crop-rotation/plan` | Crop rotation planning |
+| Domain | Module Count | Sample Endpoints | Purpose |
+|---|---|---|---|
+| **Livestock & Animals** | 6 | `/livestock/*`, `/animals/*`, `/herd-health/*` | Animal management, health tracking, meat processing |
+| **Crops & Fields** | 15+ | `/crop-planning/*`, `/precision-ag/*`, `/soil-tests/*`, `/yield-records/*` | Crop planning, field health, precision agriculture |
+| **Produce & Harvest** | 8 | `/produce/*`, `/harvest-lots/*`, `/grain-bin/*`, `/cold-chain/*` | Harvest management, storage, traceability |
+| **Marketplace & Commerce** | 7 | `/marketplace/*`, `/equipment-marketplace/*`, `/farm-stand/*` | E-commerce, pricing, vendor management |
+| **Supply Chain** | 10 | `/supply-chain/*`, `/delivery-routes/*`, `/procurement/*` | Routing, sourcing, buyer management |
+| **Events & Community** | 32+ | `/events/*`, `/event-analytics/*`, `/event-registration/*` | Event management, sponsorships, registrations |
+| **Financial** | 7 | `/accounting/*`, `/cash-flow/*`, `/farmer-settlement/*` | Accounting, budgeting, payments |
+| **Content & Web** | 8 | `/website-builder/*`, `/blog/*`, `/news/*` | Website management, blogging, content |
+| **HR & Operations** | 10+ | `/hr/*`, `/job-board/*`, `/work-orders/*` | HR management, operations, notifications |
+| **Admin & Platform** | 5 | `/platform-settings/*`, `/compliance-audit/*`, `/esg-reports/*` | Configuration, compliance, reporting |
 
-### Health Checks
+**Health Checks:**
 
 ```
 GET  /                  # API info & version
 GET  /health            # Shallow liveness probe
 GET  /ready             # Deep readiness check (all dependencies)
-GET  /health/redis      # Redis connectivity (Saige feature)
-GET  /health/firestore  # Firestore connectivity (Saige feature)
+GET  /health/redis      # Redis connectivity
+GET  /health/firestore  # Firestore connectivity
 ```
+
+See [`saige/README.md`](saige/README.md#api-reference) for detailed Saige API documentation.
 
 ## Configuration
 
@@ -188,9 +382,26 @@ gcloud run deploy oatmealfarmnetwork \
 | Authentication | JWT HS256 (python-jose) |
 | **Saige AI** | LangGraph, Google Gemini, Firestore, Redis |
 | Marketplace | Stripe, SendGrid |
-| Cloud Platform | Google Cloud (Cloud Run, Firestore) |
+| Cloud Platform | Google Cloud (Cloud Run, Firestore, Earth Engine) |
 | Task Queue | Redis (Saige checkpoints & message buffer) |
 | Vector Search | Firestore vector search + text-embedding-004 |
+| Imagery Analysis | Google Earth Engine (biomass analysis, sentinel-2) |
+| Email | SendGrid API |
+| File Storage | Google Cloud Storage (images, documents) |
+
+## Platform Scale
+
+This is one of the most comprehensive agricultural software platforms:
+
+- **137+ API routers** covering 15+ agricultural domains
+- **2,000+ endpoints** across the platform
+- **50K+ lines** in models.py alone (extensive domain model coverage)
+- **40+ database migrations** for complex data schema evolution
+- **Multi-tenancy support** for businesses, farms, and organizations
+- **Enterprise event management** (32+ event types)
+- **Real-time monitoring** via IoT greenhouse, precision ag, field health
+- **Supply chain visibility** from farm to consumer
+- **AI-powered advisory** with RAG-backed contextual guidance
 
 ## Key Features
 
@@ -206,21 +417,112 @@ The `saige/` subdirectory contains an AI-powered agricultural advisory system:
 
 → **Full documentation:** [`saige/README.md`](saige/README.md)
 
-### Marketplace
+### Livestock & Animal Management
+
+- Herd health tracking, reproduction monitoring
+- Breed recommendations & knowledge base
+- Meat processing workflows
+- Animal photo/identification system
+- Herd health accounting
+
+### Precision Agriculture & Field Monitoring
+
+- **Satellite Analysis** — Earth Engine integration for crop health, biomass estimation
+- **Field Mapping** — precision ag tools, field boundaries
+- **Real-time Monitoring** — IoT greenhouse sensors, soil tests
+- **Health Alerts** — automated warnings for field anomalies
+- **Yield Analysis** — historical yield tracking and optimization
+
+### Events & Community
+
+Comprehensive event management supporting:
+- Auctions, livestock shows, fiber arts festivals
+- Vendor fairs, conferences, competitions
+- Sponsorship management, floor planning
+- Registration, check-in, meal planning
+- Broadcast/streaming capabilities
+
+### Marketplace & E-Commerce
 
 - Product catalog with categories
 - Stripe payment integration
+- Equipment rental marketplace
+- Farm stand direct sales
 - Vendor management & commission tracking
-- Email notifications via SendGrid
 
-### Knowledge Bases
+### Supply Chain & Traceability
 
-- **Livestock** — breed recommendations, health guidelines, husbandry practices
-- **Plants** — disease identification, soil management, crop rotation
-- **Ingredients** — food processing knowledge, nutrition data
-- **Bakasura Products** — product/service database
+- Delivery route optimization
+- Supplier directory & scoring
+- Buyer CRM for vendor relationships
+- Cold chain logistics tracking
+- Product provenance & traceability
+- Export compliance documentation
+
+### Financial & Accounting
+
+- Cash flow tracking & forecasting
+- Crop budget planning
+- Farmer settlement & payments
+- Price list management
+- ESG reporting & sustainability metrics
+
+### Content Management
+
+- Website builder with AI assistance
+- Blogging platform
+- Company feature pages
+- News aggregation
+- Document vault for files
 
 ## Development
+
+### Database Seeding
+
+The repository includes multiple seed scripts to populate the database with realistic demo data for testing and development:
+
+```bash
+# General demo data (businesses, users, events)
+python seed_demo_15671.py
+
+# Livestock & animal management demo
+python seed_livestock_15665.py
+
+# Accounting demo data
+python seed_accounting_15671.py
+
+# Cold chain & logistics demo
+python seed_cold_chain_15671.py
+python seed_cold_chain_advanced_15671.py
+python seed_cold_chain_recent_15671.py
+python seed_cold_chain_shipments_maint_15671.py
+
+# Precision agriculture demo
+python seed_precision_ag_15671.py
+
+# Supply chain demo
+python seed_suppliers_15671.py
+
+# Education, grants, orders demo
+python seed_edu_15671.py
+python seed_grants_15671.py
+python seed_orders_15671.py
+
+# Test data
+python seed_test_data_15665.py
+```
+
+**Note:** Seed scripts populate specific domains. Run multiple seeds to build a comprehensive demo environment. The numeric suffixes (15671, 15665) reference demo business IDs.
+
+### Utilities
+
+```bash
+# Upload local animal photos to cloud storage
+python upload_local_animal_photos.py
+
+# Database schema migrations (in migrations/ directory)
+# Applied automatically or manually via your SQL client
+```
 
 ### Running Tests
 
