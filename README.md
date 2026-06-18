@@ -1,172 +1,310 @@
 # Oatmeal Farm Network — Backend
 
-This is the backend API for [Oatmeal Farm Network](https://oatmealfarmnetwork.com). For the full system overview and how to run frontend + backend together locally, see **[docs/SYSTEM.md](docs/SYSTEM.md)**.
+A comprehensive FastAPI backend for the Oatmeal Farm Network platform, providing REST APIs for agricultural management, marketplace operations, user authentication, and AI-powered advisory services.
 
-## What This Repo Does
+## Overview
 
-A **FastAPI** application backed by **Azure SQL** that powers the OFN platform:
+This backend powers the Oatmeal Farm Network platform with modular APIs for:
 
-- User authentication and account management (`/auth`)
-- Marketplace, events, supply chain, livestock, accounting, HR, and many other domain APIs (`/api/...`)
-- **[Saige](saige/README.md)** — AI agricultural advisory assistant, mounted at `/saige/*`
-- **Crop Monitor proxy** — precision-ag and field data, mounted at `/cm/*` when running via `server_all.py`
+- **Authentication & User Management** — JWT-based auth, user profiles, password recovery
+- **Farm Operations** — livestock management, crop/plant knowledge, produce tracking, processed foods
+- **Agricultural Services** — weather data, precision agriculture, crop rotation planning
+- **Marketplace** — product catalog, Stripe payments, vendor management
+- **Content Management** — blogging, events, website builder, company features
+- **AI Advisory System** — intelligent farm guidance via LangGraph and Google Gemini (`saige/` subdirectory)
 
-The repo also contains a legacy **Node/Express** entry point (`src/index.js`) for OTF admin/nav endpoints (port 3001); most development targets the Python API.
+## Project Structure
 
-## Prerequisites
+```
+.
+├── routers/                         # API endpoint modules (25+ routers)
+│   ├── auth.py                      # JWT authentication
+│   ├── businesses.py                # Business/vendor management
+│   ├── livestock.py                 # Animal management & knowledge
+│   ├── plant_knowledgebase.py       # Crop & plant guidance
+│   ├── produce.py                   # Produce tracking
+│   ├── marketplace.py               # E-commerce operations
+│   ├── weather.py                   # Weather data integration
+│   ├── precision_ag.py              # Precision agriculture tools
+│   └── [20+ more routers]           # See routers/ directory
+│
+├── saige/                           # AI Agricultural Advisory System
+│   ├── api.py                       # FastAPI endpoints for Saige
+│   ├── graph.py                     # LangGraph workflow orchestration
+│   ├── nodes.py                     # Workflow nodes (assessment, routing, advisory)
+│   ├── rag.py                       # Firestore RAG/vector search
+│   ├── llm.py                       # Google Gemini LLM integration
+│   ├── redis_client.py              # Redis connection & pooling
+│   └── README.md                    # Full Saige documentation
+│
+├── main.py                          # FastAPI app initialization & middleware
+├── models.py                        # SQLAlchemy & Pydantic models
+├── database.py                      # Azure SQL database connection
+├── requirements.txt                 # Python dependencies
+├── Dockerfile                       # Cloud Run deployment
+├── cloudbuild.yaml                  # GCP Cloud Build pipeline
+└── .env.example                     # Environment variables template
+```
+
+## Quick Start
+
+### Prerequisites
 
 - Python 3.11+
-- Access to the OFN Azure SQL database
-- For Saige features: Redis, Google Gemini credentials (see [saige/README.md](saige/README.md))
-- For unified local dev with crop-monitor routes: a clone of **CropMonitoringBackend** (see [docs/SYSTEM.md](docs/SYSTEM.md))
+- Redis 7+ (for Saige features)
+- Azure SQL Server (optional, for core backend features)
+- Google Cloud credentials (optional, for Saige AI advisory)
 
-## Setup
+### Installation
 
-```powershell
-# From repo root
+```bash
+# Clone and enter directory
+git clone https://github.com/Oatmeal-Farm-Network/oatmealfarmnetworkbackend.git
+cd oatmealfarmnetworkbackend
+
+# Create virtual environment
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
+
+# Set up environment variables
+cp .env.example .env
+# Edit .env with your credentials
 ```
 
-Create a `.env` file at the repo root. At minimum:
+### Running the Backend
+
+```bash
+# Start main API server (port 8000)
+uvicorn main:app --reload --port 8000
+```
+
+**API Documentation:** Visit `http://localhost:8000/docs`
+
+### Running Saige AI Advisory (Optional)
+
+```bash
+# From the saige/ directory
+cd saige
+uvicorn api:app --reload --port 8001
+
+# Or from root, run Saige routes integrated with main API
+```
+
+See [`saige/README.md`](saige/README.md) for full Saige setup and configuration.
+
+## API Endpoints
+
+All endpoints require JWT authentication via `Authorization: Bearer <token>` header (except health checks).
+
+### Core APIs
+
+| Module | Endpoints | Purpose |
+|---|---|---|
+| **auth** | `/auth/register`, `/auth/login`, `/auth/verify` | User authentication & JWT management |
+| **users** | `/users/{id}`, `/users/me` | User profiles & account management |
+| **businesses** | `/businesses`, `/businesses/{id}` | Vendor & farm business management |
+| **livestock** | `/livestock`, `/livestock/{id}` | Animal records & knowledge base |
+| **produce** | `/produce`, `/produce/{id}` | Harvest & produce tracking |
+| **plant_knowledgebase** | `/plant-kb/` | Crop disease & agronomy guidance |
+| **weather** | `/weather/forecast` | Weather data & forecasts |
+| **marketplace** | `/marketplace/products`, `/marketplace/orders` | E-commerce operations |
+| **precision_ag** | `/precision-ag/` | Soil analysis, field mapping tools |
+| **crop_rotation** | `/crop-rotation/plan` | Crop rotation planning |
+
+### Health Checks
+
+```
+GET  /                  # API info & version
+GET  /health            # Shallow liveness probe
+GET  /ready             # Deep readiness check (all dependencies)
+GET  /health/redis      # Redis connectivity (Saige feature)
+GET  /health/firestore  # Firestore connectivity (Saige feature)
+```
+
+## Configuration
+
+### Environment Variables
+
+Create a `.env` file in the project root (see `.env.example`):
 
 ```env
-# Database (required)
-DB_SERVER=your-server.database.windows.net
-DB_USER=your-user
-DB_PASSWORD=your-password
-DB_NAME=your-database
+# --- Authentication ---
+SECRET_KEY=your_jwt_secret_key              # HS256 secret (required)
 
-# Auth (required — must match Saige's SECRET_KEY)
-SECRET_KEY=your-random-secret-at-least-32-chars
+# --- Database ---
+DB_HOST=your_azure_sql_host
+DB_PORT=1433
+DB_USER=your_user
+DB_PASSWORD=your_password
+DB_NAME=your_database
 
-# App URLs
-FRONTEND_URL=http://localhost:5173
-OFN_BASE_URL=http://localhost:5173
-
-# Email (password reset, notifications)
-SENDGRID_API_KEY=
-FROM_EMAIL=john@oatmeal-ai.com
-SITE_NAME=Oatmeal Farm Network
-
-# Payments (marketplace)
-STRIPE_SECRET_KEY=
-STRIPE_WEBHOOK_SECRET=
-
-# Google Cloud (translation, AI routers, biomass uploads)
-GOOGLE_CLOUD_PROJECT=
-GOOGLE_APPLICATION_CREDENTIALS=./path/to/service-account.json
-GOOGLE_API_KEY=
-
-# Optional
+# --- Saige AI Advisory (optional) ---
+GOOGLE_API_KEY=your_gemini_api_key
+GEMINI_MODEL=gemini-2.5-flash-lite
+FIRESTORE_DATABASE=charlie
+REDIS_ENABLED=true
 REDIS_URL=redis://localhost:6379/0
-BIOMASS_GCS_BUCKET=oatmeal-farm-network-images
-PLATFORM_ADMIN_IDS=1,2,3
+
+# --- CORS ---
+FRONTEND_URL=http://localhost:3000
+ALLOW_ALL_ORIGINS=false
+
+# --- Marketplace (optional) ---
+STRIPE_SECRET_KEY=your_stripe_key
+SENDGRID_API_KEY=your_sendgrid_key
 ```
 
-For Saige-specific variables (Redis, Firestore, Gemini), create `saige/.env` — details in [saige/README.md](saige/README.md).
-
-## Running
-
-### Main API only
-
-Sufficient for auth, marketplace, events, and most `/api` routes:
-
-```powershell
-python -m uvicorn main:app --reload --port 8000
-```
-
-- API: http://localhost:8000
-- Interactive docs: http://localhost:8000/docs
-- Health: http://localhost:8000/health
-
-### Unified stack (main + Saige + Crop Monitor)
-
-Requires **CropMonitoringBackend** checked out as a sibling directory (see [docs/SYSTEM.md](docs/SYSTEM.md)):
-
-```powershell
-python -m uvicorn server_all:app --reload --port 8000
-```
-
-Routes:
-
-| Path | Service |
-|------|---------|
-| `/` | Main backend |
-| `/saige/*` | Saige AI |
-| `/cm/*` | Crop Monitor |
-
-### Saige in isolation
-
-```powershell
-cd saige
-docker compose up -d redis    # optional but recommended
-uvicorn api:app --reload --port 8000
-```
-
-See [saige/README.md](saige/README.md) for API reference, graph design, and configuration.
-
-### Legacy Node API (optional)
-
-```powershell
-node src/index.js
-```
-
-Runs on port 3001. Used by the frontend for `VITE_OTF_API_URL` nav-config endpoints.
-
-## Tests
-
-Saige has pytest coverage:
-
-```powershell
-cd saige
-pytest
-```
-
-Integration tests (`test_api_flow.py`, `test_redis.py`) require running Redis and valid `.env` credentials.
-
-## Scripts & Utilities
-
-| Path | Purpose |
-|------|---------|
-| `scripts/` | Database seed scripts |
-| `seed_*.py` | Domain-specific seed data |
-| `scrapers/` | Knowledge-base scrapers (e.g. Lavendir) |
-| `saige/seed_firestore.py` | Seed RAG knowledge into Firestore |
-| `saige/sync_embeddings.py` | Refresh Firestore vector embeddings |
-| `saige/deploy.ps1` | Deploy Saige to Cloud Run |
+See [`saige/README.md`](saige/README.md#configuration) for full Saige configuration details.
 
 ## Deployment
 
-The root `Dockerfile` builds the main FastAPI app:
+### Google Cloud Run
 
-```dockerfile
-uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}
+```bash
+# Build and deploy
+gcloud builds submit --config cloudbuild.yaml
+
+# Manually deploy Dockerfile
+gcloud run deploy oatmealfarmnetwork \
+  --source . \
+  --platform managed \
+  --region us-central1 \
+  --allow-unauthenticated
 ```
 
-Saige has its own `saige/Dockerfile.backend` and `saige/deploy.ps1` for standalone Cloud Run deployment. Production runs separate Cloud Run services for main, Saige, and Crop Monitor — see [docs/SYSTEM.md](docs/SYSTEM.md).
+**Production domains:**
+- API: `https://oatmealfarmnewtorkbackend-802455386518.us-central1.run.app`
+- Frontend: `https://www.oatmealfarmnetwork.com`
 
-## Project Layout
+## Technologies
 
+| Layer | Technology |
+|---|---|
+| API Framework | FastAPI, Uvicorn, Starlette |
+| Database | Azure SQL Server (pymssql) |
+| Authentication | JWT HS256 (python-jose) |
+| **Saige AI** | LangGraph, Google Gemini, Firestore, Redis |
+| Marketplace | Stripe, SendGrid |
+| Cloud Platform | Google Cloud (Cloud Run, Firestore) |
+| Task Queue | Redis (Saige checkpoints & message buffer) |
+| Vector Search | Firestore vector search + text-embedding-004 |
+
+## Key Features
+
+### Saige AI Advisory System
+
+The `saige/` subdirectory contains an AI-powered agricultural advisory system:
+
+- **Multi-domain Advisory** — livestock, crops, weather, mixed queries
+- **LangGraph Orchestration** — structured workflows with state management
+- **RAG Integration** — Firestore vector search with domain-specific knowledge
+- **Real-time Context** — live weather data, farm assessments
+- **Chat History** — Firestore persistence + Redis message buffer
+
+→ **Full documentation:** [`saige/README.md`](saige/README.md)
+
+### Marketplace
+
+- Product catalog with categories
+- Stripe payment integration
+- Vendor management & commission tracking
+- Email notifications via SendGrid
+
+### Knowledge Bases
+
+- **Livestock** — breed recommendations, health guidelines, husbandry practices
+- **Plants** — disease identification, soil management, crop rotation
+- **Ingredients** — food processing knowledge, nutrition data
+- **Bakasura Products** — product/service database
+
+## Development
+
+### Running Tests
+
+```bash
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=.
+
+# Run specific test file
+pytest saige/test_api_flow.py -v
 ```
-oatmealfarmnetworkbackend/
-├── main.py              # FastAPI app entry point
-├── server_all.py        # Unified launcher (main + Saige + Crop Monitor)
-├── database.py          # SQLAlchemy / pymssql connection
-├── auth.py              # JWT helpers
-├── routers/             # API route modules
-├── models.py            # SQLAlchemy models
-├── saige/               # AI advisory subsystem
-├── src/index.js         # Legacy Node API
-├── requirements.txt
-├── docs/
-│   └── SYSTEM.md        # Cross-repo architecture (source of truth)
-└── README.md            # This file
+
+### Project Structure for Routers
+
+Each router is a FastAPI APIRouter:
+
+```python
+from fastapi import APIRouter, Depends
+from database import get_db
+
+router = APIRouter(prefix="/my_resource", tags=["my_resource"])
+
+@router.get("/")
+def list_my_resources(db = Depends(get_db)):
+    # Implementation
+    pass
+
+@router.post("/")
+def create_my_resource(data: MyModel, db = Depends(get_db)):
+    # Implementation
+    pass
 ```
 
-## Related Documentation
+Then import in `main.py`:
+```python
+from routers import my_resource
+app.include_router(my_resource.router)
+```
 
-- **[docs/SYSTEM.md](docs/SYSTEM.md)** — architecture, local full-stack setup, ports, production overview
-- **[saige/README.md](saige/README.md)** — Saige API, LangGraph design, RAG, Redis, env reference
-- **[Frontend README](https://github.com/Oatmeal-Farm-Network/oatmealfarmnetwork/blob/main/README.md)** — React app setup and `VITE_*` variables
+## Security
+
+**Never commit:**
+- `.env` files (API keys, credentials)
+- `credentials/` directories (service account JSONs)
+- Database passwords or tokens
+
+The `.gitignore` excludes sensitive files. Before pushing, verify:
+
+```bash
+git status  # Confirm no .env, credentials, or secrets staged
+```
+
+**Production Checklist:**
+- [ ] Generate strong random `SECRET_KEY` (32+ chars)
+- [ ] Set `ALLOW_ALL_ORIGINS=false` and specify `FRONTEND_URL`
+- [ ] Enable `REDIS_SSL=true` for managed Redis
+- [ ] Rotate API keys, JWT secrets, and service accounts regularly
+- [ ] Use environment-specific `.env` files (never commit)
+
+## Troubleshooting
+
+| Issue | Solution |
+|---|---|
+| `401 Invalid or expired token` | Verify JWT in `Authorization: Bearer <token>` header |
+| `500 JWT_SECRET is not configured` | Set `SECRET_KEY` in `.env` |
+| Database connection fails | Check `DB_HOST`, `DB_USER`, `DB_PASSWORD` in `.env` |
+| Saige endpoints 404 | Confirm Saige routers are registered in `main.py` |
+| Redis connection timeout | Verify Redis is running (`redis-cli ping`), or set `REDIS_ENABLED=false` |
+| Docker build fails | Ensure `requirements.txt` is up to date and Python 3.11+ |
+
+## Support & Contributions
+
+- **Issues:** Report bugs on [GitHub Issues](https://github.com/Oatmeal-Farm-Network/oatmealfarmnetworkbackend/issues)
+- **Discussions:** Join community discussions on GitHub
+- **Contributing:** See `CONTRIBUTING.md` (if available) for contribution guidelines
+
+## License
+
+[Add your license information here]
+
+## Related Repositories
+
+- **Frontend:** [oatmeal-farm-network-frontend](https://github.com/Oatmeal-Farm-Network/oatmeal-farm-network-frontend)
+- **Documentation:** [oatmeal-farm-network-docs](https://github.com/Oatmeal-Farm-Network/oatmeal-farm-network-docs)
+- **Saige AI:** See [`saige/README.md`](saige/README.md) for dedicated AI advisory documentation
