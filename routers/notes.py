@@ -21,6 +21,10 @@ class NoteCreate(BaseModel):
     category:   str
     title:      str
     content:    str
+    severity:   Optional[str]   = None  # Low/Medium/High/Critical (scouting-style)
+    latitude:   Optional[float] = None
+    longitude:  Optional[float] = None
+    image_url:  Optional[str]   = None
 
 
 class NoteUpdate(BaseModel):
@@ -28,6 +32,10 @@ class NoteUpdate(BaseModel):
     category:  str
     title:     str
     content:   str
+    severity:  Optional[str]   = None
+    latitude:  Optional[float] = None
+    longitude: Optional[float] = None
+    image_url: Optional[str]   = None
 
 
 def _serialize(n: models.FieldNote) -> dict:
@@ -40,6 +48,10 @@ def _serialize(n: models.FieldNote) -> dict:
         "category":   n.Category,
         "title":      n.Title,
         "content":    n.Content,
+        "severity":   n.Severity,
+        "latitude":   float(n.Latitude)  if n.Latitude  is not None else None,
+        "longitude":  float(n.Longitude) if n.Longitude is not None else None,
+        "image_url":  n.ImageUrl,
         "created_at": str(n.CreatedAt) if n.CreatedAt else None,
         "updated_at": str(n.UpdatedAt) if n.UpdatedAt else None,
     }
@@ -72,6 +84,10 @@ def create_note(note: NoteCreate, db: Session = Depends(get_db)):
             Category   = note.category,
             Title      = note.title,
             Content    = note.content,
+            Severity   = note.severity,
+            Latitude   = note.latitude,
+            Longitude  = note.longitude,
+            ImageUrl   = note.image_url,
             CreatedAt  = datetime.utcnow(),
             UpdatedAt  = datetime.utcnow(),
         )
@@ -95,6 +111,10 @@ def update_note(note_id: int, note: NoteUpdate, db: Session = Depends(get_db)):
         existing.Category  = note.category
         existing.Title     = note.title
         existing.Content   = note.content
+        existing.Severity  = note.severity
+        existing.Latitude  = note.latitude
+        existing.Longitude = note.longitude
+        existing.ImageUrl  = note.image_url
         existing.UpdatedAt = datetime.utcnow()
         db.commit()
         db.refresh(existing)

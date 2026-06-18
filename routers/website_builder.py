@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError
 from database import get_db, engine, Base
 from datetime import datetime, date
 from typing import Optional, List
@@ -67,6 +68,7 @@ with engine.connect() as _conn:
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterBgWidth') ALTER TABLE BusinessWebsite ADD FooterBgWidth NVARCHAR(20) DEFAULT '100%'",
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebPage' AND COLUMN_NAME='ParentPageID') ALTER TABLE BusinessWebPage ADD ParentPageID INT NULL",
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebPage' AND COLUMN_NAME='IsNavHeading') ALTER TABLE BusinessWebPage ADD IsNavHeading BIT NOT NULL DEFAULT 0",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebPage' AND COLUMN_NAME='LinkURL') ALTER TABLE BusinessWebPage ADD LinkURL NVARCHAR(500) NULL",
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='DropdownBgColor') ALTER TABLE BusinessWebsite ADD DropdownBgColor NVARCHAR(50)",
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='DropdownHoverColor') ALTER TABLE BusinessWebsite ADD DropdownHoverColor NVARCHAR(50)",
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='DropdownBgColor2') ALTER TABLE BusinessWebsite ADD DropdownBgColor2 NVARCHAR(50)",
@@ -74,9 +76,81 @@ with engine.connect() as _conn:
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='HeaderBannerBgColor') ALTER TABLE BusinessWebsite ADD HeaderBannerBgColor NVARCHAR(20)",
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='CopyrightBarBgColor') ALTER TABLE BusinessWebsite ADD CopyrightBarBgColor NVARCHAR(20)",
         "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FaviconURL') ALTER TABLE BusinessWebsite ADD FaviconURL NVARCHAR(1000)",
+        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterBottomRadius') ALTER TABLE BusinessWebsite ADD FooterBottomRadius INT DEFAULT 0",
     ]:
         _conn.execute(text(col_ddl))
+
+    # ── WebsiteCustomDomain — indexed custom-domain lookup table ──────────────
+    # One row per bare domain (e.g. "alpacasontheweb.com").  Replaces the slow
+    # LIKE '%domain%' full-table scan on CanonicalURL that times out on cold starts.
+    _conn.execute(text("""
+        IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'WebsiteCustomDomain')
+        BEGIN
+            CREATE TABLE WebsiteCustomDomain (
+                DomainID  INT IDENTITY(1,1) PRIMARY KEY,
+                WebsiteID INT NOT NULL,
+                Domain    NVARCHAR(255) NOT NULL,
+                IsActive  BIT NOT NULL DEFAULT 1,
+                CreatedAt DATETIME DEFAULT GETDATE(),
+                CONSTRAINT UQ_WebsiteCustomDomain_Domain UNIQUE (Domain)
+            );
+            CREATE INDEX IX_WebsiteCustomDomain_WebsiteID ON WebsiteCustomDomain(WebsiteID);
+        END
+    """))
+
+    # Back-fill from existing CanonicalURL values (idempotent — skips conflicts).
+    _conn.execute(text("""
+        INSERT INTO WebsiteCustomDomain (WebsiteID, Domain)
+        SELECT WebsiteID,
+               LOWER(
+                 LTRIM(RTRIM(
+                   REPLACE(REPLACE(REPLACE(REPLACE(CanonicalURL,
+                     'https://', ''), 'http://', ''), 'www.', ''), '/', '')
+                 ))
+               )
+        FROM BusinessWebsite
+        WHERE CanonicalURL IS NOT NULL AND LEN(LTRIM(RTRIM(CanonicalURL))) > 0
+        AND LOWER(LTRIM(RTRIM(REPLACE(REPLACE(REPLACE(REPLACE(CanonicalURL,
+              'https://', ''), 'http://', ''), 'www.', ''), '/', '')))) NOT IN (
+            SELECT Domain FROM WebsiteCustomDomain
+        )
+    """))
+
     _conn.commit()
+
+
+def _normalize_domain(raw: str) -> str:
+    """Return a bare lowercase domain: strips protocol, www., and trailing slashes."""
+    d = raw.lower().strip()
+    for prefix in ("https://", "http://"):
+        if d.startswith(prefix):
+            d = d[len(prefix):]
+    d = d.rstrip("/")
+    if d.startswith("www."):
+        d = d[4:]
+    return d
+
+
+def _upsert_custom_domain(db: Session, website_id: int, canonical_url: str | None) -> None:
+    """Register or update the custom domain for a site (called on create/update)."""
+    if not canonical_url:
+        return
+    bare = _normalize_domain(canonical_url)
+    if not bare:
+        return
+    try:
+        db.execute(text("""
+            MERGE WebsiteCustomDomain AS target
+            USING (SELECT :wid AS WebsiteID, :dom AS Domain) AS src
+            ON target.Domain = src.Domain
+            WHEN MATCHED THEN UPDATE SET WebsiteID = src.WebsiteID, IsActive = 1
+            WHEN NOT MATCHED THEN INSERT (WebsiteID, Domain, IsActive, CreatedAt)
+                                  VALUES (src.WebsiteID, src.Domain, 1, GETDATE());
+        """), {"wid": website_id, "dom": bare})
+        db.commit()
+    except Exception:
+        db.rollback()
+
 
 # ── Pydantic models ──────────────────────────────────────────────
 
@@ -91,6 +165,8 @@ class SiteCreate(BaseModel):
     secondary_color: Optional[str] = '#819360'
     accent_color: Optional[str] = '#FFC567'
     bg_color: Optional[str] = '#FFFFFF'
+    screen_background_color: Optional[str] = None
+    page_background_color: Optional[str] = None
     text_color: Optional[str] = '#111827'
     font_family: Optional[str] = 'Inter, sans-serif'
     phone: Optional[str] = None
@@ -107,6 +183,8 @@ class SiteCreate(BaseModel):
     canonical_url: Optional[str] = None
     og_image_url: Optional[str] = None
     seo_extras_json: Optional[str] = None
+    menu_style_json: Optional[str] = None
+    footer_json: Optional[str] = None
     # Width controls
     header_bg_width: Optional[str] = '100%'
     header_content_width: Optional[str] = '100%'
@@ -115,32 +193,36 @@ class SiteCreate(BaseModel):
     footer_content_width: Optional[str] = '100%'
     footer_bg_width: Optional[str] = '100%'
     # Typography / type scale
-    h1_size: Optional[str] = '2.5rem'
+    h1_size: Optional[str] = '40px'
     h1_weight: Optional[str] = '800'
     h1_color: Optional[str] = ''
     h1_align: Optional[str] = 'left'
     h1_underline: Optional[bool] = False
+    h1_italic: Optional[bool] = False
     h1_rule: Optional[bool] = False
     h1_rule_color: Optional[str] = ''
-    h2_size: Optional[str] = '1.8rem'
+    h2_size: Optional[str] = '29px'
     h2_weight: Optional[str] = '700'
     h2_color: Optional[str] = ''
     h2_align: Optional[str] = 'left'
     h2_underline: Optional[bool] = False
+    h2_italic: Optional[bool] = False
     h2_rule: Optional[bool] = False
     h2_rule_color: Optional[str] = ''
-    h3_size: Optional[str] = '1.3rem'
+    h3_size: Optional[str] = '21px'
     h3_weight: Optional[str] = '600'
     h3_color: Optional[str] = ''
     h3_align: Optional[str] = 'left'
     h3_underline: Optional[bool] = False
+    h3_italic: Optional[bool] = False
     h3_rule: Optional[bool] = False
     h3_rule_color: Optional[str] = ''
-    h4_size: Optional[str] = '1.05rem'
+    h4_size: Optional[str] = '17px'
     h4_weight: Optional[str] = '600'
     h4_color: Optional[str] = ''
     h4_align: Optional[str] = 'left'
     h4_underline: Optional[bool] = False
+    h4_italic: Optional[bool] = False
     h4_rule: Optional[bool] = False
     h4_rule_color: Optional[str] = ''
     h1_margin_top: Optional[int] = 0
@@ -155,11 +237,19 @@ class SiteCreate(BaseModel):
     h4_margin_top: Optional[int] = 0
     h4_margin_bottom: Optional[int] = 4
     h4_font: Optional[str] = ''
-    body_size: Optional[str] = '1rem'
+    body_size: Optional[str] = '16px'
     body_line_height: Optional[str] = '1.75'
     body_color: Optional[str] = ''
     body_align: Optional[str] = 'left'
     body_underline: Optional[bool] = False
+    body_italic: Optional[bool] = False
+    # Site-wide image styling
+    image_border_radius: Optional[int] = 0
+    image_shadow_enabled: Optional[bool] = False
+    image_shadow_color: Optional[str] = 'rgba(0,0,0,0.35)'
+    image_shadow_distance: Optional[int] = 4
+    image_shadow_blur: Optional[int] = 8
+    image_shadow_angle: Optional[int] = 135
     body_margin_top: Optional[int] = 0
     body_margin_bottom: Optional[int] = 12
     body_font: Optional[str] = ''
@@ -179,12 +269,14 @@ class SiteCreate(BaseModel):
     header_banner_url: Optional[str] = None
     header_height: Optional[int] = 120
     show_site_name: Optional[bool] = True
+    header_layout: Optional[str] = 'banner_top'
     # Nav bar
     nav_bg_image_url: Optional[str] = None
     # Footer
     footer_bg_image_url: Optional[str] = None
     footer_html: Optional[str] = None
     footer_height: Optional[int] = 200
+    footer_bottom_radius: Optional[int] = 0
     # Page background
     bg_image_url: Optional[str] = None
     bg_gradient: Optional[str] = None
@@ -199,6 +291,8 @@ class SiteUpdate(SiteCreate):
     secondary_color: Optional[str] = None
     accent_color: Optional[str] = None
     bg_color: Optional[str] = None
+    screen_background_color: Optional[str] = None
+    page_background_color: Optional[str] = None
     text_color: Optional[str] = None
     font_family: Optional[str] = None
     nav_text_color: Optional[str] = None
@@ -213,6 +307,7 @@ class SiteUpdate(SiteCreate):
     h1_color: Optional[str] = None
     h1_align: Optional[str] = None
     h1_underline: Optional[bool] = None
+    h1_italic: Optional[bool] = None
     h1_rule: Optional[bool] = None
     h1_rule_color: Optional[str] = None
     h2_size: Optional[str] = None
@@ -220,6 +315,7 @@ class SiteUpdate(SiteCreate):
     h2_color: Optional[str] = None
     h2_align: Optional[str] = None
     h2_underline: Optional[bool] = None
+    h2_italic: Optional[bool] = None
     h2_rule: Optional[bool] = None
     h2_rule_color: Optional[str] = None
     h3_size: Optional[str] = None
@@ -227,6 +323,7 @@ class SiteUpdate(SiteCreate):
     h3_color: Optional[str] = None
     h3_align: Optional[str] = None
     h3_underline: Optional[bool] = None
+    h3_italic: Optional[bool] = None
     h3_rule: Optional[bool] = None
     h3_rule_color: Optional[str] = None
     h4_size: Optional[str] = None
@@ -234,6 +331,7 @@ class SiteUpdate(SiteCreate):
     h4_color: Optional[str] = None
     h4_align: Optional[str] = None
     h4_underline: Optional[bool] = None
+    h4_italic: Optional[bool] = None
     h4_rule: Optional[bool] = None
     h4_rule_color: Optional[str] = None
     h1_margin_top: Optional[int] = None
@@ -253,6 +351,13 @@ class SiteUpdate(SiteCreate):
     body_color: Optional[str] = None
     body_align: Optional[str] = None
     body_underline: Optional[bool] = None
+    body_italic: Optional[bool] = None
+    image_border_radius: Optional[int] = None
+    image_shadow_enabled: Optional[bool] = None
+    image_shadow_color: Optional[str] = None
+    image_shadow_distance: Optional[int] = None
+    image_shadow_blur: Optional[int] = None
+    image_shadow_angle: Optional[int] = None
     body_margin_top: Optional[int] = None
     body_margin_bottom: Optional[int] = None
     body_font: Optional[str] = None
@@ -269,8 +374,10 @@ class SiteUpdate(SiteCreate):
     header_height: Optional[int] = None
     header_banner_bg_color: Optional[str] = None
     footer_height: Optional[int] = None
+    footer_bottom_radius: Optional[int] = None
     copyright_bar_bg_color: Optional[str] = None
     show_site_name: Optional[bool] = None
+    header_layout: Optional[str] = None
     is_published: Optional[bool] = None
 
 class PageCreate(BaseModel):
@@ -285,6 +392,7 @@ class PageCreate(BaseModel):
     is_home_page: Optional[bool] = False
     parent_page_id: Optional[int] = None
     is_nav_heading: Optional[bool] = False
+    link_url: Optional[str] = None
 
 class PageUpdate(BaseModel):
     page_name: Optional[str] = None
@@ -296,6 +404,7 @@ class PageUpdate(BaseModel):
     is_home_page: Optional[bool] = None
     parent_page_id: Optional[int] = None
     is_nav_heading: Optional[bool] = None
+    link_url: Optional[str] = None
 
 class BlockCreate(BaseModel):
     page_id: int
@@ -327,6 +436,8 @@ def _ser_site(s: models.BusinessWebsite) -> dict:
         "secondary_color":s.SecondaryColor or '#819360',
         "accent_color":   s.AccentColor or '#FFC567',
         "bg_color":       s.BgColor or '#FFFFFF',
+        "screen_background_color": s.ScreenBackgroundColor or s.BgColor or '#FFFFFF',
+        "page_background_color":   s.PageBackgroundColor or '',
         "text_color":     s.TextColor or '#111827',
         "font_family":    s.FontFamily or 'Inter, sans-serif',
         "phone":          s.Phone,
@@ -343,6 +454,8 @@ def _ser_site(s: models.BusinessWebsite) -> dict:
         "canonical_url":   s.CanonicalURL,
         "og_image_url":    s.OgImageURL,
         "seo_extras_json": s.SeoExtrasJSON,
+        "menu_style_json": s.MenuStyleJSON,
+        "footer_json":     getattr(s, 'FooterJSON', None),
         # Width controls
         "header_bg_width":      s.HeaderBgWidth or '100%',
         "header_content_width": s.HeaderContentWidth or '100%',
@@ -351,32 +464,36 @@ def _ser_site(s: models.BusinessWebsite) -> dict:
         "footer_content_width": s.FooterContentWidth or '100%',
         "footer_bg_width":      s.FooterBgWidth or '100%',
         # Typography / type scale
-        "h1_size":          s.H1Size or '2.5rem',
+        "h1_size":          s.H1Size or '40px',
         "h1_weight":        s.H1Weight or '800',
         "h1_color":         s.H1Color or '',
         "h1_align":         s.H1Align or 'left',
         "h1_underline":     bool(s.H1Underline) if s.H1Underline is not None else False,
+        "h1_italic":        bool(getattr(s, 'H1Italic', False)) if getattr(s, 'H1Italic', None) is not None else False,
         "h1_rule":          bool(s.H1Rule) if s.H1Rule is not None else False,
         "h1_rule_color":    s.H1RuleColor or '',
-        "h2_size":          s.H2Size or '1.8rem',
+        "h2_size":          s.H2Size or '29px',
         "h2_weight":        s.H2Weight or '700',
         "h2_color":         s.H2Color or '',
         "h2_align":         s.H2Align or 'left',
         "h2_underline":     bool(s.H2Underline) if s.H2Underline is not None else False,
+        "h2_italic":        bool(getattr(s, 'H2Italic', False)) if getattr(s, 'H2Italic', None) is not None else False,
         "h2_rule":          bool(s.H2Rule) if s.H2Rule is not None else False,
         "h2_rule_color":    s.H2RuleColor or '',
-        "h3_size":          s.H3Size or '1.3rem',
+        "h3_size":          s.H3Size or '21px',
         "h3_weight":        s.H3Weight or '600',
         "h3_color":         s.H3Color or '',
         "h3_align":         s.H3Align or 'left',
         "h3_underline":     bool(s.H3Underline) if s.H3Underline is not None else False,
+        "h3_italic":        bool(getattr(s, 'H3Italic', False)) if getattr(s, 'H3Italic', None) is not None else False,
         "h3_rule":          bool(s.H3Rule) if s.H3Rule is not None else False,
         "h3_rule_color":    s.H3RuleColor or '',
-        "h4_size":          s.H4Size or '1.05rem',
+        "h4_size":          s.H4Size or '17px',
         "h4_weight":        s.H4Weight or '600',
         "h4_color":         s.H4Color or '',
         "h4_align":         s.H4Align or 'left',
         "h4_underline":     bool(s.H4Underline) if s.H4Underline is not None else False,
+        "h4_italic":        bool(getattr(s, 'H4Italic', False)) if getattr(s, 'H4Italic', None) is not None else False,
         "h4_rule":          bool(s.H4Rule) if s.H4Rule is not None else False,
         "h4_rule_color":    s.H4RuleColor or '',
         "h1_margin_top":    s.H1MarginTop if s.H1MarginTop is not None else 0,
@@ -391,11 +508,19 @@ def _ser_site(s: models.BusinessWebsite) -> dict:
         "h4_margin_top":    s.H4MarginTop if s.H4MarginTop is not None else 0,
         "h4_margin_bottom": s.H4MarginBottom if s.H4MarginBottom is not None else 4,
         "h4_font":          s.H4Font or '',
-        "body_size":        s.BodySize or '1rem',
+        "body_size":        s.BodySize or '16px',
         "body_line_height": s.BodyLineHeight or '1.75',
         "body_color":       s.BodyColor or '',
         "body_align":       s.BodyAlign or 'left',
         "body_underline":   bool(s.BodyUnderline) if s.BodyUnderline is not None else False,
+        "body_italic":      bool(getattr(s, 'BodyItalic', False)) if getattr(s, 'BodyItalic', None) is not None else False,
+        # Site-wide image styling
+        "image_border_radius":   getattr(s, 'ImageBorderRadius', 0) or 0,
+        "image_shadow_enabled":  bool(getattr(s, 'ImageShadowEnabled', False)) if getattr(s, 'ImageShadowEnabled', None) is not None else False,
+        "image_shadow_color":    getattr(s, 'ImageShadowColor', '') or 'rgba(0,0,0,0.35)',
+        "image_shadow_distance": getattr(s, 'ImageShadowDistance', 4) if getattr(s, 'ImageShadowDistance', None) is not None else 4,
+        "image_shadow_blur":     getattr(s, 'ImageShadowBlur', 8) if getattr(s, 'ImageShadowBlur', None) is not None else 8,
+        "image_shadow_angle":    getattr(s, 'ImageShadowAngle', 135) if getattr(s, 'ImageShadowAngle', None) is not None else 135,
         "body_margin_top":    s.BodyMarginTop if s.BodyMarginTop is not None else 0,
         "body_margin_bottom": s.BodyMarginBottom if s.BodyMarginBottom is not None else 12,
         "body_font":          s.BodyFont or '',
@@ -416,12 +541,14 @@ def _ser_site(s: models.BusinessWebsite) -> dict:
         "header_banner_bg_color": s.HeaderBannerBgColor or '',
         "header_height":         s.HeaderHeight or 120,
         "show_site_name":        bool(s.ShowSiteName) if s.ShowSiteName is not None else True,
+        "header_layout":         s.HeaderLayout or 'banner_top',
         # Nav bar
         "nav_bg_image_url":   s.NavBgImageURL or '',
         # Footer
         "footer_bg_image_url":    s.FooterBgImageURL or '',
         "footer_html":            s.FooterHTML or '',
         "footer_height":          s.FooterHeight or 200,
+        "footer_bottom_radius":   s.FooterBottomRadius or 0,
         "copyright_bar_bg_color": s.CopyrightBarBgColor or '',
         # Page background
         "bg_image_url":        s.BgImageURL or '',
@@ -444,6 +571,7 @@ def _ser_page(p: models.BusinessWebPage) -> dict:
         "is_home_page":     bool(p.IsHomePage),
         "parent_page_id":   p.ParentPageID,
         "is_nav_heading":   bool(p.IsNavHeading) if p.IsNavHeading is not None else False,
+        "link_url":         p.LinkURL,
         "created_at":       str(p.CreatedAt) if p.CreatedAt else None,
     }
 
@@ -494,7 +622,10 @@ def create_site(body: SiteCreate, db: Session = Depends(get_db)):
         BusinessID=body.business_id, SiteName=body.site_name, Slug=body.slug,
         Tagline=body.tagline, LogoURL=body.logo_url,
         PrimaryColor=body.primary_color, SecondaryColor=body.secondary_color,
-        AccentColor=body.accent_color, BgColor=body.bg_color, TextColor=body.text_color,
+        AccentColor=body.accent_color, BgColor=body.bg_color,
+        ScreenBackgroundColor=body.screen_background_color or body.bg_color,
+        PageBackgroundColor=body.page_background_color,
+        TextColor=body.text_color,
         FontFamily=body.font_family, Phone=body.phone, Email=body.email, Address=body.address,
         FacebookURL=body.facebook_url, InstagramURL=body.instagram_url, TwitterURL=body.twitter_url,
         NavTextColor=body.nav_text_color or '#FFFFFF',
@@ -505,9 +636,11 @@ def create_site(body: SiteCreate, db: Session = Depends(get_db)):
         CanonicalURL=body.canonical_url,
         OgImageURL=body.og_image_url,
         SeoExtrasJSON=body.seo_extras_json,
+        MenuStyleJSON=body.menu_style_json,
         CreatedAt=datetime.utcnow(), UpdatedAt=datetime.utcnow()
     )
     db.add(site); db.commit(); db.refresh(site)
+    _upsert_custom_domain(db, site.WebsiteID, body.canonical_url)
     return _ser_site(site)
 
 @router.put("/site/{website_id}")
@@ -533,6 +666,8 @@ def update_site(website_id: int, body: SiteUpdate, db: Session = Depends(get_db)
     if body.secondary_color is not None: site.SecondaryColor = body.secondary_color
     if body.accent_color is not None: site.AccentColor = body.accent_color
     if body.bg_color is not None: site.BgColor = body.bg_color
+    if body.screen_background_color is not None: site.ScreenBackgroundColor = body.screen_background_color
+    if body.page_background_color is not None: site.PageBackgroundColor = body.page_background_color
     if body.text_color is not None: site.TextColor = body.text_color
     if body.font_family is not None: site.FontFamily = body.font_family
     if body.phone is not None: site.Phone = body.phone
@@ -549,6 +684,8 @@ def update_site(website_id: int, body: SiteUpdate, db: Session = Depends(get_db)
     if body.canonical_url is not None: site.CanonicalURL = body.canonical_url
     if body.og_image_url is not None: site.OgImageURL = body.og_image_url
     if body.seo_extras_json is not None: site.SeoExtrasJSON = body.seo_extras_json
+    if body.menu_style_json is not None: site.MenuStyleJSON = body.menu_style_json
+    if body.footer_json is not None: site.FooterJSON = body.footer_json
     # Width controls
     if body.header_bg_width is not None: site.HeaderBgWidth = body.header_bg_width
     if body.header_content_width is not None: site.HeaderContentWidth = body.header_content_width
@@ -562,6 +699,7 @@ def update_site(website_id: int, body: SiteUpdate, db: Session = Depends(get_db)
     if body.h1_color is not None: site.H1Color = body.h1_color
     if body.h1_align is not None: site.H1Align = body.h1_align
     if body.h1_underline is not None: site.H1Underline = body.h1_underline
+    if body.h1_italic is not None: site.H1Italic = body.h1_italic
     if body.h1_rule is not None: site.H1Rule = body.h1_rule
     if body.h1_rule_color is not None: site.H1RuleColor = body.h1_rule_color
     if body.h2_size is not None: site.H2Size = body.h2_size
@@ -569,6 +707,7 @@ def update_site(website_id: int, body: SiteUpdate, db: Session = Depends(get_db)
     if body.h2_color is not None: site.H2Color = body.h2_color
     if body.h2_align is not None: site.H2Align = body.h2_align
     if body.h2_underline is not None: site.H2Underline = body.h2_underline
+    if body.h2_italic is not None: site.H2Italic = body.h2_italic
     if body.h2_rule is not None: site.H2Rule = body.h2_rule
     if body.h2_rule_color is not None: site.H2RuleColor = body.h2_rule_color
     if body.h3_size is not None: site.H3Size = body.h3_size
@@ -576,6 +715,7 @@ def update_site(website_id: int, body: SiteUpdate, db: Session = Depends(get_db)
     if body.h3_color is not None: site.H3Color = body.h3_color
     if body.h3_align is not None: site.H3Align = body.h3_align
     if body.h3_underline is not None: site.H3Underline = body.h3_underline
+    if body.h3_italic is not None: site.H3Italic = body.h3_italic
     if body.h3_rule is not None: site.H3Rule = body.h3_rule
     if body.h3_rule_color is not None: site.H3RuleColor = body.h3_rule_color
     if body.h4_size is not None: site.H4Size = body.h4_size
@@ -583,6 +723,7 @@ def update_site(website_id: int, body: SiteUpdate, db: Session = Depends(get_db)
     if body.h4_color is not None: site.H4Color = body.h4_color
     if body.h4_align is not None: site.H4Align = body.h4_align
     if body.h4_underline is not None: site.H4Underline = body.h4_underline
+    if body.h4_italic is not None: site.H4Italic = body.h4_italic
     if body.h4_rule is not None: site.H4Rule = body.h4_rule
     if body.h4_rule_color is not None: site.H4RuleColor = body.h4_rule_color
     if body.h1_margin_top is not None: site.H1MarginTop = body.h1_margin_top
@@ -602,6 +743,14 @@ def update_site(website_id: int, body: SiteUpdate, db: Session = Depends(get_db)
     if body.body_color is not None: site.BodyColor = body.body_color
     if body.body_align is not None: site.BodyAlign = body.body_align
     if body.body_underline is not None: site.BodyUnderline = body.body_underline
+    if body.body_italic is not None: site.BodyItalic = body.body_italic
+    # Site-wide image styling
+    if body.image_border_radius is not None: site.ImageBorderRadius = body.image_border_radius
+    if body.image_shadow_enabled is not None: site.ImageShadowEnabled = body.image_shadow_enabled
+    if body.image_shadow_color is not None: site.ImageShadowColor = body.image_shadow_color
+    if body.image_shadow_distance is not None: site.ImageShadowDistance = body.image_shadow_distance
+    if body.image_shadow_blur is not None: site.ImageShadowBlur = body.image_shadow_blur
+    if body.image_shadow_angle is not None: site.ImageShadowAngle = body.image_shadow_angle
     if body.body_margin_top is not None: site.BodyMarginTop = body.body_margin_top
     if body.body_margin_bottom is not None: site.BodyMarginBottom = body.body_margin_bottom
     if body.body_font is not None: site.BodyFont = body.body_font
@@ -622,17 +771,21 @@ def update_site(website_id: int, body: SiteUpdate, db: Session = Depends(get_db)
     if body.header_banner_bg_color is not None: site.HeaderBannerBgColor = body.header_banner_bg_color
     if body.header_height is not None: site.HeaderHeight = body.header_height
     if body.show_site_name is not None: site.ShowSiteName = body.show_site_name
+    if body.header_layout is not None: site.HeaderLayout = body.header_layout
     # Nav bar
     if body.nav_bg_image_url is not None: site.NavBgImageURL = body.nav_bg_image_url
     # Footer
     if body.footer_bg_image_url is not None: site.FooterBgImageURL = body.footer_bg_image_url
     if body.footer_html is not None: site.FooterHTML = body.footer_html
     if body.footer_height is not None: site.FooterHeight = body.footer_height
+    if body.footer_bottom_radius is not None: site.FooterBottomRadius = body.footer_bottom_radius
     if body.copyright_bar_bg_color is not None: site.CopyrightBarBgColor = body.copyright_bar_bg_color
     if body.bg_image_url is not None: site.BgImageURL = body.bg_image_url
     if body.bg_gradient is not None: site.BgGradient = body.bg_gradient
     site.UpdatedAt = datetime.utcnow()
     db.commit(); db.refresh(site)
+    if body.canonical_url is not None:
+        _upsert_custom_domain(db, site.WebsiteID, body.canonical_url)
     return _ser_site(site)
 
 
@@ -653,6 +806,7 @@ def create_page(body: PageCreate, db: Session = Depends(get_db)):
         MetaDescription=body.meta_description, SortOrder=body.sort_order,
         IsPublished=body.is_published, IsHomePage=body.is_home_page,
         ParentPageID=body.parent_page_id, IsNavHeading=body.is_nav_heading or False,
+        LinkURL=body.link_url,
         CreatedAt=datetime.utcnow(), UpdatedAt=datetime.utcnow()
     )
     db.add(page); db.commit(); db.refresh(page)
@@ -688,6 +842,8 @@ def update_page(page_id: int, body: PageUpdate, db: Session = Depends(get_db)):
         page.ParentPageID = body.parent_page_id
     if body.is_nav_heading is not None:
         page.IsNavHeading = body.is_nav_heading
+    if 'link_url' in _unset:
+        page.LinkURL = body.link_url or None
     page.UpdatedAt = datetime.utcnow()
     db.commit(); db.refresh(page)
     return _ser_page(page)
@@ -708,6 +864,158 @@ def delete_page(page_id: int, db: Session = Depends(get_db)):
     ).delete()
     db.delete(page); db.commit()
     return {"success": True}
+
+
+# ── Page templates ───────────────────────────────────────────────
+
+class PageFromTemplate(BaseModel):
+    website_id: int
+    business_id: int
+    template_key: str
+    page_name: Optional[str] = None
+    slug: Optional[str] = None
+
+
+def _unique_slug(db: Session, website_id: int, base: str) -> str:
+    base = (base or "page").strip().lower()
+    base = re.sub(r"[^a-z0-9-]+", "-", base).strip("-") or "page"
+    slug = base
+    i = 2
+    while db.query(models.BusinessWebPage).filter(
+        models.BusinessWebPage.WebsiteID == website_id,
+        models.BusinessWebPage.Slug == slug,
+    ).first():
+        slug = f"{base}-{i}"
+        i += 1
+    return slug
+
+
+@router.get("/templates")
+def list_page_templates(business_id: int, db: Session = Depends(get_db)):
+    """Return page templates applicable to this business's BusinessTypeID."""
+    import page_templates
+    biz = db.query(models.Business).filter(models.Business.BusinessID == business_id).first()
+    if not biz:
+        raise HTTPException(status_code=404, detail="Business not found")
+    return {
+        "business_type_id": biz.BusinessTypeID,
+        "templates": page_templates.list_templates(biz.BusinessTypeID),
+    }
+
+
+@router.post("/pages/from-template")
+def create_page_from_template(body: PageFromTemplate, db: Session = Depends(get_db)):
+    """Create a page + seed blocks from a named template."""
+    import page_templates
+    tpl = page_templates.get_template(body.template_key)
+    if not tpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    # Gate: template must apply to this business's BusinessTypeID (unless universal)
+    gate = tpl.get("business_type_ids")
+    if gate is not None:
+        biz = db.query(models.Business).filter(models.Business.BusinessID == body.business_id).first()
+        if not biz or biz.BusinessTypeID not in gate:
+            raise HTTPException(status_code=403, detail="Template not available for this business type")
+
+    name = (body.page_name or tpl.get("name") or "New Page").strip()
+    slug = _unique_slug(db, body.website_id, body.slug or tpl.get("slug") or name)
+
+    # Sort order: append at end
+    last = db.query(models.BusinessWebPage).filter(
+        models.BusinessWebPage.WebsiteID == body.website_id
+    ).order_by(models.BusinessWebPage.SortOrder.desc()).first()
+    next_order = (last.SortOrder + 1) if last and last.SortOrder is not None else 0
+
+    page = models.BusinessWebPage(
+        WebsiteID=body.website_id, BusinessID=body.business_id,
+        PageName=name, Slug=slug,
+        PageTitle=tpl.get("page_title"),
+        MetaDescription=tpl.get("meta_description"),
+        SortOrder=next_order, IsPublished=True, IsHomePage=False,
+        IsNavHeading=False,
+        CreatedAt=datetime.utcnow(), UpdatedAt=datetime.utcnow()
+    )
+    db.add(page); db.commit(); db.refresh(page)
+
+    blocks_out = []
+    for i, b in enumerate(tpl.get("default_blocks", [])):
+        block = models.BusinessWebBlock(
+            PageID=page.PageID,
+            BlockType=b.get("block_type", "content"),
+            BlockData=json.dumps(b.get("block_data", {})),
+            SortOrder=i,
+            CreatedAt=datetime.utcnow(), UpdatedAt=datetime.utcnow(),
+        )
+        db.add(block); blocks_out.append(block)
+    db.commit()
+    for bl in blocks_out:
+        db.refresh(bl)
+
+    return {
+        "page": _ser_page(page),
+        "blocks": [_ser_block(b) for b in blocks_out],
+        "template_key": tpl["key"],
+    }
+
+
+class PagesFromTemplatesBulk(BaseModel):
+    website_id: int
+    business_id: int
+    template_keys: List[str]
+
+
+@router.post("/pages/from-templates-bulk")
+def create_pages_from_templates_bulk(body: PagesFromTemplatesBulk, db: Session = Depends(get_db)):
+    """Apply a batch of templates to a site in one call. Best-effort: skips invalid
+    keys and templates the business type isn't entitled to, returns what was created
+    plus what was skipped and why."""
+    import page_templates
+
+    biz = db.query(models.Business).filter(models.Business.BusinessID == body.business_id).first()
+    if not biz:
+        raise HTTPException(status_code=404, detail="Business not found")
+
+    last = db.query(models.BusinessWebPage).filter(
+        models.BusinessWebPage.WebsiteID == body.website_id
+    ).order_by(models.BusinessWebPage.SortOrder.desc()).first()
+    next_order = (last.SortOrder + 1) if last and last.SortOrder is not None else 0
+
+    created, skipped = [], []
+    for key in body.template_keys:
+        tpl = page_templates.get_template(key)
+        if not tpl:
+            skipped.append({"template_key": key, "reason": "not_found"}); continue
+        gate = tpl.get("business_type_ids")
+        if gate is not None and biz.BusinessTypeID not in gate:
+            skipped.append({"template_key": key, "reason": "gated"}); continue
+
+        name = (tpl.get("name") or "New Page").strip()
+        slug = _unique_slug(db, body.website_id, tpl.get("slug") or name)
+        page = models.BusinessWebPage(
+            WebsiteID=body.website_id, BusinessID=body.business_id,
+            PageName=name, Slug=slug,
+            PageTitle=tpl.get("page_title"),
+            MetaDescription=tpl.get("meta_description"),
+            SortOrder=next_order, IsPublished=True, IsHomePage=False,
+            IsNavHeading=False,
+            CreatedAt=datetime.utcnow(), UpdatedAt=datetime.utcnow(),
+        )
+        db.add(page); db.commit(); db.refresh(page)
+        next_order += 1
+
+        for i, b in enumerate(tpl.get("default_blocks", [])):
+            db.add(models.BusinessWebBlock(
+                PageID=page.PageID,
+                BlockType=b.get("block_type", "content"),
+                BlockData=json.dumps(b.get("block_data", {})),
+                SortOrder=i,
+                CreatedAt=datetime.utcnow(), UpdatedAt=datetime.utcnow(),
+            ))
+        db.commit()
+        created.append({"template_key": key, "page": _ser_page(page)})
+
+    return {"created": created, "skipped": skipped}
 
 
 # ── Block endpoints ──────────────────────────────────────────────
@@ -765,21 +1073,213 @@ def reorder_blocks(body: BlockReorder, db: Session = Depends(get_db)):
 
 # ── Live content endpoints (for dynamic blocks) ──────────────────
 
-@router.get("/content/livestock")
-def get_livestock(business_id: int, db: Session = Depends(get_db)):
+@router.get("/content/members")
+def get_association_members(business_id: int, q: Optional[str] = None, state: Optional[str] = None,
+                             max_items: int = 24, db: Session = Depends(get_db)):
+    """Return member businesses for an association.
+    A business is treated as a 'member' of the association if any of its animals carry an
+    AnimalRegistration whose RegType matches the association's acronym. Associations are
+    matched to the requesting Business by name (best-effort)."""
     try:
-        rows = db.execute(text("""
-            SELECT TOP 20 a.AnimalID, a.FullName, a.ShortName, a.Description,
-                   a.PublishForSale, a.PublishStud, a.Category, a.Breed,
-                   a.StudDescription, a.Financeterms,
-                   p.Photo1
-            FROM animals a
-            LEFT JOIN productsphotos p ON p.AnimalID = a.AnimalID
-            WHERE a.BusinessID = :bid AND (a.PublishForSale = 1 OR a.PublishStud = 1)
-            ORDER BY a.AnimalID DESC
+        # Resolve the association's acronym. Match by AssociationName ≈ BusinessName (case-insensitive).
+        acro_row = db.execute(text("""
+            SELECT TOP 1 AssociationAcronym FROM Associations a
+            JOIN Business b ON LOWER(LTRIM(RTRIM(a.AssociationName))) = LOWER(LTRIM(RTRIM(b.BusinessName)))
+            WHERE b.BusinessID = :bid AND a.AssociationAcronym IS NOT NULL AND a.AssociationAcronym <> ''
+        """), {"bid": business_id}).fetchone()
+        if not acro_row:
+            return []  # no acronym on record → can't resolve members
+        acronym = acro_row[0]
+
+        filters = ["reg.RegType = :acro", "b.BusinessID <> :selfid"]
+        params  = {"acro": acronym, "selfid": business_id, "top": max_items}
+        if q:
+            filters.append("b.BusinessName LIKE :q")
+            params["q"] = f"%{q}%"
+        if state:
+            filters.append("addr.AddressState = :state")
+            params["state"] = state
+        where = " AND ".join(filters)
+
+        rows = db.execute(text(f"""
+            SELECT TOP (:top)
+                b.BusinessID, b.BusinessName, b.Logo, b.BusinessWebsite,
+                addr.AddressCity, addr.AddressState
+            FROM Business b
+            JOIN Animals a              ON a.BusinessID = b.BusinessID
+            JOIN AnimalRegistration reg ON reg.AnimalID = a.AnimalID
+            LEFT JOIN Address addr      ON addr.AddressID = b.AddressID
+            WHERE {where}
+            GROUP BY b.BusinessID, b.BusinessName, b.Logo, b.BusinessWebsite,
+                     addr.AddressCity, addr.AddressState
+            ORDER BY b.BusinessName
+        """), params).fetchall()
+        return [{
+            "business_id": r.BusinessID,
+            "name":        r.BusinessName,
+            "logo_url":    r.Logo,
+            "website_url": r.BusinessWebsite,
+            "city":        r.AddressCity,
+            "state":       r.AddressState,
+            "slug":        str(r.BusinessID),
+        } for r in rows]
+    except Exception as e:
+        import traceback
+        print(f"[content/members] ERROR for business_id={business_id}: {e}")
+        traceback.print_exc()
+        return []
+
+
+@router.get("/content/registry")
+def get_association_registry(business_id: int, name: Optional[str] = None,
+                              reg_number: Optional[str] = None, owner: Optional[str] = None,
+                              max_results: int = 20, db: Session = Depends(get_db)):
+    """Search animal registrations scoped to this association's acronym."""
+    if not any([name, reg_number, owner]):
+        return []
+    try:
+        acro_row = db.execute(text("""
+            SELECT TOP 1 AssociationAcronym FROM Associations a
+            JOIN Business b ON LOWER(LTRIM(RTRIM(a.AssociationName))) = LOWER(LTRIM(RTRIM(b.BusinessName)))
+            WHERE b.BusinessID = :bid AND a.AssociationAcronym IS NOT NULL AND a.AssociationAcronym <> ''
+        """), {"bid": business_id}).fetchone()
+        if not acro_row:
+            return []
+        acronym = acro_row[0]
+
+        filters = ["reg.RegType = :acro"]
+        params  = {"acro": acronym, "top": max_results}
+        if name:
+            filters.append("a.FullName LIKE :name")
+            params["name"] = f"%{name}%"
+        if reg_number:
+            filters.append("reg.RegNumber LIKE :reg")
+            params["reg"] = f"%{reg_number}%"
+        if owner:
+            filters.append("b.BusinessName LIKE :owner")
+            params["owner"] = f"%{owner}%"
+        where = " AND ".join(filters)
+
+        rows = db.execute(text(f"""
+            SELECT TOP (:top)
+                a.AnimalID, a.FullName, reg.RegNumber, b.BusinessName
+            FROM Animals a
+            JOIN AnimalRegistration reg ON reg.AnimalID = a.AnimalID
+            LEFT JOIN Business b        ON b.BusinessID = a.BusinessID
+            WHERE {where}
+            ORDER BY a.FullName
+        """), params).fetchall()
+        return [{
+            "animal_id":  r.AnimalID,
+            "name":       r.FullName,
+            "reg_number": r.RegNumber,
+            "owner":      r.BusinessName,
+            "detail_url": f"/livestock/{r.AnimalID}",
+        } for r in rows]
+    except Exception as e:
+        import traceback
+        print(f"[content/registry] ERROR for business_id={business_id}: {e}")
+        traceback.print_exc()
+        return []
+
+
+@router.get("/content/livestock")
+def get_livestock(business_id: int, include_unpublished: int = 0, db: Session = Depends(get_db)):
+    try:
+        publish_clause = "" if include_unpublished else " AND (a.PublishForSale = 1 OR a.PublishStud = 1)"
+        rows = db.execute(text(f"""
+            SELECT TOP 200
+                a.AnimalID, a.FullName, a.Description,
+                a.SpeciesID, a.PublishForSale, a.PublishStud,
+                b.Breed AS Breed,
+                sc.SpeciesCategory       AS CategoryName,
+                sc.SpeciesCategoryPlural AS CategoryPlural,
+                sc.SpeciesCategoryOrder  AS CategoryOrder,
+                sp.Species               AS SpeciesName,
+                ph.Photo1,
+                pr.Price,
+                pr.SalePrice,
+                pr.StudFee,
+                pr.PriceComments
+            FROM Animals a
+            LEFT JOIN SpeciesBreedLookupTable b ON b.BreedLookupID = a.BreedID
+            OUTER APPLY (
+                SELECT TOP 1 SpeciesCategory, SpeciesCategoryPlural, SpeciesCategoryOrder
+                FROM speciescategory
+                WHERE SpeciesCategory = a.Category
+                ORDER BY CASE WHEN SpeciesID = a.SpeciesID THEN 0 ELSE 1 END, SpeciesCategoryID
+            ) sc
+            LEFT JOIN SpeciesAvailable sp       ON sp.SpeciesID = a.SpeciesID
+            LEFT JOIN Photos ph  ON ph.AnimalID = a.AnimalID
+            LEFT JOIN Pricing pr ON pr.AnimalID = a.AnimalID
+            WHERE a.BusinessID = :bid{publish_clause}
+            ORDER BY sc.SpeciesCategoryOrder, sc.SpeciesCategory, a.FullName
         """), {"bid": business_id}).fetchall()
         return [dict(r._mapping) for r in rows]
     except Exception as e:
+        import traceback
+        print(f"[content/livestock] ERROR for business_id={business_id}: {e}")
+        traceback.print_exc()
+        return []
+
+@router.get("/content/packages")
+def get_packages(business_id: int, db: Session = Depends(get_db)):
+    """Return all packages for a business with nested animal items including photos."""
+    try:
+        pkgs = db.execute(text("""
+            SELECT p.PackageID, p.Title, p.Description, p.PackagePrice, p.CreatedAt
+            FROM AnimalPackage p
+            WHERE p.BusinessID = :bid
+            ORDER BY p.CreatedAt DESC
+        """), {"bid": business_id}).fetchall()
+        result = []
+        for pkg in pkgs:
+            p = dict(pkg._mapping)
+            items = db.execute(text("""
+                SELECT pi.PackageItemID, pi.AnimalID, pi.IncludeType,
+                       a.FullName, a.Description,
+                       b.Breed,
+                       ph.Photo1,
+                       pr.Price, pr.SalePrice, pr.StudFee
+                FROM AnimalPackageItem pi
+                JOIN Animals a ON a.AnimalID = pi.AnimalID
+                LEFT JOIN SpeciesBreedLookupTable b ON b.BreedLookupID = a.BreedID
+                LEFT JOIN Photos ph ON ph.AnimalID = pi.AnimalID
+                LEFT JOIN Pricing pr ON pr.AnimalID = pi.AnimalID
+                WHERE pi.PackageID = :pid
+            """), {"pid": p["PackageID"]}).fetchall()
+            p["items"] = [dict(it._mapping) for it in items]
+            # Calculate total value from individual animal prices
+            total = 0
+            for it in p["items"]:
+                if it.get("IncludeType") == "stud":
+                    total += float(it.get("StudFee") or 0)
+                else:
+                    sale = float(it.get("SalePrice") or 0)
+                    total += sale if sale > 0 else float(it.get("Price") or 0)
+            p["total_value"] = total
+            result.append(p)
+        return result
+    except Exception as e:
+        import traceback
+        print(f"[content/packages] ERROR for business_id={business_id}: {e}")
+        traceback.print_exc()
+        return []
+
+@router.get("/content/animal-packages")
+def get_animal_packages(animal_id: int, db: Session = Depends(get_db)):
+    """Return all packages that contain a specific animal."""
+    try:
+        rows = db.execute(text("""
+            SELECT p.PackageID, p.Title, p.Description, p.PackagePrice
+            FROM AnimalPackageItem pi
+            JOIN AnimalPackage p ON p.PackageID = pi.PackageID
+            WHERE pi.AnimalID = :aid
+            ORDER BY p.CreatedAt DESC
+        """), {"aid": animal_id}).fetchall()
+        return [dict(r._mapping) for r in rows]
+    except Exception as e:
+        print(f"[content/animal-packages] ERROR for animal_id={animal_id}: {e}")
         return []
 
 @router.get("/content/produce")
@@ -926,23 +1426,36 @@ def check_content(business_id: int, db: Session = Depends(get_db)):
 
 def _build_bundle(site: models.BusinessWebsite, db) -> dict:
     """Shared helper: serialise site + published pages + blocks."""
-    pages = db.query(models.BusinessWebPage).filter(
-        models.BusinessWebPage.WebsiteID == site.WebsiteID,
-        models.BusinessWebPage.IsPublished == True
-    ).order_by(models.BusinessWebPage.SortOrder).all()
+    import traceback
+    try:
+        pages = db.query(models.BusinessWebPage).filter(
+            models.BusinessWebPage.WebsiteID == site.WebsiteID,
+            models.BusinessWebPage.IsPublished == True
+        ).order_by(models.BusinessWebPage.SortOrder).all()
 
-    result_pages = []
-    for page in pages:
-        blocks = db.query(models.BusinessWebBlock).filter(
-            models.BusinessWebBlock.PageID == page.PageID
-        ).order_by(models.BusinessWebBlock.SortOrder).all()
-        p = _ser_page(page)
-        p["blocks"] = [_ser_block(b) for b in blocks]
-        result_pages.append(p)
+        result_pages = []
+        for page in pages:
+            blocks = db.query(models.BusinessWebBlock).filter(
+                models.BusinessWebBlock.PageID == page.PageID
+            ).order_by(models.BusinessWebBlock.SortOrder).all()
+            p = _ser_page(page)
+            p["blocks"] = [_ser_block(b) for b in blocks]
+            result_pages.append(p)
 
-    site_data = _ser_site(site)
-    site_data["pages"] = result_pages
-    return site_data
+        site_data = _ser_site(site)
+        site_data["pages"] = result_pages
+
+        # Include header images so the public renderer can pick the date-matched one.
+        header_rows = db.execute(
+            text("SELECT * FROM WebsiteHeaderImages WHERE WebsiteID=:wid ORDER BY StartDate, SortOrder"),
+            {"wid": site.WebsiteID}
+        ).fetchall()
+        site_data["header_images"] = [_ser_header_image(r) for r in header_rows]
+
+        return site_data
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"bundle build failed: {exc}")
 
 
 @router.get("/bundle/{slug}")
@@ -958,31 +1471,68 @@ def get_site_bundle(slug: str, db: Session = Depends(get_db)):
 
 @router.get("/bundle-by-domain")
 def get_site_bundle_by_domain(domain: str, db: Session = Depends(get_db)):
-    """Looks up a site by canonical URL / custom domain and returns its full bundle.
-    Strips protocol and trailing slashes before matching so 'yourfarm.com',
-    'https://yourfarm.com', and 'https://yourfarm.com/' all resolve the same site.
+    """Fast domain → site bundle lookup.
+
+    Resolution order:
+      1. WebsiteCustomDomain table (indexed — O(log n), handles all variants)
+      2. Fallback LIKE scan on CanonicalURL (old sites not yet in the index)
+         — auto-registers the match so subsequent calls use the fast path.
+
+    Retries once on transient DB connection errors (Cloud Run cold-start races).
     """
-    # Normalise: strip protocol and trailing slash
-    clean = domain.lower().replace("https://", "").replace("http://", "").rstrip("/")
-    if not clean:
+    import traceback
+
+    bare = _normalize_domain(domain)
+    if not bare:
         raise HTTPException(status_code=400, detail="domain parameter is required")
 
-    site = db.query(models.BusinessWebsite).filter(
-        models.BusinessWebsite.CanonicalURL.ilike(f"%{clean}%")
-    ).first()
-    # If not found and domain has www., try the bare domain (and vice versa)
-    if not site and clean.startswith("www."):
-        bare = clean[4:]
-        site = db.query(models.BusinessWebsite).filter(
-            models.BusinessWebsite.CanonicalURL.ilike(f"%{bare}%")
-        ).first()
-    elif not site and not clean.startswith("www."):
-        site = db.query(models.BusinessWebsite).filter(
-            models.BusinessWebsite.CanonicalURL.ilike(f"%www.{clean}%")
-        ).first()
-    if not site:
-        raise HTTPException(status_code=404, detail="No site found for this domain")
-    return _build_bundle(site, db)
+    # Build all candidates to search: bare and www. variant
+    candidates = [bare, f"www.{bare}"]
+
+    for attempt in range(2):
+        try:
+            # ── 1. Fast indexed lookup ────────────────────────────────────────
+            row = db.execute(
+                text("SELECT TOP 1 WebsiteID FROM WebsiteCustomDomain WHERE Domain IN :doms AND IsActive = 1"),
+                {"doms": tuple(candidates)},
+            ).first()
+
+            if row:
+                site = db.query(models.BusinessWebsite).filter(
+                    models.BusinessWebsite.WebsiteID == row.WebsiteID
+                ).first()
+            else:
+                # ── 2. Fallback: LIKE scan (back-compat for old entries) ──────
+                site = None
+                for candidate in candidates:
+                    site = db.query(models.BusinessWebsite).filter(
+                        models.BusinessWebsite.CanonicalURL.ilike(f"%{candidate}%")
+                    ).first()
+                    if site:
+                        # Auto-register so next request hits the fast path
+                        _upsert_custom_domain(db, site.WebsiteID, site.CanonicalURL)
+                        break
+
+            if not site:
+                raise HTTPException(status_code=404, detail="No site found for this domain")
+
+            return _build_bundle(site, db)
+
+        except HTTPException:
+            raise
+        except OperationalError as exc:
+            # Transient connection error (stale pool, cold-start race) — retry once
+            if attempt == 0:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                continue
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"bundle-by-domain failed: {exc}")
+        except Exception as exc:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"bundle-by-domain failed: {exc}")
 
 
 # ── Contact form submission ───────────────────────────────────────
@@ -1056,6 +1606,11 @@ def delete_site(website_id: int, db: Session = Depends(get_db)):
     ).first()
     if not site:
         raise HTTPException(status_code=404, detail="Site not found")
+    # Free the slug in its own commit BEFORE the cascade delete. Slug has a
+    # unique index, so if a child-table FK ever blocks the row delete, the
+    # slug is already released and the user can recreate without a collision.
+    site.Slug = None
+    db.commit()
     # Delete all child data first
     page_ids = [p.PageID for p in db.query(models.BusinessWebPage).filter(
         models.BusinessWebPage.WebsiteID == website_id
@@ -1068,6 +1623,7 @@ def delete_site(website_id: int, db: Session = Depends(get_db)):
         models.BusinessWebPage.WebsiteID == website_id
     ).delete(synchronize_session=False)
     db.execute(text("DELETE FROM WebsiteHeaderImages WHERE WebsiteID=:wid"), {"wid": website_id})
+    db.execute(text("DELETE FROM WebsiteVersionHistory WHERE WebsiteID=:wid"), {"wid": website_id})
     db.delete(site)
     db.commit()
     return {"ok": True}
@@ -1087,6 +1643,25 @@ async def upload_website_image(file: UploadFile = File(...)):
         blob.upload_from_string(contents, content_type=file.content_type or "image/jpeg")
         url = f"https://storage.googleapis.com/{GCS_BUCKET}/{filename}"
         return {"url": url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+
+@router.post("/upload-file")
+async def upload_website_file(file: UploadFile = File(...)):
+    """Upload a PDF (or any document) to GCS and return its public URL + original filename."""
+    try:
+        from google.cloud import storage as gcs
+        contents = await file.read()
+        original = file.filename or "document.pdf"
+        ext = original.rsplit(".", 1)[-1].lower() if "." in original else "pdf"
+        filename = f"{GCS_PREFIX}/files/{uuid.uuid4().hex}.{ext}"
+        client = gcs.Client()
+        bucket = client.bucket(GCS_BUCKET)
+        blob = bucket.blob(filename)
+        blob.upload_from_string(contents, content_type=file.content_type or "application/pdf")
+        url = f"https://storage.googleapis.com/{GCS_BUCKET}/{filename}"
+        return {"url": url, "filename": original}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
@@ -1218,7 +1793,10 @@ def restore_version(version_id: int, db: Session = Depends(get_db)):
         for field, col in [
             ("site_name","SiteName"),("tagline","Tagline"),("logo_url","LogoURL"),("favicon_url","FaviconURL"),
             ("primary_color","PrimaryColor"),("secondary_color","SecondaryColor"),
-            ("accent_color","AccentColor"),("bg_color","BgColor"),("text_color","TextColor"),
+            ("accent_color","AccentColor"),("bg_color","BgColor"),
+            ("screen_background_color","ScreenBackgroundColor"),
+            ("page_background_color","PageBackgroundColor"),
+            ("text_color","TextColor"),
             ("font_family","FontFamily"),("nav_text_color","NavTextColor"),
             ("footer_bg_color","FooterBgColor"),("copyright_text","CopyrightText"),
         ]:

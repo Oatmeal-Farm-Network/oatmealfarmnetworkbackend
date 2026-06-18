@@ -8,6 +8,7 @@ from typing import Optional
 import re
 import uuid
 from datetime import datetime
+from routers.translation import translate_fields, translate_list
 
 router = APIRouter(prefix="/api/blog", tags=["blog"])
 
@@ -336,13 +337,18 @@ def list_public_posts(
     blog_cat_id: Optional[int] = None,
     category_name: Optional[str] = None,
     featured_only: bool = False,
+    show_on_website: bool = False,
     limit: int = 20,
     offset: int = 0,
+    lang: str = "en",
     db: Session = Depends(get_db)
 ):
-    """List published posts, optionally filtered by business, category, or featured."""
+    """List posts, optionally filtered by business, category, or featured.
+    By default filters to IsPublished=1 (public directory/listing).
+    Pass show_on_website=true to instead filter by ShowOnWebsite=1 (the
+    per-business custom website toggle used by WebsiteBuilder)."""
     _ensure_schema(db)
-    where = ["b.IsPublished = 1"]
+    where = ["b.ShowOnWebsite = 1"] if show_on_website else ["b.IsPublished = 1"]
     params: dict = {"limit": limit, "offset": offset}
 
     if business_id is not None:
@@ -374,7 +380,8 @@ def list_public_posts(
         OFFSET :offset ROWS FETCH NEXT :limit ROWS ONLY
     """), params).fetchall()
 
-    return [
+    _BLOG_FIELDS = ["Title", "Content"]
+    posts = [
         {
             **_post_row(r),
             "business_name":      r.BusinessName,
@@ -383,10 +390,11 @@ def list_public_posts(
         }
         for r in rows
     ]
+    return translate_list(posts, _BLOG_FIELDS, lang, db)
 
 
 @router.get("/posts/{blog_id}")
-def get_post(blog_id: int, db: Session = Depends(get_db)):
+def get_post(blog_id: int, lang: str = "en", db: Session = Depends(get_db)):
     """Get a single published post with its photos."""
     _ensure_schema(db)
     row = db.execute(text("""
@@ -410,7 +418,7 @@ def get_post(blog_id: int, db: Session = Depends(get_db)):
         FROM blogphotos WHERE BlogID = :id ORDER BY PhotoOrder
     """), {"id": blog_id}).fetchall()
 
-    return {
+    post = {
         **_post_row(row),
         "business_name":        row.BusinessName,
         "category_name":        row.BlogCategoryName,
@@ -421,6 +429,7 @@ def get_post(blog_id: int, db: Session = Depends(get_db)):
             for p in photos
         ],
     }
+    return translate_fields(post, ["Title", "Content"], lang, db)
 
 
 # ── Management endpoints ─────────────────────────────────────────

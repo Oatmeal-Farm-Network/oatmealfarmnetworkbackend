@@ -37,6 +37,30 @@ from config import (
     THREADS_COLLECTION,
 )
 
+# ── Org-profile collection ────────────────────────────────────────────────────
+# Formal schema for the Cassia-seeded onboarding profile. Written once at
+# account setup, merged into get_org_memory() so all agents inherit it.
+ORG_PROFILES_COLLECTION = "org_profiles"
+
+# Canonical field names — all agents read these keys from get_org_memory().
+# Validate writes against this to avoid drift across agents.
+_ORG_PROFILE_FIELDS = frozenset({
+    # identity
+    "business_id", "people_id", "business_type", "plan_tier",
+    # agronomic
+    "crops", "field_count", "size_ha", "uses_agronomist", "location",
+    # commercial
+    "channels", "revenue_model",
+    # operational
+    "headache",
+    # agent-specific
+    "brand_context",   # Lavendir website builder
+    "cuisine_type",    # Pairsley — restaurants only
+    "sourcing_prefs",  # Pairsley — restaurants only
+    # meta
+    "seeded_at", "updated_at",
+})
+
 if FIRESTORE_AVAILABLE:
     from google.cloud import firestore
 
@@ -132,10 +156,13 @@ class ChatHistory:
         role: str,
         content: str,
         metadata: Optional[Dict[str, Any]] = None,
+        business_id: Optional[str] = None,
     ) -> bool:
         """Persist a single message and ensure the parent thread doc exists.
 
         Creates the thread document on the first message.
+        business_id is stored on the thread so org-wide memory queries can
+        aggregate across all team members' conversations for the same org.
         """
         if self.threads_col is None:
             return False
@@ -148,27 +175,31 @@ class ChatHistory:
             # --- upsert thread doc ---
             thread_snap = thread_ref.get()
             if thread_snap.exists:
-                thread_ref.update(
-                    {
-                        "updated_at": now,
-                        "message_count": firestore.Increment(1),
-                    }
-                )
+                update_doc: Dict[str, Any] = {
+                    "updated_at": now,
+                    "message_count": firestore.Increment(1),
+                }
+                # Backfill business_id if missing from an older thread doc
+                existing = thread_snap.to_dict() or {}
+                if business_id and not existing.get("business_id"):
+                    update_doc["business_id"] = str(business_id)
+                thread_ref.update(update_doc)
             else:
                 preview = content[:100] if role == "user" else ""
-                thread_ref.set(
-                    {
-                        "thread_id": thread_id,
-                        "user_id": user_id,
-                        "created_at": now,
-                        "updated_at": now,
-                        "status": "active",
-                        "advisory_type": None,
-                        "message_count": 1,
-                        "preview": preview,
-                        "farm_context": None,
-                    }
-                )
+                thread_doc: Dict[str, Any] = {
+                    "thread_id": thread_id,
+                    "user_id": user_id,
+                    "created_at": now,
+                    "updated_at": now,
+                    "status": "active",
+                    "advisory_type": None,
+                    "message_count": 1,
+                    "preview": preview,
+                    "farm_context": None,
+                }
+                if business_id:
+                    thread_doc["business_id"] = str(business_id)
+                thread_ref.set(thread_doc)
 
             # --- add message to subcollection ---
             message_id = f"{now}_{uuid.uuid4().hex[:8]}"
@@ -283,6 +314,231 @@ class ChatHistory:
         except Exception as e:
             logger.error("[ChatHistory] Get threads error: %s", e)
             return [], None
+
+    def get_user_memory(self, user_id: str, max_threads: int = 10) -> Dict[str, Any]:
+        """Aggregate farm_context from this user's recent completed threads.
+
+        Returns a profile Saige injects into prompts so she remembers locations,
+        crops/livestock, farm size, recurring concerns, and past recommendations
+        across conversations. Safe to call on every turn — bounded query.
+        """
+        if self.threads_col is None:
+            return {}
+        try:
+            query = (
+                self.threads_col.where("user_id", "==", user_id)
+                .where("status", "==", "complete")
+                .order_by("updated_at", direction=firestore.Query.DESCENDING)
+                .limit(max_threads)
+            )
+            locations: List[str] = []
+            crops: List[str] = []
+            farm_sizes: List[str] = []
+            recent_topics: List[str] = []
+            recent_solutions: List[str] = []  # past recommendations Saige gave
+            known_issues: List[str] = []       # recurring problems this farmer raises
+            seen_loc, seen_crop, seen_size = set(), set(), set()
+            seen_issues: set = set()
+            for doc in query.stream():
+                ctx = (doc.to_dict() or {}).get("farm_context") or {}
+                loc = ctx.get("location")
+                if loc and loc not in seen_loc:
+                    locations.append(loc); seen_loc.add(loc)
+                for c in (ctx.get("crops") or []):
+                    if c not in seen_crop:
+                        crops.append(c); seen_crop.add(c)
+                fs = ctx.get("farm_size")
+                if fs and fs not in seen_size:
+                    farm_sizes.append(fs); seen_size.add(fs)
+                summary = ctx.get("assessment_summary")
+                if summary:
+                    recent_topics.append(summary)
+                # Collect past recommendations (top 2 per thread, deduped)
+                for rec in (ctx.get("recommendations") or [])[:2]:
+                    if rec and len(recent_solutions) < 8:
+                        recent_solutions.append(rec)
+                # Collect recurring issues this farmer has raised
+                for issue in (ctx.get("current_issues") or []):
+                    if issue and issue not in seen_issues:
+                        known_issues.append(issue)
+                        seen_issues.add(issue)
+            return {
+                "locations": locations,
+                "crops": crops,
+                "farm_sizes": farm_sizes,
+                "recent_topics": recent_topics[:5],
+                "recent_solutions": recent_solutions[:6],
+                "known_issues": list(known_issues)[:8],
+            }
+        except Exception as e:
+            logger.error("[ChatHistory] get_user_memory error: %s", e)
+            return {}
+
+    def get_org_memory(
+        self,
+        business_id: str,
+        exclude_user_id: Optional[str] = None,
+        max_threads: int = 30,
+    ) -> Dict[str, Any]:
+        """Aggregate farm_context from ALL team members' completed threads for this org.
+
+        Returns shared org-level facts: locations, crops, animals, recurring issues,
+        and solutions that any team member has received. Personal user details are not
+        included — only agricultural/operational facts about the organisation.
+
+        exclude_user_id: skip this user's own threads (their personal memory is loaded
+        separately via get_user_memory and we don't want to double-count it here).
+        """
+        if not business_id:
+            return {}
+
+        # Load Cassia-seeded onboarding profile first so conversation-derived
+        # facts augment (rather than replace) the structured baseline.
+        seeded_profile: Dict[str, Any] = self.get_org_profile(business_id)
+
+        if self.threads_col is None:
+            # Return the seeded profile alone when Firestore threads are offline.
+            return {
+                "locations": [],
+                "crops": list(seeded_profile.get("crops") or []),
+                "farm_sizes": [],
+                "recent_topics": [],
+                "org_solutions": [],
+                "known_org_issues": [],
+                "seeded_profile": seeded_profile,
+                "channels": seeded_profile.get("channels") or [],
+                "plan_tier": seeded_profile.get("plan_tier") or "",
+                "revenue_model": seeded_profile.get("revenue_model") or "",
+                "uses_agronomist": seeded_profile.get("uses_agronomist"),
+                "headache": seeded_profile.get("headache") or "",
+                "business_type": seeded_profile.get("business_type") or "",
+            }
+        try:
+            # Single equality filter on business_id — no composite index needed.
+            # Filter status and sort in Python to avoid Firestore index requirements.
+            query = (
+                self.threads_col
+                .where("business_id", "==", str(business_id))
+                .limit(max_threads)
+            )
+            # Pre-seed crops from the structured profile so the list is populated
+            # even for businesses with no completed conversations yet.
+            locations: List[str] = []
+            seed_crops: List[str] = list(seeded_profile.get("crops") or [])
+            crops: List[str] = list(seed_crops)
+            farm_sizes: List[str] = []
+            recent_topics: List[str] = []
+            org_solutions: List[str] = []
+            known_org_issues: List[str] = []
+            seen_loc, seen_crop, seen_size = set(), set(), set()
+            seen_crop = set(c.lower() for c in seed_crops)
+            seen_issues: set = set()
+
+            docs = sorted(
+                [d for d in query.stream() if (d.to_dict() or {}).get("status") == "complete"],
+                key=lambda d: (d.to_dict() or {}).get("updated_at", ""),
+                reverse=True,
+            )[:max_threads]
+
+            for doc in docs:
+                data = doc.to_dict() or {}
+                # Optionally skip the requesting user's own threads (loaded in personal memory)
+                if exclude_user_id and data.get("user_id") == exclude_user_id:
+                    continue
+                ctx = data.get("farm_context") or {}
+                loc = ctx.get("location")
+                if loc and loc not in seen_loc:
+                    locations.append(loc); seen_loc.add(loc)
+                for c in (ctx.get("crops") or []):
+                    if c.lower() not in seen_crop:
+                        crops.append(c); seen_crop.add(c.lower())
+                fs = ctx.get("farm_size")
+                if fs and fs not in seen_size:
+                    farm_sizes.append(fs); seen_size.add(fs)
+                summary = ctx.get("assessment_summary")
+                if summary and len(recent_topics) < 8:
+                    recent_topics.append(summary)
+                for rec in (ctx.get("recommendations") or [])[:2]:
+                    if rec and len(org_solutions) < 8:
+                        org_solutions.append(rec)
+                for issue in (ctx.get("current_issues") or []):
+                    if issue and issue not in seen_issues:
+                        known_org_issues.append(issue)
+                        seen_issues.add(issue)
+
+            return {
+                "locations": locations[:5],
+                "crops": crops[:15],
+                "farm_sizes": farm_sizes[:3],
+                "recent_topics": recent_topics[:6],
+                "org_solutions": org_solutions[:6],
+                "known_org_issues": list(known_org_issues)[:10],
+                # Structured fields from Cassia onboarding (if seeded)
+                "seeded_profile": seeded_profile,
+                "channels": seeded_profile.get("channels") or [],
+                "plan_tier": seeded_profile.get("plan_tier") or "",
+                "revenue_model": seeded_profile.get("revenue_model") or "",
+                "uses_agronomist": seeded_profile.get("uses_agronomist"),
+                "headache": seeded_profile.get("headache") or "",
+                "business_type": seeded_profile.get("business_type") or "",
+            }
+        except Exception as e:
+            logger.error("[ChatHistory] get_org_memory error: %s", e)
+            return {}
+
+    # ------------------------------------------------------------------
+    # Org profile (Cassia-seeded structured onboarding data)
+    # ------------------------------------------------------------------
+
+    def save_org_memory_profile(
+        self, business_id: str, data: Dict[str, Any]
+    ) -> bool:
+        """Write Cassia's structured onboarding profile for this business.
+
+        Seeds get_org_memory() before any conversations have happened so Saige,
+        Thaiyme, Lavendir, and Pairsley all inherit the farmer's stated crops,
+        channels, headache, and plan tier from day one.
+        """
+        db = self.firestore_db
+        if not db or not business_id:
+            return False
+        try:
+            profile: Dict[str, Any] = {
+                k: v for k, v in data.items() if k in _ORG_PROFILE_FIELDS
+            }
+            profile["business_id"] = int(business_id)
+            profile["updated_at"] = time.time()
+            if "seeded_at" not in profile:
+                profile["seeded_at"] = time.time()
+            db.collection(ORG_PROFILES_COLLECTION).document(str(business_id)).set(
+                profile, merge=True
+            )
+            logger.info(
+                "[ChatHistory] Saved org_profile for business %s", business_id
+            )
+            return True
+        except Exception as e:
+            logger.error("[ChatHistory] save_org_memory_profile error: %s", e)
+            return False
+
+    def get_org_profile(self, business_id: str) -> Dict[str, Any]:
+        """Read the Cassia-seeded onboarding profile for a business.
+
+        Returns an empty dict if no profile has been written yet.
+        """
+        db = self.firestore_db
+        if not db or not business_id:
+            return {}
+        try:
+            snap = (
+                db.collection(ORG_PROFILES_COLLECTION)
+                .document(str(business_id))
+                .get()
+            )
+            return snap.to_dict() or {} if snap.exists else {}
+        except Exception as e:
+            logger.error("[ChatHistory] get_org_profile error: %s", e)
+            return {}
 
     def get_messages(
         self,

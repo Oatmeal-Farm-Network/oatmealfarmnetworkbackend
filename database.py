@@ -17,10 +17,10 @@ engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
     echo=False,
     pool_pre_ping=True,
-    pool_recycle=300,
+    pool_recycle=1800,    # recycle connections every 30 min; 60s was too short for idle dev sessions
     pool_size=5,
     max_overflow=10,
-    connect_args={"timeout": 10, "login_timeout": 10},
+    connect_args={"timeout": 30, "login_timeout": 15},  # 30s query / 15s login — handles cold starts
 )
 
 # Declarative base
@@ -49,3 +49,18 @@ def get_db_cursor():
         login_timeout=10,
     )
     return conn.cursor(as_dict=True)
+
+
+def get_raw_conn():
+    conn = pymssql.connect(
+        server=os.getenv("DB_SERVER"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        database=os.getenv("DB_NAME"),
+        timeout=30,
+        login_timeout=15,
+    )
+    try:
+        yield conn
+    finally:
+        conn.close()

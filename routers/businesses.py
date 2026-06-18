@@ -1,10 +1,61 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
-from database import get_db
+from sqlalchemy import text
+from database import get_db, SessionLocal
 import models
 import datetime
 
 router = APIRouter(prefix="/api/businesses", tags=["businesses"])
+
+
+def _seed_business_types():
+    """Idempotent seed of business categories surfaced in the public /directory.
+    Runs once on module load — safe to re-run because each insert is gated by a
+    NOT EXISTS check on BusinessType."""
+    seed_types = [
+        "Hunger Relief Organization",
+    ]
+    try:
+        with SessionLocal() as db:
+            for bt in seed_types:
+                db.execute(text("""
+                    IF NOT EXISTS (SELECT 1 FROM businesstypelookup WHERE BusinessType = :bt)
+                    INSERT INTO businesstypelookup (BusinessType) VALUES (:bt)
+                """), {"bt": bt})
+            db.commit()
+    except Exception as e:
+        print(f"[businesses] seed_business_types error: {e}")
+
+
+_seed_business_types()
+
+
+@router.get("/{business_id}/team")
+def get_business_team(business_id: int, db: Session = Depends(get_db)):
+    """
+    All People with active BusinessAccess for this business. Used by:
+      - event wizard attendees step (Import from my team)
+      - event mailing list admin (Import contacts)
+    """
+    rows = db.execute(text("""
+        SELECT p.PeopleID, p.PeopleFirstName, p.PeopleLastName, p.PeopleEmail,
+               p.PeoplePhone, ba.AccessLevel
+        FROM BusinessAccess ba
+        JOIN People p ON p.PeopleID = ba.PeopleID
+        WHERE ba.BusinessID = :bid AND ba.Active = 1
+        ORDER BY p.PeopleLastName, p.PeopleFirstName
+    """), {"bid": business_id}).mappings().all()
+    return [
+        {
+            "PeopleID":    r["PeopleID"],
+            "FirstName":   r["PeopleFirstName"],
+            "LastName":    r["PeopleLastName"],
+            "Email":       r["PeopleEmail"],
+            "Phone":       r["PeoplePhone"],
+            "AccessLevel": r["AccessLevel"],
+        }
+        for r in rows
+    ]
 
 
 def clean(val):
@@ -28,10 +79,25 @@ def build_logo_url(logo):
 
 
 @router.get("/countries")
-def get_countries(db: Session = Depends(get_db)):
+def get_countries(business_type_id: str = None, db: Session = Depends(get_db)):
     try:
-        countries = db.query(models.Country.name).order_by(models.Country.name).all()
-        return [c[0] for c in countries if c[0]]
+        if business_type_id:
+            rows = db.execute(text("""
+                SELECT DISTINCT c.name
+                FROM country c
+                JOIN Address a ON a.country_id = c.country_id
+                JOIN Business b ON b.AddressID = a.AddressID
+                WHERE b.BusinessTypeID = :btid
+                  AND c.name IS NOT NULL AND c.name <> ''
+                ORDER BY c.name
+            """), {"btid": int(business_type_id)}).fetchall()
+        else:
+            rows = db.execute(text("""
+                SELECT name FROM country
+                WHERE name IS NOT NULL AND name <> ''
+                ORDER BY name
+            """)).fetchall()
+        return [r.name for r in rows]
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -81,11 +147,14 @@ def create_account(payload: dict, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail="PeopleID is required")
 
         # 1. Create Address record
+        country_id = payload.get("country_id") or None
         address = models.Address(
-            AddressStreet = payload.get("AddressStreet", ""),
-            AddressCity   = payload.get("AddressCity", ""),
-            AddressState  = payload.get("StateIndex", ""),
-            AddressZip    = payload.get("AddressZip", ""),
+            AddressStreet  = payload.get("AddressStreet", ""),
+            AddressCity    = payload.get("AddressCity", ""),
+            AddressState   = payload.get("StateIndex", ""),
+            AddressZip     = payload.get("AddressZip", ""),
+            AddressCountry = payload.get("country", ""),
+            country_id     = int(country_id) if country_id else None,
         )
         db.add(address)
         db.flush()
@@ -111,11 +180,13 @@ def create_account(payload: dict, db: Session = Depends(get_db)):
         db.add(business)
         db.flush()
 
-        # 4. Create BusinessAccess record linking user to business
+        # 4. Create BusinessAccess record linking user to business.
+        # Creator gets AccessLevelID=3 (admin) so they can manage their own team
+        # via /auth/business-members, which requires level >= 3.
         access = models.BusinessAccess(
             BusinessID    = business.BusinessID,
             PeopleID      = int(people_id),
-            AccessLevelID = 1,
+            AccessLevelID = 3,
             Active        = 1,
             CreatedAt     = datetime.datetime.utcnow(),
             Role          = "Owner",
@@ -158,11 +229,35 @@ def debug_businesses(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/subcategories")
+def get_subcategories(BusinessTypeID: int = None, db: Session = Depends(get_db)):
+    """Return distinct SpeciesCategory names for businesses of a given type."""
+    try:
+        if not BusinessTypeID:
+            return []
+        rows = db.execute(text("""
+            SELECT DISTINCT sc.SpeciesCategory
+            FROM Business b
+            JOIN Animals a ON a.BusinessID = b.BusinessID
+            JOIN speciescategory sc ON a.SpeciesCategoryID = sc.SpeciesCategoryID
+            WHERE b.BusinessTypeID = :btype
+              AND sc.SpeciesCategory IS NOT NULL
+              AND sc.SpeciesCategory <> ''
+            ORDER BY sc.SpeciesCategory
+        """), {"btype": BusinessTypeID}).fetchall()
+        return [r.SpeciesCategory for r in rows]
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/")
 def get_businesses(
     country: str = None,
     BusinessTypeID: int = None,
     state: str = None,
+    species_category: str = None,
     db: Session = Depends(get_db)
 ):
     try:
@@ -180,6 +275,14 @@ def get_businesses(
         if state:
             conditions.append("sp.name = :state")
             params["state"] = state
+        if species_category:
+            conditions.append("""EXISTS (
+                SELECT 1 FROM Animals a2
+                JOIN speciescategory sc2 ON a2.SpeciesCategoryID = sc2.SpeciesCategoryID
+                WHERE a2.BusinessID = b.BusinessID
+                  AND sc2.SpeciesCategory = :species_category
+            )""")
+            params["species_category"] = species_category
 
         where_clause = " AND ".join(conditions)
 
@@ -263,6 +366,8 @@ def get_profile(business_id: int, db: Session = Depends(get_db)):
                 b.BusinessX, b.BusinessPinterest, b.BusinessYouTube,
                 b.BusinessTruthSocial, b.BusinessBlog,
                 b.BusinessOtherSocial1, b.BusinessOtherSocial2,
+                b.Cuisine, b.HeadChef, b.SeatingCapacity,
+                b.RestaurantHours, b.YearOpened, b.SourcingPhilosophy,
                 a.AddressStreet, a.AddressApt, a.AddressCity,
                 a.AddressState, a.AddressZip, a.StateIndex, a.country_id,
                 w.Website,
@@ -322,6 +427,12 @@ def get_profile(business_id: int, db: Session = Depends(get_db)):
             "BusinessBlog":         row.BusinessBlog,
             "BusinessOtherSocial1": row.BusinessOtherSocial1,
             "BusinessOtherSocial2": row.BusinessOtherSocial2,
+            "Cuisine":              getattr(row, 'Cuisine', None),
+            "HeadChef":             getattr(row, 'HeadChef', None),
+            "SeatingCapacity":      getattr(row, 'SeatingCapacity', None),
+            "RestaurantHours":      getattr(row, 'RestaurantHours', None),
+            "YearOpened":           getattr(row, 'YearOpened', None),
+            "SourcingPhilosophy":   getattr(row, 'SourcingPhilosophy', None),
         }
     except HTTPException:
         raise
@@ -344,7 +455,8 @@ def update_profile(business_id: int, payload: dict, db: Session = Depends(get_db
         if not ids:
             raise HTTPException(status_code=404, detail="Business not found")
 
-        # 1. Update Address — create the row if the business has no AddressID yet
+        # 1. Update Address — create the row if the business has no AddressID yet,
+        # or if the AddressID is dangling (points to a row that no longer exists)
         address_params = {
             "street":  (payload.get("AddressStreet") or "").strip(),
             "apt":     (payload.get("AddressApt")    or "").strip(),
@@ -353,7 +465,14 @@ def update_profile(business_id: int, payload: dict, db: Session = Depends(get_db
             "zip":     (payload.get("AddressZip")    or "").strip(),
             "country": (payload.get("country_name")  or "USA").strip(),
         }
+        address_exists = False
         if ids.AddressID:
+            address_exists = db.execute(
+                text("SELECT 1 FROM Address WHERE AddressID = :aid"),
+                {"aid": ids.AddressID}
+            ).fetchone() is not None
+
+        if address_exists:
             db.execute(text("""
                 UPDATE Address SET
                     AddressStreet = :street,
@@ -448,7 +567,13 @@ def update_profile(business_id: int, payload: dict, db: Session = Depends(get_db
                 BusinessTruthSocial = :truth,
                 BusinessBlog        = :blog,
                 BusinessOtherSocial1= :other1,
-                BusinessOtherSocial2= :other2
+                BusinessOtherSocial2= :other2,
+                Cuisine             = :cuisine,
+                HeadChef            = :chef,
+                SeatingCapacity     = :capacity,
+                RestaurantHours     = :hours,
+                YearOpened          = :year_opened,
+                SourcingPhilosophy  = :sourcing
             WHERE BusinessID = :bid
         """), {
             "name":      (payload.get("BusinessName")     or "").strip(),
@@ -464,6 +589,12 @@ def update_profile(business_id: int, payload: dict, db: Session = Depends(get_db
             "blog":      s("BusinessBlog"),
             "other1":    s("BusinessOtherSocial1"),
             "other2":    s("BusinessOtherSocial2"),
+            "cuisine":   s("Cuisine"),
+            "chef":      s("HeadChef"),
+            "capacity":  payload.get("SeatingCapacity") or None,
+            "hours":     s("RestaurantHours"),
+            "year_opened": payload.get("YearOpened") or None,
+            "sourcing":  s("SourcingPhilosophy"),
             "bid":       business_id,
         })
 

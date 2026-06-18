@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api/ranches", tags=["ranches"])
 _cache: dict = {}
 CACHE_TTL = 300
 
-GCP_BUCKET_URL = "https://storage.googleapis.com/oatmeal-farm-network-images/Animals/Uploads"
+GCP_BUCKET_URL = "https://storage.googleapis.com/oatmeal-farm-network-images/Animals"
 
 SLUG_TO_SPECIES_ID = {
     'alpacas': 2, 'bison': 9, 'buffalo': 34, 'camels': 18, 'cattle': 8,
@@ -224,6 +224,8 @@ def get_ranch_profile(business_id: int, db: Session = Depends(get_db)):
                 biz.RanchHomeText, biz.RanchHomeHeading,
                 biz.RanchHomeText2, biz.BusinessProfileHeader,
                 biz.BusinessPhone,
+                biz.Cuisine, biz.HeadChef, biz.SeatingCapacity,
+                biz.RestaurantHours, biz.YearOpened, biz.SourcingPhilosophy,
                 addr.AddressStreet, addr.AddressCity, addr.AddressZip,
                 sp.name AS StateName,
                 c.name AS CountryName,
@@ -269,6 +271,12 @@ def get_ranch_profile(business_id: int, db: Session = Depends(get_db)):
             "truth_social": _safe_str(row.BusinessTruthSocial),
             "other_social1": _safe_str(getattr(row, 'BusinessOtherSocial1', '')),
             "other_social2": _safe_str(getattr(row, 'BusinessOtherSocial2', '')),
+            "cuisine":              _safe_str(getattr(row, 'Cuisine', '')),
+            "head_chef":            _safe_str(getattr(row, 'HeadChef', '')),
+            "seating_capacity":     getattr(row, 'SeatingCapacity', None),
+            "restaurant_hours":     _safe_str(getattr(row, 'RestaurantHours', '')),
+            "year_opened":          getattr(row, 'YearOpened', None),
+            "sourcing_philosophy":  _safe_str(getattr(row, 'SourcingPhilosophy', '')),
         }
     except HTTPException:
         raise
