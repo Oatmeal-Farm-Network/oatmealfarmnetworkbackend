@@ -8,9 +8,13 @@ import models
 
 router = APIRouter(prefix="/api", tags=["crop-rotation"])
 
-Base.metadata.create_all(
-    bind=engine, tables=[models.CropRotationEntry.__table__], checkfirst=True
-)
+# Guarded so a DB outage at startup can't crash the whole container.
+try:
+    Base.metadata.create_all(
+        bind=engine, tables=[models.CropRotationEntry.__table__], checkfirst=True
+    )
+except Exception as e:
+    print(f"[crop_rotation] create_all skipped (DB unavailable): {e}")
 
 
 class RotationCreate(BaseModel):
