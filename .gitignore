@@ -133,6 +133,3 @@ coverage.xml
 *.err
 *.out
 _uvicorn.*
-
-*.err
-*.out
