@@ -9,8 +9,13 @@ import models
 
 router = APIRouter(prefix="/api", tags=["notes"])
 
-# Auto-create FieldNote table if it doesn't exist yet
-Base.metadata.create_all(bind=engine, tables=[models.FieldNote.__table__], checkfirst=True)
+# Auto-create FieldNote table if it doesn't exist yet.
+# Guarded so a DB outage at startup can't crash the whole container (the import
+# would otherwise raise and uvicorn would exit(1) before binding the port).
+try:
+    Base.metadata.create_all(bind=engine, tables=[models.FieldNote.__table__], checkfirst=True)
+except Exception as e:
+    print(f"[notes] create_all skipped (DB unavailable): {e}")
 
 
 class NoteCreate(BaseModel):
