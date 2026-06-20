@@ -2,7 +2,7 @@
 Seed script — Food Aggregator test data for BusinessID 15665.
 
 Run from Backend/:
-    python scripts/seed_aggregator.py
+    python scripts/seeds/seed_aggregator.py
 
 Wipes all OFNAggregator* rows for BusinessID 15665 then inserts fresh data.
 """
@@ -10,7 +10,7 @@ import os, sys, random
 from datetime import date, timedelta
 from decimal import Decimal
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 load_dotenv()
 

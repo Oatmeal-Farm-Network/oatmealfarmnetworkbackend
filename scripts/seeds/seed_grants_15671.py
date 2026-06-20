@@ -5,7 +5,7 @@ BusinessGrantTracking entries for BID=15671 across all status values.
 Idempotent: skips grants by Title, skips tracking by GrantID+BusinessID.
 """
 import sys, datetime
-sys.path.insert(0, r"f:\Oatmeal AI\OatmealFarmNetwork Repo\Backend\oatmealfarmnetworkbackend")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from database import get_db
 from sqlalchemy import text
 

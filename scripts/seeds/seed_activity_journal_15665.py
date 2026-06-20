@@ -2,7 +2,7 @@
 seed_activity_journal_15665.py  -  FieldActivityLog + FieldNote for BusinessID=15665, FieldID=30
 
 Run from Backend/:
-    ./venv/Scripts/python.exe scripts/seed_activity_journal_15665.py
+    ./venv/Scripts/python.exe scripts/seeds/seed_activity_journal_15665.py
 """
 import os
 from datetime import datetime, timedelta, date
@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-load_dotenv(Path(__file__).parent.parent / ".env")
+load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 engine = create_engine(
     f"mssql+pymssql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}"
     f"@{os.getenv('DB_SERVER')}/{os.getenv('DB_NAME')}",

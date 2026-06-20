@@ -6,7 +6,7 @@ Idempotent: checks for existing data before inserting.
 Run: python seed_demo_15671c.py
 """
 import sys, datetime
-sys.path.insert(0, r"f:\Oatmeal AI\OatmealFarmNetwork Repo\Backend\oatmealfarmnetworkbackend")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from database import get_db
 from sqlalchemy import text
 
