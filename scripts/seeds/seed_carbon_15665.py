@@ -5,7 +5,7 @@ Soil samples span 5 years showing an upward OM trend (2.8 -> 3.4%).
 Crop rotation spans 8 years with corn-soy rotation + 4 cover-crop seasons.
 
 Run from Backend/:
-    ./venv/Scripts/python.exe scripts/seed_carbon_15665.py
+    ./venv/Scripts/python.exe scripts/seeds/seed_carbon_15665.py
 """
 import os
 from datetime import date
@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-load_dotenv(Path(__file__).parent.parent / ".env")
+load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 engine = create_engine(
     f"mssql+pymssql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}"
     f"@{os.getenv('DB_SERVER')}/{os.getenv('DB_NAME')}",

@@ -6,7 +6,7 @@ Idempotent: skips by Name for fields, by date+field for analyses.
 Run from: Backend/oatmealfarmnetworkbackend/
 """
 import sys, datetime, math, json, random
-sys.path.insert(0, r"f:\Oatmeal AI\OatmealFarmNetwork Repo\Backend\oatmealfarmnetworkbackend")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from database import get_db
 from sqlalchemy import text
 

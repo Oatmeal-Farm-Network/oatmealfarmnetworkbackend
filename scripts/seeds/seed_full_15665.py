@@ -5,7 +5,7 @@ Covers: Blog, Precision Ag, Website, Accounting, Marketplace, Produce,
         previous seed_aggregator.py run)
 
 Run from Backend/:
-    ./venv/Scripts/python.exe scripts/seed_full_15665.py
+    ./venv/Scripts/python.exe scripts/seeds/seed_full_15665.py
 """
 import os, sys, json, random, calendar
 from datetime import datetime, date, timedelta
@@ -15,7 +15,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 HERE = Path(__file__).resolve().parent
-load_dotenv(HERE.parent / ".env")
+load_dotenv(HERE.parent.parent / ".env")
 
 engine = create_engine(
     f"mssql+pymssql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}"
