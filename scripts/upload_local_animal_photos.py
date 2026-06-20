@@ -6,8 +6,8 @@ public/images/ (the frontend's Vite public folder), uploads them to
 GCS oatmeal-farm-network-images/Animals/, then updates the Photos table.
 
 Usage:
-    python upload_local_animal_photos.py             # full run
-    python upload_local_animal_photos.py --dry-run   # report only
+    python scripts/upload_local_animal_photos.py             # full run
+    python scripts/upload_local_animal_photos.py --dry-run   # report only
 """
 
 import os
@@ -15,7 +15,8 @@ import sys
 import argparse
 from urllib.parse import quote, unquote
 
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
 
 from database import engine
 from sqlalchemy import text
@@ -25,8 +26,7 @@ GCS_BUCKET   = "oatmeal-farm-network-images"
 GCS_PREFIX   = "Animals"
 GCS_BASE     = f"https://storage.googleapis.com/{GCS_BUCKET}/{GCS_PREFIX}"
 LOCAL_IMAGES = os.path.abspath(
-    os.path.join(os.path.dirname(__file__),
-                 "../OatmealFarmNetwork/public/images")
+    os.path.join(_ROOT, "..", "OatmealFarmNetwork", "public", "images")
 )
 
 PHOTO_COLS = [f"Photo{i}" for i in range(1, 17)] + ["ListPageImage"]

@@ -1,6 +1,6 @@
 """Seed education courses for BusinessID=15671."""
 import os, sys
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
 from database import engine

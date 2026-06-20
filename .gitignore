@@ -129,3 +129,10 @@ coverage.xml
 # - Virtual environments
 # - Build artifacts and cache files
 
+# Uvicorn / process output
+*.err
+*.out
+_uvicorn.*
+
+*.err
+*.out

@@ -25,7 +25,8 @@ import time
 import argparse
 from urllib.parse import quote, unquote
 
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
 
 from database import engine
 from sqlalchemy import text
