@@ -2,7 +2,7 @@
 seed_alerts_15665.py  —  Seed FieldScout alert rows for BusinessID=15665, FieldID=30
 
 Run from Backend/:
-    ./venv/Scripts/python.exe scripts/seed_alerts_15665.py
+    ./venv/Scripts/python.exe scripts/seeds/seed_alerts_15665.py
 """
 import os, sys
 from datetime import datetime, timedelta
@@ -12,7 +12,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 HERE = Path(__file__).resolve().parent
-load_dotenv(HERE.parent / ".env")
+load_dotenv(HERE.parent.parent / ".env")
 
 engine = create_engine(
     f"mssql+pymssql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}"

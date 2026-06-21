@@ -3,7 +3,7 @@ seed_analyses_15665.py  -  FieldBiomassAnalysis for BusinessID=15665, FieldID=30
 Simulates a full corn-season NDVI arc (planting through harvest).
 
 Run from Backend/:
-    ./venv/Scripts/python.exe scripts/seed_analyses_15665.py
+    ./venv/Scripts/python.exe scripts/seeds/seed_analyses_15665.py
 """
 import os, json
 from datetime import datetime, timedelta
@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-load_dotenv(Path(__file__).parent.parent / ".env")
+load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 engine = create_engine(
     f"mssql+pymssql://{os.getenv('DB_USER')}:{os.getenv('DB_PASSWORD')}"
     f"@{os.getenv('DB_SERVER')}/{os.getenv('DB_NAME')}",

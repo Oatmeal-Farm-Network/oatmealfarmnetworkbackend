@@ -5,7 +5,7 @@ for BusinessID=15671's three vehicles.
 Idempotent: skips on RouteLabel+RunDate for shipments, ServiceType+ServiceDate for maintenance.
 """
 import sys, datetime
-sys.path.insert(0, r"f:\Oatmeal AI\OatmealFarmNetwork Repo\Backend\oatmealfarmnetworkbackend")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from database import get_db
 from sqlalchemy import text
 

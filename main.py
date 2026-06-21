@@ -167,6 +167,7 @@ ALLOWED_ORIGINS = [
     "https://lkm-frontend-802455386518.us-central1.run.app",
     "https://lkm-frontend-mt7mh6zhoa-uc.a.run.app",
     "https://www.lkmcpa.com", "https://lkmcpa.com",
+    "https://www.islandcpas.com", "https://islandcpas.com",
 ]
 
 def _is_allowed_origin(origin: str) -> bool:
@@ -181,6 +182,15 @@ def _is_allowed_origin(origin: str) -> bool:
             clean = origin.replace("https://", "").replace("http://", "").rstrip("/")
             alt = clean[4:] if clean.startswith("www.") else f"www.{clean}"
             with SessionLocal() as db:
+                # 1. Indexed custom-domain table — the source of truth for sites
+                #    with one or more custom domains (Domain stored bare, no www).
+                row = db.execute(
+                    sa_text("SELECT TOP 1 1 FROM WebsiteCustomDomain WHERE Domain IN (:a, :b) AND IsActive = 1"),
+                    {"a": clean, "b": alt}
+                ).first()
+                if row is not None:
+                    return True
+                # 2. Fallback: legacy LIKE scan on CanonicalURL (sites not yet indexed)
                 row = db.execute(
                     sa_text("SELECT TOP 1 1 FROM BusinessWebsite WHERE CanonicalURL LIKE :pat OR CanonicalURL LIKE :alt"),
                     {"pat": f"%{clean}%", "alt": f"%{alt}%"}

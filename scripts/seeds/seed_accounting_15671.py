@@ -5,7 +5,7 @@ Run from Backend/oatmealfarmnetworkbackend/:
     ..\venv\Scripts\python.exe seed_accounting_15671.py
 """
 import sys, datetime
-sys.path.insert(0, "f:/Oatmeal AI/OatmealFarmNetwork Repo/Backend/oatmealfarmnetworkbackend")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from database import get_db, engine
 from sqlalchemy import text
 

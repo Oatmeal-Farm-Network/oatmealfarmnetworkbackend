@@ -4,7 +4,7 @@ Adds 3 weeks of realistic daily route readings for the 3 existing vehicles.
 Idempotent: skips timestamps already in the DB.
 """
 import sys, datetime, random
-sys.path.insert(0, r"f:\Oatmeal AI\OatmealFarmNetwork Repo\Backend\oatmealfarmnetworkbackend")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from database import get_db
 from sqlalchemy import text
 
