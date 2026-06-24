@@ -1,120 +1,7 @@
-from sqlalchemy import Column, Integer, String, SmallInteger, DateTime, Date, Text, Boolean, Float
-from sqlalchemy import Numeric as Decimal
-from database import Base
-
-from app.models.users import (  # noqa: F401
-    Address,
-    Business,
-    BusinessAccess,
-    BusinessTypeLookup,
-    Country,
-    People,
-    StateProvince,
-    Websites,
-)
-from app.models.accounting import (  # noqa: F401
-    Account,
-    AccountingCustomer,
-    AccountingVendor,
-    AccountType,
-    Bill,
-    BillLine,
-    Expense,
-    ExpenseLine,
-    FiscalPeriod,
-    FiscalYear,
-    Invoice,
-    InvoiceLine,
-    Item,
-    JournalEntry,
-    JournalEntryLine,
-    Payment,
-    PaymentApplication,
-)
-
-# ── ANIMALS ─────────────────────────────────────────────────────
-class Pricing(Base):
-    __tablename__ = "Pricing"
-    AnimalID          = Column(Integer, primary_key=True, index=True)
-    Price             = Column(Decimal(10, 2))
-    Price2            = Column(Decimal(10, 2))
-    Price3            = Column(Decimal(10, 2))
-    Price4            = Column(Decimal(10, 2))
-    MinOrder1         = Column(Integer)
-    MinOrder2         = Column(Integer)
-    MinOrder3         = Column(Integer)
-    MinOrder4         = Column(Integer)
-    MaxOrder1         = Column(Integer)
-    MaxOrder2         = Column(Integer)
-    MaxOrder3         = Column(Integer)
-    MaxOrder4         = Column(Integer)
-    StudFee           = Column(Decimal(10, 2))
-    ForSale           = Column(SmallInteger)
-    Free              = Column(SmallInteger)
-    OBO               = Column(SmallInteger)
-    Foundation        = Column(SmallInteger)
-    Discount          = Column(Integer)
-    PriceComments     = Column(Text)
-    Donor             = Column(SmallInteger)
-    EmbryoPrice       = Column(Decimal(10, 2))
-    SemenPrice        = Column(Decimal(10, 2))
-    PayWhatYouCanStud = Column(SmallInteger)
-    Sold              = Column(SmallInteger)
-    SalePrice         = Column(Decimal(10, 2))
-    CoOwnerBusiness1  = Column(String(255))
-    CoOwnerName1      = Column(String(255))
-    CoOwnerLink1      = Column(String(255))
-    CoOwnerBusiness2  = Column(String(255))
-    CoOwnerName2      = Column(String(255))
-    CoOwnerLink2      = Column(String(255))
-    CoOwnerBusiness3  = Column(String(255))
-    CoOwnerName3      = Column(String(255))
-    CoOwnerLink3      = Column(String(255))
-
-# ── BUSINESS ACCESS ──────────────────────────────────────────────
-class BusinessAccess(Base):
-    __tablename__ = "BusinessAccess"
-    BusinessAccessID = Column(Integer, primary_key=True, index=True)
-    BusinessID       = Column(Integer)
-    PeopleID         = Column(Integer)
-    AccessLevelID    = Column(Integer)
-    Active           = Column(SmallInteger)
-    CreatedAt        = Column(DateTime)
-    RevokedAt        = Column(DateTime)
-    Role             = Column(String(100))
-
-# ── BUSINESS TYPE LOOKUP ─────────────────────────────────────────
-class BusinessTypeLookup(Base):
-    __tablename__ = "businesstypelookup"
-    BusinessTypeID      = Column(Integer, primary_key=True, index=True)
-    BusinessType        = Column(String(255))
-    BusinessTypeIcon    = Column(String(255))
-    BusinessTypeIDOrder = Column(Integer)
-
-    # ── COUNTRY ──────────────────────────────────────────────────────
-class Country(Base):
-    __tablename__ = "country"
-    country_id = Column(Integer, primary_key=True, index=True)
-    name       = Column(String(100))
-    iso_code   = Column(String(10))
+from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean
+from app.database import Base
 
 
-    # ── STATE / PROVINCE ─────────────────────────────────────────────
-class StateProvince(Base):
-    __tablename__ = "state_province"
-    StateIndex   = Column(Integer, primary_key=True, index=True)
-    name         = Column(String(100))
-    abbreviation = Column(String(10))
-    country_id   = Column(Integer)
-
-class Websites(Base):
-    __tablename__ = "Websites"
-    WebsitesID  = Column(Integer, primary_key=True, index=True)
-    Website     = Column(String(500))
-    websitepath = Column(String(500))
-    watermark   = Column(DateTime)
-
-# ── WEBSITE BUILDER ──────────────────────────────────────────────
 class BusinessWebsite(Base):
     __tablename__ = "BusinessWebsite"
     WebsiteID       = Column(Integer, primary_key=True, autoincrement=True)
@@ -137,7 +24,6 @@ class BusinessWebsite(Base):
     FooterBgWidth   = Column(String(20), default='100%')
     TextColor       = Column(String(20), default='#111827')
     FontFamily      = Column(String(100), default='Inter, sans-serif')
-    # Typography / type scale
     H1Size          = Column(String(20), default='40px')
     H1Weight        = Column(String(10), default='800')
     H1Color         = Column(String(20), default='')
@@ -188,13 +74,12 @@ class BusinessWebsite(Base):
     BodyAlign       = Column(String(10), default='left')
     BodyUnderline   = Column(Boolean, default=False)
     BodyItalic      = Column(Boolean, default=False)
-    # Site-wide image styling
-    ImageBorderRadius   = Column(Integer, default=0)       # percent 0-50
+    ImageBorderRadius   = Column(Integer, default=0)
     ImageShadowEnabled  = Column(Boolean, default=False)
     ImageShadowColor    = Column(String(40), default='rgba(0,0,0,0.35)')
-    ImageShadowDistance = Column(Integer, default=4)       # px
-    ImageShadowBlur     = Column(Integer, default=8)       # px
-    ImageShadowAngle    = Column(Integer, default=135)     # degrees 0-359
+    ImageShadowDistance = Column(Integer, default=4)
+    ImageShadowBlur     = Column(Integer, default=8)
+    ImageShadowAngle    = Column(Integer, default=135)
     BodyMarginTop   = Column(Integer, default=0)
     BodyMarginBottom= Column(Integer, default=12)
     BodyFont        = Column(String(200), default='')
@@ -225,29 +110,23 @@ class BusinessWebsite(Base):
     SeoExtrasJSON   = Column(Text)
     MenuStyleJSON   = Column(Text)
     FooterJSON      = Column(Text)
-    # Width controls
     HeaderContentWidth = Column(String(20), default='100%')
     FooterContentWidth = Column(String(20), default='100%')
-    # Top bar
     TopBarEnabled   = Column(Boolean, default=False)
     TopBarHTML      = Column(Text)
     TopBarBgColor   = Column(String(20), default='#f8f5ef')
     TopBarTextColor = Column(String(20), default='#333333')
     TopBarAlign     = Column(String(10), default='right')
-    # Header banner
     HeaderBannerURL    = Column(String(1000))
     HeaderBannerBgColor = Column(String(20))
     HeaderHeight    = Column(Integer, default=120)
     ShowSiteName    = Column(Boolean, default=True)
-    # Layout: 'banner_top' (default — logo banner above nav) or 'nav_top'
-    # (slim nav above a larger centered-logo band, reference: oregonqha.com)
     HeaderLayout   = Column(String(20), default='banner_top')
-    # Nav bar
     NavBgImageURL   = Column(String(1000))
-    # Favicon
     FaviconURL      = Column(String(1000))
     CreatedAt       = Column(DateTime)
     UpdatedAt       = Column(DateTime)
+
 
 class BusinessWebPage(Base):
     __tablename__ = "BusinessWebPage"
@@ -267,21 +146,20 @@ class BusinessWebPage(Base):
     CreatedAt       = Column(DateTime)
     UpdatedAt       = Column(DateTime)
 
+
 class BusinessWebBlock(Base):
     __tablename__ = "BusinessWebBlock"
     BlockID     = Column(Integer, primary_key=True, autoincrement=True)
     PageID      = Column(Integer, nullable=False, index=True)
     BlockType   = Column(String(50))
-    BlockData   = Column(Text)   # JSON string
+    BlockData   = Column(Text)
     SortOrder   = Column(Integer, default=0)
     CreatedAt   = Column(DateTime)
     UpdatedAt   = Column(DateTime)
 
 
 class WebsiteCustomDomain(Base):
-    """Indexed lookup table: one row per custom domain pointing to a WebsiteID.
-    Populated automatically when CanonicalURL is saved and used for fast
-    O(log n) domain resolution instead of a full-table LIKE scan."""
+    """Indexed lookup table: one row per custom domain pointing to a WebsiteID."""
     __tablename__ = "WebsiteCustomDomain"
     DomainID  = Column(Integer, primary_key=True, autoincrement=True)
     WebsiteID = Column(Integer, nullable=False, index=True)
@@ -290,17 +168,13 @@ class WebsiteCustomDomain(Base):
     CreatedAt = Column(DateTime)
 
 
-# ── SITE SETTINGS (single-row control table) ─────────────────────
 class SiteSettings(Base):
     __tablename__ = "SiteSettings"
     id              = Column(Integer, primary_key=True, default=1)
-    team_only_login = Column(Boolean, nullable=False, default=True)   # True = team members only
-    signup_open     = Column(Boolean, nullable=False, default=False)  # True = join page visible
+    team_only_login = Column(Boolean, nullable=False, default=True)
+    signup_open     = Column(Boolean, nullable=False, default=False)
 
 
-
-
-# ── BUSINESS BLOG POSTS ──────────────────────────────────────────
 class BusinessBlogPost(Base):
     __tablename__ = "BusinessBlogPosts"
     PostID       = Column(Integer, primary_key=True, autoincrement=True)
@@ -314,4 +188,3 @@ class BusinessBlogPost(Base):
     IsPublished  = Column(Boolean, default=False)
     CreatedAt    = Column(DateTime)
     UpdatedAt    = Column(DateTime)
-
