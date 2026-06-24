@@ -35,10 +35,7 @@ BACKEND_DIR = HERE.parent                                       # .../Backend
 REPO_ROOT   = BACKEND_DIR.parent                                # .../OatmealFarmNetwork Repo
 SAIGE_CODE_DIR = HERE / "saige"
 SAIGE_ENV_DIR  = BACKEND_DIR / "saige"                          # legacy env location
-CROP_DIR    = REPO_ROOT / "CropMonitoringBackend"
 
-if not CROP_DIR.is_dir():
-    raise RuntimeError(f"CropMonitoringBackend not found at {CROP_DIR}")
 
 print("[serve_all] paths:")
 print(f"  HERE       = {HERE}")
@@ -47,7 +44,7 @@ print(f"  SAIGE_CODE = {SAIGE_CODE_DIR}")
 
 
 # ── Load all .env files (later overrides) ───────────────────────────────────
-for env_path in [CROP_DIR / ".env", SAIGE_ENV_DIR / ".env", BACKEND_DIR / ".env"]:
+for env_path in [SAIGE_ENV_DIR / ".env", BACKEND_DIR / ".env"]:
     if env_path.is_file():
         load_dotenv(env_path, override=True)
         print(f"[serve_all] loaded env: {env_path}")
@@ -108,7 +105,7 @@ def _remove_path(p: Path) -> None:
 _add_path_front(HERE)
 
 print("[serve_all] phase 1: loading main backend")
-_main_spec = importlib.util.spec_from_file_location("oatmeal_main_app", str(HERE / "main.py"))
+_main_spec = importlib.util.spec_from_file_location("oatmeal_main_app", str(HERE /"app" / "main.py"))
 _main_module = importlib.util.module_from_spec(_main_spec)
 sys.modules["oatmeal_main_app"] = _main_module
 _main_spec.loader.exec_module(_main_module)
@@ -129,19 +126,8 @@ print(f"[serve_all] phase 2: evicted {_evicted} main-backend modules from sys.mo
 _remove_path(HERE)
 
 
-# ── Phase 3: chdir + load CropMonitor ──────────────────────────────────────
-# CropMonitor uses cwd-relative paths (`StaticFiles(directory="static")` and
-# `FileResponse("static/index.html")`). We chdir into its dir and stay there
-# for the rest of the process lifetime — main backend has no cwd dependencies.
-_add_path_front(CROP_DIR)
-os.chdir(CROP_DIR)
-print(f"[serve_all] phase 3: chdir -> {CROP_DIR}, loading CropMonitor")
-import backend as _crop_module                                # noqa: E402
-crop_app = _crop_module.app
-print("[serve_all] CropMonitor loaded")
 
-
-# ── Phase 4: load Saige ────────────────────────────────────────────────────
+# ── Phase 3: load Saige ────────────────────────────────────────────────────
 # Saige is cwd-independent. Add saige to sys.path; its `from database import …`
 # will now find saige/database.py (no main-backend `database` in sys.modules).
 _add_path_front(SAIGE_CODE_DIR)
@@ -150,7 +136,7 @@ from api import app as saige_app, app_lifespan as saige_lifespan  # noqa: E402
 print("[serve_all] Saige loaded")
 
 
-# ── Phase 5: restore main-backend 'database' and 'models' for hot-reload safety
+# ── Phase 4: restore main-backend 'database' and 'models' for hot-reload safety
 # Saige is fully loaded — all its imports have already resolved and bound into
 # each module's namespace.  We re-point sys.modules for the names that the main
 # backend uses lazily at request time so those `import models` / `import database`
@@ -174,7 +160,7 @@ else:
 @asynccontextmanager
 async def unified_lifespan(app: FastAPI):
     async with AsyncExitStack() as stack:
-        for label, sub in [("main", main_app), ("crop", crop_app)]:
+        for label, sub in [("main", main_app)]:
             for handler in sub.router.on_startup:
                 try:
                     result = handler()
@@ -190,7 +176,7 @@ async def unified_lifespan(app: FastAPI):
         try:
             yield
         finally:
-            for label, sub in [("crop", crop_app), ("main", main_app)]:
+            for label, sub in [("main", main_app)]:
                 for handler in sub.router.on_shutdown:
                     try:
                         result = handler()
@@ -204,9 +190,9 @@ async def unified_lifespan(app: FastAPI):
 app = main_app
 app.router.lifespan_context = unified_lifespan
 app.mount("/saige", saige_app)
-app.mount("/cm",    crop_app)
 
-print("[serve_all] mounted: /saige (Saige), /cm (CropMonitor)")
+
+print("[serve_all] mounted: /saige (Saige)")
 print("[serve_all] main backend at root with all original routes")
 print("[serve_all] ready.")
 
