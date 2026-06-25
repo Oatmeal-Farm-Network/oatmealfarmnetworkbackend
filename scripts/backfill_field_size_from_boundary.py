@@ -15,9 +15,9 @@ import sys
 # Allow running as `python scripts/...` from the package root.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database import SessionLocal  # type: ignore
+from app.database import SessionLocal  # type: ignore
 import models                      # type: ignore
-from geo_utils import polygon_area_hectares  # type: ignore
+from app.utils.geo_utils import polygon_area_hectares  # type: ignore
 
 
 def main() -> int:

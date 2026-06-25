@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db, SessionLocal
-from auth import get_current_user
+from app.database import get_db, SessionLocal
+from app.core.auth import get_current_user
 import models
 import datetime
 
@@ -698,7 +698,7 @@ def upsert_minute_entry(meeting_id: int, item_id: int, payload: dict,
 
 @router.post("/{meeting_id}/send-agenda")
 def send_agenda(meeting_id: int, access=Depends(require_access), db: Session = Depends(get_db)):
-    from meeting_emails import send_meeting_agenda
+    from app.services.meeting_emails import send_meeting_agenda
 
     detail = _meeting_detail(meeting_id, db)
     if not detail or detail["business_id"] != access["business_id"]:
@@ -731,7 +731,7 @@ def send_agenda(meeting_id: int, access=Depends(require_access), db: Session = D
 
 @router.post("/{meeting_id}/send-minutes")
 def send_minutes(meeting_id: int, access=Depends(require_access), db: Session = Depends(get_db)):
-    from meeting_emails import send_meeting_minutes
+    from app.services.meeting_emails import send_meeting_minutes
 
     detail = _meeting_detail(meeting_id, db)
     if not detail or detail["business_id"] != access["business_id"]:

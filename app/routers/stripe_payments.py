@@ -14,8 +14,8 @@ from datetime import date, datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db
-from routers.platform_settings import get_stripe_config
+from app.database import get_db
+from app.routers.platform_settings import get_stripe_config
 
 router = APIRouter()
 
@@ -24,7 +24,7 @@ def _send_cart_receipt(db: Session, cart_id: int):
     """Best-effort receipt email. Swallow exceptions so payment isn't blocked by
     email failures."""
     try:
-        from event_emails import send_cart_receipt
+        from app.services.event_emails import send_cart_receipt
     except Exception:
         return
     try:
@@ -67,7 +67,7 @@ def _post_event_cart_accounting(db: Session, cart_id: int, amount_paid: float):
     """Post an income JE for a paid event cart. Wrapped in try/except so accounting
     failures never block payment confirmation."""
     try:
-        from herd_health_accounting import post_income_je
+        from app.services.herd_health_accounting import post_income_je
         row = db.execute(text("""
             SELECT e.BusinessID, c.EventID, e.EventName
             FROM OFNEventRegistrationCart c
@@ -87,7 +87,7 @@ def _post_event_cart_accounting(db: Session, cart_id: int, amount_paid: float):
 
 def _void_event_cart_accounting(db: Session, cart_id: int):
     try:
-        from herd_health_accounting import void_je
+        from app.services.herd_health_accounting import void_je
         void_je(db, "event_cart", cart_id)
     except Exception as e:
         print(f"[stripe_payments] accounting void failed for cart {cart_id}: {e}")
@@ -205,7 +205,7 @@ def confirm_payment(cart_id: int, payload: dict, db: Session = Depends(get_db)):
     if cart_status == "paid":
         _mark_entries_paid(db, cart_id)
         try:
-            from routers.events import _check_and_record_sold_out
+            from app.routers.events import _check_and_record_sold_out
             eid = db.execute(text("SELECT EventID FROM OFNEventRegistrationCart WHERE CartID = :id"),
                              {"id": cart_id}).scalar()
             if eid:
@@ -241,7 +241,7 @@ def capture_payment(cart_id: int, db: Session = Depends(get_db)):
     """), {"id": cart_id, "amt": amount_paid})
     _mark_entries_paid(db, cart_id)
     try:
-        from routers.events import _check_and_record_sold_out
+        from app.routers.events import _check_and_record_sold_out
         eid = db.execute(text("SELECT EventID FROM OFNEventRegistrationCart WHERE CartID = :id"),
                          {"id": cart_id}).scalar()
         if eid:

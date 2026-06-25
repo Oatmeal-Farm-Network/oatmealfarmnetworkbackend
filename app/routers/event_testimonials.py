@@ -10,7 +10,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db, SessionLocal
+from app.database import get_db, SessionLocal
 
 router = APIRouter()
 
@@ -128,7 +128,7 @@ async def send_testimonial_requests(event_id: int, request: Request,
                 "preview": to_send[:25]}
 
     try:
-        from event_emails import send_event_testimonial_request
+        from app.services.event_emails import send_event_testimonial_request
     except Exception:
         send_event_testimonial_request = None
 

@@ -15,11 +15,11 @@ Per-type differentiators stored on OFNEventSimpleConfig:
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db, SessionLocal
+from app.database import get_db, SessionLocal
 from datetime import date
 
 try:
-    from event_emails import send_registration_confirmation
+    from app.services.event_emails import send_registration_confirmation
 except Exception:  # pragma: no cover
     def send_registration_confirmation(*a, **kw): return False
 

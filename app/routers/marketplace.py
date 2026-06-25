@@ -5,16 +5,16 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text, bindparam
-from database import get_db, engine
-from auth import get_current_user
+from app.database import get_db, engine
+from app.core.auth import get_current_user
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date
 import os
 
-from image_service import ensure_images_for_catalog
-from routers.translation import translate_fields, translate_list
-from routers.notifications import notify_business
+from app.services.image_service import ensure_images_for_catalog
+from app.routers.translation import translate_fields, translate_list
+from app.routers.notifications import notify_business
 
 marketplace_router = APIRouter()
 
@@ -598,7 +598,7 @@ def get_catalog(
     # ── Fire background image generation for any missing images ──────────────
     items_needing_images = [r for r in results if not r.get("ImageURL") and r.get("IngredientID")]
     if items_needing_images:
-        from database import get_db as get_db_factory
+        from app.database import get_db as get_db_factory
         background_tasks.add_task(ensure_images_for_catalog, items_needing_images, get_db_factory)
 
     # ── Attach volume price tiers to each listing ─────────────────────────────
@@ -959,18 +959,18 @@ def place_order(req: PlaceOrderRequest, db: Session = Depends(get_db)):
     db.commit()
 
     try:
-        from marketplace_emails import send_order_placed_buyer, send_order_placed_seller
+        from app.services.marketplace_emails import send_order_placed_buyer, send_order_placed_seller
         send_order_placed_buyer(order_id, db)
     except Exception as e:
         print(f"[marketplace] Email send failed: {e}")
 
     thank_you_codes = []
     try:
-        from routers.event_promo_codes import issue_marketplace_thank_you_codes
+        from app.routers.event_promo_codes import issue_marketplace_thank_you_codes
         thank_you_codes = issue_marketplace_thank_you_codes(db, order_id)
         if thank_you_codes:
             try:
-                from event_emails import send_marketplace_thank_you_promo
+                from app.services.event_emails import send_marketplace_thank_you_promo
                 send_marketplace_thank_you_promo(buyer[1], buyer[0], thank_you_codes)
             except Exception as e:
                 print(f"[marketplace] Thank-you promo email failed: {e}")
