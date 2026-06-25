@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from jose import JWTError, jwt
 from datetime import datetime, timedelta, timezone
 import bcrypt as _bcrypt
-from database import get_db
+from app.database import get_db
 import models
 import os
 from dotenv import load_dotenv
