@@ -39,7 +39,6 @@ SAIGE_ENV_DIR  = BACKEND_DIR / "saige"                          # legacy env loc
 
 print("[serve_all] paths:")
 print(f"  HERE       = {HERE}")
-print(f"  CROP_DIR   = {CROP_DIR}")
 print(f"  SAIGE_CODE = {SAIGE_CODE_DIR}")
 
 
