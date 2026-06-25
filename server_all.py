@@ -1,10 +1,9 @@
 """
-Unified launcher — runs main backend + Saige + CropMonitor in one FastAPI process.
+Unified launcher — runs main backend + Saige in one FastAPI process.
 
 Routes:
   /             -> main backend (auth, marketplace, events, notifications, ...)
   /saige/*      -> Saige (LangGraph chat + push + agent endpoints)
-  /cm/*         -> CropMonitor (fields, analyses, weather, raster, zones, ...)
 
 Run from Backend/oatmealfarmnetworkbackend/:
     ../venv/Scripts/python.exe -m uvicorn server_all:app --reload --port 8000
