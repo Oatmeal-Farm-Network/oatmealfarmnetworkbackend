@@ -5,9 +5,14 @@ FieldSoilSamples, FieldScout, FieldPrescription, FieldMaturitySample, and Alerts
 Idempotent: skips by Name for fields, by date+field for analyses.
 Run from: Backend/oatmealfarmnetworkbackend/
 """
+import os
+import sys
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 import sys, datetime, math, json, random
-sys.path.insert(0, r"f:\Oatmeal AI\OatmealFarmNetwork Repo\Backend\oatmealfarmnetworkbackend")
-from database import get_db
+from app.database import get_db
 from sqlalchemy import text
 
 BID = 15671

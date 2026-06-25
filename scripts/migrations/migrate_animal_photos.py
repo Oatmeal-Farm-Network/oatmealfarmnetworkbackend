@@ -19,15 +19,17 @@ Usage:
     python migrate_animal_photos.py --dry-run    # report only, no writes
 """
 
-import sys
 import os
+import sys
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 import time
 import argparse
 from urllib.parse import quote, unquote
 
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
-
-from database import engine
+from app.database import engine
 from sqlalchemy import text
 from google.cloud import storage as gcs
 

@@ -4,9 +4,14 @@ Idempotent: deletes existing accounting data for this business before re-inserti
 Run from Backend/oatmealfarmnetworkbackend/:
     ..\venv\Scripts\python.exe seed_accounting_15671.py
 """
+import os
+import sys
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 import sys, datetime
-sys.path.insert(0, "f:/Oatmeal AI/OatmealFarmNetwork Repo/Backend/oatmealfarmnetworkbackend")
-from database import get_db, engine
+from app.database import get_db, engine
 from sqlalchemy import text
 
 BID = 15671
