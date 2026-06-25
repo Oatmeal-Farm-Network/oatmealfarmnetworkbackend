@@ -3,11 +3,15 @@ Comprehensive demo seed for BusinessID=15671 — Green Valley Farm.
 Run from the oatmealfarmnetworkbackend directory:
   ..\venv\Scripts\python.exe seed_demo_15671.py
 """
-import os, sys
-sys.path.insert(0, os.path.dirname(__file__))
+import os
+import sys
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
-from database import engine
+from app.database import engine
 from sqlalchemy import text
 from datetime import date, timedelta
 

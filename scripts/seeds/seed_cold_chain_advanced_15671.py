@@ -11,11 +11,16 @@ Populates test data for all 6 advanced cold-chain features on BusinessID=15671:
 Run from: f:\\Oatmeal AI\\OatmealFarmNetwork Repo\\Backend\\oatmealfarmnetworkbackend
   python seed_cold_chain_advanced_15671.py
 """
+import os
+import sys
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 import sys, random, hashlib, json
 from datetime import datetime, timedelta
 
-sys.path.insert(0, r"f:\Oatmeal AI\OatmealFarmNetwork Repo\Backend\oatmealfarmnetworkbackend")
-from database import get_db
+from app.database import get_db
 from sqlalchemy import text
 
 BID = 15671

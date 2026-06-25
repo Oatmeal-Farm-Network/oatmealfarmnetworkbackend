@@ -104,6 +104,8 @@ Desktop.ini
 
 # Logs
 *.log
+*.err
+*.out
 logs/
 
 # Temporary files

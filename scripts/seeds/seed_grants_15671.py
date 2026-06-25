@@ -4,9 +4,14 @@ Adds more GrantPrograms (relevant to an alpaca+produce farm in Colorado) and
 BusinessGrantTracking entries for BID=15671 across all status values.
 Idempotent: skips grants by Title, skips tracking by GrantID+BusinessID.
 """
+import os
+import sys
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 import sys, datetime
-sys.path.insert(0, r"f:\Oatmeal AI\OatmealFarmNetwork Repo\Backend\oatmealfarmnetworkbackend")
-from database import get_db
+from app.database import get_db
 from sqlalchemy import text
 
 BID = 15671

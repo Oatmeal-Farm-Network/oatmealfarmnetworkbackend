@@ -1,7 +1,12 @@
 """Fills in May 4 (Monday) readings — missed in the previous extension script."""
+import os
+import sys
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 import sys, datetime, random
-sys.path.insert(0, r"f:\Oatmeal AI\OatmealFarmNetwork Repo\Backend\oatmealfarmnetworkbackend")
-from database import get_db
+from app.database import get_db
 from sqlalchemy import text
 
 BID = 15671

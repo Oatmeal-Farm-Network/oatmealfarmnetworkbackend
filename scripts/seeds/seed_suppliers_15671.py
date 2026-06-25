@@ -3,9 +3,13 @@ seed_suppliers_15671.py — Supplier directory demo data for BusinessID=15671
 Adds SupplierListings + SupplierReviews.
 Idempotent: skips entries that already exist by CompanyName.
 """
+import os
 import sys
-sys.path.insert(0, r"f:\Oatmeal AI\OatmealFarmNetwork Repo\Backend\oatmealfarmnetworkbackend")
-from database import get_db
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from app.database import get_db
 from sqlalchemy import text
 
 BID = 15671

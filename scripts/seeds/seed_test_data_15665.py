@@ -4,13 +4,16 @@ Covers: Equipment Marketplace + Food Wanted Board.
 Safe to re-run — skips insert if data already exists for this business.
 Run: python seed_test_data_15665.py
 """
-import os, sys
+import os
+import sys
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 from dotenv import load_dotenv
 load_dotenv()
-sys.path.insert(0, os.path.dirname(__file__))
-
 from sqlalchemy import text
-from database import SessionLocal
+from app.database import SessionLocal
 
 BID = 15665
 

@@ -3,9 +3,14 @@ seed_cold_chain_15671.py — Additional cold chain readings for BusinessID=15671
 Adds 3 weeks of realistic daily route readings for the 3 existing vehicles.
 Idempotent: skips timestamps already in the DB.
 """
+import os
+import sys
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 import sys, datetime, random
-sys.path.insert(0, r"f:\Oatmeal AI\OatmealFarmNetwork Repo\Backend\oatmealfarmnetworkbackend")
-from database import get_db
+from app.database import get_db
 from sqlalchemy import text
 
 BID = 15671
