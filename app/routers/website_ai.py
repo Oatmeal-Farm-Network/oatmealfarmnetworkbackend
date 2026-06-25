@@ -6,7 +6,7 @@ their website and can make changes directly (with user confirmation).
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db
+from app.database import get_db
 from pydantic import BaseModel
 from typing import Optional, List, Any
 import os, json, datetime, asyncio, re
@@ -964,7 +964,7 @@ def _execute_action(action: str, params: dict, website_id: int, business_id: int
         return f"Page \"{page_name}\" added successfully."
 
     if action == "list_page_templates":
-        import page_templates
+        from app.utils import page_templates
         biz = db.query(models.Business).filter(models.Business.BusinessID == business_id).first()
         bt_id = biz.BusinessTypeID if biz else None
         tpls = page_templates.list_templates(bt_id)
@@ -982,7 +982,7 @@ def _execute_action(action: str, params: dict, website_id: int, business_id: int
 
     if action == "add_page_from_template":
         import re, json as _json
-        import page_templates
+        from app.utils import page_templates
         key = params.get("template_key")
         tpl = page_templates.get_template(key) if key else None
         if not tpl:
@@ -1031,7 +1031,7 @@ def _execute_action(action: str, params: dict, website_id: int, business_id: int
 
     if action == "add_pages_bulk":
         import re, json as _json
-        import page_templates
+        from app.utils import page_templates
         keys = params.get("template_keys") or []
         biz = db.query(models.Business).filter(models.Business.BusinessID == business_id).first()
         bt_id = biz.BusinessTypeID if biz else None
@@ -4561,7 +4561,7 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
                         }
                     prompt_text = _build_hero_prompt(description, params.get("style"))
                     try:
-                        from image_service import generate_image_bytes, upload_image_to_gcs
+                        from app.services.image_service import generate_image_bytes, upload_image_to_gcs
                         import uuid as _uuid
                         img_bytes = await asyncio.get_event_loop().run_in_executor(
                             None, generate_image_bytes, prompt_text

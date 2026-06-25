@@ -1,12 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db
+from app.database import get_db
 from typing import Optional
 from pydantic import BaseModel
 from datetime import date, datetime
 from decimal import Decimal
-from herd_health_accounting import post_expense_je, post_income_je, void_je, sync_herd_health_to_accounting
+from app.services.herd_health_accounting import (
+    post_expense_je,
+    post_income_je,
+    sync_herd_health_to_accounting,
+    void_je,
+)
 
 router = APIRouter(prefix="/api/herd-health", tags=["herd-health"])
 

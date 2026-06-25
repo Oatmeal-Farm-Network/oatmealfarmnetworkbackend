@@ -8,11 +8,11 @@ pricing tier (early-bird / regular / late) and get a badge on check-in.
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db, SessionLocal
+from app.database import get_db, SessionLocal
 from datetime import date, datetime
 
 try:
-    from event_emails import send_registration_confirmation
+    from app.services.event_emails import send_registration_confirmation
 except Exception:  # pragma: no cover
     def send_registration_confirmation(*a, **kw): return False
 

@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy.orm import Session
-from routers import auth
+from app.routers import auth
 from app.database import get_db, SessionLocal
 import os
 import models
@@ -83,7 +83,7 @@ from app.routers import provenance
 from app.routers import field_health_alerts
 
 from app.routers.marketplace import marketplace_router
-from marketplace_stripe import stripe_router
+from app.services.marketplace_stripe import stripe_router
 from app.routers.equipment_marketplace import equipment_router
 from app.routers.food_wanted import food_wanted_router
 from app.routers import notifications
@@ -340,7 +340,7 @@ async def _startup_migrations():
 
         # Idempotently seed CompanySiteManagement with all DEFAULT_FEATURES (IsEnabled=1)
         try:
-            from routers.company_features import DEFAULT_FEATURES as _DF
+            from app.routers.company_features import DEFAULT_FEATURES as _DF
             with SessionLocal() as _db:
                 existing_keys = {r[0] for r in _db.execute(_t("SELECT FeatureKey FROM CompanySiteManagement")).fetchall()}
                 for _key, _name, _monthly, _yearly, _sort in _DF:
@@ -356,7 +356,7 @@ async def _startup_migrations():
 
         # Auto-seed 5 default RBAC roles for every business that has none yet
         try:
-            from routers.rbac import DEFAULT_ROLES as _DR, _ensure as _rbac_ensure
+            from app.routers.rbac import DEFAULT_ROLES as _DR, _ensure as _rbac_ensure
             with SessionLocal() as _db:
                 _rbac_ensure(_db)
                 biz_ids = [r[0] for r in _db.execute(_t(
@@ -380,8 +380,8 @@ async def _startup_migrations():
     # Runs in background so startup is never blocked.
     def _seed_prices():
         try:
-            from routers.commodity_history import _fetch_and_store_prices
-            from database import SessionLocal as _SL
+            from app.routers.commodity_history import _fetch_and_store_prices
+            from app.database import SessionLocal as _SL
             with _SL() as _db:
                 has_data = _db.execute(
                     __import__('sqlalchemy').text(
@@ -403,7 +403,7 @@ async def _startup_migrations():
         import time as _time
         while True:
             try:
-                from routers.notifications import notify_business as _nb
+                from app.routers.notifications import notify_business as _nb
                 with SessionLocal() as _db:
                     # Farm inputs expiring in ≤14 days
                     inp_rows = _db.execute(__import__('sqlalchemy').text("""
@@ -733,7 +733,7 @@ def dynamic_sitemap(db: Session = Depends(get_db)):
 
     # News articles (Firestore)
     try:
-        from routers.news import _get_db as _news_firestore
+        from app.routers.news import _get_db as _news_firestore
         fs = _news_firestore()
         if fs:
             from google.cloud.firestore_v1 import Query as FSQuery

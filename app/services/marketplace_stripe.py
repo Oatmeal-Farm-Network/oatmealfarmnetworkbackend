@@ -15,9 +15,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from database import get_db, SessionLocal
-from jwt_auth import get_current_user
-from routers.platform_settings import get_stripe_config
+from app.database import get_db, SessionLocal
+from app.core.jwt_auth import get_current_user
+from app.routers.platform_settings import get_stripe_config
 
 
 stripe_router = APIRouter()
@@ -225,7 +225,7 @@ async def confirm_payment(order_id: int, payment_intent_id: str = "", db: Sessio
             db.commit()
 
             try:
-                from marketplace_accounting import post_marketplace_order_journal_entries
+                from app.services.marketplace_accounting import post_marketplace_order_journal_entries
                 with SessionLocal() as accdb:
                     summary = post_marketplace_order_journal_entries(order_id, accdb)
                 print(f"[marketplace-accounting] confirm_payment order {order_id}: {summary}")
@@ -290,7 +290,7 @@ async def stripe_webhook(request: Request):
                 # Idempotent post — if confirm_payment already ran, the existing
                 # JournalEntries row will short-circuit this call.
                 try:
-                    from marketplace_accounting import post_marketplace_order_journal_entries
+                    from app.services.marketplace_accounting import post_marketplace_order_journal_entries
                     with SessionLocal() as accdb:
                         summary = post_marketplace_order_journal_entries(oid, accdb)
                     print(f"[marketplace-accounting] webhook order {oid}: {summary}")
