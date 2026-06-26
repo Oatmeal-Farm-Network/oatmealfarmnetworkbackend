@@ -2,36 +2,49 @@
 
 > **Companion to:** `Tasks.md`, `REORG-CLEANUP.md`  
 > **Integration branch:** `epic/backend-reorg`  
-> **Purpose:** Divide pytest work among the team so the reorg can ship to `main` with automated smoke coverage — without one person writing every test.
+> **Purpose:** Divide pytest work evenly so the reorg can ship to `main` with automated smoke coverage — without one person owning everything.
 
 The main backend currently has **no pytest suite** (only `python -c "import app.main"` in CI). Saige has its own tests under `saige/`; this plan covers **only the main `app/` backend**.
+
+**Reorg cleanup** (import rewrite, shim deletion) stays in `REORG-CLEANUP.md` — David owns that there. **This doc is only for tests** and spreads work across all six developers.
+
+---
+
+## Balanced workload (v1)
+
+| Developer | Name | Test branch | What you own |
+|-----------|------|-------------|--------------|
+| Dev 2 | David | `task/reorg-test-infra` | **Harness only:** `pytest.ini`, `conftest.py`, `/health` smoke, CI wiring (~1 small PR) |
+| Dev 1 | Vidyanand | `task/reorg-tests-scripts` | Scripts/scrapers imports + repo hygiene + **`docker build`** verify |
+| Dev 3 | Sankeerth | `task/reorg-tests-services` | Services/utils imports + service routers + **`server_all.py`** boot verify |
+| Dev 4A | Bringesh | `task/reorg-tests-models-core` | Core models + auth/accounting routers + **`uvicorn app.main:app`** verify |
+| Dev 4B | Navdeep | `task/reorg-tests-models-ag` | Ag/livestock/events models + ag router import hygiene |
+| Dev 4C | Guia | `task/reorg-tests-models-web` | Web models + website/blog routers + `models.py` shim check |
+
+Everyone writes **~1 test file**, **import/static checks for their slice**, **one mocked HTTP test**, and **one manual boot/deploy check**. David does **not** own domain tests or the full boot gate alone.
 
 ---
 
 ## Strategy
 
-| Role | Owner | Responsibility |
-|------|-------|----------------|
-| **Shared test infra** | David (Dev 2) | `pytest.ini`, `tests/conftest.py`, smoke/health tests, CI wiring, boot gate |
-| **Domain tests** | Vidyanand, Sankeerth, Bringesh, Navdeep, Guia | Import + mocked HTTP tests for the slice each developer owns from the reorg |
-
-**Why split this way**
-
-- Each developer already knows their moved code (models, services, scripts).
-- Work is parallelizable — five small PRs instead of one giant test PR.
-- Failures map to an owner: “Bringesh’s accounting import test failed” is actionable.
+| Layer | Who | What |
+|-------|-----|------|
+| **Harness** | David | `pytest.ini`, `tests/conftest.py`, `tests/test_health.py`, CI update |
+| **Domain smoke** | Vidyanand, Sankeerth, Bringesh, Navdeep, Guia | Imports + flat-import guards + one mocked route each |
+| **Manual boot** | Split (see table above) | Each person verifies one launcher/deploy path |
+| **Final gate** | Team | Full `pytest` green on epic → PR to `main` |
 
 **What we are not doing in v1**
 
 - 100% router coverage (150+ routers).
-- Real MSSQL in CI (use mocks; optional `@pytest.mark.integration` for local/DB env).
-- Assigning David domain tests on top of Phase 2 import cleanup.
+- Real MSSQL in CI (mocks only; optional `@pytest.mark.integration` locally).
+- David writing every domain test on top of Phase 2 import cleanup (`REORG-CLEANUP.md`).
 
 ---
 
 ## Prerequisites
 
-Land tests **after** David’s `task/reorg-import-cleanup` merges (flat imports gone, shims deleted). Tests written against shims will need rewrites.
+Per `REORG-CLEANUP.md`, David’s **`task/reorg-import-cleanup`** should land on epic **before** tests are finalized (flat `app.*` imports, shims deleted). Domain tests can be **drafted in parallel** on branches using `app.*` paths; merge after import cleanup to avoid rework.
 
 ---
 
@@ -39,90 +52,74 @@ Land tests **after** David’s `task/reorg-import-cleanup` merges (flat imports 
 
 **Repo root:** `oatmealfarmnetworkbackend/` (where `.git` lives)
 
-**Rule:** All test work branches off **`epic/backend-reorg`**. Every test PR merges into **`epic/backend-reorg`** — never directly into `main`.
+**Rule:** All test branches cut from **`epic/backend-reorg`**. Every test PR merges into **`epic/backend-reorg`** — not `main`.
 
-**Final ship:** After all test PRs are on epic and `pytest` is green → one PR **`epic/backend-reorg` → `main`** (merge commit, **not** squash).
+**Final ship:** Full `pytest` green on epic → PR **`epic/backend-reorg` → `main`** (merge commit, **not** squash).
 
 ```
-main  ←────────────────────────────────────────────  (final PR #7, team)
+main  ←────────────────────────────────────────────  (final PR, team)
   ↑
-epic/backend-reorg  ←── all test PRs merge here (#1–#6)
+epic/backend-reorg  ←── all test PRs merge here
   ↑
-task/reorg-import-cleanup          (David — must land first)
-task/reorg-test-infra              (David — test harness, merge before domain tests)
-task/reorg-tests-scripts           (Vidyanand)
-task/reorg-tests-services          (Sankeerth)
-task/reorg-tests-models-core       (Bringesh)
-task/reorg-tests-models-ag         (Navdeep)
-task/reorg-tests-models-web        (Guia)
+task/reorg-test-infra              (David — merge first)
+task/reorg-tests-scripts           (Vidyanand)  ─┐
+task/reorg-tests-services          (Sankeerth)   ├─ parallel after infra
+task/reorg-tests-models-core       (Bringesh)    │
+task/reorg-tests-models-ag         (Navdeep)     │
+task/reorg-tests-models-web        (Guia)       ─┘
 ```
 
-### Daily sync (everyone — run before starting work)
-
-```bash
-cd oatmealfarmnetworkbackend/
-git checkout epic/backend-reorg
-git pull origin epic/backend-reorg
-git merge main                    # keep epic current with main
-```
-
-### Suggested merge order
-
-| Order | Developer | Branch | PR target | Notes |
-|-------|-----------|--------|-----------|-------|
-| 0 | David | `task/reorg-import-cleanup` | → `epic/backend-reorg` | **Blocker** — Phase 2 import cleanup must land before tests |
-| 1 | David | `task/reorg-test-infra` | → `epic/backend-reorg` | `pytest.ini`, `conftest.py`, smoke tests, CI — **others wait for this** |
-| 2 | Vidyanand | `task/reorg-tests-scripts` | → `epic/backend-reorg` | Can run in parallel with rows 3–6 after row 1 merges |
-| 3 | Sankeerth | `task/reorg-tests-services` | → `epic/backend-reorg` | Parallel |
-| 4 | Bringesh | `task/reorg-tests-models-core` | → `epic/backend-reorg` | Parallel |
-| 5 | Navdeep | `task/reorg-tests-models-ag` | → `epic/backend-reorg` | Parallel |
-| 6 | Guia | `task/reorg-tests-models-web` | → `epic/backend-reorg` | Parallel |
-| 7 | Team | — | `epic/backend-reorg` → `main` | After full `pytest` green on epic |
-
-### If your branch falls behind epic while a PR is open
-
-```bash
-git checkout <your-branch>
-git fetch origin
-git merge origin/epic/backend-reorg    # merge, don't rebase — epic is shared
-# resolve conflicts, then:
-git push
-```
-
-### Branch summary
-
-| Developer | Name | Create branch | Merge PR into | Files you add |
-|-----------|------|---------------|---------------|---------------|
-| Dev 2 | David | `task/reorg-import-cleanup` then `task/reorg-test-infra` | `epic/backend-reorg` | import cleanup + `pytest.ini`, `tests/conftest.py`, `tests/test_smoke.py`, `tests/test_health.py`, CI |
-| Dev 1 | Vidyanand | `task/reorg-tests-scripts` | `epic/backend-reorg` | `tests/test_scripts.py` |
-| Dev 3 | Sankeerth | `task/reorg-tests-services` | `epic/backend-reorg` | `tests/test_services.py` |
-| Dev 4A | Bringesh | `task/reorg-tests-models-core` | `epic/backend-reorg` | `tests/test_models_core.py` |
-| Dev 4B | Navdeep | `task/reorg-tests-models-ag` | `epic/backend-reorg` | `tests/test_models_ag.py` |
-| Dev 4C | Guia | `task/reorg-tests-models-web` | `epic/backend-reorg` | `tests/test_models_web.py` |
-
----
-
-### Per-developer git commands
-
-#### David (Dev 2) — Phase 2 import cleanup (do this first)
+### Daily sync (everyone)
 
 ```bash
 cd oatmealfarmnetworkbackend/
 git checkout epic/backend-reorg
 git pull origin epic/backend-reorg
 git merge main
-git checkout -b task/reorg-import-cleanup
-
-# ... rewrite flat imports, delete root shims, verify boot ...
-
-git add -A
-git commit -m "refactor: Phase 2 import cleanup — app.* imports, delete shims"
-git push -u origin task/reorg-import-cleanup
-# GitHub PR:  task/reorg-import-cleanup  →  epic/backend-reorg
-# Merge this PR before anyone starts test branches.
 ```
 
-#### David (Dev 2) — test infrastructure (do this second)
+### Merge order
+
+| Order | Developer | Branch | PR target |
+|-------|-----------|--------|-----------|
+| 1 | David | `task/reorg-test-infra` | → `epic/backend-reorg` |
+| 2–6 | Vidyanand, Sankeerth, Bringesh, Navdeep, Guia | `task/reorg-tests-*` | → `epic/backend-reorg` (parallel) |
+| 7 | Team | — | `epic/backend-reorg` → `main` |
+
+### If your branch falls behind epic
+
+```bash
+git checkout <your-branch>
+git fetch origin
+git merge origin/epic/backend-reorg
+git push
+```
+
+> **Per-developer git commands** are in each developer’s task section below.
+
+---
+
+## Shared rules (everyone)
+
+1. **Use David’s `conftest.py`** — do not fork a second client fixture.
+2. **Mock `get_db`** in HTTP tests — no real MSSQL in CI.
+3. **Use `app.*` imports** in tests and in code under test.
+4. **Per-dev done when:** your test file passes + your manual boot check (below) + PR merged.
+5. **Before opening your PR:** `pytest tests/test_<your_file>.py` locally.
+6. **Integration tests** — `@pytest.mark.integration`, skip when `DB_SERVER` unset (optional, local only).
+
+---
+
+## David (Dev 2) — test harness only
+
+**Branch:** `task/reorg-test-infra`  
+**Merge PR into:** `epic/backend-reorg`  
+**Start after:** epic has latest cleanup from `REORG-CLEANUP.md` (or draft in parallel; merge when imports are stable).  
+**Merge before:** domain test branches (Vidyanand, Sankeerth, Bringesh, Navdeep, Guia).
+
+David does **not** write domain tests or run the entire boot gate alone. Phase 2 import cleanup remains in `REORG-CLEANUP.md`.
+
+### Git commands
 
 ```bash
 cd oatmealfarmnetworkbackend/
@@ -130,152 +127,25 @@ git checkout epic/backend-reorg
 git pull origin epic/backend-reorg
 git checkout -b task/reorg-test-infra
 
-# ... add pytest.ini, tests/conftest.py, tests/test_smoke.py, tests/test_health.py ...
-# ... update .github/workflows/smoke-backend.yml ...
+# Add: pytest.ini, tests/conftest.py, tests/test_health.py
+# Update: .github/workflows/smoke-backend.yml
 
 git add pytest.ini tests/ .github/workflows/smoke-backend.yml
-git commit -m "test: add pytest infra, smoke tests, and CI gate"
+git commit -m "test: add pytest harness and health smoke CI"
 git push -u origin task/reorg-test-infra
 # GitHub PR:  task/reorg-test-infra  →  epic/backend-reorg
-# Merge this PR before domain test branches (Vidyanand, Sankeerth, Bringesh, Navdeep, Guia).
 ```
-
-#### Vidyanand (Dev 1) — scripts tests
-
-**Start after:** `task/reorg-test-infra` is merged into `epic/backend-reorg`.
-
-```bash
-cd oatmealfarmnetworkbackend/
-git checkout epic/backend-reorg
-git pull origin epic/backend-reorg
-git checkout -b task/reorg-tests-scripts
-
-# ... add tests/test_scripts.py ...
-
-git add tests/test_scripts.py
-git commit -m "test: add scripts import and repo hygiene tests"
-git push -u origin task/reorg-tests-scripts
-# GitHub PR:  task/reorg-tests-scripts  →  epic/backend-reorg
-```
-
-#### Sankeerth (Dev 3) — services & utils tests
-
-**Start after:** `task/reorg-test-infra` is merged into `epic/backend-reorg`.
-
-```bash
-cd oatmealfarmnetworkbackend/
-git checkout epic/backend-reorg
-git pull origin epic/backend-reorg
-git checkout -b task/reorg-tests-services
-
-# ... add tests/test_services.py ...
-
-git add tests/test_services.py
-git commit -m "test: add services and utils import tests"
-git push -u origin task/reorg-tests-services
-# GitHub PR:  task/reorg-tests-services  →  epic/backend-reorg
-```
-
-#### Bringesh (4A) — core models tests
-
-**Start after:** `task/reorg-test-infra` is merged into `epic/backend-reorg`.
-
-```bash
-cd oatmealfarmnetworkbackend/
-git checkout epic/backend-reorg
-git pull origin epic/backend-reorg
-git checkout -b task/reorg-tests-models-core
-
-# ... add tests/test_models_core.py ...
-
-git add tests/test_models_core.py
-git commit -m "test: add core models (users, accounting, Pricing) tests"
-git push -u origin task/reorg-tests-models-core
-# GitHub PR:  task/reorg-tests-models-core  →  epic/backend-reorg
-```
-
-#### Navdeep (4B) — ag / livestock / events models tests
-
-**Start after:** `task/reorg-test-infra` is merged into `epic/backend-reorg`.
-
-```bash
-cd oatmealfarmnetworkbackend/
-git checkout epic/backend-reorg
-git pull origin epic/backend-reorg
-git checkout -b task/reorg-tests-models-ag
-
-# ... add tests/test_models_ag.py ...
-
-git add tests/test_models_ag.py
-git commit -m "test: add ag, livestock, and events model tests"
-git push -u origin task/reorg-tests-models-ag
-# GitHub PR:  task/reorg-tests-models-ag  →  epic/backend-reorg
-```
-
-#### Guia (4C) — web models tests
-
-**Start after:** `task/reorg-test-infra` is merged into `epic/backend-reorg`.
-
-```bash
-cd oatmealfarmnetworkbackend/
-git checkout epic/backend-reorg
-git pull origin epic/backend-reorg
-git checkout -b task/reorg-tests-models-web
-
-# ... add tests/test_models_web.py ...
-
-git add tests/test_models_web.py
-git commit -m "test: add web models and website router tests"
-git push -u origin task/reorg-tests-models-web
-# GitHub PR:  task/reorg-tests-models-web  →  epic/backend-reorg
-```
-
-#### Team — final merge to main (after all above PRs are on epic)
-
-```bash
-cd oatmealfarmnetworkbackend/
-git checkout epic/backend-reorg
-git pull origin epic/backend-reorg
-git merge main                         # final sync with main
-
-pip install -r requirements.txt
-pytest                                 # must pass
-
-git push origin epic/backend-reorg
-# GitHub PR:  epic/backend-reorg  →  main
-# Use merge commit (NOT squash).
-```
-
----
-
-## Shared rules (everyone)
-
-1. **Do not duplicate `conftest.py`** — use David’s fixture; add helpers only if agreed in PR review.
-2. **Default tests use a mocked `get_db`** — no real database in CI.
-3. **Import paths use `app.*`** — e.g. `from app.models import People`, not `import models`.
-4. **Keep PRs small** — target 1–3 test files, ~50–150 lines each.
-5. **Done when per dev:** import test for your slice + at least one HTTP test (mocked DB) OR one structural test (scripts).
-6. **Optional integration tests** — mark with `@pytest.mark.integration` and skip when `DB_SERVER` is unset.
-
----
-
-## David (Dev 2) — shared infrastructure
-
-**Branches:** `task/reorg-import-cleanup` (first) → `task/reorg-test-infra` (second)  
-**Merge both into:** `epic/backend-reorg`  
-**Git commands:** [David — Phase 2 import cleanup](#david-dev-2--phase-2-import-cleanup-do-this-first) · [David — test infrastructure](#david-dev-2--test-infrastructure-do-this-second)
-
-`task/reorg-test-infra` — **merge before domain test PRs.**
 
 ### Deliverables
 
 ```
 pytest.ini
 tests/
-├── conftest.py          # TestClient + get_db override
-├── test_smoke.py        # import app.main, import app.models
-└── test_health.py       # GET /health, GET /openapi.json
+├── conftest.py       # TestClient + mocked get_db
+└── test_health.py    # GET /health, GET /openapi.json
 ```
+
+Keep `test_smoke.py` **out of David’s PR** — each domain owner adds import smoke in their own file (avoids one person owning all model imports).
 
 ### `pytest.ini`
 
@@ -315,18 +185,6 @@ def client():
     app.dependency_overrides.clear()
 ```
 
-### `tests/test_smoke.py` (sketch)
-
-```python
-def test_import_main_app():
-    import app.main  # noqa: F401
-
-
-def test_import_core_models():
-    from app.models import People, Invoice
-    assert People.__tablename__ == "People"
-```
-
 ### `tests/test_health.py` (sketch)
 
 ```python
@@ -334,38 +192,26 @@ def test_health_returns_ok(client):
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_openapi_loads(client):
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
 ```
 
-### CI — extend `.github/workflows/smoke-backend.yml`
-
-Replace (or supplement) the import-only step:
+### CI — `.github/workflows/smoke-backend.yml`
 
 ```yaml
-- name: Run pytest smoke suite
-  run: pytest tests/test_smoke.py tests/test_health.py
-```
-
-Later, when domain tests land:
-
-```yaml
+- name: Run pytest
   run: pytest
 ```
 
-### Boot gate (manual, before epic → main)
+Start with `pytest tests/test_health.py` in the first PR; switch to full `pytest` once domain files land.
 
-```bash
-pip install -r requirements.txt
-pytest
-python -c "import app.main"
-uvicorn app.main:app --port 8080
-uvicorn server_all:app --port 8000
-docker build .
-```
+### David’s manual check
 
-### Done when
-
-- `pytest tests/test_smoke.py tests/test_health.py` passes locally and in CI.
-- Other developers can add files under `tests/` without editing `conftest.py`.
+- [ ] CI workflow passes on PR to epic.
+- [ ] Another developer can add `tests/test_*.py` without changing `conftest.py`.
 
 ---
 
@@ -373,16 +219,31 @@ docker build .
 
 **Branch:** `task/reorg-tests-scripts`  
 **Merge PR into:** `epic/backend-reorg`  
-**Start after:** `task/reorg-test-infra` merged  
-**Git commands:** [Vidyanand — scripts tests](#vidyanand-dev-1--scripts-tests)
+**Start after:** `task/reorg-test-infra` merged into epic  
+**File:** `tests/test_scripts.py`
 
-**Scope:** Moved seeds, migrations, and import hygiene under `scripts/`.
+### Git commands
 
-### Tests to write (`tests/test_scripts.py`)
+```bash
+cd oatmealfarmnetworkbackend/
+git checkout epic/backend-reorg
+git pull origin epic/backend-reorg
+git checkout -b task/reorg-tests-scripts
 
-- Sample moved scripts import `app.database` (not flat `from database import`).
-- No `from models import` under `scripts/` or `scrapers/`.
-- Structural: no loose `seed_*.py`, `migrate_*.py`, or `*.sql` at repo root (path glob / `pathlib` check).
+# ... add tests/test_scripts.py ...
+pytest tests/test_scripts.py
+
+git add tests/test_scripts.py
+git commit -m "test: scripts hygiene and import tests"
+git push -u origin task/reorg-tests-scripts
+# GitHub PR:  task/reorg-tests-scripts  →  epic/backend-reorg
+```
+
+### Tests to write
+
+- No loose root `seed_*.py`, `migrate_*.py`, or `*.sql`.
+- `scripts/` and `scrapers/` use `app.database` / `app.*` — no flat `from database import` or `from models import`.
+- At least two moved scripts verified by reading source or import.
 
 ### Example
 
@@ -392,188 +253,274 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_no_loose_root_seeds_or_migrations():
+def test_no_loose_root_artifacts():
     assert list(ROOT.glob("seed_*.py")) == []
     assert list(ROOT.glob("migrate_*.py")) == []
     assert list(ROOT.glob("*.sql")) == []
 
 
-def test_backfill_script_imports_app_database():
-    source = (ROOT / "scripts" / "backfill_field_size_from_boundary.py").read_text()
-    assert "from app.database import" in source
-    assert "from database import" not in source
+def test_backfill_script_uses_app_database():
+    text = (ROOT / "scripts" / "backfill_field_size_from_boundary.py").read_text()
+    assert "from app.database import" in text
+    assert "from database import" not in text
 ```
 
-### Done when
+### Vidyanand’s manual check
 
-- `tests/test_scripts.py` passes in CI.
-- At least two moved scripts verified for correct `app.*` imports.
+- [ ] `docker build .` succeeds from repo root.
+- [ ] Container starts (`uvicorn app.main:app` via Dockerfile CMD).
 
 ---
 
-## Sankeerth (Dev 3) — services & utils
+## Sankeerth (Dev 3) — services, utils & service routers
 
 **Branch:** `task/reorg-tests-services`  
 **Merge PR into:** `epic/backend-reorg`  
-**Start after:** `task/reorg-test-infra` merged  
-**Git commands:** [Sankeerth — services tests](#sankeerth-dev-3--services--utils-tests)
+**Start after:** `task/reorg-test-infra` merged into epic  
+**File:** `tests/test_services.py`
 
-**Scope:** `app/services/*`, `app/utils/*`, and routers that import them.
+### Git commands
 
-### Tests to write (`tests/test_services.py`)
+```bash
+cd oatmealfarmnetworkbackend/
+git checkout epic/backend-reorg
+git pull origin epic/backend-reorg
+git checkout -b task/reorg-tests-services
 
-**Import tests** — each module loads without root shims:
+# ... add tests/test_services.py ...
+pytest tests/test_services.py
 
-- `app.services.marketplace_stripe`
-- `app.services.marketplace_catalog`
-- `app.services.event_emails`
-- `app.services.meeting_emails`
-- `app.services.image_service`
-- `app.utils.page_templates`
-- `app.utils.geo_utils`
-
-**HTTP tests (mocked `get_db`)** — one per area:
-
-- `GET /health` already covered by David; pick one service-backed route, e.g. lazy import path in `meetings` or `marketplace` that uses `app.services.*`.
-
-### Routers to spot-check (any one mocked test each)
-
-- `app/routers/marketplace.py`
-- `app/routers/stripe_payments.py`
-- `app/routers/meetings.py`
-- `app/routers/website_builder.py`
-- One `event_*.py` router (e.g. `event_simple.py`)
-
-### Example import test
-
-```python
-def test_marketplace_stripe_imports():
-    from app.services import marketplace_stripe
-    assert hasattr(marketplace_stripe, "stripe_router")
+git add tests/test_services.py
+git commit -m "test: services, utils, and service-router tests"
+git push -u origin task/reorg-tests-services
+# GitHub PR:  task/reorg-tests-services  →  epic/backend-reorg
 ```
 
-### Done when
+### Scope
 
-- All 7 service/util modules above import cleanly.
-- At least one mocked HTTP test hits a route that uses a moved service.
+**Modules** — import without root shims:
+
+- `app.services.marketplace_stripe`, `marketplace_catalog`, `event_emails`, `meeting_emails`, `image_service`
+- `app.utils.page_templates`, `geo_utils`
+
+**Routers** — static guard: these files must not use flat `from database import`, `import models`, or root shims:
+
+- `app/routers/marketplace.py`, `stripe_payments.py`, `meetings.py`
+- `app/routers/website_builder.py`, `website_ai.py`
+- At least **3** `app/routers/event_*.py` files (pick the ones you moved imports for in cleanup)
+
+**HTTP (mocked):** one route that lazy-imports a service (e.g. `meetings` or `event_simple`).
+
+### Example
+
+```python
+def test_marketplace_stripe_has_router():
+    from app.services import marketplace_stripe
+    assert hasattr(marketplace_stripe, "stripe_router")
+
+
+def test_marketplace_router_no_flat_database_import():
+    text = open("app/routers/marketplace.py").read()
+    assert "from database import" not in text
+    assert "from app.database import" in text
+```
+
+### Sankeerth’s manual check
+
+- [ ] `uvicorn server_all:app --port 8000` starts without import errors.
+- [ ] `GET /health` returns 200 through `server_all` (optional curl).
 
 ---
 
-## Bringesh (4A) — core models (users + accounting)
+## Bringesh (4A) — core models & auth/accounting routers
 
 **Branch:** `task/reorg-tests-models-core`  
 **Merge PR into:** `epic/backend-reorg`  
-**Start after:** `task/reorg-test-infra` merged  
-**Git commands:** [Bringesh — core models tests](#bringesh-4a--core-models-tests)
+**Start after:** `task/reorg-test-infra` merged into epic  
+**File:** `tests/test_models_core.py`
 
-**Scope:** `app/models/users.py`, `app/models/accounting.py`, `Pricing` in `livestock.py`.
+### Git commands
 
-### Tests to write (`tests/test_models_core.py`)
+```bash
+cd oatmealfarmnetworkbackend/
+git checkout epic/backend-reorg
+git pull origin epic/backend-reorg
+git checkout -b task/reorg-tests-models-core
 
-**Model import tests:**
+# ... add tests/test_models_core.py ...
+pytest tests/test_models_core.py
+
+git add tests/test_models_core.py
+git commit -m "test: core models and auth/accounting router tests"
+git push -u origin task/reorg-tests-models-core
+# GitHub PR:  task/reorg-tests-models-core  →  epic/backend-reorg
+```
+
+### Scope
+
+**Models** — `from app.models import` works:
+
+- `People`, `Business`, `Account`, `Invoice`, `JournalEntry`, `Pricing`
+
+**Routers** — no flat imports in:
+
+- `app/routers/auth.py`, `accounting.py`, `businesses.py`, `forgot_password.py`
+
+**HTTP (mocked):** `GET /auth/site-settings` — defaults when DB returns no row.
+
+### Example
 
 ```python
-from app.models import (
-    People, Business, Address, BusinessAccess,
-    Account, Invoice, JournalEntry, Pricing,
-)
+from app.models import People, Invoice, Pricing
 
 
 def test_core_model_tables():
     assert People.__tablename__ == "People"
     assert Invoice.__tablename__ == "Invoice"
     assert Pricing.__tablename__ == "Pricing"
+
+
+def test_auth_router_uses_app_imports():
+    text = open("app/routers/auth.py").read()
+    assert "from app.database import" in text or "from app.core" in text
+    assert "from database import" not in text
 ```
 
-**HTTP test (mocked DB):** `GET /auth/site-settings` — returns defaults when no `SiteSettings` row (see router in `app/routers/auth.py`).
+### Bringesh’s manual check
 
-### Done when
-
-- Core user + accounting models import via `from app.models import ...`.
-- `Pricing` resolves from `livestock` through `app/models/__init__.py`.
-- One mocked router test for an accounting- or auth-related endpoint.
+- [ ] `uvicorn app.main:app --port 8080` starts clean.
+- [ ] `python -c "from app.models import People, Invoice, Pricing; print('ok')"`
 
 ---
 
-## Navdeep (4B) — ag / livestock / events models
+## Navdeep (4B) — ag / livestock / events models & routers
 
 **Branch:** `task/reorg-tests-models-ag`  
 **Merge PR into:** `epic/backend-reorg`  
-**Start after:** `task/reorg-test-infra` merged  
-**Git commands:** [Navdeep — ag models tests](#navdeep-4b--ag--livestock--events-models-tests)
+**Start after:** `task/reorg-test-infra` merged into epic  
+**File:** `tests/test_models_ag.py`
 
-**Scope:** `app/models/livestock.py`, `precision_ag.py`, `crops.py`, `events.py`.
+### Git commands
 
-### Tests to write (`tests/test_models_ag.py`)
+```bash
+cd oatmealfarmnetworkbackend/
+git checkout epic/backend-reorg
+git pull origin epic/backend-reorg
+git checkout -b task/reorg-tests-models-ag
 
-**Model import tests:**
+# ... add tests/test_models_ag.py ...
+pytest tests/test_models_ag.py
+
+git add tests/test_models_ag.py
+git commit -m "test: ag models and livestock router tests"
+git push -u origin task/reorg-tests-models-ag
+# GitHub PR:  task/reorg-tests-models-ag  →  epic/backend-reorg
+```
+
+### Scope
+
+**Models** — import via `app.models`:
+
+- `Animal`, `Field`, `Produce`, `Event`, `Association` (+ spot-check a few more from your four files)
+
+**Model files** — all use `from app.database import Base`:
+
+- `livestock.py`, `precision_ag.py`, `crops.py`, `events.py`
+
+**Routers** — no flat imports in:
+
+- `app/routers/livestock.py`, `animals.py`, `precision_ag.py`, `events.py`, `associations.py`
+
+**HTTP (mocked):** one ag/livestock route — expect 200, 401, or 404, not 500.
+
+### Example
 
 ```python
-from app.models import (
-    Animal, Field, Produce, Event, Association,
-)
+from app.models import Animal, Field, Event
 
 
 def test_ag_model_tables():
     assert Animal.__tablename__ == "Animal"
     assert Field.__tablename__ == "Field"
-    assert Event.__tablename__ == "Event"
+
+
+def test_livestock_router_no_flat_models_import():
+    text = open("app/routers/livestock.py").read()
+    assert "from models import" not in text
 ```
 
-**Base import sanity** — all four model files use `from app.database import Base` (static read or import).
+### Navdeep’s manual check
 
-**HTTP test (mocked DB):** one router from ag/livestock slice, e.g. `livestock` or `events` — assert non-500 response or expected 401 without auth.
-
-### Done when
-
-- All 27 ag/event model classes import via `app.models`.
-- Four model files use `app.database.Base`.
-- One mocked HTTP test for an ag/livestock/events router.
+- [ ] `pytest tests/test_models_ag.py` passes.
+- [ ] `python -c "from app.models import Animal, Field, Event; print('ok')"`
 
 ---
 
-## Guia (4C) — web models
+## Guia (4C) — web models & website routers
 
 **Branch:** `task/reorg-tests-models-web`  
 **Merge PR into:** `epic/backend-reorg`  
-**Start after:** `task/reorg-test-infra` merged  
-**Git commands:** [Guia — web models tests](#guia-4c--web-models-tests)
+**Start after:** `task/reorg-test-infra` merged into epic  
+**File:** `tests/test_models_web.py`
 
-**Scope:** `app/models/web.py`, website/blog routers.
+### Git commands
 
-### Tests to write (`tests/test_models_web.py`)
+```bash
+cd oatmealfarmnetworkbackend/
+git checkout epic/backend-reorg
+git pull origin epic/backend-reorg
+git checkout -b task/reorg-tests-models-web
 
-**Model import tests:**
+# ... add tests/test_models_web.py ...
+pytest tests/test_models_web.py
+
+git add tests/test_models_web.py
+git commit -m "test: web models and website router tests"
+git push -u origin task/reorg-tests-models-web
+# GitHub PR:  task/reorg-tests-models-web  →  epic/backend-reorg
+```
+
+### Scope
+
+**Models** — `from app.models import`:
+
+- `BusinessWebsite`, `BusinessWebPage`, `SiteSettings`, `BusinessBlogPost`
+
+**Structural** — root `models.py` is shim-only (no `class X(Base):`).
+
+**Routers** — no flat imports in:
+
+- `app/routers/website_builder.py`, `website_ai.py`, `blog.py`
+
+**HTTP (mocked):** one `blog` or `website_builder` route — not 500.
+
+### Example
 
 ```python
-from app.models import (
-    BusinessWebsite,
-    BusinessWebPage,
-    SiteSettings,
-    BusinessBlogPost,
-)
+import re
+from pathlib import Path
+from app.models import BusinessWebsite, SiteSettings
 
 
 def test_web_model_tables():
     assert BusinessWebsite.__tablename__ == "BusinessWebsite"
     assert SiteSettings.__tablename__ == "SiteSettings"
+
+
+def test_root_models_py_is_shim_only():
+    text = Path("models.py").read_text()
+    assert "from app.models import" in text
+    assert re.search(r"^class \w+\(Base\):", text, re.M) is None
 ```
 
-**Structural:** root `models.py` has no `class X(Base):` definitions (shim only).
+### Guia’s manual check
 
-**HTTP test (mocked DB):** one route from `blog` or `website_builder` — non-500 with mocked session.
-
-### Done when
-
-- All six web models import from `app.models`.
-- Root `models.py` is shim-only (no duplicate ORM classes).
-- One mocked HTTP test for `blog` or `website_builder`.
+- [ ] `pytest tests/test_models_web.py` passes.
+- [ ] `GET /openapi.json` lists website/blog routes (via `client` fixture or curl against local uvicorn).
 
 ---
 
 ## Optional integration tests (any developer, local only)
-
-Mark tests that need a real `.env` / MSSQL:
 
 ```python
 import os
@@ -587,16 +534,32 @@ from app.main import app
 def test_db_ping():
     response = TestClient(app).get("/test-db")
     assert response.status_code == 200
-    assert response.json()["db"] == "connected"
 ```
-
-Run locally:
 
 ```bash
-pytest -m integration
+pytest -m integration    # local only; not in default CI
 ```
 
-Do **not** enable integration tests in default CI unless GitHub secrets provide DB access.
+---
+
+## Team — final merge to `main`
+
+**Start after:** all test PRs (#1–#6) merged into `epic/backend-reorg` and full `pytest` passes.
+
+### Git commands
+
+```bash
+cd oatmealfarmnetworkbackend/
+git checkout epic/backend-reorg
+git pull origin epic/backend-reorg
+git merge main
+
+pip install -r requirements.txt
+pytest
+
+git push origin epic/backend-reorg
+# GitHub PR:  epic/backend-reorg  →  main  (merge commit, NOT squash)
+```
 
 ---
 
@@ -604,30 +567,28 @@ Do **not** enable integration tests in default CI unless GitHub secrets provide 
 
 | Check | Owner |
 |-------|-------|
-| David Phase 2 import cleanup merged | David |
+| Phase 2 import cleanup merged (`REORG-CLEANUP.md`) | David |
 | `task/reorg-test-infra` merged | David |
-| All five domain test PRs merged | Vidyanand, Sankeerth, Bringesh, Navdeep, Guia |
-| `pytest` green on epic | Team |
-| `python -c "import app.main"` | David |
-| `uvicorn app.main:app` + `server_all.py` start | David |
-| `docker build` + container boot | David |
-| Smoke CI passes on PR to `main` | Team |
-| Final merge commit (not squash) `epic/backend-reorg → main` | Team |
+| `tests/test_scripts.py` + docker build | Vidyanand |
+| `tests/test_services.py` + `server_all` boot | Sankeerth |
+| `tests/test_models_core.py` + `uvicorn app.main` | Bringesh |
+| `tests/test_models_ag.py` | Navdeep |
+| `tests/test_models_web.py` + `models.py` shim | Guia |
+| Full `pytest` green on epic | Team |
+| Smoke CI on PR to `main` | Team |
+| `epic/backend-reorg → main` (merge commit) | Team |
 
 ---
 
 ## Quick commands
 
 ```bash
-# From repo root: oatmealfarmnetworkbackend/
-
+cd oatmealfarmnetworkbackend/
 pip install -r requirements.txt
-pytest                          # full suite (after all PRs land)
-pytest tests/test_smoke.py      # fastest gate
-pytest -m "not integration"     # skip DB tests
-pytest -v --tb=short            # verbose failures
+pytest                              # full suite (after all PRs land)
+pytest tests/test_health.py         # harness only
+pytest tests/test_models_core.py    # your slice
+pytest -m "not integration"         # skip DB tests
 ```
 
 ---
-
-*Created for post-reorg test rollout. Update this file as test PRs merge.*
