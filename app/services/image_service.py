@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # image_service.py
 # Handles AI image generation via Google Vertex AI Imagen
 # and storage in Google Cloud Storage.

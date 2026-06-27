@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database import get_db, SessionLocal
 from app.core.auth import get_current_user
-import models
+from app import models
 import datetime
 
 router = APIRouter(prefix="/api/meetings", tags=["meetings"])

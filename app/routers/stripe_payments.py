@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Stripe payment + refund endpoints for the event registration cart.
 
@@ -14,6 +16,7 @@ from datetime import date, datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from typing import Optional
 from app.database import get_db
 from app.routers.platform_settings import get_stripe_config
 
@@ -255,7 +258,7 @@ def capture_payment(cart_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/api/events/cart/{cart_id}/refund")
-def refund_cart(cart_id: int, payload: dict | None = None, db: Session = Depends(get_db)):
+def refund_cart(cart_id: int, payload: Optional[dict] = None, db: Session = Depends(get_db)):
     """Issue a full or partial refund. Enforces the refund-deadline setting
     from OFNPlatformSettings (RefundDeadlineDays before event start)."""
     payload = payload or {}

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Platform-level settings (Stripe keys, refund model, platform fee).
 
@@ -12,8 +14,8 @@ import os
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db, SessionLocal
-from jwt_auth import get_current_user
+from app.database import get_db, SessionLocal
+from app.core.jwt_auth import get_current_user
 
 router = APIRouter()
 
