@@ -329,8 +329,7 @@ Create a `.env` file in the project root (see `.env.example`):
 SECRET_KEY=your_jwt_secret_key              # HS256 secret (required)
 
 # --- Database ---
-DB_HOST=your_azure_sql_host
-DB_PORT=1433
+DB_SERVER=your_azure_sql_host
 DB_USER=your_user
 DB_PASSWORD=your_password
 DB_NAME=your_database
@@ -590,7 +589,7 @@ git status  # Confirm no .env, credentials, or secrets staged
 |---|---|
 | `401 Invalid or expired token` | Verify JWT in `Authorization: Bearer <token>` header |
 | `500 JWT_SECRET is not configured` | Set `SECRET_KEY` in `.env` |
-| Database connection fails | Check `DB_HOST`, `DB_USER`, `DB_PASSWORD` in `.env` |
+| Database connection fails | Check `DB_SERVER`, `DB_USER`, `DB_PASSWORD` in `.env` |
 | Saige endpoints 404 | Confirm Saige routers are registered in `main.py` |
 | Redis connection timeout | Verify Redis is running (`redis-cli ping`), or set `REDIS_ENABLED=false` |
 | Docker build fails | Ensure `requirements.txt` is up to date and Python 3.11+ |

@@ -14,11 +14,11 @@ Architecture: request-response with up to 4 Gemini tool-calling loops.
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db
-from auth import get_current_user
+from app.database import get_db
+from app.core.auth import get_current_user
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
-import models
+from app import models
 import os, re, datetime, uuid, logging
 
 router = APIRouter(prefix="/api/tarrigon", tags=["tarrigon-ai"])

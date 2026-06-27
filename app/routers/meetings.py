@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db, SessionLocal
-from auth import get_current_user
-import models
+from app.database import get_db, SessionLocal
+from app.core.auth import get_current_user
+from app import models
 import datetime
 
 router = APIRouter(prefix="/api/meetings", tags=["meetings"])

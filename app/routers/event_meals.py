@@ -11,7 +11,7 @@ Distinct from OFNEventDiningConfig which is for sit-down dining *events*.
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db, SessionLocal
+from app.database import get_db, SessionLocal
 
 router = APIRouter()
 

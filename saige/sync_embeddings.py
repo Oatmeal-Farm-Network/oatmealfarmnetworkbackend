@@ -24,7 +24,7 @@ if not RAG_AVAILABLE:
     sys.exit(1)
 
 from google.cloud.firestore_v1.vector import Vector
-from database import db
+from app.database import db
 from rag import rag
 
 

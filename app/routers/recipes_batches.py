@@ -8,7 +8,7 @@ Tables created on first request (IF NOT EXISTS):
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db
+from app.database import get_db
 from typing import Optional, List
 from datetime import date, datetime
 from pydantic import BaseModel

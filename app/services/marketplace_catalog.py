@@ -8,7 +8,7 @@ from typing import Optional, List
 from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db
+from app.database import get_db
 import os
 
 marketplace_router = APIRouter()

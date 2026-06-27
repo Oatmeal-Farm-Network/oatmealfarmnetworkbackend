@@ -3,10 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy.orm import Session
-from routers import auth
+from app.routers import auth
 from app.database import get_db, SessionLocal
 import os
-import models
+from app import models
 from dotenv import load_dotenv
 
 from app.routers import businesses
@@ -83,7 +83,7 @@ from app.routers import provenance
 from app.routers import field_health_alerts
 
 from app.routers.marketplace import marketplace_router
-from marketplace_stripe import stripe_router
+from app.services.marketplace_stripe import stripe_router
 from app.routers.equipment_marketplace import equipment_router
 from app.routers.food_wanted import food_wanted_router
 from app.routers import notifications
@@ -381,7 +381,7 @@ async def _startup_migrations():
     def _seed_prices():
         try:
             from routers.commodity_history import _fetch_and_store_prices
-            from database import SessionLocal as _SL
+            from app.database import SessionLocal as _SL
             with _SL() as _db:
                 has_data = _db.execute(
                     __import__('sqlalchemy').text(

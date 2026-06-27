@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from typing import Optional, List
-from database import get_db
+from app.database import get_db
 
 router = APIRouter(prefix="/api/precision-ag/crop-summary", tags=["crop-summary"])
 

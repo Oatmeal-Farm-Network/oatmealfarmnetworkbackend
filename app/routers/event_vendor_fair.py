@@ -8,7 +8,7 @@ details and product categories; organizers approve, reject, or assign booth numb
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db, SessionLocal
+from app.database import get_db, SessionLocal
 from datetime import date
 
 router = APIRouter()

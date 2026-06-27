@@ -1,4 +1,4 @@
-﻿from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date, datetime
@@ -230,7 +230,7 @@ def log_moisture(zone_id: int, body: MoistureIn, db=Depends(get_raw_conn), user=
 
 @router.post("/webhook/zones/{zone_id}/moisture", status_code=201)
 def webhook_moisture(zone_id: int, token: str, body: MoistureIn, db=Depends(get_raw_conn)):
-    """IoT soil moisture sensor endpoint — token auth, no JWT."""
+    """IoT soil moisture sensor endpoint � token auth, no JWT."""
     _ensure_tables(db)
     cur = db.cursor()
     cur.execute("SELECT ZoneID, BusinessID, WebhookToken FROM IrrigationZone WHERE ZoneID=?", [zone_id])

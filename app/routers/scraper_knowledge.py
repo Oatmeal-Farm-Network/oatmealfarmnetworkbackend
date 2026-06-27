@@ -14,7 +14,7 @@ Both scrapers:
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db
+from app.database import get_db
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import re, json, datetime

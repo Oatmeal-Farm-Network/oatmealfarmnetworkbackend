@@ -10,8 +10,8 @@ from sendgrid.helpers.mail import Mail
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, EmailStr
 
-from database import get_db_cursor
-from auth import hash_password, create_password_reset_token
+from app.database import get_db_cursor
+from app.core.auth import hash_password, create_password_reset_token
 
 logger = logging.getLogger(__name__)
 

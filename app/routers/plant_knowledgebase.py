@@ -1,10 +1,10 @@
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import text
-from database import get_db
+from app.database import get_db
 from fastapi import Depends
 from sqlalchemy.orm import Session
 import time
-from routers.translation import translate_list, translate_fields
+from app.routers.translation import translate_list, translate_fields
 
 router = APIRouter(prefix="/api/plant-knowledgebase", tags=["plant-knowledgebase"])
 

@@ -21,9 +21,9 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from auth import get_current_user
-from database import get_db
-import models
+from app.core.auth import get_current_user
+from app.database import get_db
+from app import models
 
 router = APIRouter(prefix="/api/esci", tags=["esci"])
 logger = logging.getLogger("esci")
@@ -1096,7 +1096,7 @@ async def stream_exceptions(
 
     async def _generator() -> AsyncGenerator[str, None]:
         nonlocal since_dt
-        from database import SessionLocal
+        from app.database import SessionLocal
         while True:
             try:
                 with SessionLocal() as db:

@@ -10,7 +10,7 @@ Mount in main.py:
 from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-from database import get_db
+from app.database import get_db
 import time, re
 
 router = APIRouter(prefix="/api/ranches", tags=["ranches"])

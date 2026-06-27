@@ -11,7 +11,7 @@ Run from Backend/oatmealfarmnetworkbackend/:
 Tricky bit: saige and the main backend each have their own top-level Python
 files with overlapping names (`database.py`, `models.py`, `main.py`, `events.py`,
 `auth.py`, `jwt_auth.py`). Once one of them lands in sys.modules under the
-generic name, the other backend's `from database import …` finds the wrong
+generic name, the other backend's `from app.database import …` finds the wrong
 module. The fix is to load each backend in its own phase and evict the
 conflicting names from sys.modules between phases. Already-resolved references
 inside each backend remain valid (Python keeps the module object alive via the
@@ -112,7 +112,7 @@ print("[serve_all] main backend loaded")
 
 
 # ── Phase 2: evict main backend's top-level modules ────────────────────────
-# After this, saige's `from database import Database` and `from models import …`
+# After this, saige's `from app.database from app.database import` and `from app.models import …`
 # will not find main's database/models in sys.modules and will fall through
 # to the file system (which we'll point at saige in a moment).
 # Keep server_all (this file — uvicorn needs to find it) + the explicitly-
@@ -126,7 +126,7 @@ _remove_path(HERE)
 
 
 # ── Phase 3: load Saige ────────────────────────────────────────────────────
-# Saige is cwd-independent. Add saige to sys.path; its `from database import …`
+# Saige is cwd-independent. Add saige to sys.path; its `from app.database import …`
 # will now find saige/database.py (no main-backend `database` in sys.modules).
 _add_path_front(SAIGE_CODE_DIR)
 print("[serve_all] phase 4: loading Saige")
@@ -137,7 +137,7 @@ print("[serve_all] Saige loaded")
 # ── Phase 4: restore main-backend 'database' and 'models' for hot-reload safety
 # Saige is fully loaded — all its imports have already resolved and bound into
 # each module's namespace.  We re-point sys.modules for the names that the main
-# backend uses lazily at request time so those `import models` / `import database`
+# backend uses lazily at request time so those `from app import models` / `from app.database import`
 # calls inside request handlers find the SQLAlchemy versions, not saige's.
 _main_db_mod = sys.modules.get("_oatmeal_database")
 if _main_db_mod is not None:

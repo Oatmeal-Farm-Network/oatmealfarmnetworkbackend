@@ -5,8 +5,8 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text, bindparam
-from database import get_db, engine
-from auth import get_current_user
+from app.database import get_db, engine
+from app.core.auth import get_current_user
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date
@@ -598,7 +598,7 @@ def get_catalog(
     # ── Fire background image generation for any missing images ──────────────
     items_needing_images = [r for r in results if not r.get("ImageURL") and r.get("IngredientID")]
     if items_needing_images:
-        from database import get_db as get_db_factory
+        from app.database import get_db as get_db_factory
         background_tasks.add_task(ensure_images_for_catalog, items_needing_images, get_db_factory)
 
     # ── Attach volume price tiers to each listing ─────────────────────────────

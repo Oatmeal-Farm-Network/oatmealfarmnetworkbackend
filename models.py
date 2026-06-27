@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, SmallInteger, DateTime, Date, Text, Boolean, Float
 from sqlalchemy import Numeric as Decimal
-from database import Base
+from app.database import Base
 
 from app.models.users import (  # noqa: F401
     Address,

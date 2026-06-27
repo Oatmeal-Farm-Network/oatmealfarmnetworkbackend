@@ -15,8 +15,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from database import get_db, SessionLocal
-from jwt_auth import get_current_user
+from app.database import get_db, SessionLocal
+from app.core.jwt_auth import get_current_user
 from routers.platform_settings import get_stripe_config
 
 

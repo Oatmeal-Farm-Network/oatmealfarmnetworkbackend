@@ -5,7 +5,7 @@ from jose import JWTError, jwt
 from datetime import datetime, timedelta, timezone
 import bcrypt as _bcrypt
 from app.database import get_db
-import models
+from app import models
 import os
 from dotenv import load_dotenv
 

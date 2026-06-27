@@ -30,9 +30,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
-import models
-from database import get_db
-from external_apis import (
+from app import models
+from app.database import get_db
+from app.services.external_apis import (
     nasa_power_summary,
     nominatim_reverse_state,
     usda_nass_crop_progress,
@@ -47,7 +47,7 @@ from external_apis import (
 
 # Reuse the climate forecast helpers so the report uses the same numbers as
 # the Climate Forecast tab — never a divergent calculation.
-from routers.climate_forecast import (
+from app.routers.climate_forecast import (
     _detect_events,
     _fetch_hourly_forecast,
     _profile_for,

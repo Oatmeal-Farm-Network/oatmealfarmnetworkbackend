@@ -1,4 +1,4 @@
-﻿from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date, datetime
@@ -132,7 +132,7 @@ class ApplicationIn(BaseModel):
     products: List[ApplicationProductLine] = []
 
 
-# ── Chemical product library ──────────────────────────────────────────────────
+# -- Chemical product library --------------------------------------------------
 
 @router.get("/products")
 def list_products(db=Depends(get_raw_conn), user=Depends(get_current_user)):
@@ -184,7 +184,7 @@ def update_product(product_id: int, body: ProductIn, db=Depends(get_raw_conn), u
     return {"ok": True}
 
 
-# ── Spray applications ────────────────────────────────────────────────────────
+# -- Spray applications --------------------------------------------------------
 
 @router.post("/applications", status_code=201)
 def create_application(body: ApplicationIn, db=Depends(get_raw_conn), user=Depends(get_current_user)):

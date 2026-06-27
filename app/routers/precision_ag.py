@@ -1,16 +1,16 @@
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc, text
-from database import get_db
+from app.database import get_db
 from datetime import date, datetime
 import json
 import os
 import uuid
-import models
+from app import models
 import requests
 from pydantic import BaseModel, validator
 from typing import Optional
-from geo_utils import polygon_area_hectares
+from app.utils.geo_utils import polygon_area_hectares
 
 router = APIRouter(prefix="/api", tags=["precision-ag"])
 

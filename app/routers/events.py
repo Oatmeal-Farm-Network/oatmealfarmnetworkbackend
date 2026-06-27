@@ -4,7 +4,7 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from routers.translation import translate_fields, translate_list
-from database import get_db
+from app.database import get_db
 from datetime import datetime, timedelta
 
 router = APIRouter()

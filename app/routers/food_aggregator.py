@@ -23,7 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from typing import Optional
-from database import get_db, SessionLocal
+from app.database import get_db, SessionLocal
 
 router = APIRouter()
 
@@ -463,7 +463,7 @@ def invite_farm(business_id: int, body: dict, db: Session = Depends(get_db)):
     5. Send an invite email via SendGrid.
     Returns { FarmID, BusinessID, PeopleID, alreadyExisted }.
     """
-    from auth import hash_password
+    from app.core.auth import hash_password
     from routers.services import SENDGRID_API_KEY, SENDGRID_URL, FROM_EMAIL
     import httpx, secrets
 

@@ -1,12 +1,12 @@
-﻿# --- nodes.py --- (All node functions, routing, and advisory engine)
+# --- nodes.py --- (All node functions, routing, and advisory engine)
 import re
 import queue as _queue_mod
 import threading
 from typing import Dict, Any, List, Optional
 from langgraph.types import interrupt
 
-# ── Streaming support ────────────────────────────────────────────────────────
-# Maps thread_id → Queue. The advisory ReAct loop puts text tokens into the
+# -- Streaming support --------------------------------------------------------
+# Maps thread_id ? Queue. The advisory ReAct loop puts text tokens into the
 # queue when streaming mode is active; the /chat/stream SSE endpoint reads them.
 _stream_queues: dict = {}
 _stream_lock = threading.Lock()
@@ -524,18 +524,18 @@ def _options_are_consistent(question_text: str, options: List[str], answer_slot:
 # ============================================================================
 
 _SAIGE_PERSONA = """
-IDENTITY & VOICE — You are Saige (pronounced exactly like "Sage" — the herb, rhymes with "page"). A woman in her early 40s, Caucasian, with a deep outdoor tan from years of working on farms and ranches. You carry a slight Texan accent — nothing heavy, just enough to add warmth and color to the way you talk.
+IDENTITY & VOICE � You are Saige (pronounced exactly like "Sage" � the herb, rhymes with "page"). A woman in her early 40s, Caucasian, with a deep outdoor tan from years of working on farms and ranches. You carry a slight Texan accent � nothing heavy, just enough to add warmth and color to the way you talk.
 
-ROLE — You are a professional farm and food advisor. You help farmers with planting, growing, harvesting, livestock care, soil health, and marketing. You also help restaurant owners and food suppliers source local ingredients and build farm-to-table connections.
+ROLE � You are a professional farm and food advisor. You help farmers with planting, growing, harvesting, livestock care, soil health, and marketing. You also help restaurant owners and food suppliers source local ingredients and build farm-to-table connections.
 
-PERSONALITY —
+PERSONALITY �
 - Warm and relationship-focused. You remember people's farms, their animals, their challenges. You ask follow-up questions when it helps.
 - Professional but never stiff. You mix technical agricultural vocabulary with plain, friendly language.
-- Politically neutral. You never take sides on policy, GMOs, organic vs. conventional, or land use debates — you give the pros and cons and let the farmer decide.
+- Politically neutral. You never take sides on policy, GMOs, organic vs. conventional, or land use debates � you give the pros and cons and let the farmer decide.
 - Pragmatic and solution-oriented. You focus on what actually works, not what's theoretically ideal.
-- Approachable. You're the advisor farmers call when they're worried about their crops or an animal is off — you calm them down and help them think through it.
+- Approachable. You're the advisor farmers call when they're worried about their crops or an animal is off � you calm them down and help them think through it.
 
-SPEECH STYLE — Casual Texan warmth mixed with technical precision when the topic calls for it.
+SPEECH STYLE � Casual Texan warmth mixed with technical precision when the topic calls for it.
 - Use "y'all" naturally (not constantly, just when addressing a group or being warm).
 - Occasional phrases like "sure thing", "you bet", "I reckon", "right off the bat", "holler at me if".
 - Keep answers concise by default. Go detailed when the topic is complex or the farmer seems to need depth.
@@ -578,7 +578,7 @@ def _looks_like_directive(text: str) -> bool:
 
 
 def _infer_directive_advisory_type(text: str) -> str:
-    """Rough routing hint for directive responses — mixed is a safe default."""
+    """Rough routing hint for directive responses � mixed is a safe default."""
     t = (text or "").lower()
     if any(k in t for k in ("weather", "rain", "forecast", "temperature", "climate")):
         return "weather"
@@ -621,7 +621,7 @@ def assessment_node(state: FarmState):
         if first_user_message and len(first_user_message) > 5:
             msg_lower = first_user_message.lower()
 
-            # ── Keyword fast-track: skip the LLM classify call for obvious cases ──
+            # -- Keyword fast-track: skip the LLM classify call for obvious cases --
             _kw_weather    = ("weather", "forecast", "rain", "snow", "frost", "hail", "humidity",
                               "temperature", "wind speed", "drought", "precipitation", "how hot",
                               "how cold", "storm", "tornado", "hurricane", "blizzard")
@@ -676,7 +676,7 @@ def assessment_node(state: FarmState):
 
             if _ft is not None:
                 _ft_type, _ft_issues, _ft_items = _ft
-                print(f"[Assessment] Keyword fast-track → {_ft_type} (skipping LLM classify)")
+                print(f"[Assessment] Keyword fast-track ? {_ft_type} (skipping LLM classify)")
                 if _ft_type == "joke":
                     return {
                         "assessment_summary": f"Joke request: {first_user_message}",
@@ -708,47 +708,47 @@ Query: "{first_user_message}"
 CLASSIFICATION RULES:
 1. Use query_type='general' ONLY for pure identity / account lookups (user ID, people ID,
    business ID) and social greetings. Do NOT use 'general' for questions about the user's
-   farm data, animals, vehicles, inventory, fields, orders, or operations — those are 'mixed'.
+   farm data, animals, vehicles, inventory, fields, orders, or operations � those are 'mixed'.
 2. Use query_type='mixed' for any question about the user's own farm data or business
    operations: vehicles, fleet, cold chain, marketplace inventory, orders, fields, animals
    owned, grants, certifications, accounting, seller dashboard, CSA, or any "what do I have /
    show me my" question. These need tool access to answer correctly.
 3. Default needs_clarification=False. Only set True if the query is completely unintelligible
    without more context (e.g., "help", "something is wrong", "what should I do").
-4. Most farming questions can be answered directly — do NOT ask follow-ups just because
+4. Most farming questions can be answered directly � do NOT ask follow-ups just because
    location or farm size isn't mentioned.
 
 Examples:
-- "what is my user ID" → query_type: general, is_specific: true, needs_clarification: false
-- "what is my people ID" → query_type: general, is_specific: true, needs_clarification: false
-- "what is my business ID" → query_type: general, is_specific: true, needs_clarification: false
-- "what is my businessid" → query_type: general, is_specific: true, needs_clarification: false
-- "what is my BusinessID" → query_type: general, is_specific: true, needs_clarification: false
-- "hello" → query_type: general, is_specific: true, needs_clarification: false
-- "what vehicles do I have" → query_type: mixed, is_specific: true, needs_clarification: false
-- "show my cold chain fleet" → query_type: mixed, is_specific: true, needs_clarification: false
-- "what animals do I have" → query_type: mixed, is_specific: true, needs_clarification: false
-- "my marketplace inventory" → query_type: mixed, is_specific: true, needs_clarification: false
-- "show my fields" → query_type: mixed, is_specific: true, needs_clarification: false
-- "my grants and programs" → query_type: mixed, is_specific: true, needs_clarification: false
-- "what orders do I have" → query_type: mixed, is_specific: true, needs_clarification: false
-- "show my business profile" → query_type: mixed, is_specific: true, needs_clarification: false
-- "what is my business info" → query_type: mixed, is_specific: true, needs_clarification: false
-- "update my website link" → query_type: mixed, is_specific: true, needs_clarification: false
-- "show my produce inventory" → query_type: mixed, is_specific: true, needs_clarification: false
-- "what meat do I have listed" → query_type: mixed, is_specific: true, needs_clarification: false
-- "show my processed food listings" → query_type: mixed, is_specific: true, needs_clarification: false
-- "what services do I offer" → query_type: mixed, is_specific: true, needs_clarification: false
-- "show my blog posts" → query_type: mixed, is_specific: true, needs_clarification: false
-- "what certifications do I have" → query_type: mixed, is_specific: true, needs_clarification: false
-- "temperature readings on my trucks" → query_type: mixed, is_specific: true, needs_clarification: false
-- "weather in California" → query_type: weather, is_specific: true, needs_clarification: false
-- "best goat breeds for meat" → query_type: livestock, is_specific: true, needs_clarification: false
-- "my tomato leaves are yellow" → query_type: crops, is_specific: true, needs_clarification: false
-- "cattle breeds for my farm" → query_type: livestock, is_specific: true, needs_clarification: false
-- "what should I plant" → query_type: crops, is_specific: false, needs_clarification: true
-- "help with my farm" → query_type: mixed, is_specific: false, needs_clarification: true
-- "animal recommendation for maize field" → query_type: mixed, is_specific: true, needs_clarification: false"""
+- "what is my user ID" ? query_type: general, is_specific: true, needs_clarification: false
+- "what is my people ID" ? query_type: general, is_specific: true, needs_clarification: false
+- "what is my business ID" ? query_type: general, is_specific: true, needs_clarification: false
+- "what is my businessid" ? query_type: general, is_specific: true, needs_clarification: false
+- "what is my BusinessID" ? query_type: general, is_specific: true, needs_clarification: false
+- "hello" ? query_type: general, is_specific: true, needs_clarification: false
+- "what vehicles do I have" ? query_type: mixed, is_specific: true, needs_clarification: false
+- "show my cold chain fleet" ? query_type: mixed, is_specific: true, needs_clarification: false
+- "what animals do I have" ? query_type: mixed, is_specific: true, needs_clarification: false
+- "my marketplace inventory" ? query_type: mixed, is_specific: true, needs_clarification: false
+- "show my fields" ? query_type: mixed, is_specific: true, needs_clarification: false
+- "my grants and programs" ? query_type: mixed, is_specific: true, needs_clarification: false
+- "what orders do I have" ? query_type: mixed, is_specific: true, needs_clarification: false
+- "show my business profile" ? query_type: mixed, is_specific: true, needs_clarification: false
+- "what is my business info" ? query_type: mixed, is_specific: true, needs_clarification: false
+- "update my website link" ? query_type: mixed, is_specific: true, needs_clarification: false
+- "show my produce inventory" ? query_type: mixed, is_specific: true, needs_clarification: false
+- "what meat do I have listed" ? query_type: mixed, is_specific: true, needs_clarification: false
+- "show my processed food listings" ? query_type: mixed, is_specific: true, needs_clarification: false
+- "what services do I offer" ? query_type: mixed, is_specific: true, needs_clarification: false
+- "show my blog posts" ? query_type: mixed, is_specific: true, needs_clarification: false
+- "what certifications do I have" ? query_type: mixed, is_specific: true, needs_clarification: false
+- "temperature readings on my trucks" ? query_type: mixed, is_specific: true, needs_clarification: false
+- "weather in California" ? query_type: weather, is_specific: true, needs_clarification: false
+- "best goat breeds for meat" ? query_type: livestock, is_specific: true, needs_clarification: false
+- "my tomato leaves are yellow" ? query_type: crops, is_specific: true, needs_clarification: false
+- "cattle breeds for my farm" ? query_type: livestock, is_specific: true, needs_clarification: false
+- "what should I plant" ? query_type: crops, is_specific: false, needs_clarification: true
+- "help with my farm" ? query_type: mixed, is_specific: false, needs_clarification: true
+- "animal recommendation for maize field" ? query_type: mixed, is_specific: true, needs_clarification: false"""
 
                 classification_result = classifier.invoke(classification_prompt)
                 
@@ -757,7 +757,7 @@ Examples:
                 needs_clarification = classification_result.needs_clarification
                 detected_items = classification_result.items
 
-                # Handle general (non-farming) queries — answer directly, no quiz
+                # Handle general (non-farming) queries � answer directly, no quiz
                 if classification_result.query_type.lower() == "general":
                     print(f"[Assessment] General (non-farming) query - fast-tracking")
                     return {
@@ -891,7 +891,7 @@ CRITICAL RULES:
    - GOOD: "What is your primary goal?" or "How large is your field?"
    - GOOD: "Where is your farm located?" or "What is your budget?"
 3. Only ask about the user's SITUATION: farm size, location, budget, existing setup, goals, problems.
-   Do NOT quiz them on agricultural science — that is YOUR job to provide in the final advice.
+   Do NOT quiz them on agricultural science � that is YOUR job to provide in the final advice.
 Set is_complete=False.
 
 DO NOT repeat what they said. Just ask your clarifying question."""
@@ -910,7 +910,7 @@ CRITICAL RULES:
    - BAD: "Which breeds are best for X?" or "What specific variety works best?"
    - GOOD: "How large is your farm?" or "What is your main concern?"
 3. Only ask about the user's SITUATION: location, farm size, budget, goals, existing problems, timeline.
-   You are the expert — do NOT ask the user to be the expert.
+   You are the expert � do NOT ask the user to be the expert.
 
 Questions asked: {question_count}/{MAX_QUESTIONS}
 
@@ -935,7 +935,7 @@ Set is_complete=True when you have:
         # treat the response as a fresh directive and break out of assessment.
         if _looks_like_directive(user_response):
             advisory_type = _infer_directive_advisory_type(user_response)
-            print(f"[Assessment] Directive detected on resume → routing to {advisory_type}")
+            print(f"[Assessment] Directive detected on resume ? routing to {advisory_type}")
             return {
                 "history": history + [f"AI: {res.question}", f"User: {user_response}"],
                 "current_issues": [user_response],
@@ -1096,13 +1096,13 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
         _pid = state.get("people_id")
         _ml = _msg.lower()
 
-        # Joke fast-path — call tell_joke_tool directly, no LLM needed
+        # Joke fast-path � call tell_joke_tool directly, no LLM needed
         if JOKES_AVAILABLE and tell_joke_tool and any(k in _ml for k in ("joke", "something funny", "make me laugh")):
             print(f"[Advisory Agent] Joke request fast-path for people_id={_pid}")
             _joke = tell_joke_tool.invoke({"people_id": str(_pid or "")})
             return {"diagnosis": _joke, "recommendations": []}
 
-        # Saige self-identity — pre-canned, no LLM needed
+        # Saige self-identity � pre-canned, no LLM needed
         _saige_identity_kw = ("what is your name", "what's your name", "whats your name",
                               "your name", "who are you", "what are you",
                               "tell me about yourself", "introduce yourself",
@@ -1112,7 +1112,7 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
             _greeting = f"Hey {_uname}! " if _uname else ""
             return {
                 "diagnosis": (
-                    f"{_greeting}My name is Saige — pronounced just like 'Sage', the herb. "
+                    f"{_greeting}My name is Saige � pronounced just like 'Sage', the herb. "
                     "I'm a farm and food advisor. I help farmers with planting, growing, harvesting, "
                     "livestock care, soil health, field monitoring, and marketing. "
                     "I can also help restaurant owners and food suppliers connect with local farms. "
@@ -1163,7 +1163,7 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
                     "The user is mid-conversation. Answer the question directly and concisely. "
                     "Do NOT introduce yourself, do NOT greet the user, and do NOT open with phrases like "
                     "'Hello there', 'Hi', 'I'm Saige', or 'your friendly assistant'. "
-                    "Skip the preamble — start with the answer.\n\n"
+                    "Skip the preamble � start with the answer.\n\n"
                     f"Question: {_msg}"
                 )
                 _answer = _resp.content if hasattr(_resp, "content") else str(_resp)
@@ -1188,7 +1188,7 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
     if not latest_user_message:
         latest_user_message = ", ".join(issues) if issues else "General inquiry"
 
-    # ── Lightweight intent router ────────────────────────────────────────────
+    # -- Lightweight intent router --------------------------------------------
     # Detect the primary intent from the user message so we can prune RAG and
     # the tool list before doing any expensive work.  Matches are broad enough
     # to catch paraphrases without needing an LLM call.
@@ -1249,14 +1249,14 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
     _INTENT_KNOWLEDGE_ONLY = not (_INTENT_MAP or _INTENT_BUSINESS
                                   or _INTENT_PRECISION_AG or _INTENT_ACCOUNTING)
 
-    # Suppress RAG for all non-knowledge intents — those queries don't benefit
+    # Suppress RAG for all non-knowledge intents � those queries don't benefit
     # from vector retrieval and it just wastes 500-800 ms.
     if not _INTENT_KNOWLEDGE_ONLY:
         rag_systems = []
-        print(f"[Intent Router] RAG suppressed — intent: "
+        print(f"[Intent Router] RAG suppressed � intent: "
               f"map={_INTENT_MAP} biz={_INTENT_BUSINESS} "
               f"precag={_INTENT_PRECISION_AG} acct={_INTENT_ACCOUNTING}")
-    # ── end intent router ─────────────────────────────────────────────────────
+    # -- end intent router -----------------------------------------------------
 
     recent_turns = "\n".join(history[-8:]) if history else "Not available"
 
@@ -1286,7 +1286,7 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
         rag_context = "\n\n".join(context_parts)
 
     # 2.5  Business Context Pre-fetch (conditional)
-    # Only fetch when business data is likely relevant — skip for pure weather/crop/livestock
+    # Only fetch when business data is likely relevant � skip for pure weather/crop/livestock
     # advisory queries that have no business-data keywords, to avoid 2 unnecessary DB round-trips.
     business_snapshot = ""
     _bid_prefetch = state.get("business_id")
@@ -1321,7 +1321,7 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
             _profile_raw = get_business_profile_tool.invoke({"business_id": int(_bid_prefetch)})
             _counts_raw  = count_my_animals_tool.invoke({"business_id": int(_bid_prefetch)})
             business_snapshot = (
-                "CURRENT BUSINESS CONTEXT (live from database — use this to answer questions "
+                "CURRENT BUSINESS CONTEXT (live from database � use this to answer questions "
                 "about the farm without calling additional tools unless the user needs detail):\n"
                 + _profile_raw
                 + "\n\n"
@@ -1342,7 +1342,7 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
         from learning import get_community_context as _get_community_ctx
         _community_section = _get_community_ctx(latest_user_message, n=3)
     except Exception as _lrn_err:
-        pass  # flywheel unavailable — degrade silently
+        pass  # flywheel unavailable � degrade silently
 
     _people_id_ctx = state.get("people_id") or ""
     _business_id_ctx = state.get("business_id") or ""
@@ -1359,16 +1359,16 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
         else (_business_id_ctx or "unknown")
     )
     identity_section = (
-        f"AUTHENTICATED IDENTITY (already known — do NOT ask the user for these):\n"
+        f"AUTHENTICATED IDENTITY (already known � do NOT ask the user for these):\n"
         + (f"- Name: {_user_name_ctx}\n" if _user_name_ctx else "")
         + f"- PeopleID: {_people_id_ctx or 'unknown'}\n"
         f"- Business: {_biz_label}\n"
         "Every tool that needs people_id or business_id receives them automatically from "
-        "this session. Call the tool directly — never ask the user to 'link their account' "
+        "this session. Call the tool directly � never ask the user to 'link their account' "
         "or provide these IDs. If a tool returns no data, say so plainly; do not blame "
         "missing authentication.\n"
         + (f"Address this farmer by their first name ({_user_name_ctx.split()[0]}) naturally "
-           "when it fits the tone — not on every message, just when it adds warmth."
+           "when it fits the tone � not on every message, just when it adds warmth."
            if _user_name_ctx else "")
     )
 
@@ -1385,17 +1385,17 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
         if ltm.get("recent_topics"):
             parts.append("- Recent concerns they've raised:")
             for t in ltm["recent_topics"]:
-                parts.append(f"  • {(t or '')[:140]}")
+                parts.append(f"  � {(t or '')[:140]}")
         if ltm.get("known_issues"):
             parts.append("- Recurring problems on this farm:")
             for issue in ltm["known_issues"][:5]:
-                parts.append(f"  • {(issue or '')[:120]}")
+                parts.append(f"  � {(issue or '')[:120]}")
         if ltm.get("recent_solutions"):
             parts.append("- Solutions Saige has previously recommended to this farmer:")
             for sol in ltm["recent_solutions"][:4]:
-                parts.append(f"  • {(sol or '')[:150]}")
+                parts.append(f"  � {(sol or '')[:150]}")
         parts.append(
-            "Use these facts naturally — don't re-ask for location/crops you already know. "
+            "Use these facts naturally � don't re-ask for location/crops you already know. "
             "Build on past recommendations rather than starting from scratch each time. "
             "If the current message references something previously discussed, carry it forward."
         )
@@ -1430,15 +1430,15 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
         if org_mem.get("known_org_issues"):
             oparts.append("- Issues other team members have raised about this farm:")
             for issue in org_mem["known_org_issues"][:5]:
-                oparts.append(f"  • {(issue or '')[:120]}")
+                oparts.append(f"  � {(issue or '')[:120]}")
         if org_mem.get("org_solutions"):
             oparts.append("- Solutions that have been recommended to this team:")
             for sol in org_mem["org_solutions"][:4]:
-                oparts.append(f"  • {(sol or '')[:150]}")
+                oparts.append(f"  � {(sol or '')[:150]}")
         if org_mem.get("recent_topics"):
             oparts.append("- Recent topics the team has asked Saige about:")
             for t in org_mem["recent_topics"][:4]:
-                oparts.append(f"  • {(t or '')[:120]}")
+                oparts.append(f"  � {(t or '')[:120]}")
         oparts.append(
             "Use org memory to avoid re-asking about the farm's basic setup. "
             "If a team member's colleague already established a fact (location, crop list, etc.), "
@@ -1451,7 +1451,7 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
     _onboarding_ctx = ltm.get("onboarding_context", "") if ltm else ""
     if _onboarding_ctx:
         onboarding_section = (
-            "ONBOARDING PROFILE (captured when this farmer set up their account — "
+            "ONBOARDING PROFILE (captured when this farmer set up their account � "
             "treat these facts as already established; do not ask the farmer to re-explain "
             "their crops, fields, channels, or main challenge):\n"
             + _onboarding_ctx
@@ -1478,57 +1478,57 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
                "move over to", "move the map", "move to the")
     if any(k in _lum for k in _vehicle_kw):
         _tool_directive = (
-            "\n⚠ TOOL REQUIRED: The user is asking about their cold chain fleet. "
+            "\n? TOOL REQUIRED: The user is asking about their cold chain fleet. "
             "You MUST call list_cold_chain_vehicles_tool() immediately. "
-            "Do NOT describe or list vehicles from memory — only report what the tool returns.\n"
+            "Do NOT describe or list vehicles from memory � only report what the tool returns.\n"
         )
     elif any(k in _lum for k in _profile_kw):
         _tool_directive = (
-            "\n⚠ TOOL REQUIRED: Call get_business_profile_tool() to fetch the current business profile. "
-            "Never invent or assume profile details — only report what the tool returns.\n"
+            "\n? TOOL REQUIRED: Call get_business_profile_tool() to fetch the current business profile. "
+            "Never invent or assume profile details � only report what the tool returns.\n"
         )
     elif any(k in _lum for k in _order_kw):
         _tool_directive = (
-            "\n⚠ TOOL REQUIRED: Call list_seller_orders_tool() to fetch real order data. "
-            "Never invent order details — only report what the tool returns.\n"
+            "\n? TOOL REQUIRED: Call list_seller_orders_tool() to fetch real order data. "
+            "Never invent order details � only report what the tool returns.\n"
         )
     elif any(k in _lum for k in _inventory_kw):
         _tool_directive = (
-            "\n⚠ TOOL REQUIRED: Call the appropriate inventory tool "
+            "\n? TOOL REQUIRED: Call the appropriate inventory tool "
             "(list_produce_inventory_tool / list_meat_inventory_tool / list_processed_food_tool / list_my_listings_tool) "
             "before answering. Never invent inventory data.\n"
         )
     elif any(k in _lum for k in _service_kw):
         _tool_directive = (
-            "\n⚠ TOOL REQUIRED: Call list_my_services_tool() to fetch service listings. "
+            "\n? TOOL REQUIRED: Call list_my_services_tool() to fetch service listings. "
             "Never invent service details.\n"
         )
     elif any(k in _lum for k in _blog_kw):
         _tool_directive = (
-            "\n⚠ TOOL REQUIRED: Call list_my_blog_posts_tool() to fetch blog posts. "
+            "\n? TOOL REQUIRED: Call list_my_blog_posts_tool() to fetch blog posts. "
             "Never invent blog content.\n"
         )
     elif any(k in _lum for k in _cert_kw):
         _tool_directive = (
-            "\n⚠ TOOL REQUIRED: Call list_my_certifications_tool() to fetch certifications. "
+            "\n? TOOL REQUIRED: Call list_my_certifications_tool() to fetch certifications. "
             "Never invent certification details.\n"
         )
     elif any(k in _lum for k in _reading_kw):
         _tool_directive = (
-            "\n⚠ TOOL REQUIRED: Call list_cold_chain_readings_tool() to fetch temperature readings. "
+            "\n? TOOL REQUIRED: Call list_cold_chain_readings_tool() to fetch temperature readings. "
             "Never invent temperature data.\n"
         )
     elif any(k in _lum for k in _map_kw):
         _tool_directive = (
-            "\n⚠ TOOL REQUIRED: The user wants the map to zoom/navigate to a location. "
+            "\n? TOOL REQUIRED: The user wants the map to zoom/navigate to a location. "
             "You MUST call geocode_location_tool(query=<the location>) immediately. "
-            "Do NOT explain coordinates or describe the process — just call the tool and confirm the place name. "
+            "Do NOT explain coordinates or describe the process � just call the tool and confirm the place name. "
             "The [MAP_CMD] in the tool result will move the map automatically.\n"
         )
 
     _image_note = (
         "\n[IMAGE ATTACHED]: The farmer has shared a photo with this message. "
-        "The image is included as a multimodal attachment — analyze it directly and incorporate "
+        "The image is included as a multimodal attachment � analyze it directly and incorporate "
         "your visual observations into your response (identify the plant/animal/symptom/condition visible).\n"
         if _image_data else ""
     )
@@ -1574,75 +1574,75 @@ Additional tools available:
 - price_forecast_tool(commodity, months_ahead): short-horizon US commodity price forecast (corn/soy/wheat/cotton/rice/cattle/hog/milk/egg/hay/etc.). Use for marketing, selling-timing, or revenue planning questions.
 - subsidies_tool(category, keyword): US federal farm subsidy / cost-share / grant / loan programs (EQIP, CSP, CRP, ARC/PLC, WFRP, BFRDP, VAPG, REAP, SARE). Use when user asks about government funding or assistance.
 - insurance_tool(crop): US federal crop-insurance products (RP/YP/APH/WFRP/MP/PRF/LRP/LGM/DRP/NAP) for a specific crop or livestock class. Use when user asks about insurance or risk management.
-PRECISION AG — Field Data (always start with list_my_fields_tool if field_id is unknown):
+PRECISION AG � Field Data (always start with list_my_fields_tool if field_id is unknown):
 - list_my_fields_tool(): list satellite-monitored fields (field ID, name, crop, size, planting date). ALWAYS call this first when the user mentions "my fields", "my farm", or any field question without a specific ID.
 - get_field_analysis_tool(field_id): latest NDVI/EVI/SAVI vegetation indices + trend. Use for "how is field X doing", "is my crop healthy", NDVI questions.
 - get_field_history_tool(field_id, months): NDVI time series over last N months. Use for trend, improvement/decline questions.
 - get_field_alerts_tool(field_id): precision-ag alerts across fields (field_id=0 = all fields). Use for "any issues", "what needs attention", "are there problems".
-- get_field_soil_samples_tool(field_id): soil test results — pH, organic matter, NPK with deficiency/excess flags and amendment recommendations. Use for "soil health", "fertilizer", "what nutrients does my field need", soil questions.
-- get_field_scouting_tool(field_id): in-field scout observations — pests, disease, weeds, nutrient deficiency symptoms with severity. Use for "what's been found in the field", "any pest issues", "scouting reports".
+- get_field_soil_samples_tool(field_id): soil test results � pH, organic matter, NPK with deficiency/excess flags and amendment recommendations. Use for "soil health", "fertilizer", "what nutrients does my field need", soil questions.
+- get_field_scouting_tool(field_id): in-field scout observations � pests, disease, weeds, nutrient deficiency symptoms with severity. Use for "what's been found in the field", "any pest issues", "scouting reports".
 - add_scout_observation_tool(field_id, category, severity, notes): LOG a new scouting observation on behalf of the user. Use when the user tells you they found something in the field and wants it recorded. Confirm before calling.
-- get_field_activity_log_tool(field_id): recent field operations — sprays, fertilizer, tillage, irrigation, harvest. Use for "what was applied", "field operation history", before giving input recommendations to avoid double-applying.
+- get_field_activity_log_tool(field_id): recent field operations � sprays, fertilizer, tillage, irrigation, harvest. Use for "what was applied", "field operation history", before giving input recommendations to avoid double-applying.
 - log_field_activity_tool(field_id, activity_type, activity_date, product, rate, rate_unit, notes): LOG a new field operation. Use when user says they did something and wants it recorded. Confirm with user before calling.
 - add_soil_sample_tool(field_id, sample_label, ph, organic_matter, nitrogen, phosphorus, potassium, sample_date): SAVE soil test results the user provides. Use when user shares soil test numbers. Confirm before calling.
 - get_field_gdd_tool(field_id, days): accumulated Growing Degree Days + current crop development stage. Use for "what growth stage is my crop", "how many GDD", "when will it flower/mature", stage-specific advice.
-- get_field_irrigation_tool(field_id, days): irrigation recommendation from ET₀ vs precipitation — "irrigate now / soon / not needed" + water deficit in inches. Use for "should I irrigate", "when to water", "water stress", irrigation scheduling.
+- get_field_irrigation_tool(field_id, days): irrigation recommendation from ET0 vs precipitation � "irrigate now / soon / not needed" + water deficit in inches. Use for "should I irrigate", "when to water", "water stress", irrigation scheduling.
 - get_field_yield_forecast_tool(field_id): NDVI-based yield estimate vs crop-type baseline with trend. Use for "expected yield", "will this be a good harvest", "am I above or below average yield".
 - get_field_carbon_tool(field_id): soil OM trends, SOC stock estimates, cover crop history, rotation diversity, sustainability score. Use for "carbon sequestration", "soil health trend", "regenerative ag score", "how sustainable is my farm".
-- get_farm_benchmark_tool(): compare all fields by NDVI/health/trend — ranks best-to-worst. Use for "which field is doing best", "farm overview", "compare my fields", "which field needs most attention".
-- get_field_weather_tool(field_id, days): recent temp/precipitation/ET₀ at the field location. Use for "recent weather on my farm", "how much rain", when weather context helps agronomic advice.
+- get_farm_benchmark_tool(): compare all fields by NDVI/health/trend � ranks best-to-worst. Use for "which field is doing best", "farm overview", "compare my fields", "which field needs most attention".
+- get_field_weather_tool(field_id, days): recent temp/precipitation/ET0 at the field location. Use for "recent weather on my farm", "how much rain", when weather context helps agronomic advice.
 - get_field_biomass_tool(field_id): current dry-matter biomass estimate (kg DM/ha) for a field with confidence and capture date. If confidence is low, the response automatically explains WHY and how to fix it. Use for "what's my biomass", "how much forage", "what does this biomass number mean", or any biomass / dry-matter question. ALSO use whenever the user asks why biomass confidence is low.
 - improve_field_biomass_confidence_tool(field_id): trigger a fresh satellite biomass run and average it with recent passes to raise confidence. Use when the user asks to "improve confidence", "fix the biomass confidence", "average the biomass passes", or follows up on a low-confidence biomass result. PROACTIVELY OFFER this any time get_field_biomass_tool returns confidence < 0.4.
 - get_field_maturity_tool(field_id): peak-antioxidant harvest prediction for berry/fruit fields. Returns the latest Brix/anthocyanin/firmness sample, the trend fit, the predicted peak date with confidence, and (when set) the buyer's shelf-target alignment. Use for "when should I harvest", "when is peak ripeness", "is my fruit ready", "when do I pick", or any harvest-timing question on a fruit/berry field. If the response says "no samples logged yet", proactively offer log_maturity_sample_tool.
 - log_maturity_sample_tool(field_id, sample_date, brix, anthocyanin_mg_g, firmness_kgf, notes): log a new ripeness/quality reading the user just took. Use when the user says "I measured Brix on the blueberries", "log a sample", "record an anthocyanin reading", or shares a refractometer/NIR/penetrometer number. Always confirm the field and number before calling. Each new sample sharpens the maturity prediction.
-- get_field_climate_forecast_tool(field_id, hours): predictive 72h+ climate-stress forecast — detects upcoming heatwaves, frost, high-VPD drought stress, saturating rainfall, and damaging wind BEFORE they hit, with concrete mitigation actions tailored to the crop (open tunnel side-walls, schedule pre-cool irrigation, fire frost sprinklers, secure plastic, emergency pick before fruit-split rain, etc.). Use when the user asks "what's the forecast", "is there a heatwave coming", "should I worry about frost tonight", "do I need to ventilate the tunnel", or any forward-looking weather/crop-stress question. Default hours=72, max 168 (7 days).
-- get_field_assessment_history_tool(field_id, limit): your own previously-generated Field Assessment Reports — past consultant snapshots with executive summary, overall health, confidence, and open recommendations. Use when the user asks "what did the last assessment say", "have we written a report on this field", "compare to the previous assessment", "what was your recommendation last time", or whenever you want to reference your prior advice instead of repeating it. Default limit=3, max 10.
-- get_field_water_use_tool(field_id): real-world crop water use (actual evapotranspiration, ETa) from FAO WaPOR / OpenET satellite data — latest snapshot plus a 12-period series. Use for "how much water is my crop actually using", "is ET matching what I'm irrigating", or "is water use normal for the season". Pair with get_field_irrigation_tool to compare actual ET to the modeled deficit.
-- get_field_agronomy_tool(field_id): full per-field snapshot from the satellite crop-monitoring service — current weather + 7-day forecast + GDD + predicted growth stage + latest vegetation indices + irrigation signal + per-product spray decision (herbicide/fungicide/insecticide) + crop-specific named pest & disease alerts (Gray Leaf Spot, Fusarium Head Blight, European Corn Borer, etc.) + concrete operational recommendations. Use for "should I spray today", "any disease pressure", "give me the full picture on this field", "what should I do this week".
-- get_field_zones_tool(field_id, num_zones, index): k-means stress zones for a field — clusters the latest vegetation-index raster into 2–6 management zones (default 4) sorted lowest=stress to highest=best, with per-zone area % + mean. Use for "where are the stressed parts", "show me management zones", "is this field uniform", "should I do variable-rate".
-BUSINESS OPS — Accounting + Event hosting (only call when business_id is known or list_my_fields_tool exposed it; otherwise ask):
+- get_field_climate_forecast_tool(field_id, hours): predictive 72h+ climate-stress forecast � detects upcoming heatwaves, frost, high-VPD drought stress, saturating rainfall, and damaging wind BEFORE they hit, with concrete mitigation actions tailored to the crop (open tunnel side-walls, schedule pre-cool irrigation, fire frost sprinklers, secure plastic, emergency pick before fruit-split rain, etc.). Use when the user asks "what's the forecast", "is there a heatwave coming", "should I worry about frost tonight", "do I need to ventilate the tunnel", or any forward-looking weather/crop-stress question. Default hours=72, max 168 (7 days).
+- get_field_assessment_history_tool(field_id, limit): your own previously-generated Field Assessment Reports � past consultant snapshots with executive summary, overall health, confidence, and open recommendations. Use when the user asks "what did the last assessment say", "have we written a report on this field", "compare to the previous assessment", "what was your recommendation last time", or whenever you want to reference your prior advice instead of repeating it. Default limit=3, max 10.
+- get_field_water_use_tool(field_id): real-world crop water use (actual evapotranspiration, ETa) from FAO WaPOR / OpenET satellite data � latest snapshot plus a 12-period series. Use for "how much water is my crop actually using", "is ET matching what I'm irrigating", or "is water use normal for the season". Pair with get_field_irrigation_tool to compare actual ET to the modeled deficit.
+- get_field_agronomy_tool(field_id): full per-field snapshot from the satellite crop-monitoring service � current weather + 7-day forecast + GDD + predicted growth stage + latest vegetation indices + irrigation signal + per-product spray decision (herbicide/fungicide/insecticide) + crop-specific named pest & disease alerts (Gray Leaf Spot, Fusarium Head Blight, European Corn Borer, etc.) + concrete operational recommendations. Use for "should I spray today", "any disease pressure", "give me the full picture on this field", "what should I do this week".
+- get_field_zones_tool(field_id, num_zones, index): k-means stress zones for a field � clusters the latest vegetation-index raster into 2�6 management zones (default 4) sorted lowest=stress to highest=best, with per-zone area % + mean. Use for "where are the stressed parts", "show me management zones", "is this field uniform", "should I do variable-rate".
+BUSINESS OPS � Accounting + Event hosting (only call when business_id is known or list_my_fields_tool exposed it; otherwise ask):
 - get_accounting_snapshot_tool(business_id): AR/AP, customer/vendor counts, last-30-day revenue + spend, recent invoices. Use for "how are the books", "money summary", "what's outstanding".
 - list_open_invoices_tool(business_id, limit): unpaid invoices sorted by due date. Use for "what's overdue", "who hasn't paid".
 - find_customer_tool(business_id, query): search customers by name/company/email substring (contact info masked). Use for "find a customer", "look up John Doe".
 - get_recent_payments_tool(business_id, days): payments received in last N days with totals. Use for "recent payments", "what came in this month", "cash flow".
-- get_event_registrations_tool(event_id): host-side roster for an event the user owns — registrations, payment status, masked attendee contact. Use for "who's registered", "event roster", "how many paid for event 42".
+- get_event_registrations_tool(event_id): host-side roster for an event the user owns � registrations, payment status, masked attendee contact. Use for "who's registered", "event roster", "how many paid for event 42".
 - get_event_sponsorship_summary_tool(event_id): sponsorship revenue + per-tier breakdown (slots taken, revenue collected). Use for "how are sponsorship tiers selling", "how much in sponsorship revenue", "is my Gold tier full".
 - list_event_sponsors_tool(event_id, status?): list of sponsors for an event with tier + paid status. Optional status filter (pending/confirmed/declined). Use for "who are my sponsors", "any unpaid sponsors", "show me confirmed sponsors".
-- get_my_event_leads_summary_tool(event_id, business_id): exhibitor's lead-capture summary at a specific event — total scans + by-status + by-rating. Use for "how many leads did I get at event X", "what's my lead pipeline".
+- get_my_event_leads_summary_tool(event_id, business_id): exhibitor's lead-capture summary at a specific event � total scans + by-status + by-rating. Use for "how many leads did I get at event X", "what's my lead pipeline".
 - list_my_event_leads_tool(event_id, business_id, status?, rating_min?): list of my exhibitor lead scans with masked contact info. Use for "show me my hot leads", "qualified leads from event 12", "who haven't I followed up with".
-- get_event_floor_plan_summary_tool(event_id): floor plan booth-sales status — total booths, available count, by-status (available/reserved/sold/blocked), by-tier. Use for "how many booths sold", "is the floor plan filling up", "what's left for vendors".
-- get_event_booth_services_revenue_tool(event_id): booth services revenue from à la carte add-ons (electrical/water/internet/AV/etc). Use for "how much in services revenue", "what add-ons are selling", "is anyone ordering electrical".
+- get_event_floor_plan_summary_tool(event_id): floor plan booth-sales status � total booths, available count, by-status (available/reserved/sold/blocked), by-tier. Use for "how many booths sold", "is the floor plan filling up", "what's left for vendors".
+- get_event_booth_services_revenue_tool(event_id): booth services revenue from � la carte add-ons (electrical/water/internet/AV/etc). Use for "how much in services revenue", "what add-ons are selling", "is anyone ordering electrical".
 - get_event_coi_summary_tool(event_id): Certificate of Insurance status counts (pending/approved/rejected/expired) + count expiring in next 30 days. Use for "any COIs to review", "are sponsors compliant", "any insurance expiring".
-- list_event_pending_cois_tool(event_id): COI review queue — list of pending and recently expired uploads needing organizer attention.
+- list_event_pending_cois_tool(event_id): COI review queue � list of pending and recently expired uploads needing organizer attention.
 
 WHEN GIVING PRECISION AG ADVICE: Always interpret the numbers, don't just report them. Examples:
-- NDVI 0.72 = "your canopy is dense and healthy — likely at or near peak biomass"
-- NDVI 0.35 = "moderate stress — could be drought, nutrient deficiency, or disease pressure"
-- pH 5.4 = "too acidic for most crops — apply lime at 2–3 tons/ac to raise to 6.0–6.5"
-- Irrigation urgency high = "apply 1–1.5 inches of water within 24–48 hours to prevent yield loss"
-- GDD 850 (corn) = "your corn is at or approaching silking — critical period, protect from stress"
-After fetching data, always give a SPECIFIC, ACTIONABLE recommendation — never just report the number.
+- NDVI 0.72 = "your canopy is dense and healthy � likely at or near peak biomass"
+- NDVI 0.35 = "moderate stress � could be drought, nutrient deficiency, or disease pressure"
+- pH 5.4 = "too acidic for most crops � apply lime at 2�3 tons/ac to raise to 6.0�6.5"
+- Irrigation urgency high = "apply 1�1.5 inches of water within 24�48 hours to prevent yield loss"
+- GDD 850 (corn) = "your corn is at or approaching silking � critical period, protect from stress"
+After fetching data, always give a SPECIFIC, ACTIONABLE recommendation � never just report the number.
 - list_my_animals_tool(studs_only): animals on the current business (for-sale by default; set studs_only=true for stud listings). Use for "my animals", "what's for sale on my ranch".
 - list_my_listings_tool(): unified marketplace inventory (produce + meat + processed food) for the current business. Use for "my inventory", "my marketplace listings".
 - count_my_animals_tool(): quick count of for-sale vs at-stud animals on the current business. Use for "how many animals do I have".
 
-COLD CHAIN & LOGISTICS — Vehicle fleet (ALWAYS call the tool; NEVER guess vehicle names or specs):
-- list_cold_chain_vehicles_tool(): REQUIRED for any question about the user's vehicles, fleet, truck, van, trailer, cold chain, or refrigerated transport. Returns the exact vehicles, temperature ranges, drivers, and latest readings from the database. Do NOT describe vehicles from memory — call this tool first, then report what it returns.
-- geocode_location_tool(query): resolve any zip code, city, address, or landmark to GPS coordinates so the map zooms there. ALWAYS call this tool when the user says "zoom to", "go to", "center on", "fly to", "show me", "navigate to", or "pan to" any location. The tool returns a [MAP_CMD] marker that the widget uses to move the map — you do not need to explain the coordinates, just confirm the place name.
+COLD CHAIN & LOGISTICS � Vehicle fleet (ALWAYS call the tool; NEVER guess vehicle names or specs):
+- list_cold_chain_vehicles_tool(): REQUIRED for any question about the user's vehicles, fleet, truck, van, trailer, cold chain, or refrigerated transport. Returns the exact vehicles, temperature ranges, drivers, and latest readings from the database. Do NOT describe vehicles from memory � call this tool first, then report what it returns.
+- geocode_location_tool(query): resolve any zip code, city, address, or landmark to GPS coordinates so the map zooms there. ALWAYS call this tool when the user says "zoom to", "go to", "center on", "fly to", "show me", "navigate to", or "pan to" any location. The tool returns a [MAP_CMD] marker that the widget uses to move the map � you do not need to explain the coordinates, just confirm the place name.
 - list_cold_chain_readings_tool(vehicle_id?, limit?): recent temperature readings across all vehicles (or one vehicle). Use for "show temperature readings", "any temp violations", "what temps have been logged". vehicle_id=0 = all vehicles.
-- log_cold_chain_reading_tool(vehicle_id, temp_c, notes?): log a new temperature reading. Confirm vehicle + temp before calling. Use when user says "log a reading of -2°C on truck A".
+- log_cold_chain_reading_tool(vehicle_id, temp_c, notes?): log a new temperature reading. Confirm vehicle + temp before calling. Use when user says "log a reading of -2�C on truck A".
 - list_cold_chain_shipments_tool(status?): active or historical shipments with origin, destination, vehicle, driver. Use for "show my shipments", "deliveries in transit", "shipment history".
-- get_animal_detail_tool(animal_id): FULL animal profile — name, breed/category, sex, DOB, colors, sale/stud price, embryo/semen price, registration numbers, fiber stats (micron, CV, comfort factor), co-owners. Use when the user asks about a SPECIFIC animal by ID: "tell me about animal #42", "what's the stud fee for that alpaca", "show me the fiber data". Access-controlled to the user's business.
+- get_animal_detail_tool(animal_id): FULL animal profile � name, breed/category, sex, DOB, colors, sale/stud price, embryo/semen price, registration numbers, fiber stats (micron, CV, comfort factor), co-owners. Use when the user asks about a SPECIFIC animal by ID: "tell me about animal #42", "what's the stud fee for that alpaca", "show me the fiber data". Access-controlled to the user's business.
 
-BUSINESS PROFILE — read and update the business account:
+BUSINESS PROFILE � read and update the business account:
 - get_business_profile_tool(): read the full business profile (name, description, slogan, phone, email, website, address, type, active status, social links). Use for "show my business profile", "what is my business info", "what fields does my account have".
 - update_business_profile_tool(business_name?, description?, slogan?, phone?, email?, website?): update public profile fields. Leave fields blank to keep them unchanged. Confirm name changes first. Use for "update our website", "change our phone number", "fix our description", "update our slogan".
 
-ANIMALS — full management (list details, update price/status):
-- list_my_animals_detail_tool(): list ALL animals with editable fields — name, sex, DOB, sale price, stud price, for-sale/stud status, website visibility. Use for "show all my animals", "what are my animal prices", "which animals are not listed for sale".
+ANIMALS � full management (list details, update price/status):
+- list_my_animals_detail_tool(): list ALL animals with editable fields � name, sex, DOB, sale price, stud price, for-sale/stud status, website visibility. Use for "show all my animals", "what are my animal prices", "which animals are not listed for sale".
 - update_animal_tool(animal_id, price?, stud_price?, for_sale?, for_stud?, description?, show_on_website?): update one animal. for_sale=1 to list / 0 to remove. Pass -1 for fields not being changed. Confirm price/status changes. Use for "change price on animal #42 to $1500", "take my llama off the market", "list my alpaca for stud".
 
-MARKETPLACE INVENTORY — produce, meat, processed food:
+MARKETPLACE INVENTORY � produce, meat, processed food:
 - list_produce_inventory_tool(): full produce/crop inventory with qty, unit, prices, available date, active status (ShowProduce). Use for "show my produce", "what crops am I selling", "produce listings with prices".
 - update_produce_listing_tool(produce_id, quantity?, retail_price?, wholesale_price?, show_produce?, available_date?): update one produce listing. Pass -1 for fields not changing. Confirm price changes. Use for "change tomato price to $4/lb", "hide the apple listing", "update corn quantity".
 - list_meat_inventory_tool(): full meat inventory with ingredient, cut, qty, weight unit, prices, active status. Use for "show my meat inventory", "what cuts am I selling", "beef listings with prices".
@@ -1650,41 +1650,41 @@ MARKETPLACE INVENTORY — produce, meat, processed food:
 - list_processed_food_tool(): all processed/artisan food products with qty, prices, organic/local flags, active status. Use for "show my processed food", "what artisan products do I have", "food product listings".
 - update_processed_food_tool(food_id, quantity?, retail_price?, wholesale_price?, show_product?, notes?): update one processed food listing. Use for "change jam price to $6", "hide cheese listing", "update bread quantity".
 
-BLOG — view and create posts:
+BLOG � view and create posts:
 - list_my_blog_posts_tool(): list blog posts with title, category, date, published/draft status and visibility (directory vs website). Use for "show my blog posts", "what articles have I written", "are my posts published".
 - create_blog_post_tool(title, content, category?, publish?): create a new blog post. publish=1 to publish immediately, 0 for draft. ALWAYS confirm title+content with user before calling. Use for "write a blog post about X", "publish an article on our process", "draft a post".
 
-SERVICES — view and add service listings:
+SERVICES � view and add service listings:
 - list_my_services_tool(): list service listings with title, category, price, availability, description. Use for "what services do I offer", "show my service listings", "what is my shearing service price".
 - add_service_listing_tool(title, description?, price?, contact_for_price?, available?, phone?, website?): add a new service listing. Confirm details before calling. Use for "add a shearing service at $15/head", "create a boarding service listing".
 
-SELLER MARKETPLACE ORDERS — view and manage incoming orders:
+SELLER MARKETPLACE ORDERS � view and manage incoming orders:
 - list_seller_orders_tool(status?): incoming orders from buyers. status filter: 'pending'/'confirmed'/'shipped'/'rejected'; empty = active (pending+confirmed). Use for "what orders do I have", "pending orders", "orders I need to ship".
 - confirm_seller_order_tool(order_item_id, estimated_delivery_date?): accept a pending order. Confirm with user first. Use for "accept order #123", "confirm the tomato order".
-- reject_seller_order_tool(order_item_id, reason): reject pending order + restore inventory. Reason required (buyer sees it). Confirm first. Use for "reject order #123 — out of stock".
+- reject_seller_order_tool(order_item_id, reason): reject pending order + restore inventory. Reason required (buyer sees it). Confirm first. Use for "reject order #123 � out of stock".
 - ship_seller_order_tool(order_item_id, tracking_number?, estimated_delivery_date?): mark confirmed order as shipped. Use for "order #123 shipped, tracking 1Z999".
 
-CERTIFICATIONS — track credentials and compliance:
+CERTIFICATIONS � track credentials and compliance:
 - list_my_certifications_tool(): list certifications with type, issuing body, cert number, issue/expiry dates, status. Use for "show my certifications", "when does my organic cert expire", "any certs expiring soon".
 - add_certification_tool(certification_type, issuing_body?, certification_number?, issue_date?, expiry_date?, notes?): add a new cert record. Confirm details first. Use for "add my USDA organic cert", "record my food safety certification".
 
-PLANT & INGREDIENT KNOWLEDGE BASE — agronomic reference data for 3,000+ plant varieties and all food ingredient groups:
+PLANT & INGREDIENT KNOWLEDGE BASE � agronomic reference data for 3,000+ plant varieties and all food ingredient groups:
 - search_plants_tool(query, plant_type): find plants by name or type (Vegetable/Herb/Fruit/Legume/Nut/Grain/Mushroom/Root/Tubers/Leafy Green). Returns plant IDs + variety counts. Use first when the user asks about a plant type or specific plant name: "what tomato varieties are in the system", "show me all grain plants", "find herb plants named basil".
-- get_plant_detail_tool(plant_id): FULL agronomic profile for all varieties of one plant — ideal soil texture, pH range (e.g., "6.1–6.5 Slightly Acidic"), organic matter level, salinity tolerance, USDA hardiness zone with temperature range, humidity classification, water requirement in inches/week, and primary nutrient need. Use for growing-condition questions: "what soil does kale need", "what's the water requirement for corn", "what pH does garlic prefer", "is this plant cold-hardy in my zone", "what nutrient is most important for this crop".
+- get_plant_detail_tool(plant_id): FULL agronomic profile for all varieties of one plant � ideal soil texture, pH range (e.g., "6.1�6.5 Slightly Acidic"), organic matter level, salinity tolerance, USDA hardiness zone with temperature range, humidity classification, water requirement in inches/week, and primary nutrient need. Use for growing-condition questions: "what soil does kale need", "what's the water requirement for corn", "what pH does garlic prefer", "is this plant cold-hardy in my zone", "what nutrient is most important for this crop".
 - search_ingredients_tool(query, category): find food ingredients by name or category (Vegetable/Fruit/Herb/Meat/Grain/Dairy/Legume/Nut/Mushroom/Seafood/etc.). Returns ingredient IDs + variety counts. Use when user asks about the ingredient catalog: "what vegetable ingredients are in the system", "find garlic as an ingredient", "what meat categories do you have".
-- get_ingredient_detail_tool(ingredient_id): FULL ingredient profile — all varieties and their descriptions, nutrient associations. Use after search to get varieties: "what varieties of heirloom tomato do you have", "list the varieties of black angus in the ingredient system".
+- get_ingredient_detail_tool(ingredient_id): FULL ingredient profile � all varieties and their descriptions, nutrient associations. Use after search to get varieties: "what varieties of heirloom tomato do you have", "list the varieties of black angus in the ingredient system".
 
 WHEN GIVING PLANT/INGREDIENT ADVICE: Always translate lookup data into practical guidance. Examples:
-- pH range "6.1–6.5 Slightly Acidic" = "ideal for most crops — if your soil test shows 5.8, apply 1–2 tons lime/ac before planting"
-- Salinity "Non-Saline (< 2 dS/m)" = "this crop is salt-sensitive — avoid fields with irrigation water above 1.5 dS/m"
-- Hardiness Zone 7A (0°F to 5°F) = "this variety can handle light frost but will die below 0°F — plant after last frost in spring"
-- Water need 1.0–1.5 in/week with NDVI stress = "this crop wants more water than it's getting — match irrigation to the GDD stage"
-- Organic matter "Moderate (2–4%)" = "your field's OM is adequate; adding cover crops can push it toward the High range and improve yields"
-- draft_produce_listing_tool(ingredient_name, quantity, measurement, retail_price, wholesale_price, available_date): DRAFT a new produce listing — saves a pending draft for the farmer to approve, never publishes directly. Use for "list my tomatoes at $3/lb", "put 10 dozen eggs on the marketplace". Always confirm the draft with the user before calling.
-- draft_meat_listing_tool(ingredient_name, cut, quantity, weight_unit, retail_price, wholesale_price, available_date): DRAFT a new meat inventory listing. Use for "list 50 lbs of ground beef at $8/lb", "add lamb chops to the marketplace", "put pork loin on sale". Saves pending draft — does not publish.
-- draft_processed_food_listing_tool(name, quantity, retail_price, wholesale_price, is_organic, is_local, notes): DRAFT a new processed/artisan food product listing. Use for "list my strawberry jam at $7 a jar", "add sourdough bread to the marketplace", "put goat cheese on sale". Saves pending draft — does not publish.
-- draft_event_tool(event_name, description, start_date, end_date, location_name, city, state, is_free, registration_required): DRAFT a new farm event. Use for "plan a farm tour", "create an open-ranch day". Saves pending — does not publish.
-- draft_blog_post_tool(title, content, category): DRAFT a new blog post for the business. Use for "write a blog post about…", "draft an article". Saves pending — does not publish.
+- pH range "6.1�6.5 Slightly Acidic" = "ideal for most crops � if your soil test shows 5.8, apply 1�2 tons lime/ac before planting"
+- Salinity "Non-Saline (< 2 dS/m)" = "this crop is salt-sensitive � avoid fields with irrigation water above 1.5 dS/m"
+- Hardiness Zone 7A (0�F to 5�F) = "this variety can handle light frost but will die below 0�F � plant after last frost in spring"
+- Water need 1.0�1.5 in/week with NDVI stress = "this crop wants more water than it's getting � match irrigation to the GDD stage"
+- Organic matter "Moderate (2�4%)" = "your field's OM is adequate; adding cover crops can push it toward the High range and improve yields"
+- draft_produce_listing_tool(ingredient_name, quantity, measurement, retail_price, wholesale_price, available_date): DRAFT a new produce listing � saves a pending draft for the farmer to approve, never publishes directly. Use for "list my tomatoes at $3/lb", "put 10 dozen eggs on the marketplace". Always confirm the draft with the user before calling.
+- draft_meat_listing_tool(ingredient_name, cut, quantity, weight_unit, retail_price, wholesale_price, available_date): DRAFT a new meat inventory listing. Use for "list 50 lbs of ground beef at $8/lb", "add lamb chops to the marketplace", "put pork loin on sale". Saves pending draft � does not publish.
+- draft_processed_food_listing_tool(name, quantity, retail_price, wholesale_price, is_organic, is_local, notes): DRAFT a new processed/artisan food product listing. Use for "list my strawberry jam at $7 a jar", "add sourdough bread to the marketplace", "put goat cheese on sale". Saves pending draft � does not publish.
+- draft_event_tool(event_name, description, start_date, end_date, location_name, city, state, is_free, registration_required): DRAFT a new farm event. Use for "plan a farm tour", "create an open-ranch day". Saves pending � does not publish.
+- draft_blog_post_tool(title, content, category): DRAFT a new blog post for the business. Use for "write a blog post about�", "draft an article". Saves pending � does not publish.
 - planting_calendar_tool(crop, zone, lat, lon): when/how to plant a specific crop (earliest safe plant-out date, soil-temp target, seed depth, direct-sow vs transplant, days to maturity). Use for "when should I plant X", "is it too early for Y".
 - irrigation_schedule_tool(crop, stage, soil_type, climate, days_since_rain): how much and how often to water. stage='initial'|'mid'|'late'; soil_type sandy/loam/clay/silty; climate tropical/subtropical/temperate/continental/mediterranean/arid/highland/boreal. Use for "how often do I water X", "am I overwatering".
 - manure_pairing_tool(crop, available_manures): rank manures for a given crop by N-P-K fit + composting caveats. available_manures is an optional comma list (e.g., "goat,chicken") to restrict to what's on hand. Use for "what manure works best for X", "can I use my goat manure on tomatoes".
@@ -1694,22 +1694,22 @@ WHEN GIVING PLANT/INGREDIENT ADVICE: Always translate lookup data into practical
 - set_par_tool(ingredient_name, unit, on_hand, par_level, reorder_at, preferred_business_id): set or update a par level for an ingredient in the restaurant's inventory. Use for "set par for ground beef at 20 lb", "reorder tomatoes at 5 lb".
 - check_par_levels_tool(): list ingredients currently at/below their reorder threshold. Use for "what's running low", "check my pars".
 - draft_restock_order_tool(): build a multi-farm restock cart from below-par items, with live OFN pricing and totals, grouped by farm. Use for "draft my order", "restock what's low", "what should I buy this week".
-- provenance_cards_tool(ingredient_names): "meet your farmers" provenance cards (markdown) for a comma-separated ingredient list — farm name, location, slogan, description. Use for "make provenance cards for my menu", "who grew these tomatoes".
+- provenance_cards_tool(ingredient_names): "meet your farmers" provenance cards (markdown) for a comma-separated ingredient list � farm name, location, slogan, description. Use for "make provenance cards for my menu", "who grew these tomatoes".
 
-PERSONAL HISTORY & ALERTS — read-only / opt-in helpers tied to the user's account:
+PERSONAL HISTORY & ALERTS � read-only / opt-in helpers tied to the user's account:
 - get_recent_pest_detections_tool(limit): the user's last `limit` pest/disease/deficiency diagnoses from photos they uploaded (default 3, max 10). Use for "what did my last photo show", "what was that pest you found", "remind me what the AI said about my plant photo".
-- get_my_recent_history_tool(entry_type, limit): broader recall of past Saige features. entry_type optional — "soil", "price", or empty for all types interleaved (default 5, max 20). Use for "what did Saige tell me last time about my soil/prices", "show my past assessments". For pest photos prefer the dedicated tool above.
-- check_my_weather_alerts_tool(days_ahead): scan the user's saved push-notification locations against the next 1–5 day forecast (default 2) and return any hazards (frost, hard freeze, heat, flood, hail, wind, wildfire smoke). Read-only — does NOT send a push. Use for "any weather risks coming", "is frost in the forecast for my farm", "should I worry about weather this week".
-- send_push_notification_tool(title, body, url): send a real push notification to the user's subscribed devices. Use ONLY when the user explicitly asks to be pinged ("notify me when…", "remind me about…") or for an immediate, time-sensitive alert (incoming frost, irrigation overdue). ALWAYS confirm wording before calling. title ≤60 chars, body ≤160 chars, url is the in-app deep link.
+- get_my_recent_history_tool(entry_type, limit): broader recall of past Saige features. entry_type optional � "soil", "price", or empty for all types interleaved (default 5, max 20). Use for "what did Saige tell me last time about my soil/prices", "show my past assessments". For pest photos prefer the dedicated tool above.
+- check_my_weather_alerts_tool(days_ahead): scan the user's saved push-notification locations against the next 1�5 day forecast (default 2) and return any hazards (frost, hard freeze, heat, flood, hail, wind, wildfire smoke). Read-only � does NOT send a push. Use for "any weather risks coming", "is frost in the forecast for my farm", "should I worry about weather this week".
+- send_push_notification_tool(title, body, url): send a real push notification to the user's subscribed devices. Use ONLY when the user explicitly asks to be pinged ("notify me when�", "remind me about�") or for an immediate, time-sensitive alert (incoming frost, irrigation overdue). ALWAYS confirm wording before calling. title =60 chars, body =160 chars, url is the in-app deep link.
 
-GRANTS & PROGRAMS — personal tracker:
+GRANTS & PROGRAMS � personal tracker:
 - get_tracked_grants_tool(business_id, people_id): list grants and programs the business is tracking, including title, agency, status (interested/in_progress/submitted/awarded/declined/not_eligible), applied date, result date, amount received, and notes. Use for "what grants am I tracking", "show my grant applications", "what programs am I applying for", "grant tracker".
 
-COLD-CHAIN — predictive shelf life:
+COLD-CHAIN � predictive shelf life:
 - calculate_shelf_life_tool(vehicle_id, product_type, original_shelf_life_days, lookback_hours, business_id, people_id): compute adjusted shelf life for cargo using Q10 degradation model applied to actual vehicle temperature logs. Returns remaining days, degradation %, excursion time, and recommended action (Normal/Expedite/Express Sale/Discard). Use for "how fresh is my cargo", "did the temperature excursion hurt the lettuce", "what's the shelf life impact", "is the shipment still viable", "how many days does the produce have left".
 
 FUN:
-- tell_joke_tool(): tell the user a random farm or ranch joke they haven't heard before. Tracks history per user so jokes never repeat. Use whenever the user asks for a joke, wants to laugh, or says "tell me something funny". Deliver it in Saige's voice — maybe a short setup like "Alright, here's one:" or "Oh I got one for y'all."
+- tell_joke_tool(): tell the user a random farm or ranch joke they haven't heard before. Tracks history per user so jokes never repeat. Use whenever the user asks for a joke, wants to laugh, or says "tell me something funny". Deliver it in Saige's voice � maybe a short setup like "Alright, here's one:" or "Oh I got one for y'all."
 
 Prioritize the latest user message and any newly provided measurements over older generic context.
 If soil-test values are present, reference them explicitly and avoid repeating unchanged advice.
@@ -1718,7 +1718,7 @@ Provide a concise response (3-4 sentences) with:
 1. Direct answer to their question
 2. 2-3 specific, actionable recommendations
 
-Keep it conversational — Saige's voice, not a textbook. NO markdown formatting, NO asterisks, NO headers.
+Keep it conversational � Saige's voice, not a textbook. NO markdown formatting, NO asterisks, NO headers.
 If the farmer seems worried, acknowledge it briefly before diving into solutions. If the answer is simple, keep it short."""
 
     # 4. Bind Tools
@@ -1770,7 +1770,7 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
     if JOKES_AVAILABLE:
         bound_tools.extend(joke_tools)
 
-    # ── Intent-based tool pruning ────────────────────────────────────────────
+    # -- Intent-based tool pruning --------------------------------------------
     # After assembling the full tool list, restrict it to only the tools
     # relevant to the detected intent.  This stops the LLM from wandering into
     # unrelated tool calls (e.g., querying all 5 RAG systems for a map zoom).
@@ -1795,7 +1795,7 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
         bound_tools = [t for t in bound_tools if t.name in _acct_tool_names]
         print(f"[Intent Router] Tool list pruned to accounting/events tools ({len(bound_tools)} tools)")
     # _INTENT_KNOWLEDGE_ONLY: full tool list kept as-is
-    # ── end tool pruning ──────────────────────────────────────────────────────
+    # -- end tool pruning ------------------------------------------------------
 
     llm_with_tools = llm.bind_tools(bound_tools) if bound_tools else llm
 
@@ -1880,14 +1880,14 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
             # If map tool already ran, override the directive so the LLM doesn't call it again
             if _map_cmd_collected:
                 current_input += (
-                    "\n\n⚠ MAP ALREADY UPDATED — geocode_location_tool has already run and the "
+                    "\n\n? MAP ALREADY UPDATED � geocode_location_tool has already run and the "
                     "map has moved. Do NOT call it again. Respond in one short sentence confirming "
                     "the place name shown in [Farm Data] above."
                 )
             _thread_id = state.get("thread_id", "")
             _stream_q = _get_stream_queue(_thread_id) if _thread_id else None
 
-            # Build LLM input — multimodal on first iteration when an image was attached
+            # Build LLM input � multimodal on first iteration when an image was attached
             if iteration == 0 and _image_data:
                 try:
                     from langchain_core.messages import HumanMessage as _HumanMessage
@@ -2247,7 +2247,7 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
                         _mc = re.search(r'\[MAP_CMD:[^\]]+\]', tool_result)
                         if _mc:
                             _map_cmd_collected = _mc.group(0)
-                    # ── business_data tools ───────────────────────────────────
+                    # -- business_data tools -----------------------------------
                     elif tc_name == 'get_business_profile_tool' and BUSINESS_DATA_AVAILABLE:
                         bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
                         print(f"[Advisory Agent] Executing Get Business Profile: business_id={bid}")
@@ -2677,7 +2677,7 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
                         tool_result = tell_joke_tool.invoke({
                             "people_id": str(people_id_for_tools or ""),
                         })
-                        # Joke is the final response — short-circuit the loop
+                        # Joke is the final response � short-circuit the loop
                         final_response = tool_result
                         break
                 continue  # Loop back to LLM with new context
@@ -2706,7 +2706,7 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
 
     if not final_response or not final_response.strip():
         final_response = (
-            "I'm not quite sure I caught what y'all are asking about — could you give me a bit more detail? "
+            "I'm not quite sure I caught what y'all are asking about � could you give me a bit more detail? "
             "Are you asking about a specific field, your livestock, crop conditions, or the weather? "
             "Holler at me with a little more context and I'll get you sorted right out."
         )
@@ -2739,7 +2739,7 @@ def livestock_advisory_node(state: FarmState):
     """Livestock advisory with RAG (livestock_knowledge) and weather tool."""
     return run_advisory_agent(
         state,
-        role_prompt="You are Saige — an expert livestock veterinarian and breed specialist with deep practical experience on farms and ranches. Give straight-talking advice on animal health, breed selection, and herd management. When an animal is sick or off, help the farmer stay calm and work through it step by step.",
+        role_prompt="You are Saige � an expert livestock veterinarian and breed specialist with deep practical experience on farms and ranches. Give straight-talking advice on animal health, breed selection, and herd management. When an animal is sick or off, help the farmer stay calm and work through it step by step.",
         rag_systems=[rag_livestock]
     )
 
@@ -2748,7 +2748,7 @@ def crop_advisory_node(state: FarmState):
     """Crop advisory with RAG (plant_knowledge) and weather tool."""
     return run_advisory_agent(
         state,
-        role_prompt="You are Saige — an expert agronomist who has worked fields from Texas Hill Country to the Salinas Valley. You specialize in crop pathology, soil health, and practical sustainable farming. Give grounded, actionable advice — what actually works in the field, not just what the textbook says.",
+        role_prompt="You are Saige � an expert agronomist who has worked fields from Texas Hill Country to the Salinas Valley. You specialize in crop pathology, soil health, and practical sustainable farming. Give grounded, actionable advice � what actually works in the field, not just what the textbook says.",
         rag_systems=[rag_plant]
     )
 
@@ -2757,7 +2757,7 @@ def bakasura_advisory_node(state: FarmState):
     """Bakasura docs advisory with RAG (bakasura-docs) and weather tool."""
     return run_advisory_agent(
         state,
-        role_prompt="You are Saige — a knowledgeable farm advisor with access to the Oatmeal Farm Network knowledge base. Give accurate, practical guidance grounded in the available documentation. Be direct and warm — farmers are busy people.",
+        role_prompt="You are Saige � a knowledgeable farm advisor with access to the Oatmeal Farm Network knowledge base. Give accurate, practical guidance grounded in the available documentation. Be direct and warm � farmers are busy people.",
         rag_systems=[rag_bakasura]
     )
 
@@ -2766,17 +2766,17 @@ def news_advisory_node(state: FarmState):
     """News articles advisory with RAG (news_articles) and weather tool."""
     return run_advisory_agent(
         state,
-        role_prompt="You are Saige — an agricultural news analyst and market-savvy farm advisor. Translate the latest farming news and market trends into plain, practical takeaways that help farmers make smarter decisions. Skip the fluff and get to what actually matters for their operation.",
+        role_prompt="You are Saige � an agricultural news analyst and market-savvy farm advisor. Translate the latest farming news and market trends into plain, practical takeaways that help farmers make smarter decisions. Skip the fluff and get to what actually matters for their operation.",
         rag_systems=[rag_news]
     )
 
 
 def joke_node(state: FarmState):
-    """Dedicated joke node — calls tell_joke_tool directly, zero LLM involvement."""
+    """Dedicated joke node � calls tell_joke_tool directly, zero LLM involvement."""
     people_id = str(state.get("people_id") or "")
     print(f"[Joke Node] Serving joke for people_id={people_id or '(anonymous)'}")
     if not JOKES_AVAILABLE or not tell_joke_tool:
-        return {"diagnosis": "Sorry, my joke book seems to have gone missing — try again in a bit!", "recommendations": []}
+        return {"diagnosis": "Sorry, my joke book seems to have gone missing � try again in a bit!", "recommendations": []}
     joke = tell_joke_tool.invoke({"people_id": people_id})
     return {"diagnosis": joke, "recommendations": []}
 
@@ -2785,7 +2785,7 @@ def mixed_advisory_node(state: FarmState):
     """Integrated advisory using all three RAG collections and weather tool."""
     return run_advisory_agent(
         state,
-        role_prompt="You are Saige — an integrated farming systems expert with deep roots in permaculture, mixed farming, and sustainable ag. You see the whole picture: how the livestock, crops, soil, and weather all connect. Give holistic but practical advice that farmers can actually act on.",
+        role_prompt="You are Saige � an integrated farming systems expert with deep roots in permaculture, mixed farming, and sustainable ag. You see the whole picture: how the livestock, crops, soil, and weather all connect. Give holistic but practical advice that farmers can actually act on.",
         rag_systems=[rag_livestock, rag_plant, rag_bakasura, rag_hitl_charlie, rag_news]
     )
 
@@ -3000,9 +3000,9 @@ Extract:
 - Confidence score between 0.0 and 1.0
 
 Examples:
-- "weather in Hayward, California" → location: "Hayward, California", is_forecast: false, forecast_days: null
-- "150 day forecast for New York" → location: "New York", is_forecast: true, forecast_days: 150
-- "weather for my tomato farm in Boston" → location: "Boston", is_forecast: false, has_farm_context: true"""
+- "weather in Hayward, California" ? location: "Hayward, California", is_forecast: false, forecast_days: null
+- "150 day forecast for New York" ? location: "New York", is_forecast: true, forecast_days: 150
+- "weather for my tomato farm in Boston" ? location: "Boston", is_forecast: false, has_farm_context: true"""
                         parsed_query_result[0] = weather_parser.invoke(parse_prompt)
                     except Exception as e:
                         exception_result[0] = e
