@@ -1,5 +1,5 @@
-ï»¿"""
-Report & Export Center â€” returns CSV downloads for key farm records.
+"""
+Report & Export Center — returns CSV downloads for key farm records.
 No new tables needed; aggregates existing data.
 """
 import csv
@@ -34,7 +34,7 @@ def spray_register(
     db=Depends(get_raw_conn),
     user=Depends(get_current_user),
 ):
-    """Chemical spray register â€” all applications with products in date range."""
+    """Chemical spray register — all applications with products in date range."""
     bid = user["BusinessID"]
     cur = db.cursor()
     f = from_date or date(date.today().year, 1, 1)

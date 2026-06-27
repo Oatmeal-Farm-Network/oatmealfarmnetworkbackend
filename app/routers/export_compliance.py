@@ -7,7 +7,7 @@ Revenue recognition on delivery confirmation (accounting Invoice).
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db
+from app.database import get_db
 from typing import Optional
 from fastapi.responses import StreamingResponse
 import csv

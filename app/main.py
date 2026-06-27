@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.routers import auth
 from app.database import get_db, SessionLocal
 import os
-import models
+from app import models
 from dotenv import load_dotenv
 
 from app.routers import businesses

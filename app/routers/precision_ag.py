@@ -6,7 +6,7 @@ from datetime import date, datetime
 import json
 import os
 import uuid
-import models
+from app import models
 import requests
 from pydantic import BaseModel, validator
 from typing import Optional

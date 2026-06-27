@@ -21,13 +21,13 @@ Tool surface (intent-routed):
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db
-from auth import get_current_user
+from app.database import get_db
+from app.core.auth import get_current_user
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import os, re, datetime, uuid, logging
 
-import models
+from app import models
 
 router = APIRouter(prefix="/api/thaiyme", tags=["thaiyme-ai"])
 logger = logging.getLogger("thaiyme")

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db
+from app.database import get_db
 from pydantic import BaseModel
 from typing import Optional
 import re

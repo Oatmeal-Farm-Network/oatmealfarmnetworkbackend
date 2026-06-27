@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, Query
 from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db
+from app.database import get_db
 
 # Simple in-memory TTL cache: {business_id_or_None: (result, expires_at)}
 _features_cache: dict = {}

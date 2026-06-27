@@ -10,9 +10,9 @@ All tables created lazily on first request via _ensure_tables().
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db, engine
-from auth import get_current_user
-import models
+from app.database import get_db, engine
+from app.core.auth import get_current_user
+from app import models
 from typing import Optional, List
 import datetime
 import secrets

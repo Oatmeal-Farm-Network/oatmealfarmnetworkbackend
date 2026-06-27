@@ -5,10 +5,10 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
-from database import get_db
+from app.database import get_db
 from datetime import datetime, date
 import json, csv, io, os, requests
-import models
+from app import models
 
 router = APIRouter(prefix="/api", tags=["precision-ag-features"])
 

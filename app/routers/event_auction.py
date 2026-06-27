@@ -8,7 +8,7 @@ lots to award winners. Bidders browse lots, place bids, and track their own bids
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db, SessionLocal
+from app.database import get_db, SessionLocal
 from datetime import datetime, date
 
 router = APIRouter()

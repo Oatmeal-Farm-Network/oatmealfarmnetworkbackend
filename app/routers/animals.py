@@ -14,8 +14,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db
-from auth import get_current_user
+from app.database import get_db
+from app.core.auth import get_current_user
 
 _GCS_BUCKET  = "oatmeal-farm-network-images"
 _GCS_PREFIX  = f"https://storage.googleapis.com/{_GCS_BUCKET}/"

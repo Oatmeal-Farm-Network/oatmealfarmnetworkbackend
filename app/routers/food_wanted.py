@@ -5,8 +5,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db, engine
-from auth import get_current_user
+from app.database import get_db, engine
+from app.core.auth import get_current_user
 from pydantic import BaseModel
 from typing import Optional, List
 

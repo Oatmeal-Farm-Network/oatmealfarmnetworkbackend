@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db, engine, Base
+from app.database import get_db, engine, Base
 from datetime import date, datetime
 from typing import Optional
 from pydantic import BaseModel
-import models
+from app import models
 
 router = APIRouter(prefix="/api", tags=["notes"])
 

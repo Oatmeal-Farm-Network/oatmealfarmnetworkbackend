@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from typing import Optional
-from database import get_db
+from app.database import get_db
 
 router = APIRouter(prefix="/api/crop-planning", tags=["crop_planning"])
 

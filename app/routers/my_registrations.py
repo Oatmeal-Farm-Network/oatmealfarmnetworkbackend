@@ -17,7 +17,7 @@ Shape:
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db
+from app.database import get_db
 
 router = APIRouter()
 

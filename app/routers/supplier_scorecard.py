@@ -6,7 +6,7 @@ Data sourced from PurchaseOrder, POReceipt, and PackhouseInspection.
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db
+from app.database import get_db
 from typing import Optional
 
 router = APIRouter(prefix="/api/supplier-scorecard", tags=["supplier_scorecard"])

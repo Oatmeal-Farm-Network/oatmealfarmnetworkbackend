@@ -8,8 +8,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db, engine, SessionLocal
-from auth import get_current_user
+from app.database import get_db, engine, SessionLocal
+from app.core.auth import get_current_user
 from routers.notifications import create_notification
 from pydantic import BaseModel
 from typing import Optional

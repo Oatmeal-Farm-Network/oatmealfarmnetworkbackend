@@ -6,7 +6,7 @@ from app.database import get_db, engine, Base
 from datetime import datetime, date
 from typing import Optional, List
 from pydantic import BaseModel
-import models, json, re, uuid
+from app import models, json, re, uuid
 
 router = APIRouter(prefix="/api/website", tags=["website-builder"])
 

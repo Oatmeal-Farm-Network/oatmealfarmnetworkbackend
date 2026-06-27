@@ -28,7 +28,7 @@ from sqlalchemy import text
 from typing import Optional
 from datetime import datetime, date, timedelta
 import json
-from database import get_db, SessionLocal
+from app.database import get_db, SessionLocal
 
 router = APIRouter()
 

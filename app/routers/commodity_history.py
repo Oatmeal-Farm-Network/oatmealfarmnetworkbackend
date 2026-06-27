@@ -5,7 +5,7 @@
 from fastapi import APIRouter, Depends, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db, engine, SessionLocal
+from app.database import get_db, engine, SessionLocal
 from typing import Optional
 from datetime import datetime, timedelta
 from collections import defaultdict

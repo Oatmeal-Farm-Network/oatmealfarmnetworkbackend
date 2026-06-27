@@ -6,7 +6,7 @@ greenhouse environmental controls.
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db
+from app.database import get_db
 from typing import Optional
 from routers.rbac import record_audit
 from routers.notifications import notify_business

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query
 from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db
+from app.database import get_db
 
 router = APIRouter(prefix="/api/harvest-schedule", tags=["harvest_schedule"])
 

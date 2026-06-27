@@ -1,4 +1,4 @@
-﻿from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends
 from typing import Optional
 from datetime import date, datetime
 from dateutil.relativedelta import relativedelta
@@ -67,7 +67,7 @@ def forecast(
         if label:
             result[month_str]["items"].append({"label": label, "amount": inflow - outflow, "type": type_})
 
-    # ── Scale tickets (actual revenue) ──────────────────────────────────────
+    # -- Scale tickets (actual revenue) --------------------------------------
     try:
         cur.execute("""
             SELECT CAST(YEAR(TicketDate) AS NVARCHAR) + '-' + RIGHT('0'+CAST(MONTH(TicketDate) AS NVARCHAR),2) AS Month,
@@ -81,7 +81,7 @@ def forecast(
     except Exception:
         pass
 
-    # ── Forward contracts (committed future revenue) ────────────────────────
+    # -- Forward contracts (committed future revenue) ------------------------
     try:
         cur.execute("""
             SELECT DeliveryPeriodEnd, ContractQtyTonnes, PricePerTonne, CommodityName,
@@ -100,7 +100,7 @@ def forecast(
     except Exception:
         pass
 
-    # ── Crop budgets (projected expenses) ───────────────────────────────────
+    # -- Crop budgets (projected expenses) -----------------------------------
     try:
         cur.execute("""
             SELECT PlannedPlantingDate, TotalVariableCost, TotalFixedCost, CropName
@@ -116,7 +116,7 @@ def forecast(
     except Exception:
         pass
 
-    # ── Manual cash flow entries ─────────────────────────────────────────────
+    # -- Manual cash flow entries ---------------------------------------------
     try:
         cur.execute("""
             SELECT CAST(YEAR(EntryDate) AS NVARCHAR) + '-' + RIGHT('0'+CAST(MONTH(EntryDate) AS NVARCHAR),2) AS Month,

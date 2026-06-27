@@ -22,8 +22,8 @@ import requests
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-import models
-from database import get_db
+from app import models
+from app.database import get_db
 
 router = APIRouter(prefix="/api", tags=["crop-monitor-proxy"])
 

@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from database import get_db, SessionLocal
-import models
+from app.database import get_db, SessionLocal
+from app import models
 import datetime
 
 router = APIRouter(prefix="/api/businesses", tags=["businesses"])

@@ -1,4 +1,4 @@
-﻿# --- api.py --- (Enhanced API for farm advisory system)
+# --- api.py --- (Enhanced API for farm advisory system)
 import os
 import json
 import logging
@@ -28,7 +28,7 @@ from redis_client import RedisClientManager, get_redis_manager
 from llm import llm
 from saige_models import FollowUpEntityExtraction, MapIntentDetection
 from nodes import register_stream_queue, deregister_stream_queue
-from jwt_auth import get_current_user
+from app.core.jwt_auth import get_current_user
 
 
 def _is_missing_checkpoint_index_error(exc: Exception) -> bool:
@@ -227,7 +227,7 @@ class ChatRequest(BaseModel):
     thread_id: str = Field(..., min_length=1, max_length=128)
     business_id: Optional[str] = None  # from URL query param (?BusinessID=...)
     image_data: Optional[str] = None   # base64-encoded image for multimodal queries
-    # NOTE: people_id is NOT here — extracted from Bearer JWT by get_current_user()
+    # NOTE: people_id is NOT here � extracted from Bearer JWT by get_current_user()
 
     @field_validator("user_input")
     @classmethod
@@ -265,7 +265,7 @@ async def text_to_speech(body: TTSRequest):
     if not api_key:
         return JSONResponse(status_code=503, content={"error": "TTS not configured"})
 
-    # ── Primary: Google Cloud TTS — en-US-Studio-O ───────────────────────────
+    # -- Primary: Google Cloud TTS � en-US-Studio-O ---------------------------
     cloud_url = f"https://texttospeech.googleapis.com/v1/text:synthesize?key={api_key}"
     cloud_payload = {
         "input": {"text": body.text},
@@ -280,7 +280,7 @@ async def text_to_speech(body: TTSRequest):
     except Exception as e:
         logger.warning("[TTS] Cloud TTS failed, falling back to Gemini: %s", e)
 
-    # ── Fallback: Gemini TTS — Zephyr (female) ───────────────────────────────
+    # -- Fallback: Gemini TTS � Zephyr (female) -------------------------------
     gemini_url = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"gemini-2.5-flash-preview-tts:generateContent?key={api_key}"
@@ -486,7 +486,7 @@ _ADDRESS_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Signals that a message *might* be a location/navigation query — gate for LLM fallback.
+# Signals that a message *might* be a location/navigation query � gate for LLM fallback.
 # Only fire the LLM call when at least one of these weaker hints is present.
 _LOCATION_HINT_RE = re.compile(
     r'\b\d{5}\b'                                                        # zip code
@@ -496,7 +496,7 @@ _LOCATION_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Lazy singleton — built once on first LLM-fallback call
+# Lazy singleton � built once on first LLM-fallback call
 _map_intent_classifier = None
 
 
@@ -508,7 +508,7 @@ def _get_map_intent_classifier():
 
 
 def _is_tool_only_intent(user_input: str) -> bool:
-    """Layer 1+2: keyword match OR address regex — no LLM cost."""
+    """Layer 1+2: keyword match OR address regex � no LLM cost."""
     lum = user_input.lower()
     if any(k in lum for k in _TOOL_ONLY_MAP_KW):
         return True
@@ -608,7 +608,7 @@ async def chat(
         events = safe_graph_stream(Command(resume=request.user_input), config, stream_mode="values")
     else:
         existing_state = state.values if state.values else {}
-        # Tool-only intents are stateless — bypass has_completed so they always get a fresh run
+        # Tool-only intents are stateless � bypass has_completed so they always get a fresh run
         has_completed_conversation = (not _skip_history) and existing_state.get("assessment_summary") and not state.next
 
         if has_completed_conversation:
@@ -630,11 +630,11 @@ Determine:
 3. Is this a new question or an answer?
 
 Examples:
-- "hayward, california" → is_answer: true, entity_type: "location", extracted_location: "Hayward, California"
-- "cattle" → is_answer: true, entity_type: "animal", extracted_animals: ["cattle"]
-- "wheat" → is_answer: true, entity_type: "crop", extracted_crops: ["wheat"]
-- "how often should I water" → is_new_question: true, is_answer: false
-- "5 acres" → is_answer: true, entity_type: "farm_size", extracted_farm_size: "5 acres"
+- "hayward, california" ? is_answer: true, entity_type: "location", extracted_location: "Hayward, California"
+- "cattle" ? is_answer: true, entity_type: "animal", extracted_animals: ["cattle"]
+- "wheat" ? is_answer: true, entity_type: "crop", extracted_crops: ["wheat"]
+- "how often should I water" ? is_new_question: true, is_answer: false
+- "5 acres" ? is_answer: true, entity_type: "farm_size", extracted_farm_size: "5 acres"
 """
                 extracted = entity_extractor.invoke(extraction_prompt)
                 print(f"[API] Entity extraction: is_answer={extracted.is_answer}, entity_type={extracted.entity_type}, is_new_question={extracted.is_new_question}")
@@ -705,7 +705,7 @@ Examples:
 
             events = safe_graph_stream(update, config, stream_mode="values")
         else:
-            # New conversation — seed people_id, business_id, user name, and memories
+            # New conversation � seed people_id, business_id, user name, and memories
             print(f"[API] Starting new conversation for thread {request.thread_id}")
             print(f"[API] people_id={people_id}, business_id={business_id}")
             initial_history = (short_term_history + [f"User: {request.user_input}"])[-SHORT_TERM_N:] if short_term_history else [f"User: {request.user_input}"]
@@ -914,13 +914,13 @@ async def chat_stream(
         )
 
     thread_id = request.thread_id
-    # Use a threading.Queue for the sync→async bridge (nodes.py writes from a sync thread).
+    # Use a threading.Queue for the sync?async bridge (nodes.py writes from a sync thread).
     # We use call_soon_threadsafe to push items into an asyncio.Queue so the event loop
     # can await them without blocking executor threads.
     loop = asyncio.get_running_loop()
     async_q: asyncio.Queue = asyncio.Queue()
 
-    # The threading.Queue registered in nodes.py; a feeder thread drains it → async_q.
+    # The threading.Queue registered in nodes.py; a feeder thread drains it ? async_q.
     stream_q = register_stream_queue(thread_id)
     result_holder: dict = {}
 
@@ -971,7 +971,7 @@ async def chat_stream(
                 events = safe_graph_stream(Command(resume=request.user_input), config, stream_mode="values")
             else:
                 existing_state = state.values if state.values else {}
-                # Tool-only intents (map zoom, etc.) are stateless — always start a fresh
+                # Tool-only intents (map zoom, etc.) are stateless � always start a fresh
                 # conversation so they don't get stuck in the terminal graph state left by a
                 # previous run, which would cause the advisory node to never execute.
                 has_completed = (not _skip_hist) and existing_state.get("assessment_summary") and not state.next
@@ -2400,7 +2400,7 @@ async def chef_restock_draft(
 
 
 # ============================================================================
-# PAIRSLEY — food-service agent (restaurants / chefs / kitchens)
+# PAIRSLEY � food-service agent (restaurants / chefs / kitchens)
 # ============================================================================
 
 try:
@@ -2489,7 +2489,7 @@ async def pairsley_thread_delete(
 
 
 # ============================================================================
-# ROSEMARIE — artisan-producer agent (mills / bakers / cheesemakers / etc.)
+# ROSEMARIE � artisan-producer agent (mills / bakers / cheesemakers / etc.)
 # ============================================================================
 
 try:
@@ -2578,7 +2578,7 @@ async def rosemarie_thread_delete(
 
 
 # ============================================================================
-# CASSIA — customer success / account-setup agent
+# CASSIA � customer success / account-setup agent
 # ============================================================================
 
 try:
@@ -2666,12 +2666,12 @@ async def cassia_checkout(
     free/hobby tier so the frontend can skip directly to the account page."""
     tier = (req.tier or "starter").lower().strip()
 
-    # Free plan — no Stripe session needed
+    # Free plan � no Stripe session needed
     if req.monthlyTotal == 0 and req.annualPrice == 0:
         return {"stripeUrl": None}
 
     if not _STRIPE_SECRET_KEY:
-        # Stripe not configured — let the frontend bypass to account
+        # Stripe not configured � let the frontend bypass to account
         return {"stripeUrl": None}
 
     try:
@@ -2691,7 +2691,7 @@ async def cassia_checkout(
         # Attempt to find a pre-configured annual Stripe price via SubscriptionLevels
         price_id: Optional[str] = None
         try:
-            from database import SessionLocal
+            from app.database import SessionLocal
             from sqlalchemy import text as _text
             with SessionLocal() as _db:
                 row = _db.execute(
@@ -2735,7 +2735,7 @@ async def cassia_checkout(
                         "unit_amount": annual_cents,
                         "product_data": {
                             "name": tier_label,
-                            "description": f"Annual OFN platform subscription — {', '.join(req.categories[:4]) or 'all features'}",
+                            "description": f"Annual OFN platform subscription � {', '.join(req.categories[:4]) or 'all features'}",
                         },
                     },
                 }],
@@ -2748,7 +2748,7 @@ async def cassia_checkout(
 
     except Exception as e:
         print(f"[cassia_checkout] Stripe error: {e}")
-        # Non-fatal — let the frontend handle missing stripeUrl gracefully
+        # Non-fatal � let the frontend handle missing stripeUrl gracefully
         return {"stripeUrl": None}
 
 
@@ -2757,7 +2757,7 @@ _STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_CASSIA_WEBHOOK_SECRET", "")
 
 @app.post("/cassia/checkout/webhook")
 async def cassia_checkout_webhook(request: Request):
-    """Stripe webhook — fires after a Cassia-initiated checkout.session.completed.
+    """Stripe webhook � fires after a Cassia-initiated checkout.session.completed.
 
     Verifies the Stripe signature, then:
       1. Updates Business.SubscriptionTier in SQL.
@@ -2773,7 +2773,7 @@ async def cassia_checkout_webhook(request: Request):
         if _STRIPE_WEBHOOK_SECRET:
             event = _stripe.Webhook.construct_event(payload, sig_header, _STRIPE_WEBHOOK_SECRET)
         else:
-            # Dev-mode fallback — no signature check (never do this in production)
+            # Dev-mode fallback � no signature check (never do this in production)
             event = json.loads(payload)
     except Exception as e:
         print(f"[cassia_webhook] signature/parse error: {e}")
@@ -2794,7 +2794,7 @@ async def cassia_checkout_webhook(request: Request):
 
     # 1. Update SQL
     try:
-        from database import SessionLocal
+        from app.database import SessionLocal
         from sqlalchemy import text as _text
         with SessionLocal() as _db:
             _db.execute(
@@ -2858,7 +2858,7 @@ async def cassia_thread_delete(
 
 
 # ============================================================================
-# WEATHER ALERTS — scheduled job + per-user dry-run
+# WEATHER ALERTS � scheduled job + per-user dry-run
 # ============================================================================
 
 try:
