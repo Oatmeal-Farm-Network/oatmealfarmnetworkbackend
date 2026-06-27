@@ -1,5 +1,3 @@
-# NOTE: Base is imported from the root `database` module until Dev 2's core
-# move lands; switch to `from app.database import Base` after that.
 from sqlalchemy import Column, Integer, String, SmallInteger, DateTime, Date, Text, Boolean, Float
 from sqlalchemy import Numeric as Decimal
 from app.database import Base
@@ -171,6 +169,45 @@ class Photo(Base):
     Histogram     = Column(String(500))
     ARI           = Column(String(500))
     AnimalVideo   = Column(String(1000))
+
+# ── PRICING ──────────────────────────────────────────────────────
+class Pricing(Base):
+    __tablename__ = "Pricing"
+    AnimalID          = Column(Integer, primary_key=True, index=True)
+    Price             = Column(Decimal(10, 2))
+    Price2            = Column(Decimal(10, 2))
+    Price3            = Column(Decimal(10, 2))
+    Price4            = Column(Decimal(10, 2))
+    MinOrder1         = Column(Integer)
+    MinOrder2         = Column(Integer)
+    MinOrder3         = Column(Integer)
+    MinOrder4         = Column(Integer)
+    MaxOrder1         = Column(Integer)
+    MaxOrder2         = Column(Integer)
+    MaxOrder3         = Column(Integer)
+    MaxOrder4         = Column(Integer)
+    StudFee           = Column(Decimal(10, 2))
+    ForSale           = Column(SmallInteger)
+    Free              = Column(SmallInteger)
+    OBO               = Column(SmallInteger)
+    Foundation        = Column(SmallInteger)
+    Discount          = Column(Integer)
+    PriceComments     = Column(Text)
+    Donor             = Column(SmallInteger)
+    EmbryoPrice       = Column(Decimal(10, 2))
+    SemenPrice        = Column(Decimal(10, 2))
+    PayWhatYouCanStud = Column(SmallInteger)
+    Sold              = Column(SmallInteger)
+    SalePrice         = Column(Decimal(10, 2))
+    CoOwnerBusiness1  = Column(String(255))
+    CoOwnerName1      = Column(String(255))
+    CoOwnerLink1      = Column(String(255))
+    CoOwnerBusiness2  = Column(String(255))
+    CoOwnerName2      = Column(String(255))
+    CoOwnerLink2      = Column(String(255))
+    CoOwnerBusiness3  = Column(String(255))
+    CoOwnerName3      = Column(String(255))
+    CoOwnerLink3      = Column(String(255))
 
 # ── SPECIES LOOKUP TABLES ────────────────────────────────────────
 class SpeciesAvailable(Base):

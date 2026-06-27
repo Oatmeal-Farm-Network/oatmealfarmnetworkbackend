@@ -12,9 +12,9 @@ from typing import Optional, List
 from datetime import date
 import os
 
-from image_service import ensure_images_for_catalog
-from routers.translation import translate_fields, translate_list
-from routers.notifications import notify_business
+from app.services.image_service import ensure_images_for_catalog
+from app.routers.translation import translate_fields, translate_list
+from app.routers.notifications import notify_business
 
 marketplace_router = APIRouter()
 
@@ -959,18 +959,18 @@ def place_order(req: PlaceOrderRequest, db: Session = Depends(get_db)):
     db.commit()
 
     try:
-        from marketplace_emails import send_order_placed_buyer, send_order_placed_seller
+        from app.services.marketplace_emails import send_order_placed_buyer, send_order_placed_seller
         send_order_placed_buyer(order_id, db)
     except Exception as e:
         print(f"[marketplace] Email send failed: {e}")
 
     thank_you_codes = []
     try:
-        from routers.event_promo_codes import issue_marketplace_thank_you_codes
+        from app.routers.event_promo_codes import issue_marketplace_thank_you_codes
         thank_you_codes = issue_marketplace_thank_you_codes(db, order_id)
         if thank_you_codes:
             try:
-                from event_emails import send_marketplace_thank_you_promo
+                from app.services.event_emails import send_marketplace_thank_you_promo
                 send_marketplace_thank_you_promo(buyer[1], buyer[0], thank_you_codes)
             except Exception as e:
                 print(f"[marketplace] Thank-you promo email failed: {e}")

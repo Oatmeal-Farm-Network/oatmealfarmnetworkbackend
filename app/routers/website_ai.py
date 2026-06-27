@@ -4561,7 +4561,7 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
                         }
                     prompt_text = _build_hero_prompt(description, params.get("style"))
                     try:
-                        from image_service import generate_image_bytes, upload_image_to_gcs
+                        from app.services.image_service import generate_image_bytes, upload_image_to_gcs
                         import uuid as _uuid
                         img_bytes = await asyncio.get_event_loop().run_in_executor(
                             None, generate_image_bytes, prompt_text

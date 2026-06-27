@@ -25,7 +25,7 @@ from pydantic import BaseModel, validator
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
-from app import models
+import models
 from app.database import get_db
 from app.services.external_apis import (
     nasa_power_summary,

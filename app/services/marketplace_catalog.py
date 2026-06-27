@@ -446,7 +446,7 @@ def checkout(data: CheckoutRequest, db: Session = Depends(get_db)):
 
     # Send emails (non-blocking)
     try:
-        from marketplace_emails import send_order_placed_buyer, send_order_placed_seller, send_admin_order_notification
+        from app.services.marketplace_emails import send_order_placed_buyer, send_order_placed_seller, send_admin_order_notification
         send_order_placed_buyer(order_id, db)
         seller_ids = set(i["SellerBusinessID"] for i in cart_items)
         for sid in seller_ids:
@@ -524,7 +524,7 @@ def seller_confirm(data: SellerConfirmation, db: Session = Depends(get_db)):
 
     # Send emails
     try:
-        from marketplace_emails import send_item_status_buyer, send_ready_for_payment
+        from app.services.marketplace_emails import send_item_status_buyer, send_ready_for_payment
         send_item_status_buyer(order_id, data.OrderItemID, data.Status, db)
         if counts[3] == 0 and counts[1] > 0:
             send_ready_for_payment(order_id, db)
@@ -544,7 +544,7 @@ def seller_ship(data: ShipmentUpdate, db: Session = Depends(get_db)):
     db.commit()
 
     try:
-        from marketplace_emails import send_item_shipped
+        from app.services.marketplace_emails import send_item_shipped
         send_item_shipped(order_id, data.OrderItemID, db)
     except Exception as e:
         print(f"[marketplace] Email error: {e}")
@@ -604,7 +604,7 @@ def mark_delivered(order_id: int, order_item_id: int, db: Session = Depends(get_
     db.commit()
 
     try:
-        from marketplace_emails import send_delivery_confirmed
+        from app.services.marketplace_emails import send_delivery_confirmed
         send_delivery_confirmed(order_id, order_item_id, db)
     except Exception as e:
         print(f"[marketplace] Email error: {e}")

@@ -340,7 +340,7 @@ def update_sponsor(sponsor_id: int, body: dict, db: Session = Depends(get_db)):
     new_status = body.get("Status", "pending")
     if new_status == "confirmed" and prev_status != "confirmed" and body.get("ContactEmail"):
         try:
-            from event_emails import send_sponsor_confirmation
+            from app.services.event_emails import send_sponsor_confirmation
             ev = db.execute(
                 text("SELECT EventID, EventName, BusinessID FROM OFNEvents WHERE EventID = :eid"),
                 {"eid": prev_row.EventID if prev_row else None},

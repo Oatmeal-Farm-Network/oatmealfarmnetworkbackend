@@ -1,7 +1,8 @@
 # Backend Reorg — Cleanup & Remaining Work
 
 > **Companion to:** `Tasks.md`  
-> **Branch:** `epic/backend-reorg` (as of last audit)  
+> **Integration branch:** `epic/backend-reorg`  
+> **Cleanup branches:** see [Cleanup branches & git workflow](#cleanup-branches--git-workflow)  
 > **Purpose:** Per-developer record of what is **done** vs what still needs doing before the reorg ships to `main`.
 
 All Phase 1 task branches have been merged into `epic/backend-reorg` (PRs #27–#36). The structural moves are largely in place. What remains is **model deduplication**, **import cleanup (Phase 2)**, and a handful of loose ends.
@@ -10,23 +11,116 @@ All Phase 1 task branches have been merged into `epic/backend-reorg` (PRs #27–
 
 ## Overall status
 
-| Developer | Name | Branch | Phase 1 | Cleanup remaining |
-|-----------|------|--------|---------|-------------------|
-| Dev 1 | Sai Ram | `task/reorg-scripts-gitignore` | ~95% | Minor |
-| Dev 2 | David | `task/reorg-skeleton-and-ci`, `task/reorg-core-app` | ~85% | Phase 0 CI + Phase 2 lead |
-| Dev 3 | Sankeerth | `task/reorg-services-utils` | ~90% | Phase 2 import rewrites |
-| Dev 4A | Bringesh | `task/reorg-models-core` | ~80% | `models.py` dedup + `Pricing` |
-| Dev 4B | Navdeep | `task/reorg-models-ag-events` | ~95% | Import convention fix |
-| Dev 4C | Guia | `task/reorg-models-web` | ~70% | `models.py` dedup |
-| Phase 2 | David (lead) | `task/reorg-import-cleanup` | **0%** | Entire phase |
+| Developer | Name | Phase 1 branch (merged) | Cleanup branch (use this) | Cleanup remaining |
+|-----------|------|-------------------------|----------------------------|-------------------|
+| Dev 1 | Sai Ram | `task/reorg-scripts-gitignore` | `task/reorg-scripts-cleanup` | Script imports + root `.sql` moves |
+| Dev 2 | David | `task/reorg-skeleton-and-ci`, `task/reorg-core-app` | `task/reorg-import-cleanup` | Phase 2 lead — shims, imports, boot gate |
+| Dev 3 | Sankeerth | `task/reorg-services-utils` | `task/reorg-services-imports` | Router imports for moved services/utils |
+| Dev 4A | Bringesh | `task/reorg-models-core` | `task/reorg-models-core-cleanup` | `models.py` dedup + `Pricing` |
+| Dev 4B | Navdeep | `task/reorg-models-ag-events` | `task/reorg-models-ag-cleanup` | `app.database` import in 4 model files |
+| Dev 4C | Guia | `task/reorg-models-web` | `task/reorg-models-web-cleanup` | Remove 6 web duplicates from `models.py` |
 
-**Not started:** `task/reorg-import-cleanup` branch, final PR `epic/backend-reorg → main`.
+**Not started:** most cleanup branches above; final PR `epic/backend-reorg → main`.
+
+> **Rule:** Phase 1 task branches are **merged — do not push new work to them.** Always cut a **new cleanup branch** from latest `epic/backend-reorg` and open a fresh PR into epic.
+
+---
+
+## Cleanup branches & git workflow
+
+All cleanup work branches off **`epic/backend-reorg`**. Every PR targets **`epic/backend-reorg`** (not `main`).
+
+### Daily sync (everyone — run before starting work)
+
+```bash
+cd oatmealfarmnetworkbackend/          # repo root (where .git lives)
+git checkout epic/backend-reorg
+git pull origin epic/backend-reorg
+git merge main                         # keep epic current with main; resolve small conflicts early
+```
+
+### Start your cleanup branch
+
+Replace `<your-cleanup-branch>` with your row from the table above:
+
+```bash
+git checkout epic/backend-reorg
+git pull origin epic/backend-reorg
+git checkout -b <your-cleanup-branch>
+# ... make changes ...
+git add -A
+git commit -m "describe your cleanup change"
+git push -u origin <your-cleanup-branch>
+# Open PR on GitHub:  <your-cleanup-branch>  →  epic/backend-reorg
+```
+
+### Suggested merge order (reduces `models.py` conflicts)
+
+| Order | Developer | Cleanup branch | Why this order |
+|-------|-----------|----------------|----------------|
+| 1 | Guia (4C) | `task/reorg-models-web-cleanup` | Removes 6 web duplicates from `models.py` first |
+| 2 | Bringesh (4A) | `task/reorg-models-core-cleanup` | Removes 5 user duplicates + `Pricing`; `models.py` → one-line shim |
+| 3 | Navdeep (4B) | `task/reorg-models-ag-cleanup` | 4 files under `app/models/` only — no `models.py` |
+| 4 | Sai Ram (Dev 1) | `task/reorg-scripts-cleanup` | Independent — `scripts/` + `data/` |
+| 5 | Sankeerth (Dev 3) | `task/reorg-services-imports` | Router/service import rewrites |
+| 6 | David (Dev 2) | `task/reorg-import-cleanup` | Integration pass — delete shims, remaining flat imports, boot gate |
+| 7 | Team | — | PR `epic/backend-reorg` → `main` (merge commit, **not** squash) |
+
+### Per-developer quick start
+
+```bash
+# Dev 1 — Sai Ram
+git checkout epic/backend-reorg && git pull origin epic/backend-reorg
+git checkout -b task/reorg-scripts-cleanup
+
+# Dev 2 — David (start after steps 1–5 above land on epic)
+git checkout epic/backend-reorg && git pull origin epic/backend-reorg
+git merge main
+git checkout -b task/reorg-import-cleanup
+
+# Dev 3 — Sankeerth
+git checkout epic/backend-reorg && git pull origin epic/backend-reorg
+git checkout -b task/reorg-services-imports
+
+# Dev 4A — Bringesh (wait for 4C's models.py PR to merge first)
+git checkout epic/backend-reorg && git pull origin epic/backend-reorg
+git checkout -b task/reorg-models-core-cleanup
+
+# Dev 4B — Navdeep
+git checkout epic/backend-reorg && git pull origin epic/backend-reorg
+git checkout -b task/reorg-models-ag-cleanup
+
+# Dev 4C — Guia (go first — owns web duplicates in models.py)
+git checkout epic/backend-reorg && git pull origin epic/backend-reorg
+git checkout -b task/reorg-models-web-cleanup
+```
+
+### If your branch falls behind epic while a PR is open
+
+```bash
+git checkout <your-cleanup-branch>
+git fetch origin
+git merge origin/epic/backend-reorg    # merge, don't rebase — epic is shared
+# resolve conflicts, then:
+git push
+```
 
 ---
 
 ## Developer 1 — Sai Ram
 
-**Goal:** Git cleanup & script consolidation (`task/reorg-scripts-gitignore`)
+**Goal:** Git cleanup & script consolidation.
+
+**Phase 1 branch (merged):** `task/reorg-scripts-gitignore`  
+**Cleanup branch:** `task/reorg-scripts-cleanup`
+
+```bash
+git checkout epic/backend-reorg && git pull origin epic/backend-reorg
+git checkout -b task/reorg-scripts-cleanup
+# ... work ...
+git push -u origin task/reorg-scripts-cleanup
+# PR: task/reorg-scripts-cleanup → epic/backend-reorg
+```
 
 ### Done
 
@@ -73,7 +167,17 @@ All Phase 1 task branches have been merged into `epic/backend-reorg` (PRs #27–
 
 **Goal:** Core `app/` package, launchers, Phase 0 skeleton, Phase 2 integration lead.
 
-**Branches:** `task/reorg-skeleton-and-ci` (Phase 0), `task/reorg-core-app` (Phase 1), `task/reorg-import-cleanup` (Phase 2).
+**Phase 1 branches (merged):** `task/reorg-skeleton-and-ci`, `task/reorg-core-app`  
+**Cleanup / Phase 2 branch:** `task/reorg-import-cleanup` — start **after** model + script cleanup PRs merge into epic.
+
+```bash
+git checkout epic/backend-reorg && git pull origin epic/backend-reorg
+git merge main
+git checkout -b task/reorg-import-cleanup
+# ... work ...
+git push -u origin task/reorg-import-cleanup
+# PR: task/reorg-import-cleanup → epic/backend-reorg
+```
 
 ### Done
 
@@ -111,10 +215,10 @@ All Phase 1 task branches have been merged into `epic/backend-reorg` (PRs #27–
 
 #### Phase 2 — `task/reorg-import-cleanup` (lead — **not started**)
 
-Create branch off `epic/backend-reorg`:
+See **Cleanup branches & git workflow** above for full git commands. Quick start:
 
 ```bash
-git checkout epic/backend-reorg && git pull
+git checkout epic/backend-reorg && git pull origin epic/backend-reorg
 git merge main
 git checkout -b task/reorg-import-cleanup
 ```
@@ -188,7 +292,18 @@ After Phase 2 merges into epic and everything boots:
 
 ## Developer 3 — Sankeerth
 
-**Goal:** Move business logic & helpers into `app/services/` and `app/utils/` (`task/reorg-services-utils`).
+**Goal:** Move business logic & helpers into `app/services/` and `app/utils/`.
+
+**Phase 1 branch (merged):** `task/reorg-services-utils`  
+**Cleanup branch:** `task/reorg-services-imports`
+
+```bash
+git checkout epic/backend-reorg && git pull origin epic/backend-reorg
+git checkout -b task/reorg-services-imports
+# ... work ...
+git push -u origin task/reorg-services-imports
+# PR: task/reorg-services-imports → epic/backend-reorg
+```
 
 ### Done
 
@@ -230,7 +345,18 @@ After David starts `task/reorg-import-cleanup`, update importers in these router
 
 ## Developer 4A — Bringesh
 
-**Goal:** Extract users + accounting models into `app/models/` (`task/reorg-models-core`).
+**Goal:** Extract users + accounting models into `app/models/`.
+
+**Phase 1 branch (merged):** `task/reorg-models-core`  
+**Cleanup branch:** `task/reorg-models-core-cleanup` — start **after** Guia's `task/reorg-models-web-cleanup` merges (both edit `models.py`).
+
+```bash
+git checkout epic/backend-reorg && git pull origin epic/backend-reorg
+git checkout -b task/reorg-models-core-cleanup
+# ... work ...
+git push -u origin task/reorg-models-core-cleanup
+# PR: task/reorg-models-core-cleanup → epic/backend-reorg
+```
 
 ### Done
 
@@ -283,7 +409,18 @@ After David starts `task/reorg-import-cleanup`, update importers in these router
 
 ## Developer 4B — Navdeep
 
-**Goal:** Extract livestock, precision-ag, crop, and event models (`task/reorg-models-ag-events`).
+**Goal:** Extract livestock, precision-ag, crop, and event models.
+
+**Phase 1 branch (merged):** `task/reorg-models-ag-events`  
+**Cleanup branch:** `task/reorg-models-ag-cleanup`
+
+```bash
+git checkout epic/backend-reorg && git pull origin epic/backend-reorg
+git checkout -b task/reorg-models-ag-cleanup
+# ... work ...
+git push -u origin task/reorg-models-ag-cleanup
+# PR: task/reorg-models-ag-cleanup → epic/backend-reorg
+```
 
 ### Done
 
@@ -332,7 +469,18 @@ After David starts `task/reorg-import-cleanup`, update importers in these router
 
 ## Developer 4C — Guia
 
-**Goal:** Extract 6 website-builder models (`task/reorg-models-web`).
+**Goal:** Extract 6 website-builder models.
+
+**Phase 1 branch (merged):** `task/reorg-models-web`  
+**Cleanup branch:** `task/reorg-models-web-cleanup` — **go first** (removes web duplicates from `models.py` before 4A).
+
+```bash
+git checkout epic/backend-reorg && git pull origin epic/backend-reorg
+git checkout -b task/reorg-models-web-cleanup
+# ... work ...
+git push -u origin task/reorg-models-web-cleanup
+# PR: task/reorg-models-web-cleanup → epic/backend-reorg
+```
 
 ### Done
 
@@ -370,33 +518,24 @@ After David starts `task/reorg-import-cleanup`, update importers in these router
 
 ## Phase 2 — Integration checklist (David, all devs support)
 
-Run only after 4A/4C finish `models.py` dedup.
+Run only after 4C + 4A finish `models.py` dedup (branches `task/reorg-models-web-cleanup` and `task/reorg-models-core-cleanup`).
 
-| # | Task | Owner | Status |
-|---|------|-------|--------|
-| 1 | `models.py` → one-line shim (then delete in Phase 2) | 4A + 4C | Not done |
-| 2 | `Pricing` assigned and moved | 4A | Not done |
-| 3 | 4B model files use `app.database` | 4B | Not done |
-| 4 | Dev 1 script import fixes (2 files) | Dev 1 | Not done |
-| 5 | Rewrite flat imports in `app/` | Dev 2 (lead), Dev 3 helps | Not done |
-| 6 | Delete all root shims (12 service/utils + models.py) | Dev 2 | Not done |
-| 7 | Fix `scripts/` + `scrapers/` imports | Dev 1 + Dev 2 | Partial |
-| 8 | Smoke CI workflow | Dev 2 | Not done |
-| 9 | `docker build` + boot locally | Dev 2 | Not verified |
-| 10 | PR `task/reorg-import-cleanup` → epic | Dev 2 | Not started |
-| 11 | PR `epic/backend-reorg` → `main` (merge commit) | Team | Not started |
+| # | Task | Owner | Cleanup branch | Status |
+|---|------|-------|----------------|--------|
+| 1 | Remove 6 web duplicates from `models.py` | 4C | `task/reorg-models-web-cleanup` | Not done |
+| 2 | Remove 5 user duplicates + move `Pricing` + `models.py` → shim | 4A | `task/reorg-models-core-cleanup` | Not done |
+| 3 | 4B model files use `app.database` | 4B | `task/reorg-models-ag-cleanup` | Not done |
+| 4 | Dev 1 script import fixes (2 files) + root `.sql` moves | Dev 1 | `task/reorg-scripts-cleanup` | Not done |
+| 5 | Rewrite service/utils imports in routers | Dev 3 | `task/reorg-services-imports` | Not done |
+| 6 | Rewrite remaining flat imports in `app/` | Dev 2 (lead) | `task/reorg-import-cleanup` | Not done |
+| 7 | Delete all root shims (12 service/utils + `models.py`) | Dev 2 | `task/reorg-import-cleanup` | Not done |
+| 8 | Fix `scripts/` + `scrapers/` imports | Dev 1 + Dev 2 | scripts-cleanup + import-cleanup | Partial |
+| 9 | Smoke CI workflow | Dev 2 | `task/reorg-import-cleanup` | May be done — verify on epic |
+| 10 | `docker build` + boot locally | Dev 2 | `task/reorg-import-cleanup` | Not verified |
+| 11 | PR cleanup branches → epic | All | (see table above) | Not started |
+| 12 | PR `epic/backend-reorg` → `main` (merge commit) | Team | — | Not started |
 
-### Suggested order
-
-```
-1. Guia (4C)  — delete 6 web class duplicates from models.py
-2. Bringesh (4A) — delete 5 user-domain duplicates + move Pricing + models.py → shim
-3. Navdeep (4B) — fix Base imports in 4 model files
-4. Sai Ram (Dev 1) — fix 2 scripts + relocate 3 root .sql dumps
-5. David (Dev 2) — start task/reorg-import-cleanup (import rewrite + shim deletion + smoke CI)
-6. Sankeerth (Dev 3) — help rewrite service/utils imports in routers during step 5
-7. David — final epic → main PR
-```
+See **Cleanup branches & git workflow** for merge order and per-developer `git checkout` commands.
 
 ---
 
@@ -435,4 +574,4 @@ uvicorn app.main:app --port 8080
 
 ---
 
-*Last updated: audit against `epic/backend-reorg` branch. Update this file as tasks close.*
+*Last updated: cleanup branch names + git workflow added. Update this file as tasks close.*

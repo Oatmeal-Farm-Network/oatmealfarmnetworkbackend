@@ -1,5 +1,3 @@
-# NOTE: Base is imported from the root `database` module until Dev 2's core
-# move lands; switch to `from app.database import Base` after that.
 from sqlalchemy import Column, Integer, String, SmallInteger, DateTime, Date, Text, Boolean, Float
 from sqlalchemy import Numeric as Decimal
 from app.database import Base
