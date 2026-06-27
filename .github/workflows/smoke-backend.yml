@@ -26,3 +26,6 @@ jobs:
       
       - name: Smoke test - import app.main
         run: python -c "import app.main"
+
+      - name: Run pytest
+        run: pytest
