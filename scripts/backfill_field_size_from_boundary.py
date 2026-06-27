@@ -16,7 +16,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.database import SessionLocal  # type: ignore
-import models                      # type: ignore
+import app.models as models        # type: ignore
 from app.utils.geo_utils import polygon_area_hectares  # type: ignore
 
 

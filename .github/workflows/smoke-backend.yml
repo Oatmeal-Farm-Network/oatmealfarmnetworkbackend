@@ -1,14 +1,10 @@
 name: Smoke Backend
 
 on:
-  push:
-    branches:
-      - main
-      - develop
   pull_request:
-    branches:
-      - main
-      - develop
+    branches: [ main, epic/backend-reorg ]
+  push:
+    branches: [ main, epic/backend-reorg ]
 
 jobs:
   smoke-test:
