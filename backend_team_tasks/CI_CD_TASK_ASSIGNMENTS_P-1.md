@@ -39,7 +39,8 @@ git pull origin epic/backend-reorg
 |---|---|---|
 | **Vidyanand** | GCP Staging Project Setup & Cloud SQL | `task/cicd-gcp-staging-cloudsql` |
 | **David** | Artifact Registry & Docker Configuration | `task/cicd-artifact-registry-docker` |
-| **Aryan** | Cloud Run Services (Staging) | `task/cicd-cloud-run-staging` |
+| **Aryan** | Cloud Run: Frontend & Backend Staging Services | `task/cicd-cloud-run-staging` |
+| **Sankeerth** | Cloud Run: Saige AI Service + Secret Manager Config | `task/cicd-cloud-run-saige-secrets` |
 | **Navdeep** | GitHub Actions — CI Pipeline (Phase 1) | `task/cicd-github-actions-ci` |
 | **Guia** | GitHub Actions — Staging Deployment (Phase 2) | `task/cicd-github-actions-cd-staging` |
 | **Bringesh** | IAM & Cross-Project Access Configuration | `task/cicd-iam-service-accounts` |
@@ -129,9 +130,9 @@ git push -u origin task/cicd-artifact-registry-docker
 
 ---
 
-### 🟨 Aryan — Cloud Run Services (Staging)
+### 🟨 Aryan — Cloud Run: Frontend & Backend Staging Services
 
-**Goal:** Create and configure the three Cloud Run services in the staging project.
+**Goal:** Create and configure the Frontend and Backend Cloud Run services in the staging project.
 
 #### 🔀 Git Setup — Run These First
 
@@ -143,9 +144,9 @@ git pull origin epic/backend-reorg
 # Create and switch to your task branch
 git checkout -b task/cicd-cloud-run-staging
 
-# When your work is done (e.g., after adding any config/yaml files), push
+# When your work is done, stage, commit, and push
 git add -A
-git commit -m "feat: configure Cloud Run staging services for backend, frontend, saige"
+git commit -m "feat: configure Cloud Run staging services for frontend and backend"
 git push -u origin task/cicd-cloud-run-staging
 ```
 
@@ -156,15 +157,31 @@ git push -u origin task/cicd-cloud-run-staging
 - [ ] Create the following **Cloud Run services** in `oatmeal-farm-staging`:
   - `oatmeal-frontend-staging`
   - `oatmeal-backend-staging` (modular monolith: accounts, directory, marketplaces, services, e-commerce, newsroom, agents, etc.)
-  - `oatmeal-saige-staging` (AI Advisor)
 - [ ] Configure each service with:
-  - `min-instances: 1` (to avoid cold starts, especially for Saige which has AI dependencies)
+  - `min-instances: 1` (to avoid cold starts)
   - Appropriate memory and CPU limits
-  - Environment variables / Secret Manager references (coordinate with Vidyanand for DB connection strings)
-- [ ] Set the service account for each Cloud Run service (coordinate with Bringesh)
-- [ ] Do an initial manual deploy of a placeholder or test image to verify services start correctly:
+  - Environment variable references from Secret Manager (coordinate with **Sankeerth** for the secret names)
+- [ ] Attach the correct service account to each Cloud Run service (get emails from **Bringesh**):
+  ```bash
+  gcloud run services update oatmeal-backend-staging \
+    --service-account=backend-sa@oatmeal-farm-staging.iam.gserviceaccount.com \
+    --project=oatmeal-farm-staging \
+    --region=REGION
+
+  gcloud run services update oatmeal-frontend-staging \
+    --service-account=frontend-sa@oatmeal-farm-staging.iam.gserviceaccount.com \
+    --project=oatmeal-farm-staging \
+    --region=REGION
+  ```
+- [ ] Do an initial manual deploy of a placeholder image to verify both services start correctly:
   ```bash
   gcloud run deploy oatmeal-backend-staging \
+    --image us-docker.pkg.dev/cloudrun/container/hello \
+    --project oatmeal-farm-staging \
+    --region us-central1 \
+    --allow-unauthenticated
+
+  gcloud run deploy oatmeal-frontend-staging \
     --image us-docker.pkg.dev/cloudrun/container/hello \
     --project oatmeal-farm-staging \
     --region us-central1 \
@@ -173,7 +190,90 @@ git push -u origin task/cicd-cloud-run-staging
 - [ ] Document each service's staging URL and share with the team
 
 > ⚠️ **Do NOT configure or touch any Production Cloud Run services.** Staging only for now.
-> ⚠️ **Wait for Bringesh** to create the service accounts before attaching them to Cloud Run.
+> ⚠️ **Wait for Bringesh** to create the service accounts before attaching them.
+> ⚠️ **Coordinate with Sankeerth** on env variable / secret references before final deploy.
+
+---
+
+### 🟧 Sankeerth — Cloud Run: Saige AI Service + Secret Manager Configuration
+
+**Goal:** Deploy the Saige AI Advisor Cloud Run service and wire all environment secrets across the staging environment.
+
+#### 🔀 Git Setup — Run These First
+
+```bash
+# Pull the latest epic base branch
+git checkout epic/backend-reorg
+git pull origin epic/backend-reorg
+
+# Create and switch to your task branch
+git checkout -b task/cicd-cloud-run-saige-secrets
+
+# When your work is done (e.g., after adding any config/docs files), push
+git add -A
+git commit -m "feat: configure Saige Cloud Run service and Secret Manager env wiring"
+git push -u origin task/cicd-cloud-run-saige-secrets
+```
+
+> Then open a **Pull Request** on GitHub: `task/cicd-cloud-run-saige-secrets` → `epic/backend-reorg`
+
+#### ✅ Tasks
+
+**Part A — Saige Cloud Run Service**
+
+- [ ] Create the `oatmeal-saige-staging` Cloud Run service in `oatmeal-farm-staging`:
+  ```bash
+  gcloud run deploy oatmeal-saige-staging \
+    --image us-docker.pkg.dev/cloudrun/container/hello \
+    --project oatmeal-farm-staging \
+    --region us-central1 \
+    --allow-unauthenticated
+  ```
+- [ ] Configure Saige-specific settings:
+  - `min-instances: 1` — **mandatory** for Saige to avoid AI model cold starts
+  - Increase memory: `--memory 2Gi` (or higher depending on model size)
+  - Increase CPU: `--cpu 2`
+- [ ] Attach the Saige service account (get email from **Bringesh**):
+  ```bash
+  gcloud run services update oatmeal-saige-staging \
+    --service-account=saige-sa@oatmeal-farm-staging.iam.gserviceaccount.com \
+    --project=oatmeal-farm-staging \
+    --region=REGION
+  ```
+- [ ] Document the Saige staging URL and share with the team
+
+**Part B — Secret Manager: Environment Variable Wiring**
+
+- [ ] Create all required secrets in GCP Secret Manager for the staging project:
+  ```bash
+  # Example — repeat for each required secret
+  echo -n "<secret-value>" | gcloud secrets create DATABASE_URL \
+    --data-file=- \
+    --project=oatmeal-farm-staging
+  ```
+  Secrets to create (coordinate with Vidyanand for DB values):
+  - `DATABASE_URL` — staging Cloud SQL connection string
+  - `SECRET_KEY` — app secret key
+  - Any API keys needed by Saige (AI provider keys, etc.)
+- [ ] Grant each Cloud Run service account access to the secrets it needs:
+  ```bash
+  gcloud secrets add-iam-policy-binding DATABASE_URL \
+    --project=oatmeal-farm-staging \
+    --member="serviceAccount:backend-sa@oatmeal-farm-staging.iam.gserviceaccount.com" \
+    --role="roles/secretmanager.secretAccessor"
+  ```
+- [ ] Verify secrets are mounted correctly in Cloud Run by checking service env config:
+  ```bash
+  gcloud run services describe oatmeal-backend-staging \
+    --project=oatmeal-farm-staging \
+    --region=REGION \
+    --format="yaml"
+  ```
+- [ ] Document the full list of secret names and which services consume them — share with Aryan and Guia
+
+> ⚠️ **Do NOT create or modify any secrets in the Production GCP project.** Staging only.
+> ⚠️ **Wait for Bringesh** to create service accounts before granting secret access.
+> ⚠️ **Wait for Vidyanand** to provision Cloud SQL before storing the `DATABASE_URL` secret.
 
 ---
 
@@ -351,20 +451,26 @@ git push -u origin task/cicd-iam-service-accounts
 ```
 epic/backend-reorg  ◄── ALL branches start from here
     │
-    ├── task/cicd-iam-service-accounts         (Bringesh)  ◄── START FIRST
+    ├── task/cicd-iam-service-accounts              (Bringesh)   ◄── START FIRST
     │       │
-    │       ├──► task/cicd-cloud-run-staging   (Aryan)
+    │       ├──► task/cicd-cloud-run-staging        (Aryan)
+    │       ├──► task/cicd-cloud-run-saige-secrets  (Sankeerth)
     │       ├──► task/cicd-github-actions-cd-staging (Guia)
-    │       └──► task/cicd-gcp-staging-cloudsql (Vidyanand)
+    │       └──► task/cicd-gcp-staging-cloudsql     (Vidyanand)
     │
-    ├── task/cicd-artifact-registry-docker     (David)     ◄── Can start in parallel
+    ├── task/cicd-artifact-registry-docker          (David)      ◄── Can start in parallel
     │       │
-    │       ├──► task/cicd-github-actions-ci   (Navdeep)
+    │       ├──► task/cicd-github-actions-ci        (Navdeep)
     │       └──► task/cicd-github-actions-cd-staging (Guia)
     │
-    └── task/cicd-gcp-staging-cloudsql         (Vidyanand)
+    ├── task/cicd-gcp-staging-cloudsql              (Vidyanand)
+    │       │
+    │       ├──► task/cicd-cloud-run-staging        (Aryan)
+    │       └──► task/cicd-cloud-run-saige-secrets  (Sankeerth)  ◄── needs DB URL
+    │
+    └── task/cicd-cloud-run-saige-secrets           (Sankeerth)
             │
-            └──► task/cicd-cloud-run-staging   (Aryan)
+            └──► task/cicd-cloud-run-staging        (Aryan)      ◄── needs secret names
 ```
 
 ---
@@ -392,4 +498,4 @@ Before this sprint is considered complete, the following must be true:
 
 ---
 
-*Last updated: July 4, 2026 | Maintained by team lead*
+*Last updated: July 4, 2026 | Maintained by team lead — Sankeerth added to sprint*
