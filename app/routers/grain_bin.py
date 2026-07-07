@@ -161,19 +161,19 @@ def _fire_alerts(db, bid: int, bin_id: int):
             VALUES (?,?,?,?,?,?)
         """, [bin_id, atype, bin_id, bid, atype, msg, sev, val])
 
-    # Hotspot: any probe = 5°C above mean
+    # Hotspot: any probe = 5Â°C above mean
     if len(temps) >= 2:
         mean_t = sum(temps) / len(temps)
         if max(temps) - mean_t >= 5:
-            _alert("hotspot", f"Temperature hotspot detected: max {max(temps):.1f}°C vs avg {mean_t:.1f}°C", "critical", max(temps))
+            _alert("hotspot", f"Temperature hotspot detected: max {max(temps):.1f}Â°C vs avg {mean_t:.1f}Â°C", "critical", max(temps))
         elif max(temps) > 30:
-            _alert("high_temp", f"Grain temperature high: {max(temps):.1f}°C", "warning", max(temps))
+            _alert("high_temp", f"Grain temperature high: {max(temps):.1f}Â°C", "warning", max(temps))
 
     if moistures and max(moistures) > 15:
-        _alert("high_moisture", f"Moisture reading {max(moistures):.1f}% — safe storage limit ~14%", "critical", max(moistures))
+        _alert("high_moisture", f"Moisture reading {max(moistures):.1f}% Â— safe storage limit ~14%", "critical", max(moistures))
 
     if co2s and max(co2s) > 5000:
-        _alert("co2_buildup", f"Elevated CO2: {max(co2s):.0f} ppm — possible grain respiration", "warning", max(co2s))
+        _alert("co2_buildup", f"Elevated CO2: {max(co2s):.0f} ppm Â— possible grain respiration", "warning", max(co2s))
 
     db.commit()
 
@@ -357,7 +357,7 @@ def equilibrium(
         "equilibrium_moisture_pct": emc,
         "safe_storage_target_pct": target,
         "aeration_recommended": emc < target,
-        "note": "Aerate when ambient EMC < target storage moisture to dry grain" if emc < target else "Do not aerate — ambient air is wetter than safe storage target",
+        "note": "Aerate when ambient EMC < target storage moisture to dry grain" if emc < target else "Do not aerate Â— ambient air is wetter than safe storage target",
     }
 
 
@@ -371,7 +371,7 @@ class WebhookReadingIn(BaseModel):
 
 @router.post("/webhook/readings", status_code=201)
 def webhook_readings(bin_id: int, token: str, body: WebhookReadingIn, db=Depends(get_raw_conn)):
-    """IoT device endpoint — no JWT needed, authenticates via per-bin webhook token."""
+    """IoT device endpoint Â— no JWT needed, authenticates via per-bin webhook token."""
     _ensure_tables(db)
     cur = db.cursor()
     cur.execute("SELECT BinID, BusinessID, WebhookToken FROM GrainBin WHERE BinID=?", [bin_id])
