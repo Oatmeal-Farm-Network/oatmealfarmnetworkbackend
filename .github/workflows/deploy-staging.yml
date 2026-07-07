@@ -1,0 +1,76 @@
+name: Deploy to Staging
+
+# Staging-only CD workflow. Do NOT add production deployment steps here.
+on:
+  push:
+    branches: [main]
+
+env:
+  # --- Set these as GitHub Actions "Variables" (Settings > Secrets and variables > Actions > Variables tab) ---
+  GCP_PROJECT_ID: oatmeal-farm-staging
+  REGION: ${{ vars.GCP_REGION }}                # e.g. us-central1 -- confirm with David/Aryan
+  IMAGE_URI_PREFIX: ${{ vars.IMAGE_URI_PREFIX }} # e.g. REGION-docker.pkg.dev/oatmeal-farm-staging/oatmeal-farm-registry/backend
+  CLOUD_RUN_SERVICE: oatmeal-backend-staging
+
+jobs:
+  deploy-staging:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # required if using Workload Identity Federation
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set short commit SHA
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      # ---------------------------------------------------------------
+      # AUTH: Pending Bringesh -- confirm which method is actually set up.
+      # OPTION A (preferred): Workload Identity Federation (keyless)
+      # ---------------------------------------------------------------
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}   # TODO: get from Bringesh
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}       # e.g. github-actions-cicd@oatmeal-farm-staging.iam.gserviceaccount.com
+
+      # ---------------------------------------------------------------
+      # OPTION B (fallback): JSON key secret -- use ONLY if Bringesh says
+      # WIF isn't set up. Comment out Option A above if using this instead.
+      # ---------------------------------------------------------------
+      # - name: Authenticate to Google Cloud (JSON key)
+      #   uses: google-github-actions/auth@v2
+      #   with:
+      #     credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build Docker image
+        run: |
+          docker build -t "${{ env.IMAGE_URI_PREFIX }}:${{ steps.vars.outputs.sha_short }}" .
+
+      - name: Push Docker image
+        run: |
+          docker push "${{ env.IMAGE_URI_PREFIX }}:${{ steps.vars.outputs.sha_short }}"
+
+      - name: Deploy to Cloud Run (staging)
+        run: |
+          gcloud run deploy ${{ env.CLOUD_RUN_SERVICE }} \
+            --image "${{ env.IMAGE_URI_PREFIX }}:${{ steps.vars.outputs.sha_short }}" \
+            --project ${{ env.GCP_PROJECT_ID }} \
+            --region ${{ env.REGION }} \
+            --quiet
+
+      - name: Print deployed URL
+        run: |
+          gcloud run services describe ${{ env.CLOUD_RUN_SERVICE }} \
+            --project ${{ env.GCP_PROJECT_ID }} \
+            --region ${{ env.REGION }} \
+            --format="value(status.url)"
