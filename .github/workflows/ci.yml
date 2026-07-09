@@ -1,0 +1,58 @@
+name: CI
+
+# CI gate for every pull request targeting main.
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11" # matches Dockerfile (python:3.11-slim)
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint app/ and saige/
+        run: ruff check app saige
+
+  boot-check:
+    name: Boot check (server_all.py)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11" # matches Dockerfile (python:3.11-slim)
+
+      - name: Install dependencies
+        run: pip install --no-cache-dir -r requirements.txt
+
+      - name: Boot server_all.py and probe /health
+        env:
+          PORT: "8000"
+        run: |
+          python server_all.py &
+          SERVER_PID=$!
+          # give the app a few seconds to come up
+          sleep 12
+          if curl --fail --silent --show-error http://127.0.0.1:8000/health; then
+            echo "boot OK"
+            RESULT=0
+          else
+            echo "boot/health check FAILED"
+            RESULT=1
+          fi
+          kill "$SERVER_PID" 2>/dev/null || true
+          exit $RESULT
+
+      # TODO: add pytest step (pytest suite is out of scope for this sprint)
