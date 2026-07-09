@@ -5,6 +5,7 @@
 > **Sprint Focus:** Staging environment setup and GitHub Actions pipeline
 >
 > ---
+>
 > ⚠️ **IMPORTANT — READ BEFORE STARTING:**
 > **Do NOT touch any production services.** All work is scoped to the `oatmeal-farm-staging` GCP project only.
 > Production deployments are on hold until Staging is fully validated. When in doubt, ask in the team channel first.
@@ -28,28 +29,36 @@ git checkout epic/backend-reorg
 git pull origin epic/backend-reorg
 ```
 
-> ⚠️ **All individual task branches must be created from `epic/backend-reorg`, NOT from `main`.**
+> ⚠️ **All individual task branches must be created from** `epic/backend-reorg`**, NOT from** `main`**.**
 > When your work is done, open a PR targeting `epic/backend-reorg` — not `main`.
 
 ---
 
+
+
 ## 👥 Team Overview
 
-| Member | Area of Responsibility | Branch Name |
-|---|---|---|
-| **Vidyanand** | GCP Staging Project Setup & Cloud SQL | `task/cicd-gcp-staging-cloudsql` |
-| **David** | Artifact Registry & Docker Configuration | `task/cicd-artifact-registry-docker` |
-| **Aryan** | Cloud Run: Frontend & Backend Staging Services | `task/cicd-cloud-run-staging` |
-| **Sankeerth** | Cloud Run: Saige AI Service + Secret Manager Config | `task/cicd-cloud-run-saige-secrets` |
-| **Navdeep** | GitHub Actions — CI Pipeline (Phase 1) | `task/cicd-github-actions-ci` |
-| **Guia** | GitHub Actions — Staging Deployment (Phase 2) | `task/cicd-github-actions-cd-staging` |
-| **Bringesh** | IAM & Cross-Project Access Configuration | `task/cicd-iam-service-accounts` |
+
+| Member        | Area of Responsibility                              | Branch Name                           |
+| ------------- | --------------------------------------------------- | ------------------------------------- |
+| **Vidyanand** | GCP Staging Project Setup & Cloud SQL               | `task/cicd-gcp-staging-cloudsql`      |
+| **David**     | Artifact Registry & Docker Configuration            | `task/cicd-artifact-registry-docker`  |
+| **Aryan**     | Cloud Run: Frontend & Backend Staging Services      | `task/cicd-cloud-run-staging`         |
+| **Sankeerth** | Cloud Run: Saige AI Service + Secret Manager Config | `task/cicd-cloud-run-saige-secrets`   |
+| **Navdeep**   | GitHub Actions — CI Pipeline (Phase 1)              | `task/cicd-github-actions-ci`         |
+| **Guia**      | GitHub Actions — Staging Deployment (Phase 2)       | `task/cicd-github-actions-cd-staging` |
+| **Bringesh**  | IAM & Cross-Project Access Configuration            | `task/cicd-iam-service-accounts`      |
+
 
 ---
+
+
 
 ## 📋 Individual Task Assignments
 
 ---
+
+
 
 ### 🟦 Vidyanand — GCP Staging Project Setup & Cloud SQL
 
@@ -71,6 +80,8 @@ git push -u origin task/cicd-gcp-staging-cloudsql
 
 > Then open a **Pull Request** on GitHub: `task/cicd-gcp-staging-cloudsql` → `epic/backend-reorg`
 
+
+
 #### ✅ Tasks
 
 - [ ] Create (or confirm) the `oatmeal-farm-staging` GCP project exists and billing is enabled
@@ -84,6 +95,8 @@ git push -u origin task/cicd-gcp-staging-cloudsql
 > ⚠️ **Wait for Bringesh** to finalize IAM service accounts before locking down access rules.
 
 ---
+
+
 
 ### 🟩 David — Artifact Registry & Docker Configuration
 
@@ -107,6 +120,8 @@ git push -u origin task/cicd-artifact-registry-docker
 
 > Then open a **Pull Request** on GitHub: `task/cicd-artifact-registry-docker` → `epic/backend-reorg`
 
+
+
 #### ✅ Tasks
 
 - [ ] Create an **Artifact Registry** repository (Docker format) in the `oatmeal-farm-staging` project
@@ -124,11 +139,13 @@ git push -u origin task/cicd-artifact-registry-docker
   ```
   REGION-docker.pkg.dev/oatmeal-farm-staging/oatmeal-farm-registry/backend:<COMMIT_SHA>
   ```
-- [ ] Ensure **no `:latest` tag** is ever pushed — enforce commit SHA tagging only
+- [ ] Ensure **no** `:latest` **tag** is ever pushed — enforce commit SHA tagging only
 
 > ⚠️ **Coordinate with Navdeep & Guia** — they will use the image URI format you define in the GitHub Actions workflows.
 
 ---
+
+
 
 ### 🟨 Aryan — Cloud Run: Frontend & Backend Staging Services
 
@@ -151,6 +168,8 @@ git push -u origin task/cicd-cloud-run-staging
 ```
 
 > Then open a **Pull Request** on GitHub: `task/cicd-cloud-run-staging` → `epic/backend-reorg`
+
+
 
 #### ✅ Tasks
 
@@ -195,6 +214,8 @@ git push -u origin task/cicd-cloud-run-staging
 
 ---
 
+
+
 ### 🟧 Sankeerth — Cloud Run: Saige AI Service + Secret Manager Configuration
 
 **Goal:** Deploy the Saige AI Advisor Cloud Run service and wire all environment secrets across the staging environment.
@@ -216,6 +237,8 @@ git push -u origin task/cicd-cloud-run-saige-secrets
 ```
 
 > Then open a **Pull Request** on GitHub: `task/cicd-cloud-run-saige-secrets` → `epic/backend-reorg`
+
+
 
 #### ✅ Tasks
 
@@ -277,6 +300,8 @@ git push -u origin task/cicd-cloud-run-saige-secrets
 
 ---
 
+
+
 ### 🟥 Navdeep — GitHub Actions: CI Pipeline (Phase 1)
 
 **Goal:** Build the CI gate that runs on every Pull Request to `main`.
@@ -299,6 +324,8 @@ git push -u origin task/cicd-github-actions-ci
 
 > Then open a **Pull Request** on GitHub: `task/cicd-github-actions-ci` → `epic/backend-reorg`
 
+
+
 #### ✅ Tasks
 
 - [ ] Create the workflow file: `.github/workflows/ci.yml`
@@ -319,6 +346,8 @@ git push -u origin task/cicd-github-actions-ci
 > ⚠️ **Coordinate with David** for the correct Python version and dependency install steps matching the Dockerfile.
 
 ---
+
+
 
 ### 🟪 Guia — GitHub Actions: Staging Deployment (Phase 2)
 
@@ -342,6 +371,8 @@ git push -u origin task/cicd-github-actions-cd-staging
 
 > Then open a **Pull Request** on GitHub: `task/cicd-github-actions-cd-staging` → `epic/backend-reorg`
 
+
+
 #### ✅ Tasks
 
 - [ ] Create the workflow file: `.github/workflows/deploy-staging.yml`
@@ -355,20 +386,20 @@ git push -u origin task/cicd-github-actions-cd-staging
   1. **Checkout** code and extract `COMMIT_SHA` (short SHA via `${{ github.sha }}`)
   2. **Authenticate** to GCP using Workload Identity Federation (or Service Account JSON secret — coordinate with Bringesh for the secret name)
   3. **Build & Tag** Docker image:
-     ```bash
+    ```bash
      docker build -t REGION-docker.pkg.dev/oatmeal-farm-staging/oatmeal-farm-registry/backend:$COMMIT_SHA .
-     ```
+    ```
   4. **Push** image to Artifact Registry (no `:latest` tag):
-     ```bash
+    ```bash
      docker push REGION-docker.pkg.dev/oatmeal-farm-staging/oatmeal-farm-registry/backend:$COMMIT_SHA
-     ```
+    ```
   5. **Deploy** to the staging Cloud Run service (`oatmeal-backend-staging`) using the commit SHA image:
-     ```bash
+    ```bash
      gcloud run deploy oatmeal-backend-staging \
        --image REGION-docker.pkg.dev/oatmeal-farm-staging/oatmeal-farm-registry/backend:$COMMIT_SHA \
        --project oatmeal-farm-staging \
        --region REGION
-     ```
+    ```
 - [ ] Store all sensitive values (project ID, region, image URI prefix) as **GitHub Actions Secrets / Variables**
 - [ ] Test end-to-end by merging a small change to `main` and verifying the staging URL reflects the change
 
@@ -377,6 +408,8 @@ git push -u origin task/cicd-github-actions-cd-staging
 > ⚠️ **Coordinate with David** for the exact Artifact Registry image URI format.
 
 ---
+
+
 
 ### 🟫 Bringesh — IAM & Cross-Project Access Configuration
 
@@ -400,9 +433,11 @@ git push -u origin task/cicd-iam-service-accounts
 
 > Then open a **Pull Request** on GitHub: `task/cicd-iam-service-accounts` → `epic/backend-reorg`
 
+
+
 #### ✅ Tasks
 
-- [ ] Create a dedicated **GitHub Actions service account** in `oatmeal-farm-staging`:
+- [x] Create a dedicated **GitHub Actions service account** in `oatmeal-farm-staging`:
   - Name suggestion: `github-actions-cicd@oatmeal-farm-staging.iam.gserviceaccount.com`
   - Roles needed:
     ```bash
@@ -418,14 +453,14 @@ git push -u origin task/cicd-iam-service-accounts
       --member="serviceAccount:github-actions-cicd@oatmeal-farm-staging.iam.gserviceaccount.com" \
       --role="roles/iam.serviceAccountUser"
     ```
-- [ ] Create dedicated **Cloud Run service accounts** for each staging service (Backend, Frontend, Saige):
+- [x] Create dedicated **Cloud Run service accounts** for each staging service (Backend, Frontend, Saige):
   ```bash
   gcloud iam service-accounts create backend-sa --project=oatmeal-farm-staging
   gcloud iam service-accounts create frontend-sa --project=oatmeal-farm-staging
   gcloud iam service-accounts create saige-sa --project=oatmeal-farm-staging
   ```
   - Grant each `roles/cloudsql.client` and `roles/secretmanager.secretAccessor`
-- [ ] Set up **GitHub Actions authentication**:
+- [x] Set up **GitHub Actions authentication**:
   - Preferred: Workload Identity Federation (keyless) — generate the provider and client ID
   - Alternative: Download a JSON key and store it as a GitHub Actions secret (`GCP_SA_KEY`)
   - Document which method was used and **share the secret name with Guia**
@@ -445,6 +480,8 @@ git push -u origin task/cicd-iam-service-accounts
 > ⚠️ **You are the blocker for Aryan, Guia, and Vidyanand.** Prioritize getting service accounts created and communicating credentials to the team ASAP.
 
 ---
+
+
 
 ## 🔗 Dependency & Coordination Map
 
@@ -475,6 +512,8 @@ epic/backend-reorg  ◄── ALL branches start from here
 
 ---
 
+
+
 ## ✅ Definition of Done (Staging Sprint)
 
 Before this sprint is considered complete, the following must be true:
@@ -488,6 +527,8 @@ Before this sprint is considered complete, the following must be true:
 - [ ] All task branches have been merged into `epic/backend-reorg` via reviewed PRs
 
 ---
+
+
 
 ## 🚫 Out of Scope (This Sprint)
 
