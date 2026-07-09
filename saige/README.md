@@ -1,6 +1,6 @@
 # Saige — AI Agricultural Advisory Assistant
 
-> Part of the [oatmealfarmnetworkbackend](https://github.com/Oatmeal-Farm-Network/oatmealfarmnetworkbackend) repo. For backend setup and how to run the full OFN stack locally, see the [backend README](../README.md) and [docs/SYSTEM.md](../docs/SYSTEM.md).
+> Part of the [oatmealfarmnetworkbackend](https://github.com/Oatmeal-Farm-Network/oatmealfarmnetworkbackend) repo. For backend setup and how to run the full OFN stack locally, see the [backend README](../README.md).
 
 A conversational AI system that provides farm-specific advice across livestock, crops, weather, and mixed topics. Built with LangGraph, FastAPI, and Google Gemini AI, backed by Firestore RAG and Redis for short-term memory.
 
@@ -392,7 +392,7 @@ API available at `http://localhost:8000`. Interactive docs at `http://localhost:
 
 ### Mounted under the unified backend
 
-When running `server_all.py` from the repo root, Saige is served at `/saige/*` (e.g. `http://localhost:8000/saige/health`). See [docs/SYSTEM.md](../docs/SYSTEM.md).
+When running `server_all.py` from the repo root, Saige is served at `/saige/*` (e.g. `http://localhost:8000/saige/health`). See the [backend README](../README.md).
 
 ### Utility Scripts
 
