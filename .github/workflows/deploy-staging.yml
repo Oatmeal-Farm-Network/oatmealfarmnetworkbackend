@@ -28,23 +28,13 @@ jobs:
         run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
       # ---------------------------------------------------------------
-      # AUTH: Pending Bringesh -- confirm which method is actually set up.
-      # OPTION A (preferred): Workload Identity Federation (keyless)
+      # AUTH: Confirmed with Bringesh -- Workload Identity Federation (keyless)
       # ---------------------------------------------------------------
-      - name: Authenticate to Google Cloud (WIF)
+      - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}   # TODO: get from Bringesh
-          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}       # e.g. github-actions-cicd@oatmeal-farm-staging.iam.gserviceaccount.com
-
-      # ---------------------------------------------------------------
-      # OPTION B (fallback): JSON key secret -- use ONLY if Bringesh says
-      # WIF isn't set up. Comment out Option A above if using this instead.
-      # ---------------------------------------------------------------
-      # - name: Authenticate to Google Cloud (JSON key)
-      #   uses: google-github-actions/auth@v2
-      #   with:
-      #     credentials_json: ${{ secrets.GCP_SA_KEY }}
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
