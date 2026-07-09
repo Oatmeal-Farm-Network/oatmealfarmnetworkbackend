@@ -194,7 +194,7 @@ oatmealfarmnetworkbackend/                 ← Git repo root (.git lives here)
 │   └── seed_oatmeal_ai.sql
 │
 ├── docs/
-│   ├── SYSTEM.md
+│   ├── iam-setup.md
 │   └── architecture.png                    ← [DECIDE] (moved from root architecture.png)
 │
 ├── src/                                   ← Legacy infrastructure
