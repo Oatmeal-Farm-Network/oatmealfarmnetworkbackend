@@ -106,7 +106,7 @@ def my_jobs(business_id: int, db: Session = Depends(get_db)):
     rows = db.execute(text("""
         SELECT j.*,
                (SELECT COUNT(*) FROM JobApplications a WHERE a.JobID=j.JobID) AS ApplicationCount
-        FROM JobListings j WHERE j.BusinessID=:b ORDER BY j.CreatedAt DESC
+        FROM JobListings j WHERE j.BusinessID=:b AND j.IsActive=1 ORDER BY j.CreatedAt DESC
     """), {"b": business_id}).fetchall()
     return [_ser(r) for r in rows]
 
