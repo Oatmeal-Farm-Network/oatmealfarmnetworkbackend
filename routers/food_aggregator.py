@@ -339,6 +339,16 @@ def _blank_to_none(body: dict) -> dict:
     return {k: (None if isinstance(v, str) and v.strip() == "" else v) for k, v in body.items()}
 
 
+def _farm_name_exists(business_id: int, farm_name: str, db: Session) -> bool:
+    """Case-insensitive check for an existing farm of the same name under this business,
+    so we don't create confusing duplicate farms."""
+    row = db.execute(text("""
+        SELECT TOP 1 FarmID FROM OFNAggregatorFarm
+        WHERE BusinessID = :bid AND LOWER(LTRIM(RTRIM(FarmName))) = LOWER(LTRIM(RTRIM(:fn)))
+    """), {"bid": business_id, "fn": (farm_name or "").strip()}).fetchone()
+    return row is not None
+
+
 def _update_row(db, table, pk_col, pk_val, body, allowed):
     """UPDATE ... SET col = :col ... WHERE pk_col = :pk for whitelisted cols."""
     body = _blank_to_none(body)
@@ -381,6 +391,8 @@ def create_farm(business_id: int, body: dict, db: Session = Depends(get_db)):
     body = _blank_to_none(body)
     if not body.get("FarmName"):
         raise HTTPException(400, "FarmName is required")
+    if _farm_name_exists(business_id, body["FarmName"], db):
+        raise HTTPException(409, "A farm with this name already exists.")
     res = db.execute(text("""
         INSERT INTO OFNAggregatorFarm
             (BusinessID, FarmName, ContactName, ContactPhone, ContactEmail,
@@ -486,6 +498,8 @@ def invite_farm(business_id: int, body: dict, db: Session = Depends(get_db)):
 
     if not farm_name:
         raise HTTPException(400, "FarmName is required")
+    if _farm_name_exists(business_id, farm_name, db):
+        raise HTTPException(409, "A farm with this name already exists.")
 
     # ── 1. Find or create People record ──────────────────────────────────────
     people_id = None
@@ -578,7 +592,9 @@ def invite_farm(business_id: int, body: dict, db: Session = Depends(get_db)):
     db.commit()
 
     # ── 5. Send invite email ──────────────────────────────────────────────────
-    if contact_email and not already_existed:
+    # Send whenever we have an email (previously skipped existing users, so re-adding a
+    # known contact silently sent nothing). Check the SendGrid response so failures surface.
+    if contact_email:
         try:
             invite_html = (
                 f"<p>Hi {contact_name or 'there'},</p>"
@@ -600,7 +616,9 @@ def invite_farm(business_id: int, body: dict, db: Session = Depends(get_db)):
                 "Authorization": "Bearer " + SENDGRID_API_KEY,
                 "Content-Type": "application/json",
             }
-            httpx.post(SENDGRID_URL, json=email_payload, headers=email_headers, timeout=10)
+            resp = httpx.post(SENDGRID_URL, json=email_payload, headers=email_headers, timeout=10)
+            if resp.status_code >= 400:
+                print(f"[invite-farm] SendGrid returned {resp.status_code}: {resp.text[:300]}")
         except Exception as e:
             print(f"[invite-farm] email error: {e}")
 
