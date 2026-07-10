@@ -25,7 +25,13 @@ def _get_stream_queue(thread_id: str):
     with _stream_lock:
         return _stream_queues.get(thread_id)
 
-from config import RAG_AVAILABLE, WEATHER_AVAILABLE, MAX_QUESTIONS
+from config import (
+    RAG_AVAILABLE,
+    WEATHER_AVAILABLE,
+    MAX_QUESTIONS,
+    ASSESSMENT_CLASSIFICATION_TIMEOUT_SECONDS,
+    ASSESSMENT_USE_LLM_CLASSIFIER,
+)
 from saige_models import FarmState, AssessmentDecision, QueryClassification, QueryTypeClassification, WeatherQueryParsed, FollowUpEntityExtraction
 from llm import llm
 from rag import rag_livestock, rag_plant, rag_bakasura, rag_news, rag_hitl_charlie
@@ -589,6 +595,31 @@ def _infer_directive_advisory_type(text: str) -> str:
     return "mixed"
 
 
+def _invoke_with_timeout(runnable, prompt: str, timeout_seconds: float):
+    """Invoke a runnable with a hard timeout to avoid long first-turn stalls."""
+    result_q = _queue_mod.Queue(maxsize=1)
+
+    def _worker():
+        try:
+            result_q.put(("ok", runnable.invoke(prompt)))
+        except Exception as exc:
+            result_q.put(("err", exc))
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout_seconds)
+
+    if t.is_alive():
+        raise TimeoutError(
+            f"classification timed out after {timeout_seconds:.1f}s"
+        )
+
+    status, payload = result_q.get_nowait()
+    if status == "err":
+        raise payload
+    return payload
+
+
 def assessment_node(state: FarmState):
     """User-driven assessment: starts with open question, then contextual follow-ups."""
     
@@ -696,10 +727,17 @@ def assessment_node(state: FarmState):
                     "advisory_type": _ft_type,
                 }
 
-            # Use LLM to intelligently classify the query and determine next steps
-            print(f"[Assessment] Using LLM for smart query classification...")
-
+            # Use LLM to intelligently classify the query and determine next steps.
+            # If disabled or slow, fall back to deterministic keyword routing.
             try:
+                if not ASSESSMENT_USE_LLM_CLASSIFIER:
+                    raise RuntimeError("LLM classifier disabled by config")
+
+                print(
+                    f"[Assessment] Using LLM for smart query classification "
+                    f"(timeout={ASSESSMENT_CLASSIFICATION_TIMEOUT_SECONDS:.1f}s)..."
+                )
+
                 classifier = llm.with_structured_output(QueryTypeClassification)
                 classification_prompt = f"""Analyze this query and classify it. Your job is to decide whether to answer directly or ask clarifying questions.
 
@@ -750,7 +788,11 @@ Examples:
 - "help with my farm" → query_type: mixed, is_specific: false, needs_clarification: true
 - "animal recommendation for maize field" → query_type: mixed, is_specific: true, needs_clarification: false"""
 
-                classification_result = classifier.invoke(classification_prompt)
+                classification_result = _invoke_with_timeout(
+                    classifier,
+                    classification_prompt,
+                    ASSESSMENT_CLASSIFICATION_TIMEOUT_SECONDS,
+                )
                 
                 query_type = normalize_advisory_type(classification_result.query_type)
                 is_specific = classification_result.is_specific
@@ -919,7 +961,11 @@ Set is_complete=True when you have:
 - What they're growing/raising
 - Location (if needed)"""
 
-    res = structured_llm.invoke(prompt)
+    res = _invoke_with_timeout(
+        structured_llm,
+        prompt,
+        ASSESSMENT_CLASSIFICATION_TIMEOUT_SECONDS,
+    )
 
     if not res.is_complete:
         answer_slot = _infer_answer_slot(res.question, has_existing_issue=bool(current_issues))

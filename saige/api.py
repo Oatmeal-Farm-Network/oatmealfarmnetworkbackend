@@ -765,9 +765,25 @@ Examples:
             print(f"[API] Event keys: {list(event.keys())}")
     except Exception as stream_err:
         logger.error(f"[API] Graph stream error: {stream_err}", exc_info=True)
+        err_text = str(stream_err) if stream_err else "Unknown stream error"
+        err_upper = err_text.upper()
+        if "RESOURCE_EXHAUSTED" in err_upper or "PREPAYMENT CREDITS ARE DEPLETED" in err_upper:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "status": "error",
+                    "message": (
+                        "Gemini API quota/credits exhausted for this project. "
+                        "Top up billing in AI Studio or switch to a billed Vertex model."
+                    ),
+                },
+                headers={"Access-Control-Allow-Origin": "*"},
+            )
+        if len(err_text) > 400:
+            err_text = err_text[:400] + "..."
         return JSONResponse(
             status_code=500,
-            content={"status": "error", "message": "Saige encountered an error processing your request. Please try again."},
+            content={"status": "error", "message": f"Saige stream error: {err_text}"},
             headers={"Access-Control-Allow-Origin": "*"},
         )
 

@@ -1,18 +1,33 @@
 # --- redis_client.py --- (Redis connection manager with pooling)
+from __future__ import annotations
+
 """
 Shared Redis client management for FastAPI and helper modules.
 Supports REDIS_URL (preferred) with fallback host/port/password/db vars.
 """
 import logging
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
 from urllib.parse import urlparse
 
-import redis
+try:
+    import redis
+except ImportError:  # pragma: no cover - optional dependency in local dev
+    redis = None
+
+if TYPE_CHECKING:
+    import redis as redis_types
+    ConnectionPoolT = redis_types.ConnectionPool
+    RedisT = redis_types.Redis
+else:
+    ConnectionPoolT = Any
+    RedisT = Any
 
 from config import (
     REDIS_AVAILABLE,
     REDIS_ENABLED,
+    REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS,
+    REDIS_SOCKET_TIMEOUT_SECONDS,
     REDIS_SSL_CERT_REQS,
     get_redis_url,
     redis_connection_mode,
@@ -25,8 +40,8 @@ class RedisClientManager:
     """Manage shared Redis connection pools for text and binary clients."""
 
     def __init__(self) -> None:
-        self._pool_text: Optional[redis.ConnectionPool] = None
-        self._pool_binary: Optional[redis.ConnectionPool] = None
+        self._pool_text: Optional[ConnectionPoolT] = None
+        self._pool_binary: Optional[ConnectionPoolT] = None
         self._redis_url: Optional[str] = get_redis_url() if REDIS_ENABLED else None
         self._mode = redis_connection_mode()
         self._last_error: Optional[str] = None
@@ -34,8 +49,8 @@ class RedisClientManager:
     def _pool_kwargs(self, decode_responses: bool) -> Dict[str, Any]:
         kwargs: Dict[str, Any] = {
             "decode_responses": decode_responses,
-            "socket_connect_timeout": 5,
-            "socket_timeout": 5,
+            "socket_connect_timeout": REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS,
+            "socket_timeout": REDIS_SOCKET_TIMEOUT_SECONDS,
             "retry_on_timeout": True,
             "health_check_interval": 30,
         }
@@ -43,7 +58,7 @@ class RedisClientManager:
             kwargs["ssl_cert_reqs"] = REDIS_SSL_CERT_REQS
         return kwargs
 
-    def _get_or_create_pool(self, decode_responses: bool) -> Optional[redis.ConnectionPool]:
+    def _get_or_create_pool(self, decode_responses: bool) -> Optional[ConnectionPoolT]:
         if not REDIS_ENABLED or not REDIS_AVAILABLE:
             return None
         if not self._redis_url:
@@ -66,7 +81,7 @@ class RedisClientManager:
             logger.error(f"[Redis] Failed to create connection pool (mode={self._mode}): {e}")
             return None
 
-    def get_client(self, decode_responses: bool = False) -> Optional[redis.Redis]:
+    def get_client(self, decode_responses: bool = False) -> Optional[RedisT]:
         """Return pooled Redis client (text or binary) if redis is enabled/available."""
         pool = self._get_or_create_pool(decode_responses)
         if not pool:
@@ -142,7 +157,7 @@ def get_redis_manager() -> RedisClientManager:
     return _default_manager
 
 
-def get_redis_client(decode_responses: bool = False) -> Optional[redis.Redis]:
+def get_redis_client(decode_responses: bool = False) -> Optional[RedisT]:
     """
     Backward-compatible helper: returns a live Redis client when possible.
     Keeps old semantics by validating with ping before returning.

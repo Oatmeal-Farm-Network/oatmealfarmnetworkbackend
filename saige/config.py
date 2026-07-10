@@ -129,6 +129,22 @@ if _redis_ssl_cert_reqs_raw not in _valid_redis_ssl_cert_reqs:
 else:
     REDIS_SSL_CERT_REQS = _redis_ssl_cert_reqs_raw
 
+# Keep Redis failures from adding multi-second latency when Redis is down.
+REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS = float(
+    os.getenv("REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS", "0.25")
+)
+REDIS_SOCKET_TIMEOUT_SECONDS = float(
+    os.getenv("REDIS_SOCKET_TIMEOUT_SECONDS", "0.25")
+)
+
+# Bound assessment classifier latency on first-turn routing.
+ASSESSMENT_CLASSIFICATION_TIMEOUT_SECONDS = float(
+    os.getenv("ASSESSMENT_CLASSIFICATION_TIMEOUT_SECONDS", "3.0")
+)
+ASSESSMENT_USE_LLM_CLASSIFIER = os.getenv(
+    "ASSESSMENT_USE_LLM_CLASSIFIER", "true"
+).lower() == "true"
+
 # Message buffer settings (Task 3 names)
 SHORT_TERM_N = int(os.getenv("SHORT_TERM_N", os.getenv("MESSAGE_BUFFER_SIZE", "20")))  # Last N messages
 SHORT_TERM_TTL_SECONDS = int(
