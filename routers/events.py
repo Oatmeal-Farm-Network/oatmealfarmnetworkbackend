@@ -651,6 +651,31 @@ def register(event_id: int, data: dict, db: Session = Depends(get_db)):
     items = data.get("items", [])
     total = sum(float(i.get("UnitPrice", 0)) * int(i.get("Quantity", 1)) for i in items)
 
+    people_id = data.get("PeopleID") or None
+    email     = (data.get("AttendeeEmail") or "").strip() or None
+
+    # #73 — block duplicate active registration for the same person (by PeopleID or email).
+    if people_id or email:
+        dup = db.execute(text("""
+            SELECT TOP 1 RegID FROM OFNEventRegistrations
+            WHERE EventID = :eid AND ISNULL(PaymentStatus,'') <> 'cancelled'
+              AND ((:pid IS NOT NULL AND PeopleID = :pid)
+                   OR (:email IS NOT NULL AND AttendeeEmail = :email))
+        """), {"eid": event_id, "pid": people_id, "email": email}).fetchone()
+        if dup:
+            raise HTTPException(409, "You are already registered for this event.")
+
+    # #72 — enforce capacity BEFORE inserting (was previously never checked on this path).
+    ev = db.execute(text("SELECT MaxAttendees FROM OFNEvents WHERE EventID = :eid"),
+                    {"eid": event_id}).fetchone()
+    if ev and ev.MaxAttendees:
+        current = db.execute(text("""
+            SELECT COUNT(*) FROM OFNEventRegistrations
+            WHERE EventID = :eid AND ISNULL(PaymentStatus,'') <> 'cancelled'
+        """), {"eid": event_id}).scalar()
+        if current >= ev.MaxAttendees:
+            raise HTTPException(409, "This event is full.")
+
     db.execute(text("""
         INSERT INTO OFNEventRegistrations
             (EventID, PeopleID, BusinessID, TotalAmount, PaymentStatus,

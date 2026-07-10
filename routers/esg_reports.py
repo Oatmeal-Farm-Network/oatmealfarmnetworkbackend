@@ -297,6 +297,8 @@ def list_metrics(business_id: int,
 
 @router.post("/api/esg/{business_id}/metrics")
 def create_metric(business_id: int, body: dict, db: Session = Depends(get_db)):
+    # Blank strings → None so the numeric NumericValue column stores NULL instead of 500-ing.
+    body = {k: (None if isinstance(v, str) and v.strip() == "" else v) for k, v in body.items()}
     if not body.get("MetricKey") or not body.get("Label"):
         raise HTTPException(400, "MetricKey and Label are required")
     res = db.execute(text("""
@@ -324,6 +326,7 @@ def create_metric(business_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/esg/metrics/{metric_id}")
 def update_metric(metric_id: int, body: dict, db: Session = Depends(get_db)):
+    body = {k: (None if isinstance(v, str) and v.strip() == "" else v) for k, v in body.items()}
     cols = [c for c in METRIC_FIELDS if c in body]
     if cols:
         sets = ", ".join(f"{c} = :{c}" for c in cols) + ", UpdatedDate = GETDATE()"
