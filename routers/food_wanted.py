@@ -186,7 +186,7 @@ def my_ads(
                (SELECT COUNT(*) FROM FoodWantedItems WHERE AdID = a.AdID) AS ItemCount,
                (SELECT COUNT(*) FROM FoodWantedResponses WHERE AdID = a.AdID) AS ResponseCount
         FROM FoodWantedAds a
-        WHERE a.BusinessID = :bid
+        WHERE a.BusinessID = :bid AND a.IsActive = 1
         ORDER BY a.CreatedAt DESC
     """), {"bid": business_id}).mappings().all()
     result = []
