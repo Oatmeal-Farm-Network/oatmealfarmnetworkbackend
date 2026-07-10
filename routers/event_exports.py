@@ -169,7 +169,7 @@ def export_halter(event_id: int, db: Session = Depends(get_db)):
           FROM OFNEventHalterRegistrations r
           LEFT JOIN Animals a    ON a.AnimalID = r.AnimalID
           LEFT JOIN People   p   ON p.people_id = r.PeopleID
-          LEFT JOIN Businesses b ON b.BusinessID = r.BusinessID
+          LEFT JOIN Business b ON b.BusinessID = r.BusinessID
          WHERE r.EventID = :e
          ORDER BY b.BusinessName, a.AnimalName
     """), {"e": event_id}).mappings().all()
@@ -204,7 +204,7 @@ def export_fleece(event_id: int, db: Session = Depends(get_db)):
           FROM OFNEventFleeceEntries f
           LEFT JOIN OFNEventFleeceDivisions d ON d.DivisionID = f.DivisionID
           LEFT JOIN People   p ON p.people_id = f.PeopleID
-          LEFT JOIN Businesses b ON b.BusinessID = f.BusinessID
+          LEFT JOIN Business b ON b.BusinessID = f.BusinessID
          WHERE f.EventID = :e
          ORDER BY d.DivisionName, f.FleeceName
     """), {"e": event_id}).mappings().all()
@@ -223,7 +223,7 @@ def export_spinoff(event_id: int, db: Session = Depends(get_db)):
                s.JudgeNotes, s.CreatedDate
           FROM OFNEventSpinOffEntries s
           LEFT JOIN People p     ON p.people_id = s.PeopleID
-          LEFT JOIN Businesses b ON b.BusinessID = s.BusinessID
+          LEFT JOIN Business b ON b.BusinessID = s.BusinessID
          WHERE s.EventID = :e
          ORDER BY s.EntryTitle
     """), {"e": event_id}).mappings().all()
@@ -243,7 +243,7 @@ def export_fiber_arts(event_id: int, db: Session = Depends(get_db)):
           FROM OFNEventFiberArtsEntries fa
           LEFT JOIN OFNEventFiberArtsCategories c ON c.CategoryID = fa.CategoryID
           LEFT JOIN People p     ON p.people_id = fa.PeopleID
-          LEFT JOIN Businesses b ON b.BusinessID = fa.BusinessID
+          LEFT JOIN Business b ON b.BusinessID = fa.BusinessID
          WHERE fa.EventID = :e
          ORDER BY c.CategoryName, fa.EntryTitle
     """), {"e": event_id}).mappings().all()

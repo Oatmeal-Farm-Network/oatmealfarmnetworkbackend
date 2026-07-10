@@ -785,7 +785,7 @@ def event_ics(event_id: int, db: Session = Depends(get_db)):
                e.EventLocationState, e.EventLocationZip,
                b.BusinessName
           FROM OFNEvents e
-          LEFT JOIN Businesses b ON b.BusinessID = e.BusinessID
+          LEFT JOIN Business b ON b.BusinessID = e.BusinessID
          WHERE e.EventID = :e
     """), {"e": event_id}).mappings().first()
     if not row:
