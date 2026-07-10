@@ -7,7 +7,7 @@ on:
 
 env:
   # --- Set these as GitHub Actions "Variables" (Settings > Secrets and variables > Actions > Variables tab) ---
-  GCP_PROJECT_ID: oatmeal-farm-staging
+  GCP_PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID }}
   REGION: us-central1
   IMAGE_URI_PREFIX: us-central1-docker.pkg.dev/oatmeal-farm-staging/oatmeal-farm-registry/backend
   CLOUD_RUN_SERVICE: oatmeal-backend-staging
@@ -30,11 +30,11 @@ jobs:
       # ---------------------------------------------------------------
       # AUTH: Confirmed with Bringesh -- Workload Identity Federation (keyless)
       # ---------------------------------------------------------------
-      - name: Authenticate to Google Cloud
+      - name: Authenticate to Google Cloud (Staging)
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ secrets.STAGING_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT }}
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
