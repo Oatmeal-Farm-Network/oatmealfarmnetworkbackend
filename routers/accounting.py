@@ -5,6 +5,7 @@
 # Same tables / logic as oatmeal_main accounting.routes.js — scoped by BusinessID.
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from database import blank_to_none
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db
@@ -1327,6 +1328,7 @@ def list_jobs(access=Depends(require_accounting_access), db: Session = Depends(g
 
 @router.post("/jobs")
 def create_job(body: dict, access=Depends(require_accounting_access), db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_job_tables(db)
     bid = access["business_id"]
     r = db.execute(text("""
@@ -1350,6 +1352,7 @@ def create_job(body: dict, access=Depends(require_accounting_access), db: Sessio
 
 @router.put("/jobs/{job_id}")
 def update_job(job_id: int, body: dict, access=Depends(require_accounting_access), db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     bid = access["business_id"]
     db.execute(text("""
         UPDATE CostJob SET JobName=:name, JobType=:jtype, FieldRef=:fref, CropName=:crop,
@@ -1396,6 +1399,7 @@ def list_allocations(job_id: int, access=Depends(require_accounting_access), db:
 
 @router.post("/jobs/{job_id}/allocations")
 def add_allocation(job_id: int, body: dict, access=Depends(require_accounting_access), db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_job_tables(db)
     bid = access["business_id"]
     r = db.execute(text("""
@@ -1617,6 +1621,7 @@ def list_currencies(db: Session = Depends(get_db)):
 
 @router.put("/currencies/{code}")
 def update_currency_rate(code: str, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     """Update the exchange rate for a currency code (rate relative to USD)."""
     _ensure_fx(db)
     code = code.upper()
@@ -1637,6 +1642,7 @@ def update_currency_rate(code: str, body: dict, db: Session = Depends(get_db)):
 
 @router.post("/currencies/convert")
 def convert_currency(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     """Convert an amount between two currencies via USD as pivot.
     body: { amount, from_currency, to_currency }"""
     _ensure_fx(db)

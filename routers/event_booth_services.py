@@ -9,6 +9,7 @@ Schema
   OFNEventBoothServiceOrder  : line item linking AppID → ServiceID with Quantity
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
+from database import blank_to_none
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from typing import Optional, List
@@ -85,6 +86,7 @@ def list_services(event_id: int, active_only: bool = True, db: Session = Depends
 
 @router.post("/api/events/{event_id}/booth-services")
 def create_service(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     if not body.get("Name"):
         raise HTTPException(400, "Name is required")
     res = db.execute(text("""
@@ -111,6 +113,7 @@ def create_service(event_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/booth-services/{service_id}")
 def update_service(service_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE OFNEventBoothService SET
             Name=:n, Description=:d, Category=:cat, Price=:p, Unit=:u,
@@ -169,6 +172,7 @@ def list_orders(app_id: int, db: Session = Depends(get_db)):
 
 @router.post("/api/events/applications/{app_id}/booth-services")
 def add_order(app_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     sid = body.get("ServiceID")
     if not sid:
         raise HTTPException(400, "ServiceID is required")
@@ -199,6 +203,7 @@ def add_order(app_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/booth-service-orders/{order_id}")
 def update_order(order_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE OFNEventBoothServiceOrder SET
             Quantity=:q, UnitPrice=:up, Notes=:n, Status=:st

@@ -3,6 +3,7 @@
 # Mount: app.include_router(marketplace_router, prefix="/api/marketplace")
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from database import blank_to_none
 from sqlalchemy.orm import Session
 from sqlalchemy import text, bindparam
 from database import get_db, engine
@@ -1118,6 +1119,7 @@ def get_seller_orders_v2(
 
 @marketplace_router.post("/orders/seller/confirm")
 def seller_confirm_v2(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     oiid = body.get("OrderItemID")
     status = body.get("Status")
     if not oiid or status not in ("confirmed", "rejected"):
@@ -1139,6 +1141,7 @@ def seller_confirm_v2(body: dict, db: Session = Depends(get_db)):
 
 @marketplace_router.post("/orders/seller/ship")
 def seller_ship_v2(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     oiid = body.get("OrderItemID")
     if not oiid:
         raise HTTPException(400, "OrderItemID required")
@@ -1919,6 +1922,7 @@ def create_product(data: ProductCreate, db: Session = Depends(get_db)):
 
 @marketplace_router.put("/products/{product_id}")
 def update_product(product_id: int, data: dict, db: Session = Depends(get_db)):
+    data = blank_to_none(data)
     allowed = {"Title", "Description", "CategoryName", "UnitPrice", "WholesalePrice",
                "UnitLabel", "QuantityAvailable", "MinOrderQuantity", "ImageURL", "Tags",
                "IsOrganic", "IsFeatured", "IsActive", "Weight", "WeightUnit",

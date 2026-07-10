@@ -12,6 +12,7 @@ is intentionally lenient on GETs (the public sponsor list IS the value),
 strict on writes (organizer-only via business_id check downstream).
 """
 from fastapi import APIRouter, HTTPException, Query, Depends
+from database import blank_to_none
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from typing import Optional
@@ -109,6 +110,7 @@ def list_tiers(event_id: int, db: Session = Depends(get_db)):
 
 @router.post("/api/events/{event_id}/sponsorship/tiers")
 def create_tier(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     if not body.get("Name"):
         raise HTTPException(status_code=400, detail="Name is required")
     res = db.execute(text("""
@@ -134,6 +136,7 @@ def create_tier(event_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/sponsorship/tiers/{tier_id}")
 def update_tier(tier_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE OFNEventSponsorTier SET
             Name=:n, Price=:p, MaxSlots=:ms, BenefitsHTML=:b,
@@ -248,6 +251,7 @@ def list_public_sponsors(event_id: int, db: Session = Depends(get_db)):
 
 @router.post("/api/events/{event_id}/sponsors")
 def add_sponsor(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     if not body.get("BusinessName"):
         raise HTTPException(status_code=400, detail="BusinessName is required")
     # Slot enforcement
@@ -296,6 +300,7 @@ def add_sponsor(event_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/sponsors/{sponsor_id}")
 def update_sponsor(sponsor_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     # Capture previous Status so we can fire a confirmation email when
     # an organizer flips a sponsor from non-confirmed → confirmed.
     prev_row = db.execute(text("""

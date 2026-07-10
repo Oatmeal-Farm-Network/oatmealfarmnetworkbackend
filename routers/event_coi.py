@@ -15,6 +15,7 @@ Auto-expiry: a NULL expiry never expires; a past-date ExpiryDate flips to
 needed).
 """
 import os, uuid
+from database import blank_to_none
 from datetime import datetime, date
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from sqlalchemy.orm import Session
@@ -206,6 +207,7 @@ def list_coi(
 
 @router.put("/api/events/coi/{coi_id}")
 def update_coi(coi_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE OFNEventCOI SET
             EffectiveDate=:ef, ExpiryDate=:ex,

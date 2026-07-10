@@ -6,6 +6,7 @@ scheduled across them. Speakers are managed with bios. Attendees register at a
 pricing tier (early-bird / regular / late) and get a badge on check-in.
 """
 from fastapi import APIRouter, Depends, HTTPException
+from database import blank_to_none
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db, SessionLocal
@@ -179,6 +180,7 @@ def get_config(event_id: int, db: Session = Depends(get_db)):
 
 @router.put("/api/events/{event_id}/conference/config")
 def put_config(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     exists = db.execute(text("SELECT ConfigID FROM OFNEventConferenceConfig WHERE EventID=:e"),
                        {"e": event_id}).fetchone()
     params = {
@@ -228,6 +230,7 @@ def list_tracks(event_id: int, db: Session = Depends(get_db)):
 
 @router.post("/api/events/{event_id}/conference/tracks")
 def add_track(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     if not body.get("TrackName"):
         raise HTTPException(400, "TrackName required")
     r = db.execute(text("""
@@ -245,6 +248,7 @@ def add_track(event_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/conference/tracks/{track_id}")
 def update_track(track_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE OFNEventConferenceTracks SET
           TrackName=:n, TrackColor=:c, Description=:d, DisplayOrder=:o
@@ -279,6 +283,7 @@ def list_rooms(event_id: int, db: Session = Depends(get_db)):
 
 @router.post("/api/events/{event_id}/conference/rooms")
 def add_room(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     if not body.get("RoomName"):
         raise HTTPException(400, "RoomName required")
     r = db.execute(text("""
@@ -292,6 +297,7 @@ def add_room(event_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/conference/rooms/{room_id}")
 def update_room(room_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("UPDATE OFNEventConferenceRooms SET RoomName=:n, Capacity=:c, Notes=:no WHERE RoomID=:r"),
               {"r": room_id, "n": body.get("RoomName"), "c": body.get("Capacity"), "no": body.get("Notes")})
     db.commit()
@@ -318,6 +324,7 @@ def list_speakers(event_id: int, db: Session = Depends(get_db)):
 
 @router.post("/api/events/{event_id}/conference/speakers")
 def add_speaker(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     if not body.get("SpeakerName"):
         raise HTTPException(400, "SpeakerName required")
     r = db.execute(text("""
@@ -336,6 +343,7 @@ def add_speaker(event_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/conference/speakers/{speaker_id}")
 def update_speaker(speaker_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE OFNEventConferenceSpeakers SET
           SpeakerName=:n, Title=:t, Company=:c, Bio=:b, PhotoURL=:p, Email=:em
@@ -392,6 +400,7 @@ def list_sessions(event_id: int, db: Session = Depends(get_db)):
 
 @router.post("/api/events/{event_id}/conference/sessions")
 def add_session(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     if not body.get("Title") or not body.get("SessionStart"):
         raise HTTPException(400, "Title and SessionStart required")
     r = db.execute(text("""
@@ -421,6 +430,7 @@ def add_session(event_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/conference/sessions/{session_id}")
 def update_session(session_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE OFNEventConferenceSessions SET
           TrackID=:t, RoomID=:r, Title=:ti, Description=:d,
@@ -478,6 +488,7 @@ def list_registrations(event_id: int, people_id: int | None = None,
 
 @router.post("/api/events/{event_id}/conference/registrations")
 def add_registration(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     cfg_row = db.execute(text("SELECT * FROM OFNEventConferenceConfig WHERE EventID=:e"),
                         {"e": event_id}).fetchone()
     if not cfg_row:
@@ -543,6 +554,7 @@ def add_registration(event_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/conference/registrations/{reg_id}")
 def update_registration(reg_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     reg = db.execute(text("SELECT * FROM OFNEventConferenceRegistrations WHERE RegID=:r"),
                     {"r": reg_id}).fetchone()
     if not reg:
@@ -569,6 +581,7 @@ def update_registration(reg_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/conference/registrations/{reg_id}/checkin")
 def checkin(reg_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     checked = 1 if body.get("CheckedIn", True) else 0
     db.execute(text("""
         UPDATE OFNEventConferenceRegistrations SET
@@ -593,6 +606,7 @@ def delete_registration(reg_id: int, db: Session = Depends(get_db)):
 
 @router.post("/api/events/conference/sessions/{session_id}/attendance")
 def record_attendance(session_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     reg_id = body.get("RegID")
     if not reg_id:
         raise HTTPException(400, "RegID required")
