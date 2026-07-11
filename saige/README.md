@@ -320,6 +320,7 @@ DB_PASSWORD=
 DB_NAME=
 
 # --- API ---
+# Supports a comma-separated list for production origins.
 FRONTEND_URL=http://localhost:5173
 ALLOW_ALL_ORIGINS=false
 
@@ -1167,6 +1168,16 @@ pytest --cov=saige --cov-report=html
 
 ## Deployment
 
+### Production deployment notes
+
+Saige is now set up for production-style deployments with the following expectations:
+
+- The container must bind to the runtime port provided by the platform. On Cloud Run this is `PORT`; the service should not hardcode `8000` when deployed there.
+- `FRONTEND_URL` should be set to the real production origin(s) for CORS. It supports a comma-separated list when multiple origins are needed.
+- `ALLOW_ALL_ORIGINS` should normally stay `false` in production.
+- `SECRET_KEY` should be injected via environment variables or a platform secret store; do not hardcode it into source-controlled deployment scripts.
+- The weather path now defaults to a free, keyless fallback path for U.S. locations (NWS/Open-Meteo), so no paid weather API key is required for the common case.
+
 ### Docker
 
 ```bash
@@ -1184,7 +1195,7 @@ gcloud run deploy saige \
   --source . \
   --platform managed \
   --region us-central1 \
-  --set-env-vars SECRET_KEY="...",GOOGLE_API_KEY="..."
+  --set-env-vars SECRET_KEY="...",GOOGLE_API_KEY="...",FRONTEND_URL="https://your-domain.com",ALLOW_ALL_ORIGINS=false
 ```
 
 ### Kubernetes

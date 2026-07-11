@@ -8,6 +8,7 @@ import base64
 import struct
 import asyncio
 import threading
+import requests
 from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Query, Request, Depends, Header
@@ -17,7 +18,7 @@ from pydantic import BaseModel, Field, field_validator
 from langgraph.types import Command
 
 from config import (
-    FRONTEND_URL, ALLOW_ALL_ORIGINS, IS_PRODUCTION, REDIS_ENABLED, SHORT_TERM_N,
+    FRONTEND_URL, ALLOW_ALL_ORIGINS, ALLOWED_ORIGINS, IS_PRODUCTION, REDIS_ENABLED, SHORT_TERM_N,
     MAX_MESSAGE_CHARS, RATE_LIMIT_ENABLED, RATE_LIMIT_MAX_REQUESTS,
     RATE_LIMIT_WINDOW_SECONDS, REDIS_RATE_LIMIT_KEY_TEMPLATE,
 )
@@ -62,6 +63,9 @@ def safe_graph_stream(input_data, config, stream_mode="values"):
 
 logger = logging.getLogger("farm_advisory")
 logger.setLevel(logging.INFO)
+
+CHAT_REQUEST_TIMEOUT_SECONDS = int(os.getenv("SAIGE_CHAT_TIMEOUT_SECONDS", "75"))
+_USDA_REPORT_ID_RE = re.compile(r"^[A-Z0-9_]{4,20}$")
 
 if IS_PRODUCTION:
     handler = logging.StreamHandler()
@@ -150,9 +154,21 @@ app_kwargs["lifespan"] = app_lifespan
 
 app = FastAPI(**app_kwargs)
 
+# CORS origins: wildcard only when explicitly opted in via ALLOW_ALL_ORIGINS.
+# Otherwise restrict to the configured FRONTEND_URL(s) — set this env var to
+# the real production domain(s) (comma-separated) when deploying. Wildcard
+# stays safe here regardless (allow_credentials=False, auth is via Bearer
+# token, not cookies), but explicit origins are still best practice.
+_CORS_ORIGINS = ["*"] if ALLOW_ALL_ORIGINS else (ALLOWED_ORIGINS or ["*"])
+if _CORS_ORIGINS == ["*"] and not ALLOW_ALL_ORIGINS:
+    logger.warning(
+        "[API] FRONTEND_URL not configured — falling back to wildcard CORS. "
+        "Set FRONTEND_URL (comma-separated for multiple origins) in production."
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_CORS_ORIGINS,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -517,11 +533,25 @@ def _is_tool_only_intent(user_input: str) -> bool:
     return bool(_ADDRESS_RE.search(clean))
 
 
+# Farm-advisory keywords that strongly indicate the message is an informational
+# question (weather/crops/livestock/soil), not a map-navigation command — even
+# when it happens to mention a "City, State" location. Guards against the
+# layer-3 LLM classifier mistaking e.g. "weather forecast for Austin, Texas"
+# for a "zoom/pan to Austin" map command.
+_FARM_INTENT_GUARD_KW = (
+    "weather", "forecast", "\brain\b", "temperature", "humidity", "climate",
+    "\bcrop", "\bplant", "\bsoil", "livestock", "cattle", "\bbreed", "harvest",
+    "irrigation", "fertiliz", "pest", "disease", "drought", "frost",
+)
+
+
 def _classify_map_intent_llm(user_input: str) -> bool:
     """Layer 3: small structured-output LLM call, only when a location hint is present.
     ~300 ms cost; only fires when layers 1+2 both miss."""
     clean = re.sub(r'\[(page|field)[^\]]*\]', '', user_input, flags=re.IGNORECASE).strip()
     if not _LOCATION_HINT_RE.search(clean):
+        return False
+    if any(re.search(kw, clean.lower()) for kw in _FARM_INTENT_GUARD_KW):
         return False
     try:
         result = _get_map_intent_classifier().invoke(
@@ -648,7 +678,17 @@ Examples:
 
             _joke_kw = ("joke", "something funny", "make me laugh")
             _followup_advisory = "joke" if any(k in user_input_lower for k in _joke_kw) else None
-            update = {"history": new_history, "diagnosis": None, "recommendations": [], "advisory_type": _followup_advisory}
+            # Keep auth/business context fresh on follow-up turns so switching
+            # businesses does not reuse stale graph state from an older thread context.
+            update = {
+                "history": new_history,
+                "diagnosis": None,
+                "recommendations": [],
+                "advisory_type": _followup_advisory,
+                "people_id": people_id,
+                "business_id": business_id or existing_state.get("business_id"),
+                "thread_id": request.thread_id,
+            }
 
             is_entity_only_answer = (
                 bool(extracted and extracted.is_answer)
@@ -759,16 +799,103 @@ Examples:
             )
 
     events_list = []
-    try:
-        for event in events:
-            events_list.append(event)
-            print(f"[API] Event keys: {list(event.keys())}")
-    except Exception as stream_err:
+    stream_err_holder: dict[str, Exception] = {}
+
+    def _drain_events() -> None:
+        try:
+            for event in events:
+                events_list.append(event)
+                print(f"[API] Event keys: {list(event.keys())}")
+        except Exception as _stream_err:
+            stream_err_holder["error"] = _stream_err
+
+    drain_thread = threading.Thread(target=_drain_events, daemon=True)
+    drain_thread.start()
+    drain_thread.join(CHAT_REQUEST_TIMEOUT_SECONDS)
+
+    if drain_thread.is_alive():
+        logger.error(
+            "[API] Chat processing timeout after %ss for thread %s",
+            CHAT_REQUEST_TIMEOUT_SECONDS,
+            request.thread_id,
+        )
+        return JSONResponse(
+            status_code=504,
+            content={
+                "status": "error",
+                "message": (
+                    "Saige is taking longer than expected right now. "
+                    "Please retry your message."
+                ),
+            },
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    if stream_err_holder.get("error"):
+        stream_err = stream_err_holder["error"]
         logger.error(f"[API] Graph stream error: {stream_err}", exc_info=True)
+        err_text = str(stream_err) if stream_err else "Unknown stream error"
+        err_upper = err_text.upper()
+        if "RESOURCE_EXHAUSTED" in err_upper or "PREPAYMENT CREDITS ARE DEPLETED" in err_upper:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "status": "error",
+                    "message": (
+                        "Gemini API quota/credits exhausted for this project. "
+                        "Top up billing in AI Studio or switch to a billed Vertex model."
+                    ),
+                },
+                headers={"Access-Control-Allow-Origin": "*"},
+            )
+        if len(err_text) > 400:
+            err_text = err_text[:400] + "..."
         return JSONResponse(
             status_code=500,
-            content={"status": "error", "message": "Saige encountered an error processing your request. Please try again."},
+            content={"status": "error", "message": f"Saige stream error: {err_text}"},
             headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+
+@app.get("/market/usda/ams/{report_id}")
+async def get_usda_ams_report(report_id: str):
+    """Server-side USDA AMS proxy to avoid browser CORS failures."""
+    report_id = (report_id or "").strip().upper()
+    if not _USDA_REPORT_ID_RE.match(report_id):
+        return JSONResponse(status_code=400, content={"error": "Invalid report_id"})
+
+    try:
+        url = (
+            "https://mpr.datamart.ams.usda.gov/services/public/LMR/Report"
+            f"?Report_ID={report_id}&key=&q="
+        )
+        resp = requests.get(
+            url,
+            timeout=10,
+            headers={
+                "User-Agent": "OatmealFarmNetwork-Saige/1.0",
+                "Accept": "application/json",
+            },
+        )
+        if resp.status_code != 200:
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "status": "error",
+                    "message": f"USDA upstream returned HTTP {resp.status_code}",
+                },
+            )
+        payload = resp.json() if resp.content else {}
+        return {
+            "status": "ok",
+            "report_id": report_id,
+            "results": (payload or {}).get("results") or [],
+        }
+    except Exception as e:
+        logger.warning("[USDA] Proxy error for report %s: %s", report_id, e)
+        return JSONResponse(
+            status_code=502,
+            content={"status": "error", "message": "Unable to fetch USDA report right now."},
         )
 
     try:
@@ -980,10 +1107,14 @@ async def chat_stream(
                     _joke_kw = ("joke", "something funny", "make me laugh")
                     _stream_advisory = "joke" if any(k in request.user_input.lower() for k in _joke_kw) else None
                     update = {
-                        "history": new_history, "diagnosis": None, "recommendations": [],
+                        "history": new_history,
+                        "diagnosis": None,
+                        "recommendations": [],
                         "advisory_type": _stream_advisory,
                         "current_issues": [request.user_input],
                         "thread_id": thread_id,
+                        "people_id": people_id,
+                        "business_id": business_id or existing_state.get("business_id"),
                     }
                     if existing_state.get("crops"):
                         update["crops"] = existing_state["crops"]

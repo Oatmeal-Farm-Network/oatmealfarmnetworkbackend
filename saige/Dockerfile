@@ -23,9 +23,12 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY *.py ./
 
-# Expose port (FastAPI default)
-EXPOSE 8000
+# Expose port (Cloud Run injects PORT at runtime, defaulting to 8080; falls
+# back to 8000 for local `docker run` without -e PORT=...)
+EXPOSE 8080
+ENV PORT=8080
 
-# Command to run the application
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+# Command to run the application — must bind to $PORT for Cloud Run, since
+# Cloud Run always routes traffic to whatever port it assigns via $PORT.
+CMD ["sh", "-c", "uvicorn api:app --host 0.0.0.0 --port ${PORT:-8080}"]
 

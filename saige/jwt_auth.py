@@ -11,7 +11,9 @@ load_dotenv()
 _bearer = HTTPBearer(auto_error=False)
 _bearer_optional = HTTPBearer(auto_error=False)
 
-SECRET_KEY = os.getenv("SECRET_KEY")
+# Keep local development aligned with main backend auth.py fallback.
+# In production, set SECRET_KEY explicitly in environment.
+SECRET_KEY = os.getenv("SECRET_KEY", "change-me-in-production")
 ALGORITHM = "HS256"
 
 
