@@ -66,7 +66,12 @@ def _query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
     try:
         cursor = conn.cursor()
         cursor.execute(sql, params)
-        return cursor.fetchall() or []
+        rows = cursor.fetchall() or []
+        # pymssql's as_dict=True preserves the exact column-alias casing from
+        # the SQL (e.g. "PlantID"), but every tool in this module reads keys
+        # in lowercase (e.g. row["plantid"]). Normalize here so callers don't
+        # have to worry about casing and every accessor keeps working.
+        return [{k.lower(): v for k, v in row.items()} for row in rows]
     except Exception as e:
         print(f"[knowledge_base] query error: {e}")
         return []

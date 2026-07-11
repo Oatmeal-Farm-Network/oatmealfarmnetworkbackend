@@ -25,6 +25,18 @@ def _get_stream_queue(thread_id: str):
     with _stream_lock:
         return _stream_queues.get(thread_id)
 
+
+def _kw_any(keywords, text: str) -> bool:
+    """Word-boundary keyword match.
+
+    Plain substring checks like ``"rain" in text`` false-positive on words
+    like "drainage", "hail" inside "detail", "cow" inside "coward", etc.
+    This requires a word boundary before the keyword (and allows trailing
+    word characters, so prefix-style keywords such as "fertiliz" still
+    match "fertilizer"/"fertilizing").
+    """
+    return any(re.search(r"\b" + re.escape(kw), text) for kw in keywords)
+
 from config import (
     RAG_AVAILABLE,
     WEATHER_AVAILABLE,
@@ -692,17 +704,17 @@ def assessment_node(state: FarmState):
                               "thank you", "thanks", "bye", "goodbye")
 
             _ft = None
-            if any(k in msg_lower for k in _kw_joke):
+            if _kw_any(_kw_joke, msg_lower):
                 _ft = ("joke", [first_user_message], [])
-            elif any(k in msg_lower for k in _kw_general) or len(first_user_message.split()) <= 2:
+            elif _kw_any(_kw_general, msg_lower) or len(first_user_message.split()) <= 2:
                 _ft = ("general", [first_user_message], [])
-            elif any(k in msg_lower for k in _kw_weather):
+            elif _kw_any(_kw_weather, msg_lower):
                 _ft = ("weather", [first_user_message], [])
-            elif any(k in msg_lower for k in _kw_livestock):
+            elif _kw_any(_kw_livestock, msg_lower):
                 _ft = ("livestock", [first_user_message], [])
-            elif any(k in msg_lower for k in _kw_crops):
+            elif _kw_any(_kw_crops, msg_lower):
                 _ft = ("crops", [first_user_message], [])
-            elif any(k in msg_lower for k in _kw_mixed_biz):
+            elif _kw_any(_kw_mixed_biz, msg_lower):
                 _ft = ("mixed", [first_user_message], [])
 
             if _ft is not None:
@@ -842,15 +854,15 @@ Examples:
                 specific_crops = ["paddy", "rice", "wheat", "maize", "corn", "cotton", "soybean", "tomato", "potato"]
                 specific_livestock = ["cattle", "cow", "buffalo", "sheep", "goat", "pig", "chicken", "duck", "turkey", "horse"]
 
-                if any(kw in msg_lower for kw in weather_keywords):
+                if _kw_any(weather_keywords, msg_lower):
                     return {
                         "assessment_summary": f"Weather query: {first_user_message}",
                         "current_issues": [first_user_message],
                         "advisory_type": "weather"
                     }
 
-                has_specific_crop = any(crop in msg_lower for crop in specific_crops)
-                has_specific_livestock = any(animal in msg_lower for animal in specific_livestock)
+                has_specific_crop = _kw_any(specific_crops, msg_lower)
+                has_specific_livestock = _kw_any(specific_livestock, msg_lower)
 
                 if has_specific_crop or has_specific_livestock:
                     print(f"[Assessment] Specific crop/livestock detected (fallback) - fast-tracking")
@@ -1028,9 +1040,9 @@ def routing_node(state: FarmState) -> Dict[str, str]:
         print(f"[Routing] Using pre-determined type: {normalized_advisory_type} (skipping analysis)")
         return {"advisory_type": normalized_advisory_type}
 
-    crops = state.get("crops", [])
-    issues = state.get("current_issues", [])
-    assessment = state.get("assessment_summary", "")
+    crops = state.get("crops") or []
+    issues = state.get("current_issues") or []
+    assessment = state.get("assessment_summary") or ""
 
     query_text = f"{' '.join(crops)} {' '.join(issues)} {assessment}".lower()
 
@@ -1093,7 +1105,12 @@ def routing_node(state: FarmState) -> Dict[str, str]:
     prompt = f"""Classify as 'livestock', 'crops', 'mixed', or 'weather':
 Crops/Animals: {', '.join(crops) if crops else 'Not specified'}
 Issues: {', '.join(issues) if issues else 'None'}
-Assessment: {assessment}"""
+Assessment: {assessment}
+
+If the query is not actually about farming (e.g. personal account details like
+name/email/PeopleID, greetings, small talk, or general questions about Saige
+itself), classify it as 'mixed' — do NOT guess 'weather' or another farming
+category just because no farming signal is present."""
 
     try:
         result = classifier.invoke(prompt)
@@ -1104,7 +1121,10 @@ Assessment: {assessment}"""
     except Exception as e:
         print(f"[Routing] LLM error: {e}")
 
-    return {"advisory_type": "crops"}
+    # "mixed" is the safest catch-all: run_advisory_agent's identity/general
+    # path handles non-farming questions gracefully, whereas defaulting to
+    # "crops" would force farm advice onto e.g. an account/identity question.
+    return {"advisory_type": "mixed"}
 
 
 # ============================================================================
@@ -1125,7 +1145,8 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
                     "tell me about yourself", "introduce yourself", "what can you do",
                     "business account", "signed in with", "which account", "what account",
                     "businessid", "business_id", "business id", "my business",
-                    "peopleid", "people_id", "people id", "user id", "userid")
+                    "peopleid", "people_id", "people id", "user id", "userid",
+                    "my email", "whats my email", "what's my email", "what is my email")
     _is_general_path = _assessment.startswith("General question:") or (
         _assessment.startswith("Farmer seeks assistance with:") and
         any(k in _assessment.lower() for k in _identity_kw) and
@@ -1167,17 +1188,26 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
                 "recommendations": [],
             }
 
-        _wants_pid  = any(k in _ml for k in ["peopleid", "people_id", "people id", "user id", "userid", "my id"])
-        _wants_name = any(k in _ml for k in ["my name", "what is my name", "what's my name"])
-        _wants_biz  = any(k in _ml for k in ["businessid", "business_id", "business id",
+        _wants_pid   = any(k in _ml for k in ["peopleid", "people_id", "people id", "user id", "userid", "my id"])
+        _wants_name  = any(k in _ml for k in ["my name", "what is my name", "what's my name"])
+        _wants_email = any(k in _ml for k in ["my email", "whats my email", "what's my email", "what is my email"])
+        _wants_biz   = any(k in _ml for k in ["businessid", "business_id", "business id",
                                               "my business", "business account", "signed in with",
                                               "which account", "what account"])
 
-        if _wants_pid or _wants_name or _wants_biz:
+        if _wants_pid or _wants_name or _wants_email or _wants_biz:
             _parts = []
             if _wants_name:
                 _uname = (state.get("user_name") or "").strip()
                 _parts.append(f"Your name is {_uname}." if _uname else "I don't have your name on file.")
+            if _wants_email:
+                _uemail = None
+                try:
+                    from user_profile import get_user_email as _get_user_email
+                    _uemail = _get_user_email(_pid) if _pid else None
+                except Exception:
+                    pass
+                _parts.append(f"Your email on file is {_uemail}." if _uemail else "I don't have your email on file.")
             if _wants_pid:
                 _parts.append(f"Your PeopleID is {_pid}." if _pid else "Your PeopleID is not available.")
             if _wants_biz:
@@ -1209,7 +1239,11 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
                     "The user is mid-conversation. Answer the question directly and concisely. "
                     "Do NOT introduce yourself, do NOT greet the user, and do NOT open with phrases like "
                     "'Hello there', 'Hi', 'I'm Saige', or 'your friendly assistant'. "
-                    "Skip the preamble — start with the answer.\n\n"
+                    "Skip the preamble — start with the answer. "
+                    "If the user is asking for personal account details you have not been given "
+                    "(e.g. their email, phone number, address) do NOT invent or guess an answer or give "
+                    "your own contact details as if they were the user's — say you don't have that "
+                    "information on file and suggest they check their account settings.\n\n"
                     f"Question: {_msg}"
                 )
                 _answer = _resp.content if hasattr(_resp, "content") else str(_resp)
@@ -1840,7 +1874,20 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
         _acct_tool_names = {t.name for t in business_ops_tools if BUSINESS_OPS_AVAILABLE}
         bound_tools = [t for t in bound_tools if t.name in _acct_tool_names]
         print(f"[Intent Router] Tool list pruned to accounting/events tools ({len(bound_tools)} tools)")
-    # _INTENT_KNOWLEDGE_ONLY: full tool list kept as-is
+    # _INTENT_KNOWLEDGE_ONLY: keep tools, but constrain knowledge-base tools by advisory type
+    if _INTENT_KNOWLEDGE_ONLY and KNOWLEDGE_BASE_AVAILABLE:
+        advisory_hint = normalize_advisory_type(state.get("advisory_type"))
+        if advisory_hint == "livestock":
+            # Livestock prompts should not route into plant-only tools.
+            _blocked_kb_tools = {"search_plants_tool", "get_plant_detail_tool"}
+            bound_tools = [t for t in bound_tools if t.name not in _blocked_kb_tools]
+            print("[Intent Router] Knowledge tools constrained for livestock advisory")
+        elif advisory_hint == "crops":
+            # Crop prompts should avoid account-scoped animal detail tool.
+            _blocked_kb_tools = {"get_animal_detail_tool"}
+            bound_tools = [t for t in bound_tools if t.name not in _blocked_kb_tools]
+            print("[Intent Router] Knowledge tools constrained for crop advisory")
+
     # ── end tool pruning ──────────────────────────────────────────────────────
 
     llm_with_tools = llm.bind_tools(bound_tools) if bound_tools else llm
@@ -2859,6 +2906,19 @@ def weather_advisory_node(state: FarmState):
     print(f"[Weather Advisory] Location from state: {location}")
     print(f"[Weather Advisory] Current issues: {issues}")
 
+    def _clean_location_candidate(text: str) -> str:
+        cleaned = re.sub(r'\s+', ' ', (text or '')).strip(" ,.;:!?")
+        cleaned = re.sub(r'^(?:in|at|near)\s+', '', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(
+            r'\b(?:this|next|coming)\s+(?:week|weeks|day|days|month|months|year|years)\b',
+            '',
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        cleaned = re.sub(r'\b(?:today|tonight|tomorrow|now|currently|current)\b', '', cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip(" ,.;:!?")
+        return cleaned
+
     # Use LLM to parse weather query if location or forecast info is missing
     forecast_days = None
 
@@ -2918,8 +2978,7 @@ Examples:
 
         if parsed_query:
             llm_confidence = max(0.0, min(1.0, float(getattr(parsed_query, "confidence", 0.0) or 0.0)))
-            parsed_location = re.sub(r'\s+', ' ', (parsed_query.location or '')).strip(" ,.;:!?")
-            parsed_location = re.sub(r'^(?:in|at|near)\s+', '', parsed_location, flags=re.IGNORECASE)
+            parsed_location = _clean_location_candidate(parsed_query.location or '')
 
             print(
                 f"[Weather Advisory] Primary parse - location: {parsed_query.location}, "
@@ -3003,7 +3062,10 @@ Examples:
                         candidate_location = groups[0].title()
 
                     # Clean up: remove any trailing time-related words
-                    time_words = ['for', 'next', 'will', 'week', 'weeks', 'day', 'days', 'month', 'months']
+                    time_words = [
+                        'for', 'next', 'will', 'week', 'weeks', 'day', 'days', 'month', 'months',
+                        'this', 'coming', 'today', 'tonight', 'tomorrow', 'now', 'currently', 'current',
+                    ]
                     location_parts = candidate_location.split()
                     # Remove trailing time words
                     while location_parts and location_parts[-1].lower() in time_words:
@@ -3065,8 +3127,7 @@ Examples:
                 elif parsed_query_result[0]:
                     parsed_query = parsed_query_result[0]
                     fallback_confidence = max(0.0, min(1.0, float(getattr(parsed_query, "confidence", 0.0) or 0.0)))
-                    parsed_location = re.sub(r'\s+', ' ', (parsed_query.location or '')).strip(" ,.;:!?")
-                    parsed_location = re.sub(r'^(?:in|at|near)\s+', '', parsed_location, flags=re.IGNORECASE)
+                    parsed_location = _clean_location_candidate(parsed_query.location or '')
                     print(
                         f"[Weather Advisory] Parsed query - location: {parsed_query.location}, "
                         f"is_weather: {parsed_query.is_weather_query}, confidence: {fallback_confidence:.2f}"

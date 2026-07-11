@@ -77,6 +77,20 @@ def get_user_name(people_id: str) -> Optional[str]:
     return full or None
 
 
+def get_user_email(people_id: str) -> Optional[str]:
+    """Return the account email for a PeopleID, or None if not found/unavailable."""
+    if not people_id:
+        return None
+    rows = _query(
+        "SELECT PeopleEmail FROM People WHERE PeopleID = %s",
+        (int(people_id),),
+    )
+    if not rows:
+        return None
+    email = (rows[0].get("PeopleEmail") or "").strip()
+    return email or None
+
+
 def get_org_member_ids(business_id: str) -> List[str]:
     """Return list of PeopleID strings for all active members of a business/org."""
     if not business_id:

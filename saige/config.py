@@ -103,6 +103,10 @@ MAX_QUESTIONS = 2
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 ALLOW_ALL_ORIGINS = os.getenv("ALLOW_ALL_ORIGINS", "false").lower() == "true"
+# FRONTEND_URL supports a comma-separated list so multiple trusted origins
+# (e.g. production domain + staging + Cloud Run preview URLs) can be
+# configured without code changes. Used by api.py's CORS middleware.
+ALLOWED_ORIGINS = [o.strip() for o in FRONTEND_URL.split(",") if o.strip()]
 
 # ============================================================================
 # CHAT HISTORY CONFIGURATION
