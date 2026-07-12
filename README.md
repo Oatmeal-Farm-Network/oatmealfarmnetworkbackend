@@ -1,611 +1,327 @@
 # Oatmeal Farm Network — Backend
 
-A comprehensive FastAPI backend for the Oatmeal Farm Network platform, providing REST APIs for agricultural management, marketplace operations, user authentication, and AI-powered advisory services.
+FastAPI backend for the Oatmeal Farm Network platform: agricultural management, marketplace, events, auth, and the Saige AI advisory service (`saige/`).
+
+**Repo:** [Oatmeal-Farm-Network/oatmealfarmnetworkbackend](https://github.com/Oatmeal-Farm-Network/oatmealfarmnetworkbackend)
+
+---
+
+## Table of contents
+
+- [Overview](#overview)
+- [Repository layout](#repository-layout)
+- [Quick start (local)](#quick-start-local)
+- [Configuration](#configuration)
+- [Staging & CI/CD](#staging--cicd)
+- [Database (staging)](#database-staging)
+- [Documentation index](#documentation-index)
+- [API overview](#api-overview)
+- [Technologies](#technologies)
+- [Development](#development)
+- [Security](#security)
+- [Troubleshooting](#troubleshooting)
+
+---
 
 ## Overview
 
-This is a comprehensive, enterprise-scale backend for the Oatmeal Farm Network platform—a complete agricultural technology ecosystem serving farmers, agribusinesses, and supply chain participants. It includes **137+ API routers** and **2,000+ endpoints** organized across 15+ major domains.
+Enterprise-scale FastAPI app with **100+ routers** across farm operations domains, plus an optional AI advisory stack in `saige/`.
 
-**Core capabilities:**
+| Area | Examples |
+|------|----------|
+| Auth & users | JWT auth, profiles, subscriptions |
+| Crops & fields | Precision ag, soil tests, irrigation, scouting, yields |
+| Livestock | Herd health, meat, ranches |
+| Harvest & cold chain | Produce, grain bins, perishable trace |
+| Marketplace | Catalog, equipment, Stripe |
+| Supply chain | Routing, procurement, provenance |
+| Events | Auctions, fairs, registration, check-in |
+| Finance | Cash flow, budgets, settlements |
+| Content | Website builder, blog, news |
+| AI | Saige (LangGraph + Gemini) — separate service in staging |
 
-- **Authentication & User Management** — JWT-based auth, user profiles, password recovery, platform subscriptions
-- **Livestock & Animal Management** — breed tracking, herd health, reproduction, meat processing, animal records
-- **Crop & Field Management** — precision agriculture, crop planning, soil testing, yield tracking, pest scouting, irrigation
-- **Harvest & Produce** — produce tracking, harvest lots, cold chain logistics, perishable traceability, grain storage
-- **Marketplace & E-Commerce** — product catalog, equipment rental, Stripe payments, vendor management, farm stand sales
-- **Supply Chain** — delivery routing, supplier management, buyer CRM, procurement, provenance tracking
-- **Events & Community** — multi-event management (auctions, fiber arts, conferences, competitions), sponsorships, vendor fairs
-- **Financial & Accounting** — cash flow, crop budgets, farmer settlement, pricing, ESG reports
-- **Content Management** — website builder, blogging, company features, news, document vault
-- **HR & Operations** — job board, work orders, equipment maintenance, farm safety, notifications
-- **Sustainability** — ESG reporting, certifications, compliance auditing, export regulations
-- **AI Advisory System** — intelligent farm guidance via LangGraph and Google Gemini (`saige/` subdirectory)
+---
 
-## Project Structure
+## Repository layout
 
-```
+Package code lives under **`app/`** (not a top-level `routers/` folder):
+
+```text
 .
-├── routers/                         # API endpoint modules (137+ routers organized by domain)
-│   │
-│   ├── Core Business & Operations
-│   │   ├── auth.py                  # JWT authentication
-│   │   ├── businesses.py            # Business/vendor management
-│   │   ├── users.py                 # User profiles & account management
-│   │   ├── dashboard.py             # User dashboards
-│   │   ├── platform_settings.py     # Platform configuration
-│   │   ├── platform_subscriptions.py # Subscription management
-│   │   └── platform_services.py     # Platform services
-│   │
-│   ├── Livestock & Animal Management
-│   │   ├── livestock.py             # Animal management & knowledge base
-│   │   ├── animals.py               # Detailed animal records
-│   │   ├── herd_health.py           # Herd health tracking & reproduction
-│   │   ├── meat.py                  # Meat processing & tracking
-│   │   ├── processed_food.py        # Food processing workflows
-│   │   └── ranches.py               # Ranch/facility management
-│   │
-│   ├── Crops & Plant Management
-│   │   ├── plant_knowledgebase.py   # Crop disease & agronomy guidance
-│   │   ├── crop_planning.py         # Crop planning workflows
-│   │   ├── crop_rotation.py         # Crop rotation optimization
-│   │   ├── crop_summary.py          # Crop status summaries
-│   │   ├── crop_monitor_proxy.py    # Crop monitoring integration
-│   │   ├── crop_budgets.py          # Crop budget planning
-│   │   ├── seed_varieties.py        # Seed & variety management
-│   │   ├── soil_tests.py            # Soil testing & analysis
-│   │   └── chilling_hours.py        # Chilling hour tracking
-│   │
-│   ├── Precision Agriculture & Field Management
-│   │   ├── precision_ag.py          # Core precision AG tools
-│   │   ├── precision_ag_features.py # Advanced PA features
-│   │   ├── field_maturity.py        # Field maturity assessment
-│   │   ├── field_assessment_report.py # Field assessment reports
-│   │   ├── field_health.py          # Field health monitoring
-│   │   ├── field_health_alerts.py   # Health alerts & warnings
-│   │   ├── field_activity.py        # Field activity logging
-│   │   ├── climate_forecast.py      # Weather & climate forecasting
-│   │   ├── weather.py               # Weather data integration
-│   │   ├── irrigation.py            # Irrigation management
-│   │   ├── spray_applications.py    # Pesticide/spray tracking
-│   │   ├── scouting.py              # Field scouting reports
-│   │   ├── harvest_scheduling.py    # Harvest scheduling
-│   │   └── yield_records.py         # Yield tracking & analysis
-│   │
-│   ├── Produce & Harvest Management
-│   │   ├── produce.py               # Produce tracking
-│   │   ├── harvest_lots.py          # Harvest lot management
-│   │   ├── harvest_bins.py          # Harvest bin tracking
-│   │   ├── grain_bin.py             # Grain storage management
-│   │   ├── scale_tickets.py         # Weighing & scale data
-│   │   └── ingredient_knowledgebase.py # Food processing knowledge
-│   │
-│   ├── Cold Chain & Perishables
-│   │   ├── cold_chain.py            # Cold chain logistics
-│   │   ├── perishable_trace.py      # Perishable traceability
-│   │   ├── ca_storage.py            # Controlled atmosphere storage
-│   │   └── chilling_hours.py        # Chilling requirements
-│   │
-│   ├── Marketplace & E-Commerce
-│   │   ├── marketplace.py           # E-commerce operations
-│   │   ├── marketplace_catalog.py   # Product catalog management
-│   │   ├── equipment_marketplace.py # Equipment rental/sales
-│   │   ├── food_wanted.py           # Food sourcing platform
-│   │   ├── sfproducts.py            # San Francisco region products
-│   │   ├── stripe_payments.py       # Stripe payment integration
-│   │   └── price_list.py            # Dynamic pricing
-│   │
-│   ├── Supply Chain & Distribution
-│   │   ├── supply_chain.py          # Supply chain management
-│   │   ├── supply_chain_events.py   # SC event tracking
-│   │   ├── supply_chain_ai.py       # AI-powered SC insights
-│   │   ├── delivery_routes.py       # Delivery routing
-│   │   ├── buyer_crm.py             # Buyer relationship management
-│   │   ├── supplier_directory.py    # Supplier management
-│   │   ├── supplier_scorecard.py    # Supplier performance
-│   │   ├── procurement.py           # Procurement workflows
-│   │   ├── farm_inputs.py           # Input sourcing & inventory
-│   │   ├── farm_stand.py            # Direct farm sales
-│   │   └── provenance.py            # Product provenance tracking
-│   │
-│   ├── Events & Community
-│   │   ├── events.py                # Main event management
-│   │   ├── event_features.py        # Event feature configuration
-│   │   ├── event_registration_cart.py # Registration shopping cart
-│   │   ├── event_checkin.py         # Event check-in
-│   │   ├── event_analytics.py       # Event analytics
-│   │   ├── event_exports.py         # Event data exports
-│   │   ├── event_booth_services.py  # Booth management
-│   │   ├── event_floor_plan.py      # Floor plan visualization
-│   │   ├── event_meals.py           # Event catering/meals
-│   │   ├── event_mailing_list.py    # Event mailing lists
-│   │   ├── event_sponsorship.py     # Sponsorship management
-│   │   ├── event_promo_codes.py     # Promotional codes
-│   │   ├── event_waitlist.py        # Waitlist management
-│   │   ├── event_leads.py           # Lead capture
-│   │   ├── event_testimonials.py    # Testimonials/feedback
-│   │   ├── event_coi.py             # Conflict of interest
-│   │   ├── event_fiber_arts.py      # Fiber arts event
-│   │   ├── event_fleece.py          # Fleece festival
-│   │   ├── event_halter.py          # Halter show event
-│   │   ├── event_auction.py         # Auction event
-│   │   ├── event_vendor_fair.py     # Vendor fair
-│   │   ├── event_dining.py          # Dining event
-│   │   ├── event_farm_tour.py       # Farm tour
-│   │   ├── event_competition.py     # Competition event
-│   │   ├── event_conference.py      # Conference
-│   │   ├── event_broadcast.py       # Live broadcast
-│   │   ├── event_simple.py          # Simple event
-│   │   ├── event_spinoff.py         # Spinoff event
-│   │   ├── my_registrations.py      # User event registrations
-│   │   └── associations.py          # Member associations
-│   │
-│   ├── Financial & Accounting
-│   │   ├── accounting.py            # General accounting
-│   │   ├── cash_flow.py             # Cash flow tracking
-│   │   ├── crop_budgets.py          # Crop budget planning
-│   │   ├── farm_pl.py               # Farm profit & loss
-│   │   ├── farmer_settlement.py     # Farmer payment settlement
-│   │   ├── price_list.py            # Product pricing
-│   │   └── stripe_payments.py       # Payment processing
-│   │
-│   ├── Content & Web Management
-│   │   ├── website_builder.py       # Website builder
-│   │   ├── website_ai.py            # AI-powered website features
-│   │   ├── blog.py                  # Blog management
-│   │   ├── company_features.py      # Company feature pages
-│   │   ├── news.py                  # News & updates
-│   │   ├── scraper_knowledge.py     # Web scraping service
-│   │   ├── recipes_batches.py       # Recipe & batch management
-│   │   └── document_vault.py        # Document storage
-│   │
-│   ├── HR & Administrative
-│   │   ├── hr.py                    # Human resources
-│   │   ├── job_board.py             # Job listings
-│   │   ├── work_orders.py           # Work order management
-│   │   ├── equipment_maintenance.py # Equipment maintenance
-│   │   ├── farm_infrastructure.py   # Infrastructure management
-│   │   ├── farm_safety.py           # Safety management
-│   │   ├── notifications.py         # User notifications
-│   │   └── meetings.py              # Meeting coordination
-│   │
-│   ├── Sustainability & Impact
-│   │   ├── esg_reports.py           # ESG reporting
-│   │   ├── certifications.py        # Organic/certification tracking
-│   │   ├── compliance_audit.py      # Compliance auditing
-│   │   ├── export_compliance.py     # Export regulations
-│   │   └── esci.py                  # Environmental sustainability
-│   │
-│   ├── Advanced Operations
-│   │   ├── csa.py                   # CSA program management
-│   │   ├── csa_advanced.py          # Advanced CSA features
-│   │   ├── land_leasing.py          # Land lease management
-│   │   ├── grants.py                # Grant tracking
-│   │   ├── education.py             # Educational programs
-│   │   ├── mill.py                  # Grain mill operations
-│   │   ├── outgrower.py             # Outgrower program
-│   │   ├── packhouse_qc.py          # Pack house quality control
-│   │   ├── nursery.py               # Plant nursery
-│   │   ├── plant_tagging.py         # Plant identification
-│   │   ├── iot_greenhouse.py        # IoT greenhouse monitoring
-│   │   ├── picker_performance.py    # Harvest worker performance
-│   │   ├── farm_kpi.py              # Farm KPI tracking
-│   │   ├── market_alerts.py         # Market price alerts
-│   │   ├── commodity_history.py     # Commodity price history
-│   │   ├── field_health_alerts.py   # Field health warnings
-│   │   ├── thaiyme.py               # Specialty crop (Thai herbs)
-│   │   ├── food_aggregator.py       # Food aggregation
-│   │   └── reports.py               # Custom reporting
-│   │
-│   └── Misc & Support
-│       ├── forgot_password.py       # Password recovery
-│       ├── services.py              # Platform services
-│       └── nutrients.py             # Nutrient management
-│
-├── saige/                           # AI Agricultural Advisory System
-│   ├── api.py                       # FastAPI endpoints for Saige
-│   ├── graph.py                     # LangGraph workflow orchestration
-│   ├── nodes.py                     # Workflow nodes (assessment, routing, advisory)
-│   ├── rag.py                       # Firestore RAG/vector search
-│   ├── llm.py                       # Google Gemini LLM integration
-│   ├── redis_client.py              # Redis connection & pooling
-│   ├── chat_history.py              # Firestore chat persistence
-│   ├── message_buffer.py            # Redis message buffer
-│   ├── models.py                    # FarmState & Pydantic models
-│   ├── config.py                    # Configuration & feature flags
-│   ├── jwt_auth.py                  # JWT verification
-│   ├── weather.py                   # Weather API integration
-│   ├── database.py                  # Azure SQL helpers
-│   ├── seed_firestore.py            # Firestore data seeding
-│   ├── sync_embeddings.py           # Embedding synchronization
-│   ├── test_*.py                    # Integration & unit tests
-│   └── README.md                    # Full Saige documentation
-│
-├── migrations/                      # Database schema migrations
-│   └── *.sql                        # SQL migration scripts
-│
-├── main.py                          # FastAPI app initialization & middleware
-├── models.py                        # SQLAlchemy & Pydantic models (50k+ lines)
-├── database.py                      # Azure SQL database connection
-├── auth.py                          # Authentication utilities
-├── marketplace_*.py                 # Marketplace utilities
-├── marketplace_stripe.py            # Stripe integration
-├── event_emails.py                  # Event notification emails
-├── external_apis.py                 # Third-party API integrations
-├── requirements.txt                 # Python dependencies
-├── Dockerfile                       # Cloud Run deployment
-├── cloudbuild.yaml                  # GCP Cloud Build pipeline
-├── .env.example                     # Environment variables template
-└── server_all.py                    # Unified server launcher
+├── app/
+│   ├── main.py              # FastAPI app (staging Cloud Run entry: app.main:app)
+│   ├── database.py          # SQLAlchemy / pymssql / Cloud SQL Connector
+│   ├── dependencies.py      # Shared FastAPI deps
+│   ├── schema_ensure.py     # Optional lazy DDL (skipped on RO staging)
+│   ├── models.py
+│   ├── core/                # JWT / shared auth helpers
+│   └── routers/             # Domain API routers
+├── saige/                   # AI advisory (own Dockerfile + CD)
+│   ├── api.py
+│   ├── Dockerfile.backend
+│   └── README.md
+├── test/                    # Unit / smoke tests
+├── docs/                    # Staging, IAM, Cloud Run runbooks
+├── scripts/                 # One-off maintenance scripts
+├── server_all.py            # Local/unified: main + Saige in one process
+├── Dockerfile               # Default CMD = server_all (overridden on staging backend)
+├── requirements.txt
+└── .github/workflows/
+    ├── deploy-staging.yml   # Main backend → oatmeal-backend-staging
+    ├── deploy-saige.yml     # Saige → oatmeal-saige-staging
+    └── ci.yml
 ```
 
-## Quick Start
+**Imports in Docker / Cloud Run** use the `app.` package prefix, e.g. `from app.database import get_db`, `from app.dependencies import get_current_user`.
+
+---
+
+## Quick start (local)
 
 ### Prerequisites
 
 - Python 3.11+
-- Redis 7+ (for Saige features)
-- Azure SQL Server (optional, for core backend features)
-- Google Cloud credentials (optional, for Saige AI advisory)
+- SQL Server reachable via `DB_*` (or Cloud SQL Auth Proxy locally)
+- Optional: Redis + Google credentials for Saige
 
-### Installation
+### Install
 
 ```bash
-# Clone and enter directory
 git clone https://github.com/Oatmeal-Farm-Network/oatmealfarmnetworkbackend.git
 cd oatmealfarmnetworkbackend
 
-# Create virtual environment
 python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+# Windows:
+.venv\Scripts\activate
+# macOS/Linux:
+source .venv/bin/activate
 
-# Install dependencies
 pip install -r requirements.txt
-
-# Set up environment variables
-cp .env.example .env
-# Edit .env with your credentials
+cp .env.example .env   # if present — otherwise create .env (see Configuration)
 ```
 
-### Running the Backend
+### Run main API only
 
 ```bash
-# Start main API server (port 8000)
-uvicorn main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8000
 ```
 
-**API Documentation:** Visit `http://localhost:8000/docs`
+Open `http://localhost:8000/docs`.
 
-### Running Saige AI Advisory (Optional)
+### Run Saige only
 
 ```bash
-# From the saige/ directory
 cd saige
 uvicorn api:app --reload --port 8001
-
-# Or from root, run Saige routes integrated with main API
 ```
 
-See [`saige/README.md`](saige/README.md) for full Saige setup and configuration.
+See [`saige/README.md`](saige/README.md).
 
-## API Endpoints
+### Run unified (main + Saige)
 
-All endpoints require JWT authentication via `Authorization: Bearer <token>` header (except health checks).
-
-With **137+ routers**, there are **2,000+ endpoints** across the platform. Key endpoint categories:
-
-| Domain | Module Count | Sample Endpoints | Purpose |
-|---|---|---|---|
-| **Livestock & Animals** | 6 | `/livestock/*`, `/animals/*`, `/herd-health/*` | Animal management, health tracking, meat processing |
-| **Crops & Fields** | 15+ | `/crop-planning/*`, `/precision-ag/*`, `/soil-tests/*`, `/yield-records/*` | Crop planning, field health, precision agriculture |
-| **Produce & Harvest** | 8 | `/produce/*`, `/harvest-lots/*`, `/grain-bin/*`, `/cold-chain/*` | Harvest management, storage, traceability |
-| **Marketplace & Commerce** | 7 | `/marketplace/*`, `/equipment-marketplace/*`, `/farm-stand/*` | E-commerce, pricing, vendor management |
-| **Supply Chain** | 10 | `/supply-chain/*`, `/delivery-routes/*`, `/procurement/*` | Routing, sourcing, buyer management |
-| **Events & Community** | 32+ | `/events/*`, `/event-analytics/*`, `/event-registration/*` | Event management, sponsorships, registrations |
-| **Financial** | 7 | `/accounting/*`, `/cash-flow/*`, `/farmer-settlement/*` | Accounting, budgeting, payments |
-| **Content & Web** | 8 | `/website-builder/*`, `/blog/*`, `/news/*` | Website management, blogging, content |
-| **HR & Operations** | 10+ | `/hr/*`, `/job-board/*`, `/work-orders/*` | HR management, operations, notifications |
-| **Admin & Platform** | 5 | `/platform-settings/*`, `/compliance-audit/*`, `/esg-reports/*` | Configuration, compliance, reporting |
-
-**Health Checks:**
-
-```
-GET  /                  # API info & version
-GET  /health            # Shallow liveness probe
-GET  /ready             # Deep readiness check (all dependencies)
-GET  /health/redis      # Redis connectivity
-GET  /health/firestore  # Firestore connectivity
+```bash
+uvicorn server_all:app --reload --port 8000
 ```
 
-See [`saige/README.md`](saige/README.md#api-reference) for detailed Saige API documentation.
+Requires Saige LLM auth (`GOOGLE_API_KEY` or `GOOGLE_CLOUD_PROJECT`).  
+**Staging backend does not use `server_all`** — Saige is deployed separately.
+
+---
 
 ## Configuration
 
-### Environment Variables
-
-Create a `.env` file in the project root (see `.env.example`):
+Root `.env` (typical):
 
 ```env
-# --- Authentication ---
-SECRET_KEY=your_jwt_secret_key              # HS256 secret (required)
+SECRET_KEY=your_jwt_secret
 
-# --- Database ---
-DB_SERVER=your_azure_sql_host
+# SQL Server (local / Auth Proxy)
+DB_SERVER=127.0.0.1
 DB_USER=your_user
 DB_PASSWORD=your_password
 DB_NAME=your_database
 
-# --- Saige AI Advisory (optional) ---
-GOOGLE_API_KEY=your_gemini_api_key
-GEMINI_MODEL=gemini-2.5-flash-lite
-FIRESTORE_DATABASE=charlie
-REDIS_ENABLED=true
-REDIS_URL=redis://localhost:6379/0
+# Cloud Run staging sets these instead of relying on localhost proxy:
+# INSTANCE_CONNECTION_NAME=project:region:instance
+# SKIP_SCHEMA_ENSURE=true
 
-# --- CORS ---
+# Saige (optional locally)
+GOOGLE_API_KEY=
+# or GOOGLE_CLOUD_PROJECT=... + GOOGLE_GENAI_USE_VERTEXAI=true
 FRONTEND_URL=http://localhost:3000
-ALLOW_ALL_ORIGINS=false
-
-# --- Marketplace (optional) ---
-STRIPE_SECRET_KEY=your_stripe_key
-SENDGRID_API_KEY=your_sendgrid_key
 ```
 
-See [`saige/README.md`](saige/README.md#configuration) for full Saige configuration details.
+| Variable | Role |
+|----------|------|
+| `DB_*` | SQL login (always needed for DB access) |
+| `INSTANCE_CONNECTION_NAME` | If set, `app/database.py` uses **Cloud SQL Python Connector** + `pytds` (Cloud Run staging) |
+| `SKIP_SCHEMA_ENSURE` | Skip lazy DDL helpers (required for read-only staging DB) |
+| `SECRET_KEY` | JWT signing |
 
-## Deployment
+---
 
-### Google Cloud Run
+## Staging & CI/CD
 
-```bash
-# Build and deploy
-gcloud builds submit --config cloudbuild.yaml
+GCP project: **`oatmeal-farm-staging`** · Region: **`us-central1`**
 
-# Manually deploy Dockerfile
-gcloud run deploy oatmealfarmnetwork \
-  --source . \
-  --platform managed \
-  --region us-central1 \
-  --allow-unauthenticated
-```
+| Pipeline | Branch | Workflow | Cloud Run service |
+|----------|--------|----------|-------------------|
+| Main backend | `GCP/backend-staging` | `.github/workflows/deploy-staging.yml` | `oatmeal-backend-staging` |
+| Saige | `GCP/saige-staging` | `.github/workflows/deploy-saige.yml` | `oatmeal-saige-staging` |
 
-**Production domains:**
-- API: `https://oatmealfarmnewtorkbackend-802455386518.us-central1.run.app`
-- Frontend: `https://www.oatmealfarmnetwork.com`
+### Backend staging (`GCP/backend-staging`)
+
+- Builds/pushes `.../oatmeal-farm-registry/backend:<short-sha>`
+- Deploys with command override: **`uvicorn app.main:app`** (not `server_all`)
+- Env: `SKIP_SCHEMA_ENSURE=true`, `INSTANCE_CONNECTION_NAME=<prod SQL connection name>`
+- Secrets: `DB_SERVER`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `SECRET_KEY`
+- **Docs-only** pushes under `docs/` do **not** trigger deploy (`paths-ignore`)
+
+→ Full runbook: [`docs/staging/BACKEND_STAGING_DEPLOY.md`](docs/staging/BACKEND_STAGING_DEPLOY.md)
+
+### Saige staging (`GCP/saige-staging`)
+
+- Builds `saige/Dockerfile.backend` → `.../oatmeal-farm-registry/saige:<sha>`
+- Triggers on changes to `saige/**` or `deploy-saige.yml` (plus manual `workflow_dispatch`)
+- Runtime SA: `saige-sa@oatmeal-farm-staging.iam.gserviceaccount.com`
+- Vertex env + secrets `SECRET_KEY`, `CRON_SECRET`
+
+→ Full runbook: [`docs/staging/SAIGE_STAGING_DEPLOY.md`](docs/staging/SAIGE_STAGING_DEPLOY.md)
+
+### GitHub secrets (shared WIF)
+
+| Secret | Used by |
+|--------|---------|
+| `STAGING_GCP_PROJECT_ID` | Both |
+| `STAGING_GCP_SERVICE_ACCOUNT` | Both |
+| `STAGING_GCP_WORKLOAD_IDENTITY_PROVIDER` | Both |
+
+### Day-to-day merge targets
+
+| Change type | Merge / push to |
+|-------------|-----------------|
+| Main API (`app/`, root Dockerfile, backend workflow) | `GCP/backend-staging` |
+| Saige (`saige/`, Saige workflow) | `GCP/saige-staging` |
+| Docs only (`docs/`) | Either; backend CD skips `docs/**` |
+
+Do **not** expect a Saige code change on `GCP/backend-staging` to update `oatmeal-saige-staging`.
+
+---
+
+## Database (staging)
+
+Staging does **not** use a writable staging Postgres DB.
+
+- Connects **read-only** to prod Cloud SQL **SQL Server**: `animated-flare-421518:us-central1:oatmealailive` / `Oatmealailivedb`
+- Runtime SA: `stg-to-prod-db-ro-dev-project@oatmeal-farm-staging.iam.gserviceaccount.com`
+- On Cloud Run: **Cloud SQL Python Connector** (not `127.0.0.1:1433` Auth Proxy TCP)
+- SQL role: `db_datareader` — writes/DDL fail by design
+
+Details: [`docs/staging/STAGING_CLOUD_SQL_SETUP.md`](docs/staging/STAGING_CLOUD_SQL_SETUP.md)
+
+---
+
+## Documentation index
+
+| Doc | Topic |
+|-----|--------|
+| [`docs/staging/BACKEND_STAGING_DEPLOY.md`](docs/staging/BACKEND_STAGING_DEPLOY.md) | Backend staging CD, env, troubleshooting |
+| [`docs/staging/SAIGE_STAGING_DEPLOY.md`](docs/staging/SAIGE_STAGING_DEPLOY.md) | Saige staging CD |
+| [`docs/staging/STAGING_CLOUD_SQL_SETUP.md`](docs/staging/STAGING_CLOUD_SQL_SETUP.md) | RO→prod SQL, secrets, SA |
+| [`docs/staging/SAIGE_STAGING_SETUP.md`](docs/staging/SAIGE_STAGING_SETUP.md) | Saige service / IAM notes |
+| [`docs/cloud-run-staging.md`](docs/cloud-run-staging.md) | Staging service URLs / status |
+| [`docs/iam-setup.md`](docs/iam-setup.md) | WIF, runtime SAs, roles |
+| [`saige/README.md`](saige/README.md) | Saige product / API deep dive |
+
+---
+
+## API overview
+
+JWT via `Authorization: Bearer <token>` on protected routes. Interactive docs: `/docs` when the server is running.
+
+Major domains (prefixes vary by router): livestock, crops/precision-ag, produce/harvest, marketplace, supply-chain, events, accounting, website/blog, HR, ESG/compliance, and Saige chat APIs when that service is up.
+
+---
 
 ## Technologies
 
-| Layer | Technology |
-|---|---|
-| API Framework | FastAPI, Uvicorn, Starlette |
-| Database | Azure SQL Server (pymssql) |
-| Authentication | JWT HS256 (python-jose) |
-| **Saige AI** | LangGraph, Google Gemini, Firestore, Redis |
-| Marketplace | Stripe, SendGrid |
-| Cloud Platform | Google Cloud (Cloud Run, Firestore, Earth Engine) |
-| Task Queue | Redis (Saige checkpoints & message buffer) |
-| Vector Search | Firestore vector search + text-embedding-004 |
-| Imagery Analysis | Google Earth Engine (biomass analysis, sentinel-2) |
-| Email | SendGrid API |
-| File Storage | Google Cloud Storage (images, documents) |
+| Layer | Stack |
+|-------|--------|
+| API | FastAPI, Uvicorn |
+| DB | SQL Server — `pymssql` locally; Cloud SQL Python Connector + `pytds` on staging Cloud Run |
+| Auth | JWT (`SECRET_KEY`) |
+| Saige | LangGraph, Gemini / Vertex AI, Firestore, Redis (optional) |
+| Deploy | Cloud Run, Artifact Registry, GitHub Actions + Workload Identity Federation |
+| Payments / email | Stripe, SendGrid (where configured) |
 
-## Platform Scale
-
-This is one of the most comprehensive agricultural software platforms:
-
-- **137+ API routers** covering 15+ agricultural domains
-- **2,000+ endpoints** across the platform
-- **50K+ lines** in models.py alone (extensive domain model coverage)
-- **40+ database migrations** for complex data schema evolution
-- **Multi-tenancy support** for businesses, farms, and organizations
-- **Enterprise event management** (32+ event types)
-- **Real-time monitoring** via IoT greenhouse, precision ag, field health
-- **Supply chain visibility** from farm to consumer
-- **AI-powered advisory** with RAG-backed contextual guidance
-
-## Key Features
-
-### Saige AI Advisory System
-
-The `saige/` subdirectory contains an AI-powered agricultural advisory system:
-
-- **Multi-domain Advisory** — livestock, crops, weather, mixed queries
-- **LangGraph Orchestration** — structured workflows with state management
-- **RAG Integration** — Firestore vector search with domain-specific knowledge
-- **Real-time Context** — live weather data, farm assessments
-- **Chat History** — Firestore persistence + Redis message buffer
-
-→ **Full documentation:** [`saige/README.md`](saige/README.md)
-
-### Livestock & Animal Management
-
-- Herd health tracking, reproduction monitoring
-- Breed recommendations & knowledge base
-- Meat processing workflows
-- Animal photo/identification system
-- Herd health accounting
-
-### Precision Agriculture & Field Monitoring
-
-- **Satellite Analysis** — Earth Engine integration for crop health, biomass estimation
-- **Field Mapping** — precision ag tools, field boundaries
-- **Real-time Monitoring** — IoT greenhouse sensors, soil tests
-- **Health Alerts** — automated warnings for field anomalies
-- **Yield Analysis** — historical yield tracking and optimization
-
-### Events & Community
-
-Comprehensive event management supporting:
-- Auctions, livestock shows, fiber arts festivals
-- Vendor fairs, conferences, competitions
-- Sponsorship management, floor planning
-- Registration, check-in, meal planning
-- Broadcast/streaming capabilities
-
-### Marketplace & E-Commerce
-
-- Product catalog with categories
-- Stripe payment integration
-- Equipment rental marketplace
-- Farm stand direct sales
-- Vendor management & commission tracking
-
-### Supply Chain & Traceability
-
-- Delivery route optimization
-- Supplier directory & scoring
-- Buyer CRM for vendor relationships
-- Cold chain logistics tracking
-- Product provenance & traceability
-- Export compliance documentation
-
-### Financial & Accounting
-
-- Cash flow tracking & forecasting
-- Crop budget planning
-- Farmer settlement & payments
-- Price list management
-- ESG reporting & sustainability metrics
-
-### Content Management
-
-- Website builder with AI assistance
-- Blogging platform
-- Company feature pages
-- News aggregation
-- Document vault for files
+---
 
 ## Development
 
-### Database Seeding
-
-The repository includes multiple seed scripts to populate the database with realistic demo data for testing and development:
+### Tests
 
 ```bash
-# General demo data (businesses, users, events)
-python seed_demo_15671.py
-
-# Livestock & animal management demo
-python seed_livestock_15665.py
-
-# Accounting demo data
-python seed_accounting_15671.py
-
-# Cold chain & logistics demo
-python seed_cold_chain_15671.py
-python seed_cold_chain_advanced_15671.py
-python seed_cold_chain_recent_15671.py
-python seed_cold_chain_shipments_maint_15671.py
-
-# Precision agriculture demo
-python seed_precision_ag_15671.py
-
-# Supply chain demo
-python seed_suppliers_15671.py
-
-# Education, grants, orders demo
-python seed_edu_15671.py
-python seed_grants_15671.py
-python seed_orders_15671.py
-
-# Test data
-python seed_test_data_15665.py
-```
-
-**Note:** Seed scripts populate specific domains. Run multiple seeds to build a comprehensive demo environment. The numeric suffixes (15671, 15665) reference demo business IDs.
-
-### Utilities
-
-```bash
-# Upload local animal photos to cloud storage
-python upload_local_animal_photos.py
-
-# Database schema migrations (in migrations/ directory)
-# Applied automatically or manually via your SQL client
-```
-
-### Running Tests
-
-```bash
-# Run all tests
 pytest
-
-# Run with coverage
-pytest --cov=.
-
-# Run specific test file
-pytest saige/test_api_flow.py -v
+pytest test/UnitTest -v
+pytest test/SmokeTest -v
 ```
 
-### Project Structure for Routers
-
-Each router is a FastAPI APIRouter:
+### Router pattern
 
 ```python
 from fastapi import APIRouter, Depends
-from database import get_db
+from app.database import get_db
 
-router = APIRouter(prefix="/my_resource", tags=["my_resource"])
+router = APIRouter(prefix="/api/example", tags=["example"])
 
 @router.get("/")
-def list_my_resources(db = Depends(get_db)):
-    # Implementation
-    pass
-
-@router.post("/")
-def create_my_resource(data: MyModel, db = Depends(get_db)):
-    # Implementation
-    pass
+def list_items(db=Depends(get_db)):
+    ...
 ```
 
-Then import in `main.py`:
-```python
-from routers import my_resource
-app.include_router(my_resource.router)
-```
+Register from `app/main.py` via `app.include_router(...)`.
+
+### Seed / utility scripts
+
+Legacy seed scripts may live at repo root; prefer documented scripts under `scripts/` for new work. Always point them at a **non-production** database unless you intentionally use the RO staging path (writes will fail).
+
+---
 
 ## Security
 
 **Never commit:**
-- `.env` files (API keys, credentials)
-- `credentials/` directories (service account JSONs)
-- Database passwords or tokens
 
-The `.gitignore` excludes sensitive files. Before pushing, verify:
+- `.env`, service account JSON, live DB passwords
 
-```bash
-git status  # Confirm no .env, credentials, or secrets staged
-```
+**Staging notes:**
 
-**Production Checklist:**
-- [ ] Generate strong random `SECRET_KEY` (32+ chars)
-- [ ] Set `ALLOW_ALL_ORIGINS=false` and specify `FRONTEND_URL`
-- [ ] Enable `REDIS_SSL=true` for managed Redis
-- [ ] Rotate API keys, JWT secrets, and service accounts regularly
-- [ ] Use environment-specific `.env` files (never commit)
+- Staging holds a path to **live prod data** (read-only). Treat `DB_*` secrets carefully.
+- Do not grant `db_datawriter` / `db_ddladmin` to the staging RO SQL login.
+- GitHub Actions must not embed DB passwords in CI logs; staging CD mounts Secret Manager at deploy time.
+
+---
 
 ## Troubleshooting
 
-| Issue | Solution |
-|---|---|
-| `401 Invalid or expired token` | Verify JWT in `Authorization: Bearer <token>` header |
-| `500 JWT_SECRET is not configured` | Set `SECRET_KEY` in `.env` |
-| Database connection fails | Check `DB_SERVER`, `DB_USER`, `DB_PASSWORD` in `.env` |
-| Saige endpoints 404 | Confirm Saige routers are registered in `main.py` |
-| Redis connection timeout | Verify Redis is running (`redis-cli ping`), or set `REDIS_ENABLED=false` |
-| Docker build fails | Ensure `requirements.txt` is up to date and Python 3.11+ |
+| Issue | What to check |
+|-------|----------------|
+| `ModuleNotFoundError: routers` / `dependencies` | Use `app.routers` / `app.dependencies` |
+| `Connection refused` to `127.0.0.1` on Cloud Run | Need `INSTANCE_CONNECTION_NAME` + Connector image (not localhost proxy) |
+| `Login failed for user '<SQL_LOGIN>'` | Secret Manager still has a placeholder — set real `DB_USER` / `DB_PASSWORD` |
+| `UPDATE/CREATE permission denied` on staging | Expected for RO login |
+| `Set GOOGLE_API_KEY or GOOGLE_CLOUD_PROJECT` on backend staging | Service is still running `server_all` — staging must use `app.main:app` |
+| Backend CD ran on docs-only change | Ensure change is only under `docs/**` on `GCP/backend-staging` |
+| Saige CD did not run | Push must hit `GCP/saige-staging` and change `saige/**` (or the Saige workflow) |
 
-## Support & Contributions
+More detail: [`docs/staging/BACKEND_STAGING_DEPLOY.md`](docs/staging/BACKEND_STAGING_DEPLOY.md#troubleshooting).
 
-- **Issues:** Report bugs on [GitHub Issues](https://github.com/Oatmeal-Farm-Network/oatmealfarmnetworkbackend/issues)
-- **Discussions:** Join community discussions on GitHub
-- **Contributing:** See `CONTRIBUTING.md` (if available) for contribution guidelines
+---
+
+## Related repositories
+
+- Frontend: [oatmeal-farm-network-frontend](https://github.com/Oatmeal-Farm-Network/oatmeal-farm-network-frontend)
+- Docs site: [oatmeal-farm-network-docs](https://github.com/Oatmeal-Farm-Network/oatmeal-farm-network-docs)
 
 ## License
 
-[Add your license information here]
-
-## Related Repositories
-
-- **Frontend:** [oatmeal-farm-network-frontend](https://github.com/Oatmeal-Farm-Network/oatmeal-farm-network-frontend)
-- **Documentation:** [oatmeal-farm-network-docs](https://github.com/Oatmeal-Farm-Network/oatmeal-farm-network-docs)
-- **Saige AI:** See [`saige/README.md`](saige/README.md) for dedicated AI advisory documentation
+See repository license / organization policy.
