@@ -1,27 +1,54 @@
-# Deploy Saige backend to Cloud Run.
-# Run from this directory: .\deploy.ps1
-# Requires: gcloud CLI authenticated, Docker running (or Cloud Build used instead).
+# Staging-only Saige Cloud Run deploy helper.
+# Run from repo root or from the saige directory:
+#   pwsh ./saige/deploy.ps1
+#
+# Prereqs:
+# - gcloud CLI installed and authenticated
+# - Access to the oatmeal-farm-staging project
+# - Artifact Registry repository already created
+# - Cloud Build API enabled
+# - Required Secret Manager secrets already provisioned (`SECRET_KEY`; `CRON_SECRET` optional but recommended)
 
-$PROJECT   = "animated-flare-421518"
-$REGION    = "us-central1"
-$SERVICE   = "saige-backend"
-$IMAGE_TAG = "us-central1-docker.pkg.dev/$PROJECT/cloud-run-source-deploy/saige-backend:latest"
+param(
+    [string]$ProjectId = "oatmeal-farm-staging",
+    [string]$Region = "us-central1",
+    [string]$Repository = "oatmeal-farm-registry",
+    [string]$ServiceName = "oatmeal-saige-staging",
+    [string]$ServiceAccount = "saige-sa@oatmeal-farm-staging.iam.gserviceaccount.com",
+    [string]$ImageName = "saige",
+    [string]$CommitSha = "",
+    [string]$FrontendUrl = "https://staging.oatmealfarmnetwork.com"
+)
 
-# SECRET_KEY must match the main backend's SECRET_KEY so JWTs can be verified.
-# Get this from: gcloud run services describe oatmealfarmnewtorkbackend --region=us-central1 --format="value(spec.template.spec.containers[0].env[SECRET_KEY])"
-$SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
+$ErrorActionPreference = "Stop"
 
-Write-Host "Building image via Cloud Build..."
-gcloud builds submit --tag $IMAGE_TAG --project=$PROJECT
-if (-not $?) { Write-Error "Build failed"; exit 1 }
+if (-not $CommitSha) {
+    $CommitSha = (git rev-parse --short=12 HEAD).Trim()
+}
 
-Write-Host "Deploying to Cloud Run (with env vars)..."
-gcloud run deploy $SERVICE `
-    --image $IMAGE_TAG `
-    --region $REGION `
-    --project $PROJECT `
-    --update-env-vars "SECRET_KEY=$SECRET_KEY"
+$ImageUri = "$Region-docker.pkg.dev/$ProjectId/$Repository/$ImageName`:$CommitSha"
 
-Write-Host "Done. Testing health..."
-Start-Sleep -Seconds 5
-Invoke-RestMethod "https://$SERVICE-802455386518.$REGION.run.app/health"
+Write-Host "Building Saige image: $ImageUri"
+gcloud builds submit ./saige --tag $ImageUri --project $ProjectId
+
+Write-Host "Deploying $ServiceName to Cloud Run (staging)"
+gcloud run deploy $ServiceName `
+    --image $ImageUri `
+    --project $ProjectId `
+    --region $Region `
+    --service-account $ServiceAccount `
+    --allow-unauthenticated `
+    --port 8000 `
+    --memory 2Gi `
+    --cpu 2 `
+    --min-instances 1 `
+    --max-instances 10 `
+    --set-env-vars "GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_LOCATION=$Region,FRONTEND_URL=$FrontendUrl,ALLOW_ALL_ORIGINS=false,GOOGLE_GENAI_USE_VERTEXAI=true,VERTEX_AI_MODEL=gemini-2.5-flash-lite,FIRESTORE_DATABASE=charlie,CHAT_HISTORY_DATABASE=chat-history,REDIS_ENABLED=false" `
+    --set-secrets "SECRET_KEY=SECRET_KEY:latest,CRON_SECRET=CRON_SECRET:latest"
+
+$Url = gcloud run services describe $ServiceName `
+    --project $ProjectId `
+    --region $Region `
+    --format "value(status.url)"
+
+Write-Host "Saige staging URL: $Url"
