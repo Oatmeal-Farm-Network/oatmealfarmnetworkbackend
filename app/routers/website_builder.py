@@ -1,3 +1,7 @@
+import json
+import re
+import uuid
+from app import models
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -6,7 +10,6 @@ from app.database import get_db, engine, Base
 from datetime import datetime, date
 from typing import Optional, List
 from pydantic import BaseModel
-from app import models, json, re, uuid
 
 router = APIRouter(prefix="/api/website", tags=["website-builder"])
 
