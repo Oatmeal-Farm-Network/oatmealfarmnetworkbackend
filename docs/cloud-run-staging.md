@@ -36,9 +36,13 @@
 
 ### Frontend (`oatmeal-frontend-staging`)
 
-- [x] Service created and reachable
-- [ ] Attach `frontend-sa@oatmeal-farm-staging.iam.gserviceaccount.com`
-- [ ] Final frontend image / config (out of scope for backend-only CD this sprint)
+- [x] Service created
+- [x] Staging CD on frontend repo branch **`GCP/frontend-staging`**
+- [x] Workflow: `oatmealfarmnetwork/.github/workflows/deploy-staging.yml`
+- [x] Build args point `VITE_API_URL` at staging backend
+- [x] Backend CORS + `FRONTEND_URL` allow this origin (`GCP/backend-staging`)
+- [ ] Confirm GitHub WIF secrets on **frontend** repo + first green deploy
+- Runbook: frontend `docs/FRONTEND_STAGING_DEPLOY.md`
 
 ### Saige (`oatmeal-saige-staging`)
 
