@@ -122,11 +122,11 @@ The GitHub Actions SA has `roles/iam.workloadIdentityUser` bound to principals f
 Configure these in **GitHub → Settings → Secrets and variables → Actions** on `oatmealfarmnetworkbackend`:
 
 
-| Secret name                   | Value                                                              |
-| ----------------------------- | ------------------------------------------------------------------ |
-| `STAGING_GCP_WIF_PROVIDER`    | Full provider path (see above)                                     |
-| `STAGING_GCP_SERVICE_ACCOUNT` | `github-actions-cicd@oatmeal-farm-staging.iam.gserviceaccount.com` |
-| `STAGING_GCP_PROJECT_ID`      | `oatmeal-farm-staging`                                             |
+| Secret name                              | Value                                                              |
+| ---------------------------------------- | ------------------------------------------------------------------ |
+| `STAGING_GCP_WORKLOAD_IDENTITY_PROVIDER` | Full provider path (see above) — **must match** `deploy-staging.yml` |
+| `STAGING_GCP_SERVICE_ACCOUNT`            | `github-actions-cicd@oatmeal-farm-staging.iam.gserviceaccount.com` |
+| `STAGING_GCP_PROJECT_ID`                 | `oatmeal-farm-staging`                                             |
 
 
 Do **not** commit secret values to this repo.
@@ -144,7 +144,7 @@ steps:
   - name: Authenticate to Google Cloud (Staging)
     uses: google-github-actions/auth@v2
     with:
-      workload_identity_provider: ${{ secrets.STAGING_GCP_WIF_PROVIDER }}
+      workload_identity_provider: ${{ secrets.STAGING_GCP_WORKLOAD_IDENTITY_PROVIDER }}
       service_account: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT }}
 
   - uses: google-github-actions/setup-gcloud@v2
@@ -152,6 +152,8 @@ steps:
 env:
   PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID }}
 ```
+
+> Staging CD triggers on pushes to branch `GCP/backend-staging` (see `.github/workflows/deploy-staging.yml`).
 
 ---
 

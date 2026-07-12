@@ -1,23 +1,25 @@
 name: Deploy to Staging
 
 # Staging-only CD workflow. Do NOT add production deployment steps here.
+# Triggers on pushes to GCP/backend-staging (dedicated staging deploy branch).
 on:
   push:
-    branches: [main]
+    branches: [GCP/backend-staging]
 
 env:
-  # --- Set these as GitHub Actions "Variables" (Settings > Secrets and variables > Actions > Variables tab) ---
   GCP_PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID }}
   REGION: us-central1
   IMAGE_URI_PREFIX: us-central1-docker.pkg.dev/oatmeal-farm-staging/oatmeal-farm-registry/backend
   CLOUD_RUN_SERVICE: oatmeal-backend-staging
+  CLOUD_SQL_INSTANCE: animated-flare-421518:us-central1:oatmealailive
+  RUNTIME_SERVICE_ACCOUNT: stg-to-prod-db-ro-dev-project@oatmeal-farm-staging.iam.gserviceaccount.com
 
 jobs:
   deploy-staging:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write   # required if using Workload Identity Federation
+      id-token: write   # required for Workload Identity Federation
 
     steps:
       - name: Checkout code
@@ -27,9 +29,8 @@ jobs:
         id: vars
         run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
-      # ---------------------------------------------------------------
-      # AUTH: Confirmed with Bringesh -- Workload Identity Federation (keyless)
-      # ---------------------------------------------------------------
+      # AUTH: Workload Identity Federation (keyless)
+      # GitHub secret name must match: STAGING_GCP_WORKLOAD_IDENTITY_PROVIDER
       - name: Authenticate to Google Cloud (Staging)
         uses: google-github-actions/auth@v2
         with:
@@ -56,6 +57,10 @@ jobs:
             --image "${{ env.IMAGE_URI_PREFIX }}:${{ steps.vars.outputs.sha_short }}" \
             --project ${{ env.GCP_PROJECT_ID }} \
             --region ${{ env.REGION }} \
+            --service-account "${{ env.RUNTIME_SERVICE_ACCOUNT }}" \
+            --set-cloudsql-instances "${{ env.CLOUD_SQL_INSTANCE }}" \
+            --update-secrets=DB_SERVER=DB_SERVER:latest,DB_USER=DB_USER:latest,DB_PASSWORD=DB_PASSWORD:latest,DB_NAME=DB_NAME:latest,SECRET_KEY=SECRET_KEY:latest \
+            --min-instances=1 \
             --quiet
 
       - name: Print deployed URL

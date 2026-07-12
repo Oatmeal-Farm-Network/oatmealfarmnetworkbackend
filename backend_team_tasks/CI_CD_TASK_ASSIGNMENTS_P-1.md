@@ -366,12 +366,12 @@ git push -u origin task/cicd-github-actions-cd-staging
 
 #### ✅ Tasks
 
-- [ ] Create the workflow file: `.github/workflows/deploy-staging.yml`
-- [ ] Configure trigger:
+- [x] Create the workflow file: `.github/workflows/deploy-staging.yml`
+- [x] Configure trigger (dedicated staging branch):
   ```yaml
   on:
     push:
-      branches: [main]
+      branches: [GCP/backend-staging]
   ```
 - [ ] Add the following deployment steps:
   1. **Checkout** code and extract `COMMIT_SHA` (short SHA via `${{ github.sha }}`)
