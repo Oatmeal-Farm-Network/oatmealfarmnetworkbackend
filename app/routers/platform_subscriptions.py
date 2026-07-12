@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db, SessionLocal
 from app.core.jwt_auth import get_current_user
-from routers.platform_settings import get_stripe_config
+from app.routers.platform_settings import get_stripe_config
 
 
 platform_subscriptions_router = APIRouter(prefix="/api/platform-subscriptions", tags=["platform-subscriptions"])

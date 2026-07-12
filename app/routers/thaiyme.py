@@ -622,7 +622,7 @@ def _esg_status(db: Session, business_id: int) -> Dict[str, Any]:
     try:
         # Reuse the live aggregator from the ESG router so the answers Thaiyme
         # gives match what the page shows.
-        from routers.esg_reports import _live_metrics, _manual_metrics
+        from app.routers.esg_reports import _live_metrics, _manual_metrics
         from datetime import date, timedelta
         end = date.today()
         start = end - timedelta(days=90)
@@ -2147,7 +2147,7 @@ def confirm_proposal(
         """), {"dt": b.get("payment_date"), "did": delivery_id, "bid": bid})
         db.commit()
         # Post accounting bill
-        from routers.outgrower import _auto_settle_to_accounting
+        from app.routers.outgrower import _auto_settle_to_accounting
         _auto_settle_to_accounting(db, delivery_id, bid)
         db.commit()
         return {"ok": True, "executed": {"delivery_id": delivery_id, "payment_date": b.get("payment_date")}}
@@ -2162,11 +2162,11 @@ def confirm_proposal(
             WHERE POID=:pid AND BusinessID=:bid
         """), {"by": b.get("approved_by", "Thaiyme"), "pid": po_id, "bid": bid})
         db.commit()
-        from routers.procurement import _sync_po_to_accounting_bill
+        from app.routers.procurement import _sync_po_to_accounting_bill
         _sync_po_to_accounting_bill(db, po_id, bid)
         db.commit()
         try:
-            from routers.notifications import notify_business
+            from app.routers.notifications import notify_business
             po = db.execute(text("SELECT PONumber, SupplierName, TotalAmount FROM PurchaseOrder WHERE POID=:pid"), {"pid": po_id}).fetchone()
             if po:
                 notify_business(db, bid, type="po_approved", title=f"PO approved: {po.PONumber}",
@@ -2187,7 +2187,7 @@ def confirm_proposal(
         """), {"reason": b.get("reason"), "pid": po_id, "bid": bid})
         db.commit()
         try:
-            from routers.notifications import notify_business
+            from app.routers.notifications import notify_business
             po = db.execute(text("SELECT PONumber, SupplierName FROM PurchaseOrder WHERE POID=:pid"), {"pid": po_id}).fetchone()
             if po:
                 notify_business(db, bid, type="po_rejected", title=f"PO rejected: {po.PONumber}",

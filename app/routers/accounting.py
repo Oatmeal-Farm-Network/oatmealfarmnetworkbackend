@@ -11,7 +11,7 @@ from app.database import get_db
 from app.core.auth import get_current_user
 from app import models
 import datetime
-from routers.rbac import record_audit
+from app.routers.rbac import record_audit
 
 router = APIRouter(prefix="/api/accounting", tags=["accounting"])
 

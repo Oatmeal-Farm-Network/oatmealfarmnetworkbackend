@@ -315,7 +315,7 @@ def _auto_revenue_invoice(db: Session, shipment_id: int, business_id: int,
             {"iid": new_inv_id, "sid": shipment_id}
         )
 
-        from routers.notifications import notify_business
+        from app.routers.notifications import notify_business
         notify_business(db, business_id, "revenue_recognized", "Export Revenue Recognized",
                         f"{commodity}: ${total:,.2f} invoice created on delivery",
                         link_path=f"/accounting?BusinessID={business_id}",

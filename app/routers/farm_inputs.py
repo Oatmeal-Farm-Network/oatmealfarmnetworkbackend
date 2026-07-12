@@ -5,7 +5,7 @@ from app.database import get_db
 from datetime import datetime, date
 from typing import Optional
 import math
-from routers.notifications import notify_business
+from app.routers.notifications import notify_business
 
 router = APIRouter(prefix="/api/farm-inputs", tags=["farm_inputs"])
 

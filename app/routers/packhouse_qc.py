@@ -160,7 +160,7 @@ def _auto_create_export_shipment(db: Session, batch_id: int, business_id: int):
             "notes": f"Auto-created from packhouse batch {batch.BatchRef or batch_id} on dispatch.",
         })
 
-        from routers.notifications import notify_business
+        from app.routers.notifications import notify_business
         notify_business(
             db, business_id, type="export_shipment_drafted",
             title=f"Draft export shipment created: {ship_ref}",
@@ -355,7 +355,7 @@ def add_inspection(batch_id: int, body: dict, db: Session = Depends(get_db)):
                         ),
                         "sid": inspection_id,
                     })
-                from routers.notifications import notify_business
+                from app.routers.notifications import notify_business
                 notify_business(
                     db, batch.BusinessID, type="qc_failure",
                     title=f"QC Failure: {batch.ProductName}",

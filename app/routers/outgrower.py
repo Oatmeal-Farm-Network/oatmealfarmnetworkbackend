@@ -422,7 +422,7 @@ def _auto_settle_to_accounting(db: Session, delivery_id: int, business_id: int):
         """), {"bid2": bill_id, "did": delivery_id, "bid": business_id})
 
         # Notify
-        from routers.notifications import notify_business
+        from app.routers.notifications import notify_business
         notify_business(
             db, business_id, type="outgrower_settlement_posted",
             title=f"Settlement posted: {row.FarmerName}",

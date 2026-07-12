@@ -3,7 +3,7 @@ from typing import Optional
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from routers.translation import translate_fields, translate_list
+from app.routers.translation import translate_fields, translate_list
 from app.database import get_db
 from datetime import datetime, timedelta
 

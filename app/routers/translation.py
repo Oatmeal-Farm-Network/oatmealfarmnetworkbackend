@@ -6,7 +6,7 @@ Two-tier cache:
   L2 — SQL Server ContentTranslations table (TTL 30 days) — avoids API calls
 
 Usage:
-    from routers.translation import translate_fields, translate_list
+    from app.routers.translation import translate_fields, translate_list
 
     # Translate a single dict's chosen fields
     row = translate_fields(row, ['Title', 'Description'], lang, db)

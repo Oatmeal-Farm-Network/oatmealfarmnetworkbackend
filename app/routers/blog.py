@@ -8,7 +8,7 @@ from typing import Optional
 import re
 import uuid
 from datetime import datetime
-from routers.translation import translate_fields, translate_list
+from app.routers.translation import translate_fields, translate_list
 
 router = APIRouter(prefix="/api/blog", tags=["blog"])
 

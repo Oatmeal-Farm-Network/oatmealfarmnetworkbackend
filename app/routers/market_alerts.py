@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database import get_db, engine
 from app.core.auth import get_current_user
-from routers.notifications import create_notification
+from app.routers.notifications import create_notification
 from pydantic import BaseModel
 from datetime import datetime
 

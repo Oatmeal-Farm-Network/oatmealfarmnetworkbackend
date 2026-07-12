@@ -25,7 +25,7 @@ def _notify_business_team(db: Session, business_id: int, title: str,
                            body_text: str, link_path: str, type_: str) -> None:
     """Insert AppNotification rows + push for every active team member of a business."""
     try:
-        from routers.notifications import _push_to_person
+        from app.routers.notifications import _push_to_person
         members = db.execute(text(
             "SELECT PeopleID FROM BusinessAccess WHERE BusinessID=:bid AND Active=1"
         ), {"bid": business_id}).fetchall()

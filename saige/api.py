@@ -2702,7 +2702,7 @@ async def cassia_checkout(
                     {"t": tier, "tl": f"%{tier}%"},
                 ).fetchone()
                 if row:
-                    from routers.platform_settings import get_stripe_config
+                    from app.routers.platform_settings import get_stripe_config
                     cfg = get_stripe_config(_db)
                     is_test = bool(cfg.get("StripeTestMode", True))
                     price_id = row[1] if is_test else row[0]

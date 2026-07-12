@@ -195,7 +195,7 @@ def _recalc_totals(db: Session, cart_id: int):
     promo_code_str = None
     if cart and cart.get("PromoCodeID"):
         try:
-            from routers.event_promo_codes import compute_discount
+            from app.routers.event_promo_codes import compute_discount
             promo = db.execute(text("""
                 SELECT * FROM OFNEventPromoCodes WHERE CodeID = :id
             """), {"id": cart["PromoCodeID"]}).mappings().first()
@@ -271,7 +271,7 @@ def add_items(cart_id: int, payload: dict, db: Session = Depends(get_db)):
 @router.post("/api/events/cart/{cart_id}/promo-code")
 def apply_promo(cart_id: int, payload: dict, db: Session = Depends(get_db)):
     """Apply a promo code to an existing cart. Validates + recalculates totals."""
-    from routers.event_promo_codes import _validate_promo, _normalize_code
+    from app.routers.event_promo_codes import _validate_promo, _normalize_code
     cart = db.execute(text("""
         SELECT EventID, Subtotal FROM OFNEventRegistrationCart WHERE CartID = :c
     """), {"c": cart_id}).mappings().first()
