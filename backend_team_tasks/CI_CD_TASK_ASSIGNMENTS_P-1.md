@@ -84,15 +84,15 @@ git push -u origin task/cicd-gcp-staging-cloudsql
 
 #### ✅ Tasks
 
-- [ ] Create (or confirm) the `oatmeal-farm-staging` GCP project exists and billing is enabled
-- [ ] Enable required GCP APIs: Cloud Run, Cloud SQL, Artifact Registry, IAM, Secret Manager
-- [ ] Provision a **Cloud SQL** instance (PostgreSQL) in the staging project
-  - Use dummy / anonymized data only — no real user data
-- [ ] Create a dedicated database and user for the staging backend
-- [ ] Document the staging Cloud SQL connection string and share credentials securely via Secret Manager
-- [ ] Verify the database is accessible only within the staging project's VPC / service account scope
+- [x] Create (or confirm) the `oatmeal-farm-staging` GCP project exists and billing is enabled
+- [x] Enable required GCP APIs: Cloud Run, Cloud SQL, Artifact Registry, IAM, Secret Manager
+- [x] ~~Provision a Cloud SQL PostgreSQL instance~~ — **superseded**: app uses SQL Server (`pymssql`); do not use Postgres for the app DB
+- [x] Staging DB access: **read-only** connection to prod Cloud SQL SQL Server (`Oatmealailivedb`) via Auth Proxy + `stg-to-prod-db-ro-dev-project` SA (see `docs/staging/STAGING_CLOUD_SQL_SETUP.md`)
+- [x] Create/confirm Secret Manager secrets: `DB_SERVER`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` (not Postgres `staging-db-*`)
+- [x] Wire Cloud Run backend with RO SA + `--set-cloudsql-instances=animated-flare-421518:us-central1:oatmealailive`
+- [x] Stop deprecated Postgres instance `oatmeal-staging-db` in staging (`STOPPED`; delete optional)
 
-> ⚠️ **Wait for Bringesh** to finalize IAM service accounts before locking down access rules.
+> ⚠️ Staging currently reads **live prod data** (db_datareader only). Treat credentials carefully; CI must not use these secrets.
 
 ---
 
