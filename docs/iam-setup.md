@@ -76,7 +76,7 @@ Each staging Cloud Run service runs under its own service account.
 | Field | Value |
 |-------|--------|
 | Email | `stg-to-prod-db-ro-dev-project@oatmeal-farm-staging.iam.gserviceaccount.com` |
-| Used by | `oatmeal-backend-staging` (DB access via Auth Proxy) |
+| Used by | `oatmeal-backend-staging` (DB access via Cloud SQL Python Connector) |
 | Prod project | `animated-flare-421518` |
 | Prod role | `roles/cloudsql.client` |
 | SQL | `Oatmealailivedb` / `db_datareader` only |
