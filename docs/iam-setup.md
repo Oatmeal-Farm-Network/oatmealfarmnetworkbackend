@@ -66,10 +66,23 @@ Each staging Cloud Run service runs under its own service account.
 | Role                                 | Why                                                              |
 | ------------------------------------ | ---------------------------------------------------------------- |
 | `roles/cloudsql.client`              | Connect to Cloud SQL (Auth Proxy / IAM DB auth)                  |
-| `roles/secretmanager.secretAccessor` | Read secrets from Secret Manager (e.g. `DATABASE_URL`, API keys) |
+| `roles/secretmanager.secretAccessor` | Read secrets from Secret Manager (e.g. `DB_*`, API keys) |
 
 
-> **Note:** `roles/cloudsql.client` alone is not enough for database access. Vidyanand must also create the DB user and configure Cloud SQL IAM auth on the instance if used.
+> **Note:** For staging DB access today, prefer the dedicated RO SA below (not `backend-sa` alone). `roles/cloudsql.client` on staging is not enough to reach prod SQL Server.
+
+### Staging → prod DB (read-only)
+
+| Field | Value |
+|-------|--------|
+| Email | `stg-to-prod-db-ro-dev-project@oatmeal-farm-staging.iam.gserviceaccount.com` |
+| Used by | `oatmeal-backend-staging` (DB access via Auth Proxy) |
+| Prod project | `animated-flare-421518` |
+| Prod role | `roles/cloudsql.client` |
+| SQL | `Oatmealailivedb` / `db_datareader` only |
+| Connection name | `animated-flare-421518:us-central1:oatmealailive` |
+
+See [STAGING_CLOUD_SQL_SETUP.md](./staging/STAGING_CLOUD_SQL_SETUP.md).
 
 ---
 
@@ -172,10 +185,10 @@ gcloud artifacts repositories add-iam-policy-binding oatmeal-farm-registry \
 
 | Teammate      | Task                       | What they need from this doc                                                    |
 | ------------- | -------------------------- | ------------------------------------------------------------------------------- |
-| **Aryan**     | Cloud Run staging services | `backend-sa`, `frontend-sa` emails                                              |
-| **Sankeerth** | Saige + Secret Manager     | `saige-sa` email; per-secret bindings optional on top of project-level accessor |
+| **Aryan**     | Cloud Run staging services | `frontend-sa` for frontend; for backend DB use `stg-to-prod-db-ro-dev-project` + Cloud SQL connection name |
+| **Sankeerth** | Saige + Secret Manager     | `saige-sa` email; wire `DB_*` secrets (not Postgres `DATABASE_URL`)             |
 | **Guia**      | CD workflow                | `STAGING_GCP_`* secret names + WIF workflow snippet above                       |
-| **Vidyanand** | Cloud SQL                  | Runtime SA emails for DB access scoping                                         |
+| **Vidyanand** | Cloud SQL                  | RO→prod path documented in [STAGING_CLOUD_SQL_SETUP.md](./staging/STAGING_CLOUD_SQL_SETUP.md) |
 
 
 ---
