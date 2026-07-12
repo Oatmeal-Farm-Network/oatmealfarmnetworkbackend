@@ -1205,13 +1205,26 @@ def _next_num(prefix: str, table: str, col: str, bid: int, db: Session) -> str:
     return f"{prefix}-{str(num).zfill(5)}"
 
 
+def _account_type_name_column(db: Session) -> str:
+    row = db.execute(text("""
+        SELECT CASE
+            WHEN COL_LENGTH('AccountTypes', 'Name') IS NOT NULL THEN 'Name'
+            WHEN COL_LENGTH('AccountTypes', 'TypeName') IS NOT NULL THEN 'TypeName'
+            ELSE 'Name'
+        END AS ColName
+    """)).fetchone()
+    col = row.ColName if row else "Name"
+    return col if col in {"Name", "TypeName"} else "Name"
+
+
 def _find_account(bid: int, account_type: str, db: Session) -> Optional[int]:
     """Find the first active account of the given type for this business."""
+    type_col = _account_type_name_column(db)
     row = db.execute(
         text("""
             SELECT TOP 1 a.AccountID FROM Accounts a
             JOIN AccountTypes at ON a.AccountTypeID = at.AccountTypeID
-            WHERE a.BusinessID = :bid AND at.Name = :atype AND a.IsActive = 1
+            WHERE a.BusinessID = :bid AND at.""" + type_col + """ = :atype AND a.IsActive = 1
             ORDER BY a.AccountNumber
         """),
         {"bid": bid, "atype": account_type},
