@@ -339,6 +339,28 @@ def _blank_to_none(body: dict) -> dict:
     return {k: (None if isinstance(v, str) and v.strip() == "" else v) for k, v in body.items()}
 
 
+def _as_int(value, field_name: str, required: bool = False) -> Optional[int]:
+    if value is None:
+        if required:
+            raise HTTPException(400, f"{field_name} is required")
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(400, f"{field_name} must be a whole number")
+
+
+def _as_float(value, field_name: str, required: bool = False) -> Optional[float]:
+    if value is None:
+        if required:
+            raise HTTPException(400, f"{field_name} is required")
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise HTTPException(400, f"{field_name} must be a number")
+
+
 def _farm_name_exists(business_id: int, farm_name: str, db: Session) -> bool:
     """Case-insensitive check for an existing farm of the same name under this business,
     so we don't create confusing duplicate farms."""
@@ -662,6 +684,7 @@ def create_contract(business_id: int, body: dict, db: Session = Depends(get_db))
     body = _blank_to_none(body)
     if not body.get("FarmID") or not body.get("CropType"):
         raise HTTPException(400, "FarmID and CropType are required")
+    farm_id = _as_int(body.get("FarmID"), "FarmID", required=True)
     res = db.execute(text("""
         INSERT INTO OFNAggregatorContract
             (BusinessID, FarmID, CropType, ContractType, PricingModel, PricePerKg,
@@ -670,7 +693,7 @@ def create_contract(business_id: int, body: dict, db: Session = Depends(get_db))
         VALUES (:bid, :fid, :ct, :ctype, :pm, :ppk, :ekg, :sd, :ed, :rr, :t, :st)
     """), {
         "bid":  business_id,
-        "fid":  int(body["FarmID"]),
+        "fid":  farm_id,
         "ct":   body["CropType"],
         "ctype":body.get("ContractType", "first_right"),
         "pm":   body.get("PricingModel", "fixed"),
@@ -731,6 +754,7 @@ def create_input(business_id: int, body: dict, db: Session = Depends(get_db)):
     body = _blank_to_none(body)
     if not body.get("FarmID") or not body.get("InputType"):
         raise HTTPException(400, "FarmID and InputType are required")
+    farm_id = _as_int(body.get("FarmID"), "FarmID", required=True)
     qty  = body.get("Quantity")
     unit = body.get("UnitCost")
     total = body.get("TotalCost")
@@ -745,7 +769,7 @@ def create_input(business_id: int, body: dict, db: Session = Depends(get_db)):
         VALUES (:bid, :fid, :it, :d, :q, :u, :uc, :tc, :pd, :rm, :n)
     """), {
         "bid": business_id,
-        "fid": int(body["FarmID"]),
+        "fid": farm_id,
         "it":  body["InputType"],
         "d":   body.get("Description"),
         "q":   qty,
@@ -812,7 +836,8 @@ def create_purchase(business_id: int, body: dict, db: Session = Depends(get_db))
     body = _blank_to_none(body)
     if not body.get("FarmID") or not body.get("CropType") or not body.get("QuantityKg"):
         raise HTTPException(400, "FarmID, CropType and QuantityKg are required")
-    qty = float(body["QuantityKg"])
+    farm_id = _as_int(body.get("FarmID"), "FarmID", required=True)
+    qty = _as_float(body.get("QuantityKg"), "QuantityKg", required=True)
     ppk = body.get("PricePerKg")
     total = body.get("TotalPaid")
     if total is None and ppk is not None:
@@ -827,7 +852,7 @@ def create_purchase(business_id: int, body: dict, db: Session = Depends(get_db))
         VALUES (:bid, :fid, :cid, :ct, :g, :q, :ppk, :tp, :rs, :rn, :hd, :rd, :ps)
     """), {
         "bid": business_id,
-        "fid": int(body["FarmID"]),
+        "fid": farm_id,
         "cid": body.get("ContractID"),
         "ct":  body["CropType"],
         "g":   body.get("Grade"),
@@ -1000,6 +1025,7 @@ def create_b2b_order(business_id: int, body: dict, db: Session = Depends(get_db)
     body = _blank_to_none(body)
     if not body.get("AccountID"):
         raise HTTPException(400, "AccountID is required")
+    account_id = _as_int(body.get("AccountID"), "AccountID", required=True)
     qty = body.get("QuantityKg")
     ppk = body.get("PricePerKg")
     total = body.get("TotalValue")
@@ -1014,7 +1040,7 @@ def create_b2b_order(business_id: int, body: dict, db: Session = Depends(get_db)
         VALUES (:bid, :aid, :od, :ct, :q, :ppk, :tv, :dd, :st, :inv, :ps, :n)
     """), {
         "bid": business_id,
-        "aid": int(body["AccountID"]),
+        "aid": account_id,
         "od":  body.get("OrderDate"),
         "ct":  body.get("CropType"),
         "q":   qty,
@@ -1070,6 +1096,11 @@ def list_d2c_orders(business_id: int, channel: Optional[str] = None, db: Session
 @router.post("/api/aggregator/{business_id}/d2c/orders")
 def create_d2c_order(business_id: int, body: dict, db: Session = Depends(get_db)):
     body = _blank_to_none(body)
+    if not body.get("CropType") or body.get("QuantityKg") is None:
+        raise HTTPException(400, "CropType and QuantityKg are required")
+    quantity_kg = _as_float(body.get("QuantityKg"), "QuantityKg", required=True)
+    total_value = _as_float(body.get("TotalValue"), "TotalValue")
+    delivery_sla = _as_int(body.get("DeliverySLAMinutes"), "DeliverySLAMinutes")
     res = db.execute(text("""
         INSERT INTO OFNAggregatorD2COrder
             (BusinessID, Channel, ExternalOrderID, CustomerName, CustomerPhone,
@@ -1085,10 +1116,10 @@ def create_d2c_order(business_id: int, body: dict, db: Session = Depends(get_db)
         "cp":  body.get("CustomerPhone"),
         "da":  body.get("DeliveryAddress"),
         "ct":  body.get("CropType"),
-        "q":   body.get("QuantityKg"),
-        "tv":  body.get("TotalValue"),
+        "q":   quantity_kg,
+        "tv":  total_value,
         "od":  body.get("OrderDate"),
-        "sla": body.get("DeliverySLAMinutes"),
+        "sla": delivery_sla,
         "st":  body.get("Status", "placed"),
     }).fetchone()
     db.commit()
