@@ -28,6 +28,8 @@ Dockerfile default `CMD` is still `server_all:app` (local/unified). Staging **ov
 ```text
 push to GCP/backend-staging
         │
+        ├─ only docs/** changed? ──► skip workflow (no build/deploy)
+        │
         ▼
 GitHub Actions: Deploy to Staging
         │
@@ -39,6 +41,8 @@ GitHub Actions: Deploy to Staging
         └─ gcloud run deploy oatmeal-backend-staging
               image, RO SA, secrets, env, command override
 ```
+
+**Docs skip:** `paths-ignore: docs/**` — a push that only touches files under `docs/` does not run CD. A push that mixes `docs/` with app/workflow changes **does** deploy.
 
 ### Runtime wiring (set by workflow)
 

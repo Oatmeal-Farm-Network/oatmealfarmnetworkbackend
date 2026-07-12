@@ -2,9 +2,12 @@ name: Deploy to Staging
 
 # Staging-only CD workflow. Do NOT add production deployment steps here.
 # Triggers on pushes to GCP/backend-staging (dedicated staging deploy branch).
+# Docs-only pushes under docs/ do not deploy (paths-ignore).
 on:
   push:
     branches: [GCP/backend-staging]
+    paths-ignore:
+      - 'docs/**'
 
 env:
   GCP_PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID }}
