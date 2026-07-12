@@ -4,10 +4,34 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.routers.translation import translate_fields, translate_list
-from app.database import get_db
+from app.database import get_db, SessionLocal
 from datetime import datetime, timedelta
 
-router = APIRouter()
+_schema_ready = False
+
+
+def _ensure_schema() -> None:
+    global _schema_ready
+    if _schema_ready:
+        return
+    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
+    if skip_schema_ensure():
+        return
+
+    def _run() -> None:
+        global _schema_ready
+        with SessionLocal() as _db:
+            ensure_tables(_db)
+        _schema_ready = True
+
+    run_schema_ensure("events", _run)
+
+
+def _schema_dep() -> None:
+    _ensure_schema()
+
+
+router = APIRouter(dependencies=[Depends(_schema_dep)])
 
 # ── Auto-create tables on startup ─────────────────────────────────────────────
 def ensure_tables(db: Session):
@@ -243,13 +267,6 @@ def generate_recap_draft(event_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "Event not found")
     db.commit()
     return {"blog_id": blog_id}
-
-
-with __import__('database').SessionLocal() as _db:
-    try:
-        ensure_tables(_db)
-    except Exception as e:
-        print(f"Events table setup error: {e}")
 
 
 # ── Public: social feed (platform-generated event announcements) ──────────────
