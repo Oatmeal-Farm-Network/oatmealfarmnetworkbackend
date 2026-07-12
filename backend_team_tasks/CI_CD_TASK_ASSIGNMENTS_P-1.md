@@ -218,7 +218,11 @@ git push -u origin task/cicd-cloud-run-staging
 
 ### 🟧 Sankeerth — Cloud Run: Saige AI Service + Secret Manager Configuration
 
-**Goal:** Deploy the Saige AI Advisor Cloud Run service and wire all environment secrets across the staging environment.
+**Goal:** Deploy the Saige AI Advisor Cloud Run service and wire Saige-specific environment secrets in staging.
+
+> **Status update (July 2026):** Backend DB secrets (`DB_*`, `SECRET_KEY`) and mounting them on `oatmeal-backend-staging` were completed under the Vidyanand / RO→prod SQL Server work. See `docs/staging/STAGING_CLOUD_SQL_SETUP.md`.
+>
+> **Still owned by Sankeerth:** Part A (Saige Cloud Run service) + Saige AI API secrets + secret→service doc for Saige.
 
 #### 🔀 Git Setup — Run These First
 
@@ -242,7 +246,7 @@ git push -u origin task/cicd-cloud-run-saige-secrets
 
 #### ✅ Tasks
 
-**Part A — Saige Cloud Run Service**
+**Part A — Saige Cloud Run Service** *(still pending)*
 
 - [ ] Create the `oatmeal-saige-staging` Cloud Run service in `oatmeal-farm-staging`:
   ```bash
@@ -256,47 +260,34 @@ git push -u origin task/cicd-cloud-run-saige-secrets
   - `min-instances: 1` — **mandatory** for Saige to avoid AI model cold starts
   - Increase memory: `--memory 2Gi` (or higher depending on model size)
   - Increase CPU: `--cpu 2`
-- [ ] Attach the Saige service account (get email from **Bringesh**):
+- [ ] Attach the Saige service account:
   ```bash
   gcloud run services update oatmeal-saige-staging \
     --service-account=saige-sa@oatmeal-farm-staging.iam.gserviceaccount.com \
     --project=oatmeal-farm-staging \
-    --region=REGION
+    --region=us-central1
   ```
+  - If Saige needs the same RO→prod SQL path as backend, also attach Cloud SQL + `DB_*` (or use `stg-to-prod-db-ro-dev-project`) — coordinate with Bringesh / see `docs/staging/STAGING_CLOUD_SQL_SETUP.md`
 - [ ] Document the Saige staging URL and share with the team
 
 **Part B — Secret Manager: Environment Variable Wiring**
 
-- [ ] Create all required secrets in GCP Secret Manager for the staging project:
+- [x] ~~`DATABASE_URL` (Postgres)~~ — **superseded.** App uses SQL Server `DB_SERVER` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` (RO→prod). Created and documented.
+- [x] `SECRET_KEY` — created in staging Secret Manager
+- [x] Mount `DB_*` + `SECRET_KEY` on `oatmeal-backend-staging` (verified)
+- [ ] Create Saige-specific secrets (AI provider / Gemini / other API keys as required by Saige)
+- [ ] Grant `saige-sa` (and/or the Saige Cloud Run runtime SA) `secretAccessor` on the secrets Saige needs
+- [ ] Mount those secrets on `oatmeal-saige-staging` and verify with:
   ```bash
-  # Example — repeat for each required secret
-  echo -n "<secret-value>" | gcloud secrets create DATABASE_URL \
-    --data-file=- \
-    --project=oatmeal-farm-staging
-  ```
-  Secrets to create (coordinate with Vidyanand for DB values):
-  - `DATABASE_URL` — staging Cloud SQL connection string
-  - `SECRET_KEY` — app secret key
-  - Any API keys needed by Saige (AI provider keys, etc.)
-- [ ] Grant each Cloud Run service account access to the secrets it needs:
-  ```bash
-  gcloud secrets add-iam-policy-binding DATABASE_URL \
+  gcloud run services describe oatmeal-saige-staging \
     --project=oatmeal-farm-staging \
-    --member="serviceAccount:backend-sa@oatmeal-farm-staging.iam.gserviceaccount.com" \
-    --role="roles/secretmanager.secretAccessor"
-  ```
-- [ ] Verify secrets are mounted correctly in Cloud Run by checking service env config:
-  ```bash
-  gcloud run services describe oatmeal-backend-staging \
-    --project=oatmeal-farm-staging \
-    --region=REGION \
+    --region=us-central1 \
     --format="yaml"
   ```
-- [ ] Document the full list of secret names and which services consume them — share with Aryan and Guia
+- [ ] Document the full secret→service map (backend vs Saige vs frontend) — share with Aryan and Guia
 
 > ⚠️ **Do NOT create or modify any secrets in the Production GCP project.** Staging only.
-> ⚠️ **Wait for Bringesh** to create service accounts before granting secret access.
-> ⚠️ **Wait for Vidyanand** to provision Cloud SQL before storing the `DATABASE_URL` secret.
+> ⚠️ Backend DB wiring is done — do not recreate Postgres `DATABASE_URL` / `staging-db-*` for the app.
 
 ---
 
