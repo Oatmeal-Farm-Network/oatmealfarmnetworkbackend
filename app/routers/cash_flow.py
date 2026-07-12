@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from typing import Optional
 from datetime import date, datetime
 from dateutil.relativedelta import relativedelta
-from dependencies import get_raw_conn, get_current_user
+from app.dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/cash-flow", tags=["cash_flow"])
 _ddl_done = False

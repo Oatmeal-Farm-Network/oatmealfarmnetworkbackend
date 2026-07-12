@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date, datetime, timedelta
 import requests
-from dependencies import get_raw_conn, get_current_user
+from app.dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/chill", tags=["chilling_hours"])
 _ddl_done = False

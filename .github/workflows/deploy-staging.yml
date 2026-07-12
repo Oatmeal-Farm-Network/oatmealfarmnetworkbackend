@@ -60,7 +60,7 @@ jobs:
             --service-account "${{ env.RUNTIME_SERVICE_ACCOUNT }}" \
             --set-cloudsql-instances "${{ env.CLOUD_SQL_INSTANCE }}" \
             --update-secrets=DB_SERVER=DB_SERVER:latest,DB_USER=DB_USER:latest,DB_PASSWORD=DB_PASSWORD:latest,DB_NAME=DB_NAME:latest,SECRET_KEY=SECRET_KEY:latest \
-            --update-env-vars=SKIP_SCHEMA_ENSURE=true \
+            --update-env-vars=SKIP_SCHEMA_ENSURE=true,INSTANCE_CONNECTION_NAME=${{ env.CLOUD_SQL_INSTANCE }} \
             --min-instances=1 \
             --quiet
 

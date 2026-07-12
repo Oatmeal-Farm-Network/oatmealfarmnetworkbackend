@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date, datetime
-from dependencies import get_raw_conn, get_current_user
+from app.dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/field-activity", tags=["field_activity"])
 _ddl_done = False

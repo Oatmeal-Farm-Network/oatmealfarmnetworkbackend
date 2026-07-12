@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, timedelta
 import math
-from dependencies import get_raw_conn, get_current_user
+from app.dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/grain-bin", tags=["grain_bin"])
 _ddl_done = False

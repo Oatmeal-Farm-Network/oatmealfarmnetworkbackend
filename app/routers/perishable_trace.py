@@ -3,7 +3,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 from datetime import date, datetime, timedelta
-from dependencies import get_raw_conn, get_current_user
+from app.dependencies import get_raw_conn, get_current_user
 
 router = APIRouter(prefix="/api/trace", tags=["perishable_trace"])
 
