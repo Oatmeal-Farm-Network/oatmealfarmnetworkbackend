@@ -1,9 +1,8 @@
 # Cloud Run Staging Services
 
-**Task branch:** `task/cicd-cloud-run-staging`
-**Owner:** Aryan
-**GCP Project:** `oatmeal-farm-staging`
-**Region:** `us-central1`
+**Owner:** Bringesh / team  
+**GCP Project:** `oatmeal-farm-staging`  
+**Region:** `us-central1`  
 **Last updated:** July 2026
 
 ---
@@ -14,7 +13,7 @@
 |---|---|
 | Backend  | https://oatmeal-backend-staging-1087130530284.us-central1.run.app |
 | Frontend | https://oatmeal-frontend-staging-1087130530284.us-central1.run.app |
-| Saige    | *(pending — Sankeerth / `oatmeal-saige-staging`)* |
+| Saige    | Separate service / CD — see [staging/SAIGE_STAGING_SETUP.md](./staging/SAIGE_STAGING_SETUP.md) |
 
 ---
 
@@ -23,15 +22,17 @@
 ### Backend (`oatmeal-backend-staging`)
 
 - [x] Service created and reachable
-- [x] Runtime SA: `stg-to-prod-db-ro-dev-project@oatmeal-farm-staging.iam.gserviceaccount.com` (RO→prod SQL)
-- [x] Cloud SQL Auth Proxy: `animated-flare-421518:us-central1:oatmealailive`
-- [x] Secrets mounted: `DB_SERVER`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `SECRET_KEY`
+- [x] Real app image from Artifact Registry via CD (`GCP/backend-staging`)
+- [x] Workflow: `.github/workflows/deploy-staging.yml`
+- [x] Process: **`uvicorn app.main:app`** (backend only — not `server_all` / Saige)
+- [x] Runtime SA: `stg-to-prod-db-ro-dev-project@oatmeal-farm-staging.iam.gserviceaccount.com`
+- [x] DB: Cloud SQL Python Connector → prod `oatmealailive` (RO)
+- [x] Env: `INSTANCE_CONNECTION_NAME`, `SKIP_SCHEMA_ENSURE=true`
+- [x] Secrets: `DB_SERVER`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `SECRET_KEY`
 - [x] `min-instances: 1`
-- [ ] Final deploy using the real application image from Artifact Registry
-  - Image URI: `us-central1-docker.pkg.dev/oatmeal-farm-staging/oatmeal-farm-registry/backend:<COMMIT_SHA>`
-  - May still be on placeholder `hello` image until CD / manual real-image deploy
 
-See [STAGING_CLOUD_SQL_SETUP.md](./staging/STAGING_CLOUD_SQL_SETUP.md).
+**Operator guide:** [staging/BACKEND_STAGING_DEPLOY.md](./staging/BACKEND_STAGING_DEPLOY.md)  
+**DB design:** [staging/STAGING_CLOUD_SQL_SETUP.md](./staging/STAGING_CLOUD_SQL_SETUP.md)
 
 ### Frontend (`oatmeal-frontend-staging`)
 
@@ -41,33 +42,13 @@ See [STAGING_CLOUD_SQL_SETUP.md](./staging/STAGING_CLOUD_SQL_SETUP.md).
 
 ### Saige (`oatmeal-saige-staging`)
 
-- [ ] Service not created yet — **Sankeerth Part A**
-- [ ] `min-instances: 1`, memory `2Gi`, CPU `2`
-- [ ] Attach `saige-sa` (+ Saige API secrets)
-- [ ] Document staging URL
-
----
-
-## Commands Used (initial placeholder deploy)
-
-```bash
-gcloud run deploy oatmeal-backend-staging \
-  --image us-docker.pkg.dev/cloudrun/container/hello \
-  --project oatmeal-farm-staging \
-  --region us-central1 \
-  --allow-unauthenticated
-
-gcloud run deploy oatmeal-frontend-staging \
-  --image us-docker.pkg.dev/cloudrun/container/hello \
-  --project oatmeal-farm-staging \
-  --region us-central1 \
-  --allow-unauthenticated
-```
+- Separate CI/CD — **not** loaded by the backend staging image command.
+- See [staging/SAIGE_STAGING_SETUP.md](./staging/SAIGE_STAGING_SETUP.md)
 
 ---
 
 ## Notes
 
-- Region `us-central1` aligns with Artifact Registry (David).
-- Backend DB secrets are **done** (not blocked on Sankeerth). Sankeerth owns Saige service + Saige AI secrets only.
-- PR: `task/cicd-cloud-run-staging` → `epic/backend-reorg` (merged).
+- Region `us-central1` aligns with Artifact Registry.
+- Backend staging CD must not require Saige LLM secrets (`GOOGLE_API_KEY` / Vertex).
+- Cloud Shell may print a harmless `Gaia id not found` warning; commands can still succeed.
