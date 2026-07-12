@@ -10,7 +10,6 @@ Tables used (read-only):
 from __future__ import annotations
 
 import logging
-from functools import lru_cache
 from typing import Dict, List, Optional
 
 from config import DB_CONFIG
@@ -91,6 +90,104 @@ def get_user_email(people_id: str) -> Optional[str]:
     return email or None
 
 
+def get_full_name(people_id: str) -> Optional[str]:
+    """Return the full name for a PeopleID, or None if not found/unavailable."""
+    if not people_id:
+        return None
+    rows = _query(
+        "SELECT PeopleFirstName, PeopleLastName FROM People WHERE PeopleID = %s",
+        (int(people_id),),
+    )
+    if not rows:
+        return None
+    first = (rows[0].get("PeopleFirstName") or "").strip()
+    last = (rows[0].get("PeopleLastName") or "").strip()
+    full = f"{first} {last}".strip()
+    return full or None
+
+
+def get_phone(people_id: str) -> Optional[str]:
+    """Return the phone number for a PeopleID, or None if not found/unavailable."""
+    if not people_id:
+        return None
+    rows = _query(
+        "SELECT PeoplePhone FROM People WHERE PeopleID = %s",
+        (int(people_id),),
+    )
+    if not rows:
+        return None
+    phone = (rows[0].get("PeoplePhone") or "").strip()
+    return phone or None
+
+
+def get_address(people_id: str) -> Optional[str]:
+    """Return a formatted address string for a PeopleID, or None if not found/unavailable."""
+    if not people_id:
+        return None
+    rows = _query(
+        "SELECT PeopleAddress, PeopleCity, PeopleState, PeopleZip, PeopleCountry FROM People WHERE PeopleID = %s",
+        (int(people_id),),
+    )
+    if not rows:
+        return None
+    address_parts = [
+        (rows[0].get("PeopleAddress") or "").strip(),
+        (rows[0].get("PeopleCity") or "").strip(),
+        (rows[0].get("PeopleState") or "").strip(),
+        (rows[0].get("PeopleZip") or "").strip(),
+        (rows[0].get("PeopleCountry") or "").strip(),
+    ]
+    address = ", ".join([p for p in address_parts if p]).strip() or None
+    return address
+
+
+def get_location(people_id: str) -> Optional[str]:
+    """Return the location/address string for a PeopleID, or None if not found/unavailable."""
+    return get_address(people_id)
+
+
+def get_account_status(people_id: str) -> Optional[str]:
+    """Return the account status for a PeopleID, or None if not found/unavailable."""
+    if not people_id:
+        return None
+    rows = _query(
+        "SELECT PeopleStatus FROM People WHERE PeopleID = %s",
+        (int(people_id),),
+    )
+    if not rows:
+        return None
+    status = (rows[0].get("PeopleStatus") or "").strip()
+    return status or None
+
+
+def get_last_login(people_id: str) -> Optional[str]:
+    """Return the last login value for a PeopleID, or None if not found/unavailable."""
+    if not people_id:
+        return None
+    rows = _query(
+        "SELECT LastLoginDate FROM People WHERE PeopleID = %s",
+        (int(people_id),),
+    )
+    if not rows:
+        return None
+    last_login = rows[0].get("LastLoginDate")
+    return str(last_login) if last_login is not None else None
+
+
+def get_timezone(people_id: str) -> Optional[str]:
+    """Return the timezone for a PeopleID, or None if not found/unavailable."""
+    if not people_id:
+        return None
+    rows = _query(
+        "SELECT PeopleTimezone FROM People WHERE PeopleID = %s",
+        (int(people_id),),
+    )
+    if not rows:
+        return None
+    timezone = (rows[0].get("PeopleTimezone") or "").strip()
+    return timezone or None
+
+
 def get_org_member_ids(business_id: str) -> List[str]:
     """Return list of PeopleID strings for all active members of a business/org."""
     if not business_id:
@@ -152,3 +249,92 @@ def get_org_member_names(business_id: str) -> Dict[str, str]:
         if pid and name:
             result[pid] = name
     return result
+
+
+def get_safe_profile(people_id: str) -> Dict[str, Optional[str] | List[str] | Dict[str, str]]:
+    """Return a non-sensitive profile summary for Saige.
+
+    This intentionally excludes password hashes, credentials, tokens, and other
+    secrets. It returns only fields that are appropriate to share with an
+    authenticated user or guest with appropriate access.
+    """
+    if not people_id:
+        return {}
+
+    rows = _query(
+        """
+        SELECT
+            PeopleID,
+            PeopleFirstName,
+            PeopleLastName,
+            PeopleEmail,
+            PeoplePhone,
+            PeopleAddress,
+            PeopleCity,
+            PeopleState,
+            PeopleZip,
+            PeopleCountry,
+            PeopleTimezone,
+            PeopleStatus,
+            LastLoginDate,
+            PeopleUserName
+        FROM People
+        WHERE PeopleID = %s
+        """,
+        (int(people_id),),
+    )
+    if not rows:
+        return {}
+
+    row = rows[0]
+    people_id = str(row.get("PeopleID")) if row.get("PeopleID") is not None else None
+    first = (row.get("PeopleFirstName") or "").strip()
+    last = (row.get("PeopleLastName") or "").strip()
+    email = (row.get("PeopleEmail") or "").strip()
+    phone = get_phone(people_id) if people_id else None
+    address = get_address(people_id) if people_id else None
+    location = address
+    timezone = get_timezone(people_id) if people_id else None
+    account_status = get_account_status(people_id) if people_id else None
+    last_login = get_last_login(people_id) if people_id else None
+    user_name = (row.get("PeopleUserName") or "").strip() or None
+    business_id = get_primary_business_id(people_id) if people_id else None
+    business_name = get_business_name(str(business_id)) if business_id else None
+    org_member_ids = get_org_member_ids(str(business_id)) if business_id else []
+    org_member_names = get_org_member_names(str(business_id)) if business_id else {}
+
+    profile: Dict[str, Optional[str] | List[str] | Dict[str, str]] = {
+        "people_id": people_id,
+        "full_name": get_full_name(people_id) if people_id else f"{first} {last}".strip() or None,
+        "user_name": user_name,
+        "first_name": first or None,
+        "last_name": last or None,
+        "email": email or None,
+        "phone": phone,
+        "address": address,
+        "location": location,
+        "business_name": business_name,
+        "primary_business_id": business_id,
+        "org_member_ids": org_member_ids,
+        "org_member_names": org_member_names,
+        "account_status": account_status,
+        "last_login": last_login,
+        "timezone": timezone,
+    }
+
+    blocked_keys = {
+        "password",
+        "password_hash",
+        "passwordsalt",
+        "pwd",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+        "access_token",
+        "refresh_token",
+        "auth_token",
+        "session_key",
+        "sessionid",
+    }
+    return {k: v for k, v in profile.items() if k not in blocked_keys}

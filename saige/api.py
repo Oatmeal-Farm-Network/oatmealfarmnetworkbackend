@@ -592,7 +592,15 @@ async def chat(
     allowed, req_count = _check_rate_limit(request.thread_id)
     if not allowed:
         logger.warning(f"[RateLimit] Thread {request.thread_id} exceeded limit ({req_count}/{RATE_LIMIT_MAX_REQUESTS} in {RATE_LIMIT_WINDOW_SECONDS}s)")
-        return JSONResponse(status_code=429, content={"status": "error", "message": f"Too many requests. Please wait before sending another message. (limit: {RATE_LIMIT_MAX_REQUESTS} per {RATE_LIMIT_WINDOW_SECONDS}s)"})
+        return JSONResponse(
+            status_code=429,
+            content={
+                "status": "error",
+                "message": f"Too many requests. Please wait before sending another message. (limit: {RATE_LIMIT_MAX_REQUESTS} per {RATE_LIMIT_WINDOW_SECONDS}s)",
+                "processing_stage": "default",
+            },
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
 
     turn_start = time.time()
     config = {"configurable": {"thread_id": request.thread_id}}
@@ -827,6 +835,7 @@ Examples:
                     "Saige is taking longer than expected right now. "
                     "Please retry your message."
                 ),
+                "processing_stage": "default",
             },
             headers={"Access-Control-Allow-Origin": "*"},
         )
@@ -845,6 +854,7 @@ Examples:
                         "Gemini API quota/credits exhausted for this project. "
                         "Top up billing in AI Studio or switch to a billed Vertex model."
                     ),
+                    "processing_stage": "default",
                 },
                 headers={"Access-Control-Allow-Origin": "*"},
             )
@@ -852,7 +862,7 @@ Examples:
             err_text = err_text[:400] + "..."
         return JSONResponse(
             status_code=500,
-            content={"status": "error", "message": f"Saige stream error: {err_text}"},
+            content={"status": "error", "message": f"Saige stream error: {err_text}", "processing_stage": "default"},
             headers={"Access-Control-Allow-Origin": "*"},
         )
 
