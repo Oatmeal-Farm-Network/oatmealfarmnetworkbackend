@@ -20,7 +20,7 @@ def _utah_units(temp_f: float) -> float:
     return -1.0
 
 def _simple_units(temp_f: float) -> float:
-    """Simple model: 1 unit for each hour between 32–45°F."""
+    """Simple model: 1 unit for each hour between 32â€“45Â°F."""
     return 1.0 if 32 <= temp_f <= 45 else 0.0
 
 def calc_daily_chill(min_f: float, max_f: float, model: str) -> float:

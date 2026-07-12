@@ -12,7 +12,7 @@ NUTRIENTS = ["pH", "EC", "OC", "N_total", "P_Colwell", "P_Bray", "K", "Ca", "Mg"
 RATINGS = ["very_low", "low", "optimal", "high", "very_high"]
 SAMPLE_TYPES = ["composite", "single_point", "grid", "zone_management"]
 
-# Rough optimal ranges for common nutrients (example values — lab-specific)
+# Rough optimal ranges for common nutrients (example values â€” lab-specific)
 OPTIMAL_RANGES = {
     "pH": (6.0, 7.2),
     "P_Colwell": (30, 80),
@@ -246,7 +246,7 @@ def trends(
 
 @router.get("/deficiency-report")
 def deficiency_report(db=Depends(get_raw_conn), user=Depends(get_current_user)):
-    """Most recent test per field — nutrients rated very_low or low."""
+    """Most recent test per field â€” nutrients rated very_low or low."""
     _ensure_tables(db)
     bid = user["BusinessID"]
     cur = db.cursor()
