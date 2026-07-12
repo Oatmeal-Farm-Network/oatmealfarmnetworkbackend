@@ -55,7 +55,10 @@ GitHub Actions: Deploy to Staging
 | Secrets | `DB_SERVER`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `SECRET_KEY` |
 | Env | `SKIP_SCHEMA_ENSURE=true` |
 | Env | `INSTANCE_CONNECTION_NAME=animated-flare-421518:us-central1:oatmealailive` |
+| Env | `FRONTEND_URL` → staging frontend (password-reset links); default `https://oatmeal-frontend-staging-1087130530284.us-central1.run.app` or repo var `STAGING_FRONTEND_URL` |
 | Min instances | `1` |
+
+CORS allows the staging frontend origins in `app/main.py` (`ALLOWED_ORIGINS`).
 
 ### GitHub secrets required
 
