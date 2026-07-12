@@ -129,7 +129,7 @@ print(f"[serve_all] phase 2: evicted {_evicted} main-backend modules from sys.mo
 _remove_path(HERE)
 
 
-# ── Phase 3: chdir + load CropMonitor ──────────────────────────────────────
+# ── Phase 3: chdir + load CropMonitor ──────────────────────────────────
 # CropMonitor uses cwd-relative paths (`StaticFiles(directory="static")` and
 # `FileResponse("static/index.html")`). We chdir into its dir and stay there
 # for the rest of the process lifetime — main backend has no cwd dependencies.

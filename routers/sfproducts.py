@@ -13,55 +13,58 @@ from decimal import Decimal
 router = APIRouter(prefix="/api/sfproducts", tags=["sfproducts"])
 
 # ── Auto-create tables ────────────────────────────────────────────────────────
-with engine.begin() as _conn:
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='sfcategories')
-        BEGIN
-            CREATE TABLE sfcategories (
-                CatID     INT IDENTITY(1,1) PRIMARY KEY,
-                CatName   VARCHAR(200) NOT NULL,
-                SortOrder INT DEFAULT 0
-            )
-        END
-    """))
+try:
+    with engine.begin() as _conn:
+        _conn.execute(text("""
+            IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='sfcategories')
+            BEGIN
+                CREATE TABLE sfcategories (
+                    CatID     INT IDENTITY(1,1) PRIMARY KEY,
+                    CatName   VARCHAR(200) NOT NULL,
+                    SortOrder INT DEFAULT 0
+                )
+            END
+        """))
 
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='sfsubcategories')
-        BEGIN
-            CREATE TABLE sfsubcategories (
-                SubCatID   INT IDENTITY(1,1) PRIMARY KEY,
-                CatID      INT NOT NULL,
-                SubCatName VARCHAR(200) NOT NULL,
-                SortOrder  INT DEFAULT 0
-            )
-        END
-    """))
+        _conn.execute(text("""
+            IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='sfsubcategories')
+            BEGIN
+                CREATE TABLE sfsubcategories (
+                    SubCatID   INT IDENTITY(1,1) PRIMARY KEY,
+                    CatID      INT NOT NULL,
+                    SubCatName VARCHAR(200) NOT NULL,
+                    SortOrder  INT DEFAULT 0
+                )
+            END
+        """))
 
-# ── Seed default categories ───────────────────────────────────────────────────
-_SEED_DATA = [
-    ("Yarn & Fiber",       ["Yarn", "Roving & Batting", "Raw Fleece", "Fiber Blends", "Spinning Fiber"]),
-    ("Clothing",           ["Sweaters & Cardigans", "Hats & Scarves", "Gloves & Mittens", "Socks", "Dresses & Skirts", "Other Clothing"]),
-    ("Blankets & Throws",  ["Blankets", "Throws", "Rugs & Weavings"]),
-    ("Crafts & Handmade",  ["Felted Items", "Jewelry", "Pottery", "Candles & Soaps", "Other Crafts"]),
-    ("Books & Guides",     ["Farming Books", "Craft Books", "Recipe Books"]),
-    ("Home Decor",         ["Wall Art", "Decorative Items", "Pillows & Cushions"]),
-    ("Outdoor & Equipment",["Farm Equipment", "Outdoor Gear", "Tools"]),
-    ("Toys & Games",       ["Children's Toys", "Games & Puzzles"]),
-    ("Other",              ["Miscellaneous"]),
-]
+    # ── Seed default categories ───────────────────────────────────────────────────
+    _SEED_DATA = [
+        ("Yarn & Fiber",       ["Yarn", "Roving & Batting", "Raw Fleece", "Fiber Blends", "Spinning Fiber"]),
+        ("Clothing",           ["Sweaters & Cardigans", "Hats & Scarves", "Gloves & Mittens", "Socks", "Dresses & Skirts", "Other Clothing"]),
+        ("Blankets & Throws",  ["Blankets", "Throws", "Rugs & Weavings"]),
+        ("Crafts & Handmade",  ["Felted Items", "Jewelry", "Pottery", "Candles & Soaps", "Other Crafts"]),
+        ("Books & Guides",     ["Farming Books", "Craft Books", "Recipe Books"]),
+        ("Home Decor",         ["Wall Art", "Decorative Items", "Pillows & Cushions"]),
+        ("Outdoor & Equipment",["Farm Equipment", "Outdoor Gear", "Tools"]),
+        ("Toys & Games",       ["Children's Toys", "Games & Puzzles"]),
+        ("Other",              ["Miscellaneous"]),
+    ]
 
-with engine.begin() as _conn:
-    count = _conn.execute(text("SELECT COUNT(*) FROM sfcategories")).scalar()
-    if count == 0:
-        for sort_idx, (cat_name, subcats) in enumerate(_SEED_DATA):
-            _conn.execute(text(
-                "INSERT INTO sfcategories (CatName, SortOrder) VALUES (:name, :sort)"
-            ), {"name": cat_name, "sort": sort_idx})
-            cat_id = _conn.execute(text("SELECT SCOPE_IDENTITY()")).scalar()
-            for sub_idx, sub_name in enumerate(subcats):
+    with engine.begin() as _conn:
+        count = _conn.execute(text("SELECT COUNT(*) FROM sfcategories")).scalar()
+        if count == 0:
+            for sort_idx, (cat_name, subcats) in enumerate(_SEED_DATA):
                 _conn.execute(text(
-                    "INSERT INTO sfsubcategories (CatID, SubCatName, SortOrder) VALUES (:cid, :name, :sort)"
-                ), {"cid": cat_id, "name": sub_name, "sort": sub_idx})
+                    "INSERT INTO sfcategories (CatName, SortOrder) VALUES (:name, :sort)"
+                ), {"name": cat_name, "sort": sort_idx})
+                cat_id = _conn.execute(text("SELECT SCOPE_IDENTITY()")).scalar()
+                for sub_idx, sub_name in enumerate(subcats):
+                    _conn.execute(text(
+                        "INSERT INTO sfsubcategories (CatID, SubCatName, SortOrder) VALUES (:cid, :name, :sort)"
+                    ), {"cid": cat_id, "name": sub_name, "sort": sub_idx})
+except Exception as e:
+    print(f"[sfproducts] Database initialization skipped: {e}")
 
 
 # ─────────────────────────────────────────────
