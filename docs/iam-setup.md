@@ -186,7 +186,7 @@ gcloud artifacts repositories add-iam-policy-binding oatmeal-farm-registry \
 | Teammate      | Task                       | What they need from this doc                                                    |
 | ------------- | -------------------------- | ------------------------------------------------------------------------------- |
 | **Aryan**     | Cloud Run staging services | `frontend-sa` for frontend; for backend DB use `stg-to-prod-db-ro-dev-project` + Cloud SQL connection name |
-| **Sankeerth** | Saige + Secret Manager     | `saige-sa` email; wire `DB_*` secrets (not Postgres `DATABASE_URL`)             |
+| **Sankeerth** | Saige Cloud Run + Saige secrets | Part A still open; backend `DB_*` done — see [STAGING_CLOUD_SQL_SETUP.md](./staging/STAGING_CLOUD_SQL_SETUP.md) |
 | **Guia**      | CD workflow                | `STAGING_GCP_`* secret names + WIF workflow snippet above                       |
 | **Vidyanand** | Cloud SQL                  | RO→prod path documented in [STAGING_CLOUD_SQL_SETUP.md](./staging/STAGING_CLOUD_SQL_SETUP.md) |
 
