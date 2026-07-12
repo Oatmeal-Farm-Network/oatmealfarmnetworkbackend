@@ -9,8 +9,11 @@ from app import models
 
 router = APIRouter(prefix="/api", tags=["notes"])
 
-# Auto-create FieldNote table if it doesn't exist yet
-Base.metadata.create_all(bind=engine, tables=[models.FieldNote.__table__], checkfirst=True)
+# Auto-create FieldNote table if it doesn't exist yet (never block boot)
+try:
+    Base.metadata.create_all(bind=engine, tables=[models.FieldNote.__table__], checkfirst=True)
+except Exception as e:
+    print(f"[notes] create_all skipped: {e}")
 
 
 class NoteCreate(BaseModel):

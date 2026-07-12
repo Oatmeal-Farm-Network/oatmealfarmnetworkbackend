@@ -8,9 +8,12 @@ from app import models
 
 router = APIRouter(prefix="/api", tags=["crop-rotation"])
 
-Base.metadata.create_all(
-    bind=engine, tables=[models.CropRotationEntry.__table__], checkfirst=True
-)
+try:
+    Base.metadata.create_all(
+        bind=engine, tables=[models.CropRotationEntry.__table__], checkfirst=True
+    )
+except Exception as e:
+    print(f"[crop-rotation] create_all skipped: {e}")
 
 
 class RotationCreate(BaseModel):
