@@ -42,8 +42,9 @@
 
 ### Saige (`oatmeal-saige-staging`)
 
-- Separate CI/CD — **not** loaded by the backend staging image command.
-- See [staging/SAIGE_STAGING_SETUP.md](./staging/SAIGE_STAGING_SETUP.md)
+- Separate CI/CD on branch **`GCP/saige-staging`** — workflow `.github/workflows/deploy-saige.yml`
+- **Not** loaded by the backend staging image command
+- See [staging/SAIGE_STAGING_DEPLOY.md](./staging/SAIGE_STAGING_DEPLOY.md) and [staging/SAIGE_STAGING_SETUP.md](./staging/SAIGE_STAGING_SETUP.md)
 
 ---
 
