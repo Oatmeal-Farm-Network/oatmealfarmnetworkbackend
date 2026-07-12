@@ -6,48 +6,70 @@ from app.database import get_db, engine
 from typing import Optional
 from pydantic import BaseModel
 
-router = APIRouter(prefix="/api/land", tags=["land-leasing"])
+_schema_ready = False
 
-with engine.begin() as _c:
-    _c.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='LandListings')
-        CREATE TABLE LandListings (
-            ListingID       INT IDENTITY(1,1) PRIMARY KEY,
-            BusinessID      INT NOT NULL,
-            Title           NVARCHAR(200) NOT NULL,
-            Description     NVARCHAR(MAX) NULL,
-            ListingType     VARCHAR(30) NOT NULL DEFAULT 'lease',
-            Acreage         DECIMAL(10,2) NULL,
-            SoilType        NVARCHAR(200) NULL,
-            Irrigation      BIT NOT NULL DEFAULT 0,
-            Tillable        DECIMAL(10,2) NULL,
-            Infrastructure  NVARCHAR(500) NULL,
-            PricePerAcre    DECIMAL(10,2) NULL,
-            TotalPrice      DECIMAL(12,2) NULL,
-            LeaseTerm       NVARCHAR(100) NULL,
-            AvailableDate   DATE NULL,
-            City            NVARCHAR(100) NULL,
-            StateProvince   NVARCHAR(60) NULL,
-            Latitude        DECIMAL(10,7) NULL,
-            Longitude       DECIMAL(10,7) NULL,
-            ContactEmail    NVARCHAR(200) NULL,
-            ContactPhone    NVARCHAR(30) NULL,
-            IsActive        BIT NOT NULL DEFAULT 1,
-            CreatedAt       DATETIME NOT NULL DEFAULT GETDATE()
-        )
-    """))
-    _c.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='LandInquiries')
-        CREATE TABLE LandInquiries (
-            InquiryID       INT IDENTITY(1,1) PRIMARY KEY,
-            ListingID       INT NOT NULL,
-            SenderName      NVARCHAR(150) NOT NULL,
-            SenderEmail     NVARCHAR(200) NOT NULL,
-            SenderPhone     NVARCHAR(30) NULL,
-            Message         NVARCHAR(MAX) NULL,
-            CreatedAt       DATETIME NOT NULL DEFAULT GETDATE()
-        )
-    """))
+
+def _ensure_schema() -> None:
+    """Lazy schema/seed — never runs at import time."""
+    global _schema_ready
+    if _schema_ready:
+        return
+    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
+    if skip_schema_ensure():
+        return
+
+    def _run() -> None:
+        global _schema_ready
+        
+        with engine.begin() as _c:
+            _c.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='LandListings')
+                CREATE TABLE LandListings (
+                    ListingID       INT IDENTITY(1,1) PRIMARY KEY,
+                    BusinessID      INT NOT NULL,
+                    Title           NVARCHAR(200) NOT NULL,
+                    Description     NVARCHAR(MAX) NULL,
+                    ListingType     VARCHAR(30) NOT NULL DEFAULT 'lease',
+                    Acreage         DECIMAL(10,2) NULL,
+                    SoilType        NVARCHAR(200) NULL,
+                    Irrigation      BIT NOT NULL DEFAULT 0,
+                    Tillable        DECIMAL(10,2) NULL,
+                    Infrastructure  NVARCHAR(500) NULL,
+                    PricePerAcre    DECIMAL(10,2) NULL,
+                    TotalPrice      DECIMAL(12,2) NULL,
+                    LeaseTerm       NVARCHAR(100) NULL,
+                    AvailableDate   DATE NULL,
+                    City            NVARCHAR(100) NULL,
+                    StateProvince   NVARCHAR(60) NULL,
+                    Latitude        DECIMAL(10,7) NULL,
+                    Longitude       DECIMAL(10,7) NULL,
+                    ContactEmail    NVARCHAR(200) NULL,
+                    ContactPhone    NVARCHAR(30) NULL,
+                    IsActive        BIT NOT NULL DEFAULT 1,
+                    CreatedAt       DATETIME NOT NULL DEFAULT GETDATE()
+                )
+            """))
+            _c.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='LandInquiries')
+                CREATE TABLE LandInquiries (
+                    InquiryID       INT IDENTITY(1,1) PRIMARY KEY,
+                    ListingID       INT NOT NULL,
+                    SenderName      NVARCHAR(150) NOT NULL,
+                    SenderEmail     NVARCHAR(200) NOT NULL,
+                    SenderPhone     NVARCHAR(30) NULL,
+                    Message         NVARCHAR(MAX) NULL,
+                    CreatedAt       DATETIME NOT NULL DEFAULT GETDATE()
+                )
+            """))
+        _schema_ready = True
+
+    run_schema_ensure("land-leasing", _run)
+
+
+def _schema_dep() -> None:
+    _ensure_schema()
+
+router = APIRouter(prefix="/api/land", tags=["land-leasing"], dependencies=[Depends(_schema_dep)])
 
 
 class LandCreate(BaseModel):

@@ -7,26 +7,48 @@ from typing import Optional
 from pydantic import BaseModel
 from datetime import date, timedelta
 
-router = APIRouter(prefix="/api/certifications", tags=["certifications"])
+_schema_ready = False
 
-with engine.begin() as _c:
-    _c.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='BusinessCertifications')
-        CREATE TABLE BusinessCertifications (
-            CertID          INT IDENTITY(1,1) PRIMARY KEY,
-            BusinessID      INT NOT NULL,
-            CertName        NVARCHAR(200) NOT NULL,
-            CertType        VARCHAR(60) NULL,
-            IssuingBody     NVARCHAR(200) NULL,
-            CertNumber      NVARCHAR(100) NULL,
-            IssuedDate      DATE NULL,
-            ExpiryDate      DATE NULL,
-            Status          VARCHAR(30) NOT NULL DEFAULT 'active',
-            Notes           NVARCHAR(500) NULL,
-            DocumentUrl     NVARCHAR(500) NULL,
-            CreatedAt       DATETIME NOT NULL DEFAULT GETDATE()
-        )
-    """))
+
+def _ensure_schema() -> None:
+    """Lazy schema/seed — never runs at import time."""
+    global _schema_ready
+    if _schema_ready:
+        return
+    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
+    if skip_schema_ensure():
+        return
+
+    def _run() -> None:
+        global _schema_ready
+        
+        with engine.begin() as _c:
+            _c.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='BusinessCertifications')
+                CREATE TABLE BusinessCertifications (
+                    CertID          INT IDENTITY(1,1) PRIMARY KEY,
+                    BusinessID      INT NOT NULL,
+                    CertName        NVARCHAR(200) NOT NULL,
+                    CertType        VARCHAR(60) NULL,
+                    IssuingBody     NVARCHAR(200) NULL,
+                    CertNumber      NVARCHAR(100) NULL,
+                    IssuedDate      DATE NULL,
+                    ExpiryDate      DATE NULL,
+                    Status          VARCHAR(30) NOT NULL DEFAULT 'active',
+                    Notes           NVARCHAR(500) NULL,
+                    DocumentUrl     NVARCHAR(500) NULL,
+                    CreatedAt       DATETIME NOT NULL DEFAULT GETDATE()
+                )
+            """))
+        _schema_ready = True
+
+    run_schema_ensure("certifications", _run)
+
+
+def _schema_dep() -> None:
+    _ensure_schema()
+
+router = APIRouter(prefix="/api/certifications", tags=["certifications"], dependencies=[Depends(_schema_dep)])
 
 
 CERT_TYPES = [

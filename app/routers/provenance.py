@@ -13,31 +13,53 @@ from pydantic import BaseModel
 from typing import Optional
 import os
 
-router = APIRouter(prefix="/api/provenance", tags=["provenance"])
+_schema_ready = False
 
-with engine.begin() as _conn:
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='ProvenanceRecords')
-        BEGIN
-            CREATE TABLE ProvenanceRecords (
-                RecordID              INT IDENTITY(1,1) PRIMARY KEY,
-                BusinessID            INT           NOT NULL,
-                ListingType           VARCHAR(20)   NOT NULL,
-                ListingSourceID       INT           NOT NULL,
-                FieldIDs              NVARCHAR(200) NULL,
-                GrowMethod            NVARCHAR(200) NULL,
-                InputsUsed            NVARCHAR(500) NULL,
-                HarvestDate           DATE          NULL,
-                SustainabilityNotes   NVARCHAR(MAX) NULL,
-                AIGeneratedNarrative  NVARCHAR(MAX) NULL,
-                NarrativeGeneratedAt  DATETIME      NULL,
-                CreatedAt             DATETIME      NOT NULL DEFAULT GETDATE(),
-                UpdatedAt             DATETIME      NOT NULL DEFAULT GETDATE()
-            )
-            CREATE UNIQUE INDEX IX_Provenance_Listing
-                ON ProvenanceRecords (BusinessID, ListingType, ListingSourceID)
-        END
-    """))
+
+def _ensure_schema() -> None:
+    """Lazy schema/seed — never runs at import time."""
+    global _schema_ready
+    if _schema_ready:
+        return
+    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
+    if skip_schema_ensure():
+        return
+
+    def _run() -> None:
+        global _schema_ready
+        
+        with engine.begin() as _conn:
+            _conn.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='ProvenanceRecords')
+                BEGIN
+                    CREATE TABLE ProvenanceRecords (
+                        RecordID              INT IDENTITY(1,1) PRIMARY KEY,
+                        BusinessID            INT           NOT NULL,
+                        ListingType           VARCHAR(20)   NOT NULL,
+                        ListingSourceID       INT           NOT NULL,
+                        FieldIDs              NVARCHAR(200) NULL,
+                        GrowMethod            NVARCHAR(200) NULL,
+                        InputsUsed            NVARCHAR(500) NULL,
+                        HarvestDate           DATE          NULL,
+                        SustainabilityNotes   NVARCHAR(MAX) NULL,
+                        AIGeneratedNarrative  NVARCHAR(MAX) NULL,
+                        NarrativeGeneratedAt  DATETIME      NULL,
+                        CreatedAt             DATETIME      NOT NULL DEFAULT GETDATE(),
+                        UpdatedAt             DATETIME      NOT NULL DEFAULT GETDATE()
+                    )
+                    CREATE UNIQUE INDEX IX_Provenance_Listing
+                        ON ProvenanceRecords (BusinessID, ListingType, ListingSourceID)
+                END
+            """))
+        _schema_ready = True
+
+    run_schema_ensure("provenance", _run)
+
+
+def _schema_dep() -> None:
+    _ensure_schema()
+
+router = APIRouter(prefix="/api/provenance", tags=["provenance"], dependencies=[Depends(_schema_dep)])
 
 
 class ProvenanceUpsert(BaseModel):

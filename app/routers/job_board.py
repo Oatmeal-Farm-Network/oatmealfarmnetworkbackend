@@ -7,47 +7,69 @@ from typing import Optional
 from pydantic import BaseModel
 from datetime import datetime
 
-router = APIRouter(prefix="/api/jobs", tags=["job-board"])
+_schema_ready = False
 
-with engine.begin() as _c:
-    _c.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='JobListings')
-        CREATE TABLE JobListings (
-            JobID           INT IDENTITY(1,1) PRIMARY KEY,
-            BusinessID      INT NOT NULL,
-            Title           NVARCHAR(200) NOT NULL,
-            Description     NVARCHAR(MAX) NULL,
-            JobType         VARCHAR(40) NOT NULL DEFAULT 'seasonal',
-            Category        VARCHAR(60) NULL,
-            PayRate         DECIMAL(10,2) NULL,
-            PayPeriod       VARCHAR(20) NULL,
-            HousingProvided BIT NOT NULL DEFAULT 0,
-            MealsProvided   BIT NOT NULL DEFAULT 0,
-            SeasonStart     DATE NULL,
-            SeasonEnd       DATE NULL,
-            ApplyDeadline   DATE NULL,
-            HoursPerWeek    INT NULL,
-            City            NVARCHAR(100) NULL,
-            StateProvince   NVARCHAR(60) NULL,
-            ContactEmail    NVARCHAR(200) NULL,
-            IsActive        BIT NOT NULL DEFAULT 1,
-            CreatedAt       DATETIME NOT NULL DEFAULT GETDATE()
-        )
-    """))
-    _c.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='JobApplications')
-        CREATE TABLE JobApplications (
-            ApplicationID   INT IDENTITY(1,1) PRIMARY KEY,
-            JobID           INT NOT NULL,
-            PeopleID        INT NULL,
-            ApplicantName   NVARCHAR(150) NOT NULL,
-            ApplicantEmail  NVARCHAR(200) NOT NULL,
-            Phone           NVARCHAR(30) NULL,
-            Message         NVARCHAR(MAX) NULL,
-            Status          VARCHAR(30) NOT NULL DEFAULT 'pending',
-            CreatedAt       DATETIME NOT NULL DEFAULT GETDATE()
-        )
-    """))
+
+def _ensure_schema() -> None:
+    """Lazy schema/seed — never runs at import time."""
+    global _schema_ready
+    if _schema_ready:
+        return
+    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
+    if skip_schema_ensure():
+        return
+
+    def _run() -> None:
+        global _schema_ready
+        
+        with engine.begin() as _c:
+            _c.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='JobListings')
+                CREATE TABLE JobListings (
+                    JobID           INT IDENTITY(1,1) PRIMARY KEY,
+                    BusinessID      INT NOT NULL,
+                    Title           NVARCHAR(200) NOT NULL,
+                    Description     NVARCHAR(MAX) NULL,
+                    JobType         VARCHAR(40) NOT NULL DEFAULT 'seasonal',
+                    Category        VARCHAR(60) NULL,
+                    PayRate         DECIMAL(10,2) NULL,
+                    PayPeriod       VARCHAR(20) NULL,
+                    HousingProvided BIT NOT NULL DEFAULT 0,
+                    MealsProvided   BIT NOT NULL DEFAULT 0,
+                    SeasonStart     DATE NULL,
+                    SeasonEnd       DATE NULL,
+                    ApplyDeadline   DATE NULL,
+                    HoursPerWeek    INT NULL,
+                    City            NVARCHAR(100) NULL,
+                    StateProvince   NVARCHAR(60) NULL,
+                    ContactEmail    NVARCHAR(200) NULL,
+                    IsActive        BIT NOT NULL DEFAULT 1,
+                    CreatedAt       DATETIME NOT NULL DEFAULT GETDATE()
+                )
+            """))
+            _c.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='JobApplications')
+                CREATE TABLE JobApplications (
+                    ApplicationID   INT IDENTITY(1,1) PRIMARY KEY,
+                    JobID           INT NOT NULL,
+                    PeopleID        INT NULL,
+                    ApplicantName   NVARCHAR(150) NOT NULL,
+                    ApplicantEmail  NVARCHAR(200) NOT NULL,
+                    Phone           NVARCHAR(30) NULL,
+                    Message         NVARCHAR(MAX) NULL,
+                    Status          VARCHAR(30) NOT NULL DEFAULT 'pending',
+                    CreatedAt       DATETIME NOT NULL DEFAULT GETDATE()
+                )
+            """))
+        _schema_ready = True
+
+    run_schema_ensure("job-board", _run)
+
+
+def _schema_dep() -> None:
+    _ensure_schema()
+
+router = APIRouter(prefix="/api/jobs", tags=["job-board"], dependencies=[Depends(_schema_dep)])
 
 
 class JobCreate(BaseModel):

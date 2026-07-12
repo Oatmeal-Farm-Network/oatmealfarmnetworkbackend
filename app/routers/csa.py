@@ -6,59 +6,81 @@ from app.database import get_db, engine
 from typing import Optional
 from pydantic import BaseModel
 
-router = APIRouter(prefix="/api/csa", tags=["csa"])
+_schema_ready = False
 
-with engine.begin() as _c:
-    _c.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='CSAPlans')
-        CREATE TABLE CSAPlans (
-            PlanID          INT IDENTITY(1,1) PRIMARY KEY,
-            BusinessID      INT NOT NULL,
-            Name            NVARCHAR(150) NOT NULL,
-            Description     NVARCHAR(MAX) NULL,
-            ShareSize       VARCHAR(40) NULL,
-            PricePerShare   DECIMAL(10,2) NULL,
-            Frequency       VARCHAR(30) NULL,
-            SeasonStart     DATE NULL,
-            SeasonEnd       DATE NULL,
-            PickupDay       VARCHAR(20) NULL,
-            PickupLocation  NVARCHAR(300) NULL,
-            Capacity        INT NULL,
-            IsActive        BIT NOT NULL DEFAULT 1,
-            ImageUrl        NVARCHAR(500) NULL,
-            CreatedAt       DATETIME NOT NULL DEFAULT GETDATE()
-        )
-    """))
-    _c.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='CSASubscriptions')
-        CREATE TABLE CSASubscriptions (
-            SubscriptionID  INT IDENTITY(1,1) PRIMARY KEY,
-            PlanID          INT NOT NULL,
-            BusinessID      INT NOT NULL,
-            PeopleID        INT NULL,
-            MemberName      NVARCHAR(150) NOT NULL,
-            MemberEmail     NVARCHAR(200) NOT NULL,
-            MemberPhone     NVARCHAR(30) NULL,
-            PickupPreference NVARCHAR(200) NULL,
-            StartDate       DATE NULL,
-            Status          VARCHAR(30) NOT NULL DEFAULT 'active',
-            Notes           NVARCHAR(500) NULL,
-            CreatedAt       DATETIME NOT NULL DEFAULT GETDATE()
-        )
-    """))
-    _c.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='CSAShareLog')
-        CREATE TABLE CSAShareLog (
-            LogID           INT IDENTITY(1,1) PRIMARY KEY,
-            PlanID          INT NOT NULL,
-            BusinessID      INT NOT NULL,
-            ShareDate       DATE NOT NULL,
-            Contents        NVARCHAR(MAX) NULL,
-            PickupCount     INT NULL,
-            Notes           NVARCHAR(500) NULL,
-            CreatedAt       DATETIME NOT NULL DEFAULT GETDATE()
-        )
-    """))
+
+def _ensure_schema() -> None:
+    """Lazy schema/seed — never runs at import time."""
+    global _schema_ready
+    if _schema_ready:
+        return
+    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
+    if skip_schema_ensure():
+        return
+
+    def _run() -> None:
+        global _schema_ready
+        
+        with engine.begin() as _c:
+            _c.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='CSAPlans')
+                CREATE TABLE CSAPlans (
+                    PlanID          INT IDENTITY(1,1) PRIMARY KEY,
+                    BusinessID      INT NOT NULL,
+                    Name            NVARCHAR(150) NOT NULL,
+                    Description     NVARCHAR(MAX) NULL,
+                    ShareSize       VARCHAR(40) NULL,
+                    PricePerShare   DECIMAL(10,2) NULL,
+                    Frequency       VARCHAR(30) NULL,
+                    SeasonStart     DATE NULL,
+                    SeasonEnd       DATE NULL,
+                    PickupDay       VARCHAR(20) NULL,
+                    PickupLocation  NVARCHAR(300) NULL,
+                    Capacity        INT NULL,
+                    IsActive        BIT NOT NULL DEFAULT 1,
+                    ImageUrl        NVARCHAR(500) NULL,
+                    CreatedAt       DATETIME NOT NULL DEFAULT GETDATE()
+                )
+            """))
+            _c.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='CSASubscriptions')
+                CREATE TABLE CSASubscriptions (
+                    SubscriptionID  INT IDENTITY(1,1) PRIMARY KEY,
+                    PlanID          INT NOT NULL,
+                    BusinessID      INT NOT NULL,
+                    PeopleID        INT NULL,
+                    MemberName      NVARCHAR(150) NOT NULL,
+                    MemberEmail     NVARCHAR(200) NOT NULL,
+                    MemberPhone     NVARCHAR(30) NULL,
+                    PickupPreference NVARCHAR(200) NULL,
+                    StartDate       DATE NULL,
+                    Status          VARCHAR(30) NOT NULL DEFAULT 'active',
+                    Notes           NVARCHAR(500) NULL,
+                    CreatedAt       DATETIME NOT NULL DEFAULT GETDATE()
+                )
+            """))
+            _c.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='CSAShareLog')
+                CREATE TABLE CSAShareLog (
+                    LogID           INT IDENTITY(1,1) PRIMARY KEY,
+                    PlanID          INT NOT NULL,
+                    BusinessID      INT NOT NULL,
+                    ShareDate       DATE NOT NULL,
+                    Contents        NVARCHAR(MAX) NULL,
+                    PickupCount     INT NULL,
+                    Notes           NVARCHAR(500) NULL,
+                    CreatedAt       DATETIME NOT NULL DEFAULT GETDATE()
+                )
+            """))
+        _schema_ready = True
+
+    run_schema_ensure("csa", _run)
+
+
+def _schema_dep() -> None:
+    _ensure_schema()
+
+router = APIRouter(prefix="/api/csa", tags=["csa"], dependencies=[Depends(_schema_dep)])
 
 
 class PlanCreate(BaseModel):

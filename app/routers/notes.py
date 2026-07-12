@@ -7,13 +7,30 @@ from typing import Optional
 from pydantic import BaseModel
 from app import models
 
-router = APIRouter(prefix="/api", tags=["notes"])
+_schema_ready = False
 
-# Auto-create FieldNote table if it doesn't exist yet (never block boot)
-try:
-    Base.metadata.create_all(bind=engine, tables=[models.FieldNote.__table__], checkfirst=True)
-except Exception as e:
-    print(f"[notes] create_all skipped: {e}")
+
+def _ensure_schema() -> None:
+    global _schema_ready
+    if _schema_ready:
+        return
+    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
+    if skip_schema_ensure():
+        return
+
+    def _run() -> None:
+        global _schema_ready
+        Base.metadata.create_all(bind=engine, tables=[models.FieldNote.__table__], checkfirst=True)
+        _schema_ready = True
+
+    run_schema_ensure("notes", _run)
+
+
+def _schema_dep() -> None:
+    _ensure_schema()
+
+
+router = APIRouter(prefix="/api", tags=["notes"], dependencies=[Depends(_schema_dep)])
 
 
 class NoteCreate(BaseModel):

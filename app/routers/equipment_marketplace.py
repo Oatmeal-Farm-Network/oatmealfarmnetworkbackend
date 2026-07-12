@@ -13,65 +13,87 @@ from typing import Optional
 
 GCS_BUCKET = "oatmeal-farm-network-images"
 
-equipment_router = APIRouter()
+_schema_ready = False
 
-# ── Auto-create tables ─────────────────────────────────────────────────────────
-with engine.begin() as _conn:
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='EquipmentListings')
-        BEGIN
-            CREATE TABLE EquipmentListings (
-                ListingID       INT IDENTITY(1,1) PRIMARY KEY,
-                BusinessID      INT NOT NULL,
-                Title           VARCHAR(300) NOT NULL,
-                Description     NVARCHAR(MAX),
-                Category        VARCHAR(100) NOT NULL DEFAULT 'Other',
-                ListingType     VARCHAR(20)  NOT NULL DEFAULT 'sale',
-                AskingPrice     DECIMAL(12,2),
-                SwapFor         VARCHAR(500),
-                LoanTerms       VARCHAR(500),
-                Condition       VARCHAR(20)  DEFAULT 'good',
-                YearMade        INT,
-                Make            VARCHAR(100),
-                Model           VARCHAR(100),
-                HoursUsed       INT,
-                City            VARCHAR(100),
-                StateProvince   VARCHAR(100),
-                ContactEmail    VARCHAR(200),
-                ContactPhone    VARCHAR(50),
-                IsActive        BIT DEFAULT 1,
-                CreatedAt       DATETIME DEFAULT GETDATE(),
-                UpdatedAt       DATETIME DEFAULT GETDATE()
-            )
-        END
-    """))
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='EquipmentListingImages')
-        BEGIN
-            CREATE TABLE EquipmentListingImages (
-                ImageID     INT IDENTITY(1,1) PRIMARY KEY,
-                ListingID   INT NOT NULL,
-                ImageURL    VARCHAR(1000) NOT NULL,
-                SortOrder   INT DEFAULT 0
-            )
-        END
-    """))
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='EquipmentInquiries')
-        BEGIN
-            CREATE TABLE EquipmentInquiries (
-                InquiryID       INT IDENTITY(1,1) PRIMARY KEY,
-                ListingID       INT NOT NULL,
-                FromBusinessID  INT,
-                SenderName      VARCHAR(200),
-                SenderEmail     VARCHAR(200),
-                Message         NVARCHAR(MAX) NOT NULL,
-                InquiryType     VARCHAR(20) DEFAULT 'general',
-                Status          VARCHAR(20) DEFAULT 'pending',
-                CreatedAt       DATETIME DEFAULT GETDATE()
-            )
-        END
-    """))
+
+def _ensure_schema() -> None:
+    """Lazy schema/seed — never runs at import time."""
+    global _schema_ready
+    if _schema_ready:
+        return
+    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
+    if skip_schema_ensure():
+        return
+
+    def _run() -> None:
+        global _schema_ready
+        
+        # ── Auto-create tables ─────────────────────────────────────────────────────────
+        with engine.begin() as _conn:
+            _conn.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='EquipmentListings')
+                BEGIN
+                    CREATE TABLE EquipmentListings (
+                        ListingID       INT IDENTITY(1,1) PRIMARY KEY,
+                        BusinessID      INT NOT NULL,
+                        Title           VARCHAR(300) NOT NULL,
+                        Description     NVARCHAR(MAX),
+                        Category        VARCHAR(100) NOT NULL DEFAULT 'Other',
+                        ListingType     VARCHAR(20)  NOT NULL DEFAULT 'sale',
+                        AskingPrice     DECIMAL(12,2),
+                        SwapFor         VARCHAR(500),
+                        LoanTerms       VARCHAR(500),
+                        Condition       VARCHAR(20)  DEFAULT 'good',
+                        YearMade        INT,
+                        Make            VARCHAR(100),
+                        Model           VARCHAR(100),
+                        HoursUsed       INT,
+                        City            VARCHAR(100),
+                        StateProvince   VARCHAR(100),
+                        ContactEmail    VARCHAR(200),
+                        ContactPhone    VARCHAR(50),
+                        IsActive        BIT DEFAULT 1,
+                        CreatedAt       DATETIME DEFAULT GETDATE(),
+                        UpdatedAt       DATETIME DEFAULT GETDATE()
+                    )
+                END
+            """))
+            _conn.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='EquipmentListingImages')
+                BEGIN
+                    CREATE TABLE EquipmentListingImages (
+                        ImageID     INT IDENTITY(1,1) PRIMARY KEY,
+                        ListingID   INT NOT NULL,
+                        ImageURL    VARCHAR(1000) NOT NULL,
+                        SortOrder   INT DEFAULT 0
+                    )
+                END
+            """))
+            _conn.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='EquipmentInquiries')
+                BEGIN
+                    CREATE TABLE EquipmentInquiries (
+                        InquiryID       INT IDENTITY(1,1) PRIMARY KEY,
+                        ListingID       INT NOT NULL,
+                        FromBusinessID  INT,
+                        SenderName      VARCHAR(200),
+                        SenderEmail     VARCHAR(200),
+                        Message         NVARCHAR(MAX) NOT NULL,
+                        InquiryType     VARCHAR(20) DEFAULT 'general',
+                        Status          VARCHAR(20) DEFAULT 'pending',
+                        CreatedAt       DATETIME DEFAULT GETDATE()
+                    )
+                END
+            """))
+        _schema_ready = True
+
+    run_schema_ensure("equipment-marketplace", _run)
+
+
+def _schema_dep() -> None:
+    _ensure_schema()
+
+equipment_router = APIRouter(dependencies=[Depends(_schema_dep)])
 
 CATEGORIES = [
     'Tractors', 'Tillage', 'Planting & Seeding', 'Harvesting',

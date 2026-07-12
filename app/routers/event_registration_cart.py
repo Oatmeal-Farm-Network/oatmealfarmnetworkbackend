@@ -12,7 +12,25 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database import get_db, SessionLocal
 
-router = APIRouter()
+def _ensure_schema() -> None:
+    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
+    if skip_schema_ensure():
+        return
+
+    def _run() -> None:
+        with SessionLocal() as _db:
+            ensure_tables(_db)
+            ensure_cart_columns(_db)
+            ensure_attendee_table(_db)
+
+    run_schema_ensure("event-registration-cart", _run)
+
+
+def _schema_dep() -> None:
+    _ensure_schema()
+
+
+router = APIRouter(dependencies=[Depends(_schema_dep)])
 
 CART_LINKED_TABLES = [
     "OFNEventHalterEntries",
@@ -122,15 +140,6 @@ def ensure_cart_columns(db: Session):
         except Exception as e:
             print(f"CartID add for {tbl} failed: {e}")
     db.commit()
-
-
-with SessionLocal() as _db:
-    try:
-        ensure_tables(_db)
-        ensure_cart_columns(_db)
-        ensure_attendee_table(_db)
-    except Exception as e:
-        print(f"Registration cart setup error: {e}")
 
 
 @router.post("/api/events/{event_id}/cart")

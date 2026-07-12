@@ -5,29 +5,44 @@ from app.database import get_db, SessionLocal
 from app import models
 import datetime
 
-router = APIRouter(prefix="/api/businesses", tags=["businesses"])
+_schema_ready = False
 
 
 def _seed_business_types():
-    """Idempotent seed of business categories surfaced in the public /directory.
-    Runs once on module load — safe to re-run because each insert is gated by a
-    NOT EXISTS check on BusinessType."""
+    """Idempotent seed of business categories surfaced in the public /directory."""
     seed_types = [
         "Hunger Relief Organization",
     ]
-    try:
-        with SessionLocal() as db:
-            for bt in seed_types:
-                db.execute(text("""
-                    IF NOT EXISTS (SELECT 1 FROM businesstypelookup WHERE BusinessType = :bt)
-                    INSERT INTO businesstypelookup (BusinessType) VALUES (:bt)
-                """), {"bt": bt})
-            db.commit()
-    except Exception as e:
-        print(f"[businesses] seed_business_types error: {e}")
+    with SessionLocal() as db:
+        for bt in seed_types:
+            db.execute(text("""
+                IF NOT EXISTS (SELECT 1 FROM businesstypelookup WHERE BusinessType = :bt)
+                INSERT INTO businesstypelookup (BusinessType) VALUES (:bt)
+            """), {"bt": bt})
+        db.commit()
 
 
-_seed_business_types()
+def _ensure_schema() -> None:
+    global _schema_ready
+    if _schema_ready:
+        return
+    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
+    if skip_schema_ensure():
+        return
+
+    def _run() -> None:
+        global _schema_ready
+        _seed_business_types()
+        _schema_ready = True
+
+    run_schema_ensure("businesses", _run)
+
+
+def _schema_dep() -> None:
+    _ensure_schema()
+
+
+router = APIRouter(prefix="/api/businesses", tags=["businesses"], dependencies=[Depends(_schema_dep)])
 
 
 @router.get("/{business_id}/team")

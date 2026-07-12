@@ -12,28 +12,50 @@ from routers.notifications import create_notification
 from pydantic import BaseModel
 from datetime import datetime
 
-router = APIRouter(prefix="/api/market-alerts", tags=["market_alerts"])
+_schema_ready = False
 
-# ── Auto-create table ────────────────────────────────────────────────────────
-with engine.begin() as _conn:
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='MarketAlerts')
-        BEGIN
-            CREATE TABLE MarketAlerts (
-                AlertID          INT IDENTITY(1,1) PRIMARY KEY,
-                PeopleID         INT          NOT NULL,
-                Commodity        VARCHAR(80)  NOT NULL,
-                Direction        VARCHAR(10)  NOT NULL,
-                ThresholdPrice   DECIMAL(12,4) NOT NULL,
-                Unit             VARCHAR(20)  NULL,
-                LastNotifiedAt   DATETIME     NULL,
-                LastCheckedPrice DECIMAL(12,4) NULL,
-                CreatedAt        DATETIME     NOT NULL DEFAULT GETDATE()
-            )
-            CREATE INDEX IX_MarketAlerts_Person
-                ON MarketAlerts (PeopleID, CreatedAt DESC)
-        END
-    """))
+
+def _ensure_schema() -> None:
+    """Lazy schema/seed — never runs at import time."""
+    global _schema_ready
+    if _schema_ready:
+        return
+    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
+    if skip_schema_ensure():
+        return
+
+    def _run() -> None:
+        global _schema_ready
+        
+        # ── Auto-create table ────────────────────────────────────────────────────────
+        with engine.begin() as _conn:
+            _conn.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='MarketAlerts')
+                BEGIN
+                    CREATE TABLE MarketAlerts (
+                        AlertID          INT IDENTITY(1,1) PRIMARY KEY,
+                        PeopleID         INT          NOT NULL,
+                        Commodity        VARCHAR(80)  NOT NULL,
+                        Direction        VARCHAR(10)  NOT NULL,
+                        ThresholdPrice   DECIMAL(12,4) NOT NULL,
+                        Unit             VARCHAR(20)  NULL,
+                        LastNotifiedAt   DATETIME     NULL,
+                        LastCheckedPrice DECIMAL(12,4) NULL,
+                        CreatedAt        DATETIME     NOT NULL DEFAULT GETDATE()
+                    )
+                    CREATE INDEX IX_MarketAlerts_Person
+                        ON MarketAlerts (PeopleID, CreatedAt DESC)
+                END
+            """))
+        _schema_ready = True
+
+    run_schema_ensure("market-alerts", _run)
+
+
+def _schema_dep() -> None:
+    _ensure_schema()
+
+router = APIRouter(prefix="/api/market-alerts", tags=["market_alerts"], dependencies=[Depends(_schema_dep)])
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
