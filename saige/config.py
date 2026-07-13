@@ -82,6 +82,9 @@ FIRESTORE_DATABASE = os.getenv("FIRESTORE_DATABASE", "charlie").strip()
 CHAT_HISTORY_DATABASE = os.getenv("CHAT_HISTORY_DATABASE", "chat-history").strip()
 LIVESTOCK_KNOWLEDGE_COLLECTION = "livestock_knowledge"
 PLANT_KNOWLEDGE_COLLECTION = "plant_knowledge"
+CROP_KNOWLEDGE_COLLECTION = "crop_knowledge"
+SOIL_KNOWLEDGE_COLLECTION = "soil_knowledge"
+FIELD_KNOWLEDGE_COLLECTION = "field_knowledge"
 BAKASURA_DOCS_COLLECTION = "bakasura-docs"
 NEWS_ARTICLES_COLLECTION = "news_articles"
 HITL_CHARLIE_COLLECTION = "hitl-charlie"
@@ -214,7 +217,7 @@ def get_redis_display_target() -> str:
 # AUTHENTICATION
 # ============================================================================
 
-JWT_SECRET = os.getenv("SECRET_KEY", "")
+JWT_SECRET = (os.getenv("SECRET_KEY") or "").strip() or "change-me-in-production"
 JWT_ALGORITHM = "HS256"
 
 # ============================================================================

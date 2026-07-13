@@ -6,6 +6,9 @@ from config import (
     FIRESTORE_DATABASE,
     LIVESTOCK_KNOWLEDGE_COLLECTION,
     PLANT_KNOWLEDGE_COLLECTION,
+    CROP_KNOWLEDGE_COLLECTION,
+    SOIL_KNOWLEDGE_COLLECTION,
+    FIELD_KNOWLEDGE_COLLECTION,
     BAKASURA_DOCS_COLLECTION,
     NEWS_ARTICLES_COLLECTION,
     HITL_CHARLIE_COLLECTION,
@@ -132,6 +135,9 @@ class RAGSystem:
 # RAG instances — one per collection
 rag_livestock = RAGSystem(LIVESTOCK_KNOWLEDGE_COLLECTION, label="livestock_knowledge")
 rag_plant = RAGSystem(PLANT_KNOWLEDGE_COLLECTION, label="plant_knowledge")
+rag_crop = RAGSystem(CROP_KNOWLEDGE_COLLECTION, label="crop_knowledge")
+rag_soil = RAGSystem(SOIL_KNOWLEDGE_COLLECTION, label="soil_knowledge")
+rag_field = RAGSystem(FIELD_KNOWLEDGE_COLLECTION, label="field_knowledge")
 rag_bakasura = RAGSystem(BAKASURA_DOCS_COLLECTION, label="bakasura-docs")
 rag_news = RAGSystem(NEWS_ARTICLES_COLLECTION, label="news_articles")
 rag_hitl_charlie = RAGSystem(HITL_CHARLIE_COLLECTION, label="hitl-charlie")

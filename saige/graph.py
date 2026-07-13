@@ -9,6 +9,8 @@ from nodes import (
     weather_advisory_node,
     livestock_advisory_node,
     crop_advisory_node,
+    soil_advisory_node,
+    field_advisory_node,
     mixed_advisory_node,
     bakasura_advisory_node,
     news_advisory_node,
@@ -28,6 +30,8 @@ builder.add_node("routing_node", routing_node)
 builder.add_node("weather_advisory_node", weather_advisory_node)
 builder.add_node("livestock_advisory_node", livestock_advisory_node)
 builder.add_node("crop_advisory_node", crop_advisory_node)
+builder.add_node("soil_advisory_node", soil_advisory_node)
+builder.add_node("field_advisory_node", field_advisory_node)
 builder.add_node("mixed_advisory_node", mixed_advisory_node)
 builder.add_node("bakasura_advisory_node", bakasura_advisory_node)
 builder.add_node("news_advisory_node", news_advisory_node)
@@ -49,6 +53,8 @@ builder.add_conditional_edges(
         "weather_advisory_node": "weather_advisory_node",
         "livestock_advisory_node": "livestock_advisory_node",
         "crop_advisory_node": "crop_advisory_node",
+        "soil_advisory_node": "soil_advisory_node",
+        "field_advisory_node": "field_advisory_node",
         "mixed_advisory_node": "mixed_advisory_node",
         "bakasura_advisory_node": "bakasura_advisory_node",
         "news_advisory_node": "news_advisory_node",
@@ -59,6 +65,8 @@ builder.add_conditional_edges(
 builder.add_edge("weather_advisory_node", END)
 builder.add_edge("livestock_advisory_node", END)
 builder.add_edge("crop_advisory_node", END)
+builder.add_edge("soil_advisory_node", END)
+builder.add_edge("field_advisory_node", END)
 builder.add_edge("mixed_advisory_node", END)
 builder.add_edge("bakasura_advisory_node", END)
 builder.add_edge("news_advisory_node", END)
