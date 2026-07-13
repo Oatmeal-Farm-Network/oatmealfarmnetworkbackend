@@ -46,7 +46,7 @@ from config import (
 )
 from saige_models import FarmState, AssessmentDecision, QueryClassification, QueryTypeClassification, WeatherQueryParsed, FollowUpEntityExtraction
 from llm import llm
-from rag import rag_livestock, rag_plant, rag_bakasura, rag_news, rag_hitl_charlie
+from rag import rag_livestock, rag_plant, rag_crop, rag_soil, rag_field, rag_bakasura, rag_news, rag_hitl_charlie
 from weather import weather_service, get_weather_tool, weather_tools
 try:
     from companion_planting import companion_tools, companion_planting_tool, check_companion_pair_tool
@@ -410,7 +410,7 @@ except Exception as _e:
     tell_joke_tool = None
     JOKES_AVAILABLE = False
 
-VALID_ADVISORY_TYPES = {"weather", "livestock", "crops", "mixed", "news", "bakasura", "joke"}
+VALID_ADVISORY_TYPES = {"weather", "livestock", "crops", "soil", "field", "mixed", "news", "bakasura", "joke"}
 ADVISORY_TYPE_ALIASES = {
     "crop": "crops",
     "crops": "crops",
@@ -418,6 +418,13 @@ ADVISORY_TYPE_ALIASES = {
     "animal": "livestock",
     "animals": "livestock",
     "weather": "weather",
+    "soil": "soil",
+    "soils": "soil",
+    "field": "field",
+    "fields": "field",
+    "precision": "field",
+    "precision ag": "field",
+    "crop monitor": "field",
     "mixed": "mixed",
     "news": "news",
     "market": "news",
@@ -677,7 +684,14 @@ def assessment_node(state: FarmState):
                               "tomato", "potato", "alfalfa", "canola", "sunflower", "beet",
                               "ndvi", "evi", "irrigation", "fertiliz", "pesticide", "herbicide",
                               "fungicide", "cover crop", "rotation", "tillage", "germination",
-                              "harvest", "planting date", "soil ph", "nitrogen deficien")
+                              "harvest", "planting date", "nitrogen deficien")
+            _kw_soil       = ("soil test", "soil ph", "soil health", "organic matter", "cec",
+                              "salinity", "soil texture", "soil nutrient", "soil compaction",
+                              "soil fertility", "soil sample", "soil remediation")
+            _kw_field      = ("ndvi", "evi", "savi", "field analysis", "my fields", "field alert",
+                              "field health", "satellite", "vegetation index", "crop monitor",
+                              "precision ag", "field scouting", "field yield", "field soil sample",
+                              "how are my fields", "list my fields")
             _kw_mixed_biz  = ("vehicle", "truck", "fleet", "cold chain", "refrigerat",
                               "my animal", "my listing", "my inventory", "my order", "my service",
                               "my blog", "my certification", "my profile", "my account",
@@ -686,7 +700,7 @@ def assessment_node(state: FarmState):
                               "center on", "center map", "take me to", "bring the map",
                               "show me where", "move over to", "move the map", "move to the",
                               "map", "zip code", "zipcode",
-                              "field", "precision ag", "sensor", "my ranch", "my farm data")
+                              "field", "sensor", "my ranch", "my farm data")
             _kw_joke       = ("joke", "something funny", "make me laugh", "tell me something funny")
             _kw_general    = ("hello", "hi ", "hey ", "good morning", "good afternoon",
                               # Saige identity
@@ -712,6 +726,10 @@ def assessment_node(state: FarmState):
                 _ft = ("weather", [first_user_message], [])
             elif _kw_any(_kw_livestock, msg_lower):
                 _ft = ("livestock", [first_user_message], [])
+            elif _kw_any(_kw_field, msg_lower):
+                _ft = ("field", [first_user_message], [])
+            elif _kw_any(_kw_soil, msg_lower):
+                _ft = ("soil", [first_user_message], [])
             elif _kw_any(_kw_crops, msg_lower):
                 _ft = ("crops", [first_user_message], [])
             elif _kw_any(_kw_mixed_biz, msg_lower):
@@ -1062,20 +1080,40 @@ def routing_node(state: FarmState) -> Dict[str, str]:
         "corn", "maize", "wheat", "rice", "barley", "soybean", "cotton",
         "tomato", "potato", "paddy"
     ]
-    crop_weak_keywords = ["vegetable", "fruit", "grain", "crop", "plant", "field", "harvest"]
+    crop_weak_keywords = ["vegetable", "fruit", "grain", "crop", "plant", "harvest"]
+    field_keywords = [
+        "ndvi", "evi", "savi", "field analysis", "field alert", "field health",
+        "satellite", "vegetation index", "crop monitor", "precision ag", "my fields",
+        "list my fields", "field scouting", "field yield",
+    ]
+    soil_keywords = [
+        "soil test", "soil ph", "soil health", "organic matter", "cec", "salinity",
+        "soil texture", "soil nutrient", "soil compaction", "soil fertility", "soil sample",
+    ]
 
     weather_matches = _count_keyword_matches(query_text, weather_keywords)
     livestock_strong_matches = _count_keyword_matches(query_text, livestock_strong_keywords)
     livestock_weak_matches = _count_keyword_matches(query_text, livestock_weak_keywords)
     crop_strong_matches = _count_keyword_matches(query_text, crop_strong_keywords)
     crop_weak_matches = _count_keyword_matches(query_text, crop_weak_keywords)
+    field_matches = _count_keyword_matches(query_text, field_keywords)
+    soil_matches = _count_keyword_matches(query_text, soil_keywords)
 
     print(
         "[Routing] Keywords - "
         f"Weather: {weather_matches}, "
         f"Livestock(strong/weak): {livestock_strong_matches}/{livestock_weak_matches}, "
-        f"Crops(strong/weak): {crop_strong_matches}/{crop_weak_matches}"
+        f"Crops(strong/weak): {crop_strong_matches}/{crop_weak_matches}, "
+        f"Field: {field_matches}, Soil: {soil_matches}"
     )
+
+    if field_matches > 0 and livestock_strong_matches == 0 and crop_strong_matches == 0:
+        print("[Routing] -> field (precision-ag keywords)")
+        return {"advisory_type": "field"}
+
+    if soil_matches > 0 and livestock_strong_matches == 0 and field_matches == 0:
+        print("[Routing] -> soil (soil health keywords)")
+        return {"advisory_type": "soil"}
 
     if weather_matches > 0 and livestock_strong_matches == 0 and crop_strong_matches == 0:
         print(f"[Routing] -> weather (pure weather query)")
@@ -2838,11 +2876,29 @@ def livestock_advisory_node(state: FarmState):
 
 
 def crop_advisory_node(state: FarmState):
-    """Crop advisory with RAG (plant_knowledge) and weather tool."""
+    """Crop advisory with plant + crop knowledge RAG and weather tool."""
     return run_advisory_agent(
         state,
         role_prompt="You are Saige — an expert agronomist who has worked fields from Texas Hill Country to the Salinas Valley. You specialize in crop pathology, soil health, and practical sustainable farming. Give grounded, actionable advice — what actually works in the field, not just what the textbook says.",
-        rag_systems=[rag_plant]
+        rag_systems=[rag_plant, rag_crop]
+    )
+
+
+def soil_advisory_node(state: FarmState):
+    """Soil health advisory with soil + plant knowledge RAG."""
+    return run_advisory_agent(
+        state,
+        role_prompt="You are Saige — a soil scientist and agronomist focused on soil health, fertility, and remediation. Translate soil test results and field observations into practical recommendations farmers can act on this season.",
+        rag_systems=[rag_soil, rag_plant, rag_crop]
+    )
+
+
+def field_advisory_node(state: FarmState):
+    """Precision-ag / field monitoring advisory with field knowledge RAG."""
+    return run_advisory_agent(
+        state,
+        role_prompt="You are Saige — a precision agriculture specialist connected to the CropMonitor satellite monitoring system. Help farmers interpret NDVI/EVI trends, field alerts, scouting data, and irrigation/yield insights. Use precision-ag tools to pull live field data when the user asks about their specific fields.",
+        rag_systems=[rag_field, rag_crop, rag_plant]
     )
 
 
@@ -2875,11 +2931,14 @@ def joke_node(state: FarmState):
 
 
 def mixed_advisory_node(state: FarmState):
-    """Integrated advisory using all three RAG collections and weather tool."""
+    """Integrated advisory using all knowledge RAG collections and weather tool."""
     return run_advisory_agent(
         state,
-        role_prompt="You are Saige — an integrated farming systems expert with deep roots in permaculture, mixed farming, and sustainable ag. You see the whole picture: how the livestock, crops, soil, and weather all connect. Give holistic but practical advice that farmers can actually act on.",
-        rag_systems=[rag_livestock, rag_plant, rag_bakasura, rag_hitl_charlie, rag_news]
+        role_prompt="You are Saige — an integrated farming systems expert with deep roots in permaculture, mixed farming, and sustainable ag. You see the whole picture: how the livestock, crops, soil, fields, and weather all connect. Give holistic but practical advice that farmers can actually act on.",
+        rag_systems=[
+            rag_livestock, rag_plant, rag_crop, rag_soil, rag_field,
+            rag_bakasura, rag_hitl_charlie, rag_news,
+        ]
     )
 
 
@@ -3195,7 +3254,22 @@ Examples:
         except Exception as e:
             print(f"[Weather Advisory] Location resolution error (continuing with raw location): {e}")
 
-    # Fetch weather data
+    else:
+        # Fall back to user/business profile location before asking the user.
+        people_id = state.get("people_id")
+        business_id = state.get("business_id")
+        if (not location or location == "Unknown") and (people_id or business_id):
+            try:
+                from user_profile import get_address, get_business_location
+                if business_id:
+                    location = get_business_location(str(business_id))
+                if (not location or location == "Unknown") and people_id:
+                    location = get_address(str(people_id))
+                if location:
+                    print(f"[Weather Advisory] Using profile location fallback: {location}")
+            except Exception as _loc_err:
+                print(f"[Weather Advisory] Profile location fallback failed: {_loc_err}")
+
     if location and location != "Unknown":
         try:
             print(f"[Weather Advisory] Attempting to fetch weather for: {location}")
@@ -3287,6 +3361,10 @@ def route_to_advisory(state: FarmState) -> str:
         return "weather_advisory_node"
     elif advisory_type == "livestock":
         return "livestock_advisory_node"
+    elif advisory_type == "soil":
+        return "soil_advisory_node"
+    elif advisory_type == "field":
+        return "field_advisory_node"
     elif advisory_type == "mixed":
         return "mixed_advisory_node"
     elif advisory_type == "bakasura":

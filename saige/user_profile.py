@@ -213,6 +213,31 @@ def get_business_name(business_id: str) -> Optional[str]:
     return str(name).strip() if name else None
 
 
+def get_business_location(business_id: str) -> Optional[str]:
+    """Return city/state/country for a business, used for weather and regional advice."""
+    if not business_id:
+        return None
+    rows = _query(
+        """
+        SELECT a.AddressCity, a.AddressState, a.AddressCountry
+        FROM Business b
+        LEFT JOIN Address a ON a.AddressID = b.AddressID
+        WHERE b.BusinessID = %s
+        """,
+        (int(business_id),),
+    )
+    if not rows:
+        return None
+    r = rows[0]
+    parts = [
+        (r.get("AddressCity") or r.get("addresscity") or "").strip(),
+        (r.get("AddressState") or r.get("addressstate") or "").strip(),
+        (r.get("AddressCountry") or r.get("addresscountry") or "").strip(),
+    ]
+    loc = ", ".join(p for p in parts if p)
+    return loc or None
+
+
 def get_primary_business_id(people_id: str) -> Optional[str]:
     """Return the first active BusinessID for this PeopleID, or None if none found."""
     if not people_id:
