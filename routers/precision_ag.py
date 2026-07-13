@@ -133,6 +133,15 @@ def get_fields(business_id: int, db: Session = Depends(get_db)):
 
 @router.post("/fields")
 def create_field(field: FieldCreate, db: Session = Depends(get_db)):
+    # Address/Latitude/Longitude are NOT NULL columns in dbo.Field — the
+    # working add-field flow (Crop Detection) always derives these from a
+    # drawn boundary, but guard here too so a bad/direct API call gets a
+    # clean 400 instead of a raw SQL IntegrityError.
+    if field.latitude is None or field.longitude is None:
+        raise HTTPException(status_code=400, detail="latitude and longitude are required")
+    if not field.address:
+        field.address = field.name
+
     try:
         planting_date = None
         if field.planting_date:
