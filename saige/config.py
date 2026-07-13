@@ -220,7 +220,13 @@ def get_redis_display_target() -> str:
 # AUTHENTICATION
 # ============================================================================
 
-JWT_SECRET = (os.getenv("SECRET_KEY") or "").strip() or "change-me-in-production"
+_JWT_SECRET_RAW = (os.getenv("SECRET_KEY") or "").strip()
+if _JWT_SECRET_RAW:
+    JWT_SECRET = _JWT_SECRET_RAW
+elif GCP_PROJECT:
+    JWT_SECRET = ""
+else:
+    JWT_SECRET = "change-me-in-production"
 JWT_ALGORITHM = "HS256"
 
 # ============================================================================
