@@ -7,6 +7,7 @@ waiver (name + date), and optionally add purchases. Organizer tracks attendance 
 payment per registration.
 """
 from fastapi import APIRouter, Depends, HTTPException
+from database import blank_to_none
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db, SessionLocal
@@ -144,6 +145,7 @@ def get_config(event_id: int, db: Session = Depends(get_db)):
 
 @router.put("/api/events/{event_id}/tour/config")
 def put_config(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     exists = db.execute(text("SELECT ConfigID FROM OFNEventTourConfig WHERE EventID=:e"),
                        {"e": event_id}).fetchone()
     params = {
@@ -200,6 +202,7 @@ def list_slots(event_id: int, db: Session = Depends(get_db)):
 
 @router.post("/api/events/{event_id}/tour/slots")
 def add_slot(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     if not body.get("SlotStart"):
         raise HTTPException(400, "SlotStart required")
     r = db.execute(text("""
@@ -220,6 +223,7 @@ def add_slot(event_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/tour/slots/{slot_id}")
 def update_slot(slot_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE OFNEventTourSlots SET
           SlotStart=:s, DurationMin=:dm, Capacity=:c, Notes=:n, IsActive=:a
@@ -260,6 +264,7 @@ def list_addons(event_id: int, db: Session = Depends(get_db)):
 
 @router.post("/api/events/{event_id}/tour/addons")
 def add_addon(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     if not body.get("AddOnName"):
         raise HTTPException(400, "AddOnName required")
     r = db.execute(text("""
@@ -282,6 +287,7 @@ def add_addon(event_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/tour/addons/{addon_id}")
 def update_addon(addon_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE OFNEventTourAddOns SET
           AddOnName=:n, AddOnDescription=:d, Price=:p,
@@ -354,6 +360,7 @@ def list_registrations(event_id: int, people_id: int | None = None,
 
 @router.post("/api/events/{event_id}/tour/registrations")
 def add_registration(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     cfg_row = db.execute(text("SELECT * FROM OFNEventTourConfig WHERE EventID=:e"),
                         {"e": event_id}).fetchone()
     if not cfg_row:
@@ -469,6 +476,7 @@ def add_registration(event_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/tour/registrations/{reg_id}")
 def update_registration(reg_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     reg = db.execute(text("SELECT * FROM OFNEventTourRegistrations WHERE RegID=:r"),
                     {"r": reg_id}).fetchone()
     if not reg:
@@ -494,6 +502,7 @@ def update_registration(reg_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/tour/registrations/{reg_id}/checkin")
 def checkin(reg_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     checked = 1 if body.get("CheckedIn", True) else 0
     db.execute(text("""
         UPDATE OFNEventTourRegistrations SET

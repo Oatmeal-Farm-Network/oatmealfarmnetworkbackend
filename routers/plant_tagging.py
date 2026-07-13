@@ -4,6 +4,7 @@ Individual plant/tree tagging, geo-tagging, packhouse/greenhouse/storage infrast
 asset geo-tagging.
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
+from database import blank_to_none
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db
@@ -114,6 +115,7 @@ def get_tag(tag_id: int, business_id: int = Query(...), db: Session = Depends(ge
 
 @router.post("")
 def create_tag(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     r = db.execute(text("""
         INSERT INTO PlantTag (BusinessID,FieldID,TagCode,Species,Variety,PlantedDate,AgeYears,
@@ -136,6 +138,7 @@ def create_tag(body: dict, db: Session = Depends(get_db)):
 
 @router.put("/{tag_id}")
 def update_tag(tag_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE PlantTag SET Species=:sp, Variety=:var, PlantedDate=:pd, AgeYears=:age,
             LocationLat=:lat, LocationLng=:lng, RowNum=:row, PositionInRow=:pos,
@@ -167,6 +170,7 @@ def delete_tag(tag_id: int, business_id: int = Query(...), db: Session = Depends
 
 @router.post("/{tag_id}/events")
 def add_event(tag_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     r = db.execute(text("""
         INSERT INTO PlantTagEvent (TagID,EventType,EventDate,Value,Unit,Notes,LoggedBy)
@@ -198,6 +202,7 @@ def list_assets(business_id: int = Query(...), asset_type: Optional[str] = None,
 
 @router.post("/assets")
 def create_asset(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     r = db.execute(text("""
         INSERT INTO FarmAsset (BusinessID,AssetType,AssetName,AssetCode,Description,
@@ -220,6 +225,7 @@ def create_asset(body: dict, db: Session = Depends(get_db)):
 
 @router.put("/assets/{asset_id}")
 def update_asset(asset_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE FarmAsset SET AssetType=:at, AssetName=:name, AssetCode=:code, Description=:desc,
             LocationLat=:lat, LocationLng=:lng, LocationLabel=:loc, Status=:st,

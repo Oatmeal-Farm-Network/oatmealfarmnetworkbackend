@@ -105,24 +105,24 @@ def get_business_profile_tool(business_id: int = 0) -> str:
         SELECT b.BusinessID, b.BusinessName, b.BusinessDescription, b.BusinessSlogan,
                b.BusinessWebsite, b.BusinessPhone, b.BusinessEmail,
                b.IsActive, b.IsClaimed, b.DateCreated,
-               bt.BusinessTypeName,
-               a.AddressLine1, a.AddressCity, a.AddressState,
+               bt.BusinessType,
+               a.AddressStreet, a.AddressCity, a.AddressState,
                a.AddressZip, a.AddressCountry
         FROM Business b
-        LEFT JOIN BusinessTypes bt ON bt.BusinessTypeID = b.BusinessTypeID
+        LEFT JOIN BusinessTypeLookup bt ON bt.BusinessTypeID = b.BusinessTypeID
         LEFT JOIN Address a ON b.AddressID = a.AddressID
         WHERE b.BusinessID = %s
     """, (int(business_id),))
     if not rows:
         return f"Business {business_id} not found."
     b = rows[0]
-    addr_parts = [b.get("AddressLine1"), b.get("AddressCity"),
+    addr_parts = [b.get("AddressStreet"), b.get("AddressCity"),
                   b.get("AddressState"), b.get("AddressZip"), b.get("AddressCountry")]
     address = ", ".join(str(p) for p in addr_parts if p)
     lines = [
         f"Business Profile — #{b.get('BusinessID')}",
         f"  Name:         {b.get('BusinessName') or '—'}",
-        f"  Type:         {b.get('BusinessTypeName') or '—'}",
+        f"  Type:         {b.get('BusinessType') or '—'}",
         f"  Active:       {'Yes' if b.get('IsActive') else 'No'} | Claimed: {'Yes' if b.get('IsClaimed') else 'No'}",
         f"  Phone:        {b.get('BusinessPhone') or '—'}",
         f"  Email:        {b.get('BusinessEmail') or '—'}",

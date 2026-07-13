@@ -329,8 +329,29 @@ def hub_dashboard(business_id: int, db: Session = Depends(get_db)):
 # Helper — generic single-row update that whitelists allowed columns
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _blank_to_none(body: dict) -> dict:
+    """Convert empty / whitespace-only strings to None so optional numeric, date, and
+    time columns store NULL instead of raising a 500 (empty string in a numeric column)
+    or saving a 1900-01-01 epoch fallback. Required fields are validated separately, and
+    a blanked value is still falsy, so 'required' checks keep working."""
+    if not isinstance(body, dict):
+        return body
+    return {k: (None if isinstance(v, str) and v.strip() == "" else v) for k, v in body.items()}
+
+
+def _farm_name_exists(business_id: int, farm_name: str, db: Session) -> bool:
+    """Case-insensitive check for an existing farm of the same name under this business,
+    so we don't create confusing duplicate farms."""
+    row = db.execute(text("""
+        SELECT TOP 1 FarmID FROM OFNAggregatorFarm
+        WHERE BusinessID = :bid AND LOWER(LTRIM(RTRIM(FarmName))) = LOWER(LTRIM(RTRIM(:fn)))
+    """), {"bid": business_id, "fn": (farm_name or "").strip()}).fetchone()
+    return row is not None
+
+
 def _update_row(db, table, pk_col, pk_val, body, allowed):
     """UPDATE ... SET col = :col ... WHERE pk_col = :pk for whitelisted cols."""
+    body = _blank_to_none(body)
     cols = [c for c in allowed if c in body]
     if not cols:
         return
@@ -367,8 +388,11 @@ def list_farms(business_id: int, status: Optional[str] = None, db: Session = Dep
 
 @router.post("/api/aggregator/{business_id}/farms")
 def create_farm(business_id: int, body: dict, db: Session = Depends(get_db)):
+    body = _blank_to_none(body)
     if not body.get("FarmName"):
         raise HTTPException(400, "FarmName is required")
+    if _farm_name_exists(business_id, body["FarmName"], db):
+        raise HTTPException(409, "A farm with this name already exists.")
     res = db.execute(text("""
         INSERT INTO OFNAggregatorFarm
             (BusinessID, FarmName, ContactName, ContactPhone, ContactEmail,
@@ -474,6 +498,8 @@ def invite_farm(business_id: int, body: dict, db: Session = Depends(get_db)):
 
     if not farm_name:
         raise HTTPException(400, "FarmName is required")
+    if _farm_name_exists(business_id, farm_name, db):
+        raise HTTPException(409, "A farm with this name already exists.")
 
     # ── 1. Find or create People record ──────────────────────────────────────
     people_id = None
@@ -566,7 +592,9 @@ def invite_farm(business_id: int, body: dict, db: Session = Depends(get_db)):
     db.commit()
 
     # ── 5. Send invite email ──────────────────────────────────────────────────
-    if contact_email and not already_existed:
+    # Send whenever we have an email (previously skipped existing users, so re-adding a
+    # known contact silently sent nothing). Check the SendGrid response so failures surface.
+    if contact_email:
         try:
             invite_html = (
                 f"<p>Hi {contact_name or 'there'},</p>"
@@ -588,7 +616,9 @@ def invite_farm(business_id: int, body: dict, db: Session = Depends(get_db)):
                 "Authorization": "Bearer " + SENDGRID_API_KEY,
                 "Content-Type": "application/json",
             }
-            httpx.post(SENDGRID_URL, json=email_payload, headers=email_headers, timeout=10)
+            resp = httpx.post(SENDGRID_URL, json=email_payload, headers=email_headers, timeout=10)
+            if resp.status_code >= 400:
+                print(f"[invite-farm] SendGrid returned {resp.status_code}: {resp.text[:300]}")
         except Exception as e:
             print(f"[invite-farm] email error: {e}")
 
@@ -629,6 +659,7 @@ def list_contracts(business_id: int, farm_id: Optional[int] = None, db: Session 
 
 @router.post("/api/aggregator/{business_id}/contracts")
 def create_contract(business_id: int, body: dict, db: Session = Depends(get_db)):
+    body = _blank_to_none(body)
     if not body.get("FarmID") or not body.get("CropType"):
         raise HTTPException(400, "FarmID and CropType are required")
     res = db.execute(text("""
@@ -697,6 +728,7 @@ def list_inputs(business_id: int, farm_id: Optional[int] = None, db: Session = D
 
 @router.post("/api/aggregator/{business_id}/inputs")
 def create_input(business_id: int, body: dict, db: Session = Depends(get_db)):
+    body = _blank_to_none(body)
     if not body.get("FarmID") or not body.get("InputType"):
         raise HTTPException(400, "FarmID and InputType are required")
     qty  = body.get("Quantity")
@@ -777,6 +809,7 @@ def list_purchases(business_id: int,
 
 @router.post("/api/aggregator/{business_id}/purchases")
 def create_purchase(business_id: int, body: dict, db: Session = Depends(get_db)):
+    body = _blank_to_none(body)
     if not body.get("FarmID") or not body.get("CropType") or not body.get("QuantityKg"):
         raise HTTPException(400, "FarmID, CropType and QuantityKg are required")
     qty = float(body["QuantityKg"])
@@ -903,6 +936,7 @@ def list_b2b_accounts(business_id: int, db: Session = Depends(get_db)):
 
 @router.post("/api/aggregator/{business_id}/b2b/accounts")
 def create_b2b_account(business_id: int, body: dict, db: Session = Depends(get_db)):
+    body = _blank_to_none(body)
     if not body.get("BuyerName"):
         raise HTTPException(400, "BuyerName is required")
     res = db.execute(text("""
@@ -963,6 +997,7 @@ def list_b2b_orders(business_id: int, account_id: Optional[int] = None, db: Sess
 
 @router.post("/api/aggregator/{business_id}/b2b/orders")
 def create_b2b_order(business_id: int, body: dict, db: Session = Depends(get_db)):
+    body = _blank_to_none(body)
     if not body.get("AccountID"):
         raise HTTPException(400, "AccountID is required")
     qty = body.get("QuantityKg")
@@ -1034,6 +1069,7 @@ def list_d2c_orders(business_id: int, channel: Optional[str] = None, db: Session
 
 @router.post("/api/aggregator/{business_id}/d2c/orders")
 def create_d2c_order(business_id: int, body: dict, db: Session = Depends(get_db)):
+    body = _blank_to_none(body)
     res = db.execute(text("""
         INSERT INTO OFNAggregatorD2COrder
             (BusinessID, Channel, ExternalOrderID, CustomerName, CustomerPhone,
@@ -1102,6 +1138,7 @@ def list_logistics(business_id: int,
 
 @router.post("/api/aggregator/{business_id}/logistics")
 def create_logistics(business_id: int, body: dict, db: Session = Depends(get_db)):
+    body = _blank_to_none(body)
     if body.get("OrderType") not in ("b2b", "d2c", "inbound"):
         raise HTTPException(400, "OrderType must be b2b / d2c / inbound")
     res = db.execute(text("""
@@ -1174,7 +1211,7 @@ def _find_account(bid: int, account_type: str, db: Session) -> Optional[int]:
         text("""
             SELECT TOP 1 a.AccountID FROM Accounts a
             JOIN AccountTypes at ON a.AccountTypeID = at.AccountTypeID
-            WHERE a.BusinessID = :bid AND at.TypeName = :atype AND a.IsActive = 1
+            WHERE a.BusinessID = :bid AND at.Name = :atype AND a.IsActive = 1
             ORDER BY a.AccountNumber
         """),
         {"bid": bid, "atype": account_type},
@@ -1283,7 +1320,7 @@ def accounting_sync(business_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Accounting not set up for this business. Open the Accounting page and click 'Initialize Accounting' first.")
 
     revenue_account_id = _find_account(bid, "Revenue", db)
-    cogs_account_id    = _find_account(bid, "Cost of Goods Sold", db)
+    cogs_account_id    = _find_account(bid, "Cost of Goods", db)
     if not revenue_account_id:
         # fallback: any income-statement account with 4xxx number
         row = db.execute(text(

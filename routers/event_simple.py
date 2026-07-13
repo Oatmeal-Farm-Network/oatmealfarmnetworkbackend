@@ -13,6 +13,7 @@ Per-type differentiators stored on OFNEventSimpleConfig:
   - Free Event: IsFree toggled, no payment processing
 """
 from fastapi import APIRouter, Depends, HTTPException
+from database import blank_to_none
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db, SessionLocal
@@ -141,6 +142,7 @@ def get_config(event_id: int, db: Session = Depends(get_db)):
 
 @router.put("/api/events/{event_id}/simple/config")
 def put_config(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     exists = db.execute(text("SELECT ConfigID FROM OFNEventSimpleConfig WHERE EventID=:e"),
                        {"e": event_id}).fetchone()
     params = {
@@ -243,6 +245,7 @@ def directory(event_id: int, db: Session = Depends(get_db)):
 
 @router.post("/api/events/{event_id}/simple/registrations")
 def add_registration(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     cfg_row = db.execute(text("SELECT * FROM OFNEventSimpleConfig WHERE EventID=:e"),
                         {"e": event_id}).fetchone()
     if not cfg_row:
@@ -314,6 +317,7 @@ def add_registration(event_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/simple/registrations/{reg_id}")
 def update_registration(reg_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     reg = db.execute(text("SELECT * FROM OFNEventSimpleRegistrations WHERE RegID=:r"),
                     {"r": reg_id}).fetchone()
     if not reg:
@@ -341,6 +345,7 @@ def update_registration(reg_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/simple/registrations/{reg_id}/checkin")
 def checkin(reg_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     checked = 1 if body.get("CheckedIn", True) else 0
     db.execute(text("""
         UPDATE OFNEventSimpleRegistrations SET

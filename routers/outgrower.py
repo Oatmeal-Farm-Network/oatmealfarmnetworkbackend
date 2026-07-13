@@ -4,6 +4,7 @@ Contract Farming / Outgrower Management — farmer registration, contract engine
 input distribution to smallholders, buy-back workflows.
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
+from database import blank_to_none
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db
@@ -125,6 +126,7 @@ def list_farmers(business_id: int = Query(...), status: Optional[str] = None, db
 
 @router.post("/farmers")
 def create_farmer(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     r = db.execute(text("""
         INSERT INTO OutgrowerFarmer (BusinessID,FullName,Phone,Email,Village,District,
@@ -146,6 +148,7 @@ def create_farmer(body: dict, db: Session = Depends(get_db)):
 
 @router.put("/farmers/{farmer_id}")
 def update_farmer(farmer_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE OutgrowerFarmer SET FullName=:name,Phone=:phone,Email=:email,Village=:vil,
             District=:dist,TotalAcreage=:acres,NationalID=:nid,BankName=:bank,
@@ -192,6 +195,7 @@ def list_contracts(business_id: int = Query(...), farmer_id: Optional[int] = Non
 
 @router.post("/contracts")
 def create_contract(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     r = db.execute(text("""
         INSERT INTO OutgrowerContract (FarmerID,BusinessID,CropName,Season,PlantingArea,
@@ -213,6 +217,7 @@ def create_contract(body: dict, db: Session = Depends(get_db)):
 
 @router.put("/contracts/{contract_id}/status")
 def update_contract_status(contract_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE OutgrowerContract SET Status=:st, UpdatedAt=GETDATE()
         WHERE ContractID=:cid AND BusinessID=:bid
@@ -243,6 +248,7 @@ def list_distributions(business_id: int = Query(...), contract_id: Optional[int]
 
 @router.post("/distributions")
 def create_distribution(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     qty = body.get("Quantity") or 0
     unit_cost = body.get("UnitCost") or 0
@@ -284,6 +290,7 @@ def list_deliveries(business_id: int = Query(...), contract_id: Optional[int] = 
 
 @router.post("/deliveries")
 def create_delivery(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     r = db.execute(text("""
         INSERT INTO OutgrowerDelivery (ContractID,FarmerID,BusinessID,DeliveryDate,GrossWeightKg,
@@ -436,6 +443,7 @@ def _auto_settle_to_accounting(db: Session, delivery_id: int, business_id: int):
 
 @router.put("/deliveries/{delivery_id}/pay")
 def mark_paid(delivery_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE OutgrowerDelivery SET PaymentStatus='paid', PaymentDate=:dt
         WHERE DeliveryID=:did AND BusinessID=:bid

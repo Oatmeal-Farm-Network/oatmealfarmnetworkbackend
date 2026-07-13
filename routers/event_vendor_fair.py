@@ -6,6 +6,7 @@ available booths and their fees; vendors apply for a booth with their business
 details and product categories; organizers approve, reject, or assign booth numbers.
 """
 from fastapi import APIRouter, Depends, HTTPException
+from database import blank_to_none
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db, SessionLocal
@@ -101,6 +102,7 @@ def get_config(event_id: int, db: Session = Depends(get_db)):
 
 @router.put("/api/events/{event_id}/vendor-fair/config")
 def put_config(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     exists = db.execute(text("SELECT ConfigID FROM OFNEventVendorConfig WHERE EventID=:e"),
                        {"e": event_id}).fetchone()
     params = {
@@ -159,6 +161,7 @@ def list_applications(event_id: int, people_id: int | None = None,
 
 @router.post("/api/events/{event_id}/vendor-fair/applications")
 def add_application(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     cfg_row = db.execute(text("SELECT * FROM OFNEventVendorConfig WHERE EventID=:e"),
                         {"e": event_id}).fetchone()
     if not cfg_row:
@@ -194,6 +197,7 @@ def add_application(event_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/vendor-fair/applications/{app_id}")
 def update_application(app_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE OFNEventVendorApplications SET
           Status=:s, BoothNumber=:bn, OrganizerNotes=:n, PaidStatus=:pd,

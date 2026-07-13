@@ -4,6 +4,7 @@ Work Orders for field crews — task dispatching, real-time labor + machinery + 
 greenhouse environmental controls.
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
+from database import blank_to_none
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db
@@ -157,6 +158,7 @@ def get_work_order(wo_id: int, business_id: int = Query(...), db: Session = Depe
 
 @router.post("")
 def create_work_order(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     r = db.execute(text("""
         INSERT INTO WorkOrder (BusinessID,FieldID,Location,TaskType,Title,Description,Priority,
@@ -202,6 +204,7 @@ def create_work_order(body: dict, db: Session = Depends(get_db)):
 
 @router.put("/{wo_id}")
 def update_work_order(wo_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE WorkOrder SET FieldID=:fid, Location=:loc, TaskType=:tt, Title=:title,
             Description=:desc, Priority=:pri, Status=:st, AssignedTo=:at,
@@ -279,6 +282,7 @@ def get_advisories(business_id: int = Query(...), db: Session = Depends(get_db))
 
 @router.post("/{wo_id}/labor")
 def add_labor(wo_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     hours = float(body.get("HoursWorked", 0))
     rate = float(body.get("HourlyRate") or 0)
@@ -310,6 +314,7 @@ def delete_labor(wo_id: int, labor_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{wo_id}/machinery")
 def add_machinery(wo_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     hours = float(body.get("HoursUsed") or 0)
     rate = float(body.get("CostPerHour") or 0)
@@ -333,6 +338,7 @@ def add_machinery(wo_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.post("/{wo_id}/materials")
 def add_material(wo_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     qty = float(body.get("Quantity", 0))
     cost = float(body.get("UnitCost") or 0)
@@ -368,6 +374,7 @@ def get_gh_readings(business_id: int = Query(...), greenhouse: Optional[str] = N
 
 @router.post("/greenhouse/readings")
 def add_gh_reading(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     r = db.execute(text("""
         INSERT INTO GreenhouseReading (BusinessID,GreenhouseName,TempCelsius,HumidityPct,CO2PPM,

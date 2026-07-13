@@ -6,6 +6,7 @@ Organizers configure the auction, add lots (animals, fleeces, items, studs), and
 lots to award winners. Bidders browse lots, place bids, and track their own bids.
 """
 from fastapi import APIRouter, Depends, HTTPException
+from database import blank_to_none
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db, SessionLocal
@@ -109,6 +110,7 @@ def get_auction_config(event_id: int, db: Session = Depends(get_db)):
 
 @router.put("/api/events/{event_id}/auction/config")
 def put_auction_config(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     exists = db.execute(text("SELECT ConfigID FROM OFNEventAuctionConfig WHERE EventID=:eid"),
                        {"eid": event_id}).fetchone()
     params = {
@@ -157,6 +159,7 @@ def list_lots(event_id: int, db: Session = Depends(get_db)):
 
 @router.post("/api/events/{event_id}/auction/lots")
 def add_lot(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     r = db.execute(text("""
         INSERT INTO OFNEventAuctionLots
           (EventID, LotNumber, LotType, Title, Description, PhotoURL, SellerPeopleID,
@@ -181,6 +184,7 @@ def add_lot(event_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/auction/lots/{lot_id}")
 def update_lot(lot_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE OFNEventAuctionLots SET
           LotNumber=:ln, LotType=:lt, Title=:t, Description=:d, PhotoURL=:p,
@@ -266,6 +270,7 @@ def lot_bids(event_id: int, lot_id: int, db: Session = Depends(get_db)):
 
 @router.post("/api/events/{event_id}/auction/lots/{lot_id}/bid")
 def place_bid(event_id: int, lot_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     cfg_row = db.execute(text("SELECT * FROM OFNEventAuctionConfig WHERE EventID=:e"),
                         {"e": event_id}).fetchone()
     if not cfg_row:

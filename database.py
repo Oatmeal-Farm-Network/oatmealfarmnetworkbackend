@@ -39,6 +39,19 @@ def get_db():
         db.close()
 
 
+def blank_to_none(body):
+    """Coerce empty / whitespace-only strings in a request body to None.
+
+    Empty strings from form submissions break INSERT/UPDATEs into numeric, date, and
+    time columns ("Error converting nvarchar to numeric" / a 1900-01-01 epoch fallback),
+    surfacing as a 500 and a dead "Save"/"Create" button. Only blank strings are nulled
+    (not 0 or other values), so required-field checks and real data are unaffected.
+    """
+    if not isinstance(body, dict):
+        return body
+    return {k: (None if isinstance(v, str) and v.strip() == "" else v) for k, v in body.items()}
+
+
 def get_db_cursor():
     conn = pymssql.connect(
         server=os.getenv("DB_SERVER"),

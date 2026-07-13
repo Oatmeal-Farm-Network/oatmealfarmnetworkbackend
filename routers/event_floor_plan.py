@@ -12,6 +12,7 @@ Schema
                       number, tier, status, assigned vendor app).
 """
 import os, uuid
+from database import blank_to_none
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
@@ -92,6 +93,7 @@ def get_floor_plan(event_id: int, db: Session = Depends(get_db)):
 
 @router.put("/api/events/{event_id}/floor-plan")
 def upsert_floor_plan(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     existing = db.execute(text(
         "SELECT FloorPlanID FROM OFNEventFloorPlan WHERE EventID = :eid"
     ), {"eid": event_id}).fetchone()
@@ -158,6 +160,7 @@ def list_booths(event_id: int, db: Session = Depends(get_db)):
 
 @router.post("/api/events/{event_id}/floor-plan/booths")
 def create_booth(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     if not body.get("BoothNumber"):
         raise HTTPException(400, "BoothNumber is required")
     res = db.execute(text("""
@@ -188,6 +191,7 @@ def create_booth(event_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.post("/api/events/{event_id}/floor-plan/booths/bulk")
 def bulk_create_booths(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     """Quick-fill from a grid. body = {start_x, start_y, cols, rows, width,
     height, gap, prefix, tier}. Lays out a grid of N×M booths and numbers them
     `<prefix>1, <prefix>2, ...`."""
@@ -233,6 +237,7 @@ def bulk_create_booths(event_id: int, body: dict, db: Session = Depends(get_db))
 
 @router.put("/api/events/floor-plan/booths/{booth_id}")
 def update_booth(booth_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE OFNEventBooth SET
             BoothNumber=:bn, X=:x, Y=:y, Width=:w, Height=:h,
@@ -266,6 +271,7 @@ def delete_booth(booth_id: int, db: Session = Depends(get_db)):
 
 @router.post("/api/events/floor-plan/booths/{booth_id}/reserve")
 def reserve_booth(booth_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     """Vendor-side: claim a booth. body = {AppID, expected_status='available'}.
     Atomic — fails if the booth's status no longer matches expectation."""
     app_id = body.get("AppID")

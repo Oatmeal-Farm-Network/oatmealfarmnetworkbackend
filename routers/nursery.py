@@ -3,6 +3,7 @@ routers/nursery.py
 Nursery & Early Growth Tracking — seed batches, germination logs, transplant scheduling, QC checks.
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
+from database import blank_to_none
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db
@@ -95,6 +96,7 @@ def list_batches(business_id: int = Query(...), status: Optional[str] = None, db
 
 @router.post("/batches")
 def create_batch(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     r = db.execute(text("""
         INSERT INTO NurseryBatch (BusinessID,CropName,Variety,PlantingDate,ExpectedTransplantDate,
@@ -120,6 +122,7 @@ def create_batch(body: dict, db: Session = Depends(get_db)):
 
 @router.put("/batches/{batch_id}")
 def update_batch(batch_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     db.execute(text("""
         UPDATE NurseryBatch SET
@@ -159,6 +162,7 @@ def get_growth_logs(batch_id: int, db: Session = Depends(get_db)):
 
 @router.post("/batches/{batch_id}/growth-logs")
 def add_growth_log(batch_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     r = db.execute(text("""
         INSERT INTO NurseryGrowthLog (BatchID,LoggedDate,HeightCm,GerminationPct,HealthScore,Notes,LoggedBy)
@@ -185,6 +189,7 @@ def get_qc(batch_id: int, db: Session = Depends(get_db)):
 
 @router.post("/batches/{batch_id}/qc")
 def add_qc(batch_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     r = db.execute(text("""
         INSERT INTO NurseryQCCheck (BatchID,CheckDate,PassFail,Issues,CheckedBy,ReadyToTransplant)
@@ -211,6 +216,7 @@ def get_inputs(batch_id: int, db: Session = Depends(get_db)):
 
 @router.post("/batches/{batch_id}/inputs")
 def add_input(batch_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     r = db.execute(text("""
         INSERT INTO NurseryResourceInput (BatchID,InputDate,InputType,InputName,Quantity,Unit,CostPerUnit,Notes)

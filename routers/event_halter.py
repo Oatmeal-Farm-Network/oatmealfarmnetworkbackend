@@ -8,6 +8,7 @@ placements. Attendees register their animals from the Animals table, pick classe
 reserve pens, and add extras (vet check, electricity, stall mats).
 """
 from fastapi import APIRouter, Depends, HTTPException
+from database import blank_to_none
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db, SessionLocal
@@ -142,6 +143,7 @@ def get_halter_config(event_id: int, db: Session = Depends(get_db)):
 
 @router.put("/api/events/{event_id}/halter/config")
 def put_halter_config(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     exists = db.execute(text("SELECT ConfigID FROM OFNEventHalterConfig WHERE EventID = :eid"),
                        {"eid": event_id}).fetchone()
     params = {
@@ -198,6 +200,7 @@ def list_classes(event_id: int, db: Session = Depends(get_db)):
 
 @router.post("/api/events/{event_id}/halter/classes")
 def add_class(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     r = db.execute(text("""
         INSERT INTO OFNEventHalterClasses
           (EventID, ClassName, ClassCode, ShornCode, Breed, Gender, AgeGroup, ClassType, DisplayOrder)
@@ -221,6 +224,7 @@ def add_class(event_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/halter/classes/{class_id}")
 def edit_class(class_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE OFNEventHalterClasses SET
           ClassName=:n, ClassCode=:c, ShornCode=:sc, Breed=:b,
@@ -360,6 +364,7 @@ _TEMPLATE_BUILDERS = {
 
 @router.post("/api/events/{event_id}/halter/classes/bulk-seed")
 def bulk_seed_classes(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     """Seed a standard halter class set for a breed. Supports multiple templates."""
     breed = body.get("Breed") or "Huacaya"
     template = body.get("Template") or "alpaca-standard"
@@ -427,6 +432,7 @@ def list_registrations(event_id: int, people_id: int | None = None, db: Session 
 
 @router.post("/api/events/{event_id}/halter/registrations")
 def add_registration(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     cfg_row = db.execute(text("SELECT * FROM OFNEventHalterConfig WHERE EventID=:eid"),
                         {"eid": event_id}).fetchone()
     if not cfg_row:
@@ -466,6 +472,7 @@ def add_registration(event_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/halter/registrations/{reg_id}")
 def update_registration(reg_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE OFNEventHalterRegistrations SET
           IsShorn=:shorn, IsCheckedIn=:chk, CheckInNotes=:notes, PaidStatus=:paid
@@ -517,6 +524,7 @@ def class_entries(event_id: int, class_id: int, db: Session = Depends(get_db)):
 
 @router.put("/api/events/halter/entries/{entry_id}/judge")
 def judge_entry(entry_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     placement = body.get("Placement")
     notes = body.get("JudgeNotes")
     db.execute(text("""
@@ -628,6 +636,7 @@ def list_pens(event_id: int, people_id: int | None = None, db: Session = Depends
 
 @router.post("/api/events/{event_id}/halter/pens")
 def add_pen(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     cfg_row = db.execute(text("SELECT * FROM OFNEventHalterConfig WHERE EventID=:eid"),
                         {"eid": event_id}).fetchone()
     cfg = dict(cfg_row._mapping) if cfg_row else {}

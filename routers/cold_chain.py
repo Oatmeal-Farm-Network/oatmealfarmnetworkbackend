@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from database import blank_to_none
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db
@@ -336,6 +337,7 @@ def list_vehicles(business_id: int = Query(...), db: Session = Depends(get_db)):
 
 @router.post("/vehicles")
 def create_vehicle(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("BusinessID") or not body.get("VehicleName"):
         raise HTTPException(400, "BusinessID and VehicleName are required")
@@ -362,6 +364,7 @@ def create_vehicle(body: dict, db: Session = Depends(get_db)):
 
 @router.put("/vehicles/{vehicle_id}")
 def update_vehicle(vehicle_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     db.execute(
         text("""
@@ -459,6 +462,7 @@ def list_readings(
 
 @router.post("/vehicles/{vehicle_id}/readings")
 def add_reading(vehicle_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if body.get("TempC") is None:
         raise HTTPException(400, "TempC is required")
@@ -515,6 +519,7 @@ def list_shocks(
 
 @router.post("/vehicles/{vehicle_id}/shocks")
 def add_shock(vehicle_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("BusinessID"):
         raise HTTPException(400, "BusinessID is required")
@@ -570,6 +575,7 @@ def list_custody(vehicle_id: int, db: Session = Depends(get_db)):
 
 @router.post("/vehicles/{vehicle_id}/custody")
 def add_custody(vehicle_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("BusinessID"):
         raise HTTPException(400, "BusinessID is required")
@@ -638,6 +644,7 @@ def list_geofence_zones(business_id: int = Query(...), db: Session = Depends(get
 
 @router.post("/geofence-zones")
 def create_geofence_zone(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("BusinessID") or not body.get("ZoneName"):
         raise HTTPException(400, "BusinessID and ZoneName are required")
@@ -693,6 +700,7 @@ def list_geofence_events(
 
 @router.post("/vehicles/{vehicle_id}/geofence-events")
 def add_geofence_event(vehicle_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("BusinessID") or not body.get("ZoneID"):
         raise HTTPException(400, "BusinessID and ZoneID are required")
@@ -738,6 +746,7 @@ def list_shelf_life(vehicle_id: int, db: Session = Depends(get_db)):
 
 @router.post("/vehicles/{vehicle_id}/shelf-life")
 def calculate_shelf_life(vehicle_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     """
     Calculate adjusted shelf life using the Q10 degradation model.
     Uses actual temperature readings from this vehicle over the last `hours` hours
@@ -861,6 +870,7 @@ def list_shipments(
 
 @router.post("/vehicles/{vehicle_id}/shipments")
 def create_shipment(vehicle_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("RunDate"):
         raise HTTPException(400, "RunDate is required")
@@ -928,6 +938,7 @@ def get_shipment(shipment_id: int, db: Session = Depends(get_db)):
 
 @router.post("/shipments/{shipment_id}/items")
 def add_shipment_item(shipment_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("ProductName"):
         raise HTTPException(400, "ProductName is required")
@@ -1003,6 +1014,7 @@ def list_maintenance(vehicle_id: int, db: Session = Depends(get_db)):
 
 @router.post("/vehicles/{vehicle_id}/maintenance")
 def add_maintenance(vehicle_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("ServiceDate") or not body.get("ServiceType"):
         raise HTTPException(400, "ServiceDate and ServiceType are required")

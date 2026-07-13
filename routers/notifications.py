@@ -16,31 +16,34 @@ router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 # NOTE: table is named AppNotifications (not Notifications) because an older
 # social/follow feature already owns the `Notifications` table with a different
 # shape (PeopleID/ActorPeopleID/IsRead/NotificationText).
-with engine.begin() as _conn:
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='AppNotifications')
-        BEGIN
-            CREATE TABLE AppNotifications (
-                NotificationID       INT IDENTITY(1,1) PRIMARY KEY,
-                RecipientPeopleID    INT NOT NULL,
-                RecipientBusinessID  INT NULL,
-                Type                 VARCHAR(80)  NOT NULL,
-                Title                NVARCHAR(200) NOT NULL,
-                Body                 NVARCHAR(1000) NULL,
-                LinkPath             NVARCHAR(500) NULL,
-                RelatedEntityType    VARCHAR(50)  NULL,
-                RelatedEntityID      INT          NULL,
-                ReadAt               DATETIME     NULL,
-                CreatedAt            DATETIME     NOT NULL DEFAULT GETDATE()
-            )
-            -- EXEC() defers parsing until the CREATE TABLE has executed, so the
-            -- filtered-index predicate can reference ReadAt without a parse error.
-            EXEC('CREATE INDEX IX_AppNotifications_Recipient_CreatedAt
-                   ON AppNotifications (RecipientPeopleID, CreatedAt DESC)')
-            EXEC('CREATE INDEX IX_AppNotifications_Recipient_Unread
-                   ON AppNotifications (RecipientPeopleID, ReadAt) WHERE ReadAt IS NULL')
-        END
-    """))
+try:
+    with engine.begin() as _conn:
+        _conn.execute(text("""
+            IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='AppNotifications')
+            BEGIN
+                CREATE TABLE AppNotifications (
+                    NotificationID       INT IDENTITY(1,1) PRIMARY KEY,
+                    RecipientPeopleID    INT NOT NULL,
+                    RecipientBusinessID  INT NULL,
+                    Type                 VARCHAR(80)  NOT NULL,
+                    Title                NVARCHAR(200) NOT NULL,
+                    Body                 NVARCHAR(1000) NULL,
+                    LinkPath             NVARCHAR(500) NULL,
+                    RelatedEntityType    VARCHAR(50)  NULL,
+                    RelatedEntityID      INT          NULL,
+                    ReadAt               DATETIME     NULL,
+                    CreatedAt            DATETIME     NOT NULL DEFAULT GETDATE()
+                )
+                -- EXEC() defers parsing until the CREATE TABLE has executed, so the
+                -- filtered-index predicate can reference ReadAt without a parse error.
+                EXEC('CREATE INDEX IX_AppNotifications_Recipient_CreatedAt
+                       ON AppNotifications (RecipientPeopleID, CreatedAt DESC)')
+                EXEC('CREATE INDEX IX_AppNotifications_Recipient_Unread
+                       ON AppNotifications (RecipientPeopleID, ReadAt) WHERE ReadAt IS NULL')
+            END
+        """))
+except Exception as e:
+    print(f"[notifications] Table setup error: {e}")
 
 
 # ── Internal helper (imported by other routers) ──────────────────────────────

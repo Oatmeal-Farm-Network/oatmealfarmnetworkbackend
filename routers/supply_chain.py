@@ -8,6 +8,7 @@ ExceptionNote, MarketPrice, Settings.
 All tables created lazily on first request via _ensure_tables().
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
+from database import blank_to_none
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db, engine
@@ -472,6 +473,7 @@ def list_suppliers(business_id: int = Query(...), db: Session = Depends(get_db))
 
 @router.post("/suppliers")
 def create_supplier(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("BusinessID") or not body.get("SupplierName"):
         raise HTTPException(400, "BusinessID and SupplierName are required")
@@ -502,6 +504,7 @@ def create_supplier(body: dict, db: Session = Depends(get_db)):
 
 @router.put("/suppliers/{supplier_id}")
 def update_supplier(supplier_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     db.execute(text("""
         UPDATE ESCI_SupplierProfile SET
@@ -573,6 +576,7 @@ def list_contracts(
 
 @router.post("/contracts")
 def create_contract(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("BusinessID") or not body.get("ProductName"):
         raise HTTPException(400, "BusinessID and ProductName are required")
@@ -608,6 +612,7 @@ def create_contract(body: dict, db: Session = Depends(get_db)):
 
 @router.put("/contracts/{contract_id}")
 def update_contract(contract_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     db.execute(text("""
         UPDATE ESCI_Contract SET
@@ -681,6 +686,7 @@ def list_shipments(
 
 @router.post("/shipments")
 def create_shipment(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("BusinessID") or not body.get("ProductName"):
         raise HTTPException(400, "BusinessID and ProductName are required")
@@ -786,6 +792,7 @@ def delete_shipment(shipment_id: int, db: Session = Depends(get_db)):
 
 @router.post("/shipments/{shipment_id}/events")
 def add_shipment_event(shipment_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("BusinessID") or not body.get("EventType"):
         raise HTTPException(400, "BusinessID and EventType are required")
@@ -837,6 +844,7 @@ def list_quality_tests(
 
 @router.post("/quality")
 def add_quality_test(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("ShipmentID") or not body.get("BusinessID"):
         raise HTTPException(400, "ShipmentID and BusinessID are required")
@@ -917,6 +925,7 @@ def list_yield_forecasts(
 
 @router.post("/yield-forecasts")
 def create_yield_forecast(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("BusinessID") or not body.get("ProductName"):
         raise HTTPException(400, "BusinessID and ProductName are required")
@@ -996,6 +1005,7 @@ def list_demand_forecasts(
 
 @router.post("/demand-forecasts")
 def create_demand_forecast(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("BusinessID") or not body.get("ProductName") or not body.get("PeriodStart"):
         raise HTTPException(400, "BusinessID, ProductName, and PeriodStart are required")
@@ -1095,6 +1105,7 @@ def margin_summary(
 
 @router.post("/margins")
 def create_margin_record(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("BusinessID") or not body.get("ProductName") or not body.get("PeriodStart"):
         raise HTTPException(400, "BusinessID, ProductName, and PeriodStart are required")
@@ -1171,6 +1182,7 @@ def list_exceptions(
 
 @router.post("/exceptions")
 def create_exception(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("BusinessID") or not body.get("Title") or not body.get("ExceptionType"):
         raise HTTPException(400, "BusinessID, Title, and ExceptionType are required")
@@ -1256,6 +1268,7 @@ def update_exception(exception_id: int, body: dict, db: Session = Depends(get_db
 
 @router.post("/exceptions/{exception_id}/notes")
 def add_exception_note(exception_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("BusinessID") or not body.get("NoteText"):
         raise HTTPException(400, "BusinessID and NoteText are required")
@@ -1297,6 +1310,7 @@ def list_market_prices(
 
 @router.post("/market-prices")
 def add_market_price(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("BusinessID") or not body.get("Commodity") or not body.get("PriceDate"):
         raise HTTPException(400, "BusinessID, Commodity, and PriceDate are required")
@@ -1350,6 +1364,7 @@ def get_settings(business_id: int = Query(...), db: Session = Depends(get_db)):
 
 @router.put("/settings")
 def upsert_settings(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("BusinessID"):
         raise HTTPException(400, "BusinessID is required")
@@ -1722,6 +1737,7 @@ def contract_market_comparison(
 
 @router.post("/import/demand-forecasts")
 def bulk_import_demand_forecasts(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     """Bulk insert demand forecast rows from a parsed CSV (list of objects)."""
     _ensure_tables(db)
     business_id = body.get("business_id")
@@ -1765,6 +1781,7 @@ def bulk_import_demand_forecasts(body: dict, db: Session = Depends(get_db)):
 
 @router.post("/import/margin-records")
 def bulk_import_margin_records(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     """Bulk insert margin records from a parsed CSV."""
     _ensure_tables(db)
     business_id = body.get("business_id")
@@ -1818,6 +1835,7 @@ def list_escalation_rules(business_id: int = Query(...), db: Session = Depends(g
 
 @router.post("/escalation-rules")
 def create_escalation_rule(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("BusinessID"):
         raise HTTPException(400, "BusinessID is required")
@@ -1974,6 +1992,7 @@ def create_portal_token(
     current_user: models.People = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    body = blank_to_none(body)
     """Create a token-authenticated portal link for a supplier."""
     _ensure_tables(db)
     if not body.get("BusinessID") or not body.get("SupplierID"):
@@ -2060,6 +2079,7 @@ def get_supplier_portal(token: str, db: Session = Depends(get_db)):
 
 @router.post("/supplier-portal/{token}/quality")
 def portal_submit_quality(token: str, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     """Public — supplier submits a quality test result via portal token."""
     _ensure_tables(db)
     tok = db.execute(text("""
@@ -2099,6 +2119,7 @@ def portal_submit_quality(token: str, body: dict, db: Session = Depends(get_db))
 
 @router.post("/supplier-portal/{token}/event")
 def portal_submit_event(token: str, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     """Public — supplier submits a shipment status event via portal token."""
     _ensure_tables(db)
     tok = db.execute(text("""

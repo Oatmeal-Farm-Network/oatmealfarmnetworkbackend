@@ -63,7 +63,7 @@ def _safe_fetch_one(db: Session, kind, table, id_col, created_col, status_col, p
           r.{created_col} AS CreatedAt
         FROM {table} r
         JOIN OFNEvents e ON e.EventID = r.EventID
-        LEFT JOIN Businesses b ON b.BusinessID = e.BusinessID
+        LEFT JOIN Business b ON b.BusinessID = e.BusinessID
         WHERE r.PeopleID = :pid
     """
     try:

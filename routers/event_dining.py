@@ -6,6 +6,7 @@ choices. Guests reserve seats, declare dietary restrictions, and pick one option
 course. Organizer assigns tables for a printable seating chart.
 """
 from fastapi import APIRouter, Depends, HTTPException
+from database import blank_to_none
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db, SessionLocal
@@ -143,6 +144,7 @@ def get_config(event_id: int, db: Session = Depends(get_db)):
 
 @router.put("/api/events/{event_id}/dining/config")
 def put_config(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     exists = db.execute(text("SELECT ConfigID FROM OFNEventDiningConfig WHERE EventID=:e"),
                        {"e": event_id}).fetchone()
     params = {
@@ -196,6 +198,7 @@ def list_menu(event_id: int, db: Session = Depends(get_db)):
 
 @router.post("/api/events/{event_id}/dining/menu")
 def add_menu_item(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     if not body.get("Course") or not body.get("ItemName"):
         raise HTTPException(400, "Course and ItemName required")
     r = db.execute(text("""
@@ -221,6 +224,7 @@ def add_menu_item(event_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/dining/menu/{item_id}")
 def update_menu_item(item_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE OFNEventDiningMenuItems SET
           Course=:c, ItemName=:n, ItemDescription=:desc,
@@ -266,6 +270,7 @@ def list_tables(event_id: int, db: Session = Depends(get_db)):
 
 @router.post("/api/events/{event_id}/dining/tables")
 def add_table(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     if not body.get("TableNumber"):
         raise HTTPException(400, "TableNumber required")
     r = db.execute(text("""
@@ -285,6 +290,7 @@ def add_table(event_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/dining/tables/{table_id}")
 def update_table(table_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE OFNEventDiningTables SET
           TableNumber=:tn, SeatCount=:sc, TableLocation=:loc, Notes=:n
@@ -352,6 +358,7 @@ def list_registrations(event_id: int, people_id: int | None = None,
 
 @router.post("/api/events/{event_id}/dining/registrations")
 def add_registration(event_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     cfg_row = db.execute(text("SELECT * FROM OFNEventDiningConfig WHERE EventID=:e"),
                         {"e": event_id}).fetchone()
     if not cfg_row:
@@ -434,6 +441,7 @@ def add_registration(event_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/dining/registrations/{reg_id}")
 def update_registration(reg_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     reg = db.execute(text("SELECT * FROM OFNEventDiningRegistrations WHERE RegID=:r"),
                     {"r": reg_id}).fetchone()
     if not reg:
@@ -499,6 +507,7 @@ def update_registration(reg_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/api/events/dining/registrations/{reg_id}/seat")
 def assign_seat(reg_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     db.execute(text("""
         UPDATE OFNEventDiningRegistrations SET
           TableID=:t, SeatNumbers=:sn, UpdatedDate=GETDATE()

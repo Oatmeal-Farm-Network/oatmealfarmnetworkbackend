@@ -3,6 +3,7 @@ routers/packhouse_qc.py
 Packhouse sorting/grading/packaging workflows and QC inspection templates.
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
+from database import blank_to_none
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from database import get_db
@@ -193,6 +194,7 @@ def list_batches(business_id: int = Query(...), status: Optional[str] = None, db
 
 @router.post("/batches")
 def create_batch(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     count = db.execute(text("SELECT COUNT(*)+1 FROM PackhouseBatch WHERE BusinessID=:bid"), {"bid": body["BusinessID"]}).scalar()
     batch_ref = f"PH-{body['BusinessID']}-{count:04d}"
@@ -215,6 +217,7 @@ def create_batch(body: dict, db: Session = Depends(get_db)):
 
 @router.put("/batches/{batch_id}/status")
 def update_batch_status(batch_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     bid = body["BusinessID"]
     new_status = body["Status"]
     db.execute(text("""
@@ -240,6 +243,7 @@ def get_grades(batch_id: int, db: Session = Depends(get_db)):
 
 @router.post("/batches/{batch_id}/grades")
 def add_grade(batch_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     r = db.execute(text("""
         INSERT INTO PackhouseGrading (BatchID,GradeName,Quantity,Unit,PriceModifier,PackagingType,PackagedUnits,Notes)
@@ -275,6 +279,7 @@ def list_templates(business_id: int = Query(...), db: Session = Depends(get_db))
 
 @router.post("/templates")
 def create_template(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     criteria = body.get("Criteria", [])
     r = db.execute(text("""
@@ -313,6 +318,7 @@ def get_inspections(batch_id: int, db: Session = Depends(get_db)):
 
 @router.post("/batches/{batch_id}/inspections")
 def add_inspection(batch_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     findings = body.get("Findings", [])
     r = db.execute(text("""
@@ -382,6 +388,7 @@ def get_packaging(batch_id: int, db: Session = Depends(get_db)):
 
 @router.post("/batches/{batch_id}/packaging")
 def add_packaging(batch_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure(db)
     r = db.execute(text("""
         INSERT INTO PackhousePackaging (BatchID,GradeID,PackDate,PackagingType,UnitsPackaged,

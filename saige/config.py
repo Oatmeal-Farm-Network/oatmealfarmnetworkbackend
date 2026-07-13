@@ -82,6 +82,9 @@ FIRESTORE_DATABASE = os.getenv("FIRESTORE_DATABASE", "charlie").strip()
 CHAT_HISTORY_DATABASE = os.getenv("CHAT_HISTORY_DATABASE", "chat-history").strip()
 LIVESTOCK_KNOWLEDGE_COLLECTION = "livestock_knowledge"
 PLANT_KNOWLEDGE_COLLECTION = "plant_knowledge"
+CROP_KNOWLEDGE_COLLECTION = "crop_knowledge"
+SOIL_KNOWLEDGE_COLLECTION = "soil_knowledge"
+FIELD_KNOWLEDGE_COLLECTION = "field_knowledge"
 BAKASURA_DOCS_COLLECTION = "bakasura-docs"
 NEWS_ARTICLES_COLLECTION = "news_articles"
 HITL_CHARLIE_COLLECTION = "hitl-charlie"
@@ -103,6 +106,10 @@ MAX_QUESTIONS = 2
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 ALLOW_ALL_ORIGINS = os.getenv("ALLOW_ALL_ORIGINS", "false").lower() == "true"
+# FRONTEND_URL supports a comma-separated list so multiple trusted origins
+# (e.g. production domain + staging + Cloud Run preview URLs) can be
+# configured without code changes. Used by api.py's CORS middleware.
+ALLOWED_ORIGINS = [o.strip() for o in FRONTEND_URL.split(",") if o.strip()]
 
 # ============================================================================
 # CHAT HISTORY CONFIGURATION
@@ -128,6 +135,22 @@ if _redis_ssl_cert_reqs_raw not in _valid_redis_ssl_cert_reqs:
     REDIS_SSL_CERT_REQS = "required"
 else:
     REDIS_SSL_CERT_REQS = _redis_ssl_cert_reqs_raw
+
+# Keep Redis failures from adding multi-second latency when Redis is down.
+REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS = float(
+    os.getenv("REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS", "0.25")
+)
+REDIS_SOCKET_TIMEOUT_SECONDS = float(
+    os.getenv("REDIS_SOCKET_TIMEOUT_SECONDS", "0.25")
+)
+
+# Bound assessment classifier latency on first-turn routing.
+ASSESSMENT_CLASSIFICATION_TIMEOUT_SECONDS = float(
+    os.getenv("ASSESSMENT_CLASSIFICATION_TIMEOUT_SECONDS", "3.0")
+)
+ASSESSMENT_USE_LLM_CLASSIFIER = os.getenv(
+    "ASSESSMENT_USE_LLM_CLASSIFIER", "true"
+).lower() == "true"
 
 # Message buffer settings (Task 3 names)
 SHORT_TERM_N = int(os.getenv("SHORT_TERM_N", os.getenv("MESSAGE_BUFFER_SIZE", "20")))  # Last N messages
@@ -194,7 +217,7 @@ def get_redis_display_target() -> str:
 # AUTHENTICATION
 # ============================================================================
 
-JWT_SECRET = os.getenv("SECRET_KEY", "")
+JWT_SECRET = (os.getenv("SECRET_KEY") or "").strip() or "change-me-in-production"
 JWT_ALGORITHM = "HS256"
 
 # ============================================================================

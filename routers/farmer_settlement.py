@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from database import blank_to_none
 from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -116,6 +117,7 @@ def get_settlement(settlement_id: int, db: Session = Depends(get_db)):
 
 @router.post("/settlements")
 def create_settlement(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("BusinessID") or not body.get("FarmerName"):
         raise HTTPException(400, "BusinessID and FarmerName are required")
@@ -144,6 +146,7 @@ def create_settlement(body: dict, db: Session = Depends(get_db)):
 
 @router.put("/settlements/{settlement_id}")
 def update_settlement(settlement_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     db.execute(
         text("""
@@ -174,6 +177,7 @@ def update_settlement(settlement_id: int, body: dict, db: Session = Depends(get_
 
 @router.post("/settlements/{settlement_id}/mark-paid")
 def mark_paid(settlement_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     db.execute(
         text("""
@@ -211,6 +215,7 @@ def delete_settlement(settlement_id: int, db: Session = Depends(get_db)):
 
 @router.post("/settlements/{settlement_id}/items")
 def add_item(settlement_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     if not body.get("ItemName"):
         raise HTTPException(400, "ItemName is required")
@@ -235,6 +240,7 @@ def add_item(settlement_id: int, body: dict, db: Session = Depends(get_db)):
 
 @router.put("/items/{item_id}")
 def update_item(item_id: int, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_tables(db)
     db.execute(
         text("""
