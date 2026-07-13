@@ -31,6 +31,8 @@ from saige_models import FollowUpEntityExtraction, MapIntentDetection
 from nodes import register_stream_queue, deregister_stream_queue
 from jwt_auth import get_current_user
 
+_CRON_SECRET = os.getenv("CRON_SECRET", "")
+
 
 def _is_missing_checkpoint_index_error(exc: Exception) -> bool:
     """Detect missing LangGraph Redis index errors from redisvl/redis exceptions."""
@@ -242,6 +244,7 @@ class ChatRequest(BaseModel):
     user_input: str = Field(..., min_length=1, max_length=MAX_MESSAGE_CHARS)
     thread_id: str = Field(..., min_length=1, max_length=128)
     business_id: Optional[str] = None  # from URL query param (?BusinessID=...)
+    field_id: Optional[str] = None     # active precision-ag field from dashboard widget
     image_data: Optional[str] = None   # base64-encoded image for multimodal queries
     # NOTE: people_id is NOT here — extracted from Bearer JWT by get_current_user()
 
@@ -650,10 +653,12 @@ async def chat(
         has_completed_conversation = (not _skip_history) and existing_state.get("assessment_summary") and not state.next
 
         if has_completed_conversation:
-            print(f"[API] Follow-up question in thread {request.thread_id} - extracting entities and preserving context")
-            try:
-                entity_extractor = llm.with_structured_output(FollowUpEntityExtraction)
-                extraction_prompt = f"""Analyze this follow-up input from a farmer and extract entities:
+            print(f"[API] Follow-up question in thread {request.thread_id} - preserving context")
+            extracted = None
+            if not _looks_like_new_question(request.user_input):
+                try:
+                    entity_extractor = llm.with_structured_output(FollowUpEntityExtraction)
+                    extraction_prompt = f"""Analyze this follow-up input from a farmer and extract entities:
 
 Previous conversation context:
 - Crops/Animals: {', '.join(existing_state.get('crops', [])) if existing_state.get('crops') else 'None'}
@@ -674,11 +679,13 @@ Examples:
 - "how often should I water" → is_new_question: true, is_answer: false
 - "5 acres" → is_answer: true, entity_type: "farm_size", extracted_farm_size: "5 acres"
 """
-                extracted = entity_extractor.invoke(extraction_prompt)
-                print(f"[API] Entity extraction: is_answer={extracted.is_answer}, entity_type={extracted.entity_type}, is_new_question={extracted.is_new_question}")
-            except Exception as e:
-                print(f"[API] Entity extraction error: {e} - falling back to simple detection")
-                extracted = None
+                    extracted = entity_extractor.invoke(extraction_prompt)
+                    print(f"[API] Entity extraction: is_answer={extracted.is_answer}, entity_type={extracted.entity_type}, is_new_question={extracted.is_new_question}")
+                except Exception as e:
+                    print(f"[API] Entity extraction error: {e} - falling back to simple detection")
+                    extracted = None
+            else:
+                print("[API] Skipping entity extraction LLM (new question detected)")
 
             existing_history = short_term_history or (existing_state.get("history", []) if existing_state else [])
             new_history = (existing_history + [f"User: {request.user_input}"])[-SHORT_TERM_N:]
@@ -697,6 +704,9 @@ Examples:
                 "business_id": business_id or existing_state.get("business_id"),
                 "thread_id": request.thread_id,
             }
+            _field_id = request.field_id or existing_state.get("field_id")
+            if _field_id:
+                update["field_id"] = _field_id
 
             is_entity_only_answer = (
                 bool(extracted and extracted.is_answer)
@@ -791,8 +801,7 @@ Examples:
                                     print(f"[API] Loaded onboarding context for business {business_id}")
                     except Exception as _ob_err:
                         logger.debug("[API] onboarding context fetch failed: %s", _ob_err)
-            events = safe_graph_stream(
-                {
+            initial_state: Dict[str, Any] = {
                     "history": initial_history,
                     "people_id": people_id,
                     "business_id": business_id,
@@ -801,7 +810,11 @@ Examples:
                     "long_term_memory": long_term_memory,
                     "org_memory": org_memory,
                     "image_data": request.image_data or None,
-                },
+                }
+            if request.field_id:
+                initial_state["field_id"] = request.field_id
+            events = safe_graph_stream(
+                initial_state,
                 config,
                 stream_mode="values",
             )
@@ -1126,6 +1139,9 @@ async def chat_stream(
                         "people_id": people_id,
                         "business_id": business_id or existing_state.get("business_id"),
                     }
+                    _field_id = request.field_id or existing_state.get("field_id")
+                    if _field_id:
+                        update["field_id"] = _field_id
                     if existing_state.get("crops"):
                         update["crops"] = existing_state["crops"]
                     if existing_state.get("location"):
@@ -1149,8 +1165,7 @@ async def chat_stream(
                         _stream_ltm = chat_history.get_user_memory(user_id) if user_id else {}
                         if business_id:
                             _stream_org_mem = chat_history.get_org_memory(business_id, exclude_user_id=user_id)
-                    events = safe_graph_stream(
-                        {
+                    stream_initial: Dict[str, Any] = {
                             "history": initial_history,
                             "people_id": people_id,
                             "business_id": business_id,
@@ -1159,7 +1174,11 @@ async def chat_stream(
                             "long_term_memory": _stream_ltm,
                             "org_memory": _stream_org_mem,
                             "image_data": request.image_data or None,
-                        },
+                        }
+                    if request.field_id:
+                        stream_initial["field_id"] = request.field_id
+                    events = safe_graph_stream(
+                        stream_initial,
                         config,
                         stream_mode="values",
                     )
@@ -1781,33 +1800,58 @@ async def push_public_key():
 
 
 @app.post("/push/subscribe")
-async def push_subscribe(payload: PushSubscribePayload):
+async def push_subscribe(
+    payload: PushSubscribePayload,
+    people_id: str = Depends(get_current_user),
+):
     if not _PN_AVAILABLE:
         return {"status": "unavailable"}
+    if str(payload.user_id) != str(people_id):
+        return JSONResponse(status_code=403, content={"status": "forbidden"})
     return _pn_subscribe(payload.user_id, payload.subscription, payload.tags,
                          location=payload.location)
 
 
 @app.post("/push/unsubscribe")
-async def push_unsubscribe(payload: PushUnsubscribePayload):
+async def push_unsubscribe(
+    payload: PushUnsubscribePayload,
+    people_id: str = Depends(get_current_user),
+):
     if not _PN_AVAILABLE:
         return {"status": "unavailable"}
     return _pn_unsubscribe(payload.endpoint)
 
 
 @app.post("/push/send")
-async def push_send(payload: PushSendPayload):
+async def push_send(
+    payload: PushSendPayload,
+    people_id: str = Depends(get_current_user),
+    x_cron_secret: str = Header(default="", alias="X-Cron-Secret"),
+):
     if not _PN_AVAILABLE:
         return {"status": "unavailable"}
     if payload.user_id:
+        if str(payload.user_id) != str(people_id):
+            if not (_CRON_SECRET and x_cron_secret == _CRON_SECRET):
+                return JSONResponse(status_code=403, content={"status": "forbidden"})
         return _pn_send_to(payload.user_id, payload.title, payload.body, payload.url, payload.tag)
+    if not _CRON_SECRET or x_cron_secret != _CRON_SECRET:
+        return JSONResponse(
+            status_code=403,
+            content={"status": "forbidden", "message": "Broadcast requires X-Cron-Secret"},
+        )
     return _pn_broadcast(payload.title, payload.body, payload.url, payload.tag)
 
 
 @app.post("/push/test")
-async def push_test(payload: PushTestPayload):
+async def push_test(
+    payload: PushTestPayload,
+    people_id: str = Depends(get_current_user),
+):
     if not _PN_AVAILABLE:
         return {"status": "unavailable"}
+    if str(payload.user_id) != str(people_id):
+        return JSONResponse(status_code=403, content={"status": "forbidden"})
     return _pn_send_to(
         payload.user_id,
         "OFN test notification",
@@ -1829,7 +1873,14 @@ except Exception as _hist_err:
 
 
 @app.get("/history/{user_id}")
-async def history_list(user_id: str, type: Optional[str] = None, limit: int = 20):
+async def history_list(
+    user_id: str,
+    type: Optional[str] = None,
+    limit: int = 20,
+    people_id: str = Depends(get_current_user),
+):
+    if str(user_id) != str(people_id):
+        return JSONResponse(status_code=403, content={"status": "forbidden"})
     if not _HIST_AVAILABLE:
         return {"status": "unavailable", "entries": []}
     entries = _hist.list_for_user(user_id, entry_type=type,
@@ -1838,7 +1889,13 @@ async def history_list(user_id: str, type: Optional[str] = None, limit: int = 20
 
 
 @app.delete("/history/{user_id}/{entry_id}")
-async def history_delete(user_id: str, entry_id: str):
+async def history_delete(
+    user_id: str,
+    entry_id: str,
+    people_id: str = Depends(get_current_user),
+):
+    if str(user_id) != str(people_id):
+        return JSONResponse(status_code=403, content={"status": "forbidden"})
     if not _HIST_AVAILABLE:
         return {"status": "unavailable"}
     removed = _hist.delete_entry(user_id, entry_id)
@@ -2302,45 +2359,6 @@ async def saige_draft_reject(
     if not ok:
         return JSONResponse({"status": "not_pending_or_missing"}, status_code=404)
     return {"status": "rejected", "draft_id": int(draft_id)}
-
-
-# ============================================================================
-# WEATHER ALERTS (signal engine that drives push)
-# ============================================================================
-
-try:
-    import weather_alerts as _wx_alerts
-    _WXA_AVAILABLE = True
-except Exception as _wxa_err:
-    print(f"[API] weather_alerts import failed: {_wxa_err}")
-    _WXA_AVAILABLE = False
-
-
-class WeatherAlertPayload(BaseModel):
-    dry_run: bool = False
-    days_ahead: int = 2
-    user_id: Optional[str] = None
-
-
-@app.post("/alerts/weather/run")
-async def alerts_weather_run(payload: WeatherAlertPayload):
-    """Cron entry point. Scans push subscriptions with attached locations,
-    evaluates forecast against hazard thresholds, sends push notifications."""
-    if not _WXA_AVAILABLE:
-        return {"status": "unavailable"}
-    return _wx_alerts.run(
-        dry_run=payload.dry_run,
-        days_ahead=payload.days_ahead,
-        user_id=payload.user_id,
-    )
-
-
-@app.get("/alerts/weather/check/{user_id}")
-async def alerts_weather_check(user_id: str, days_ahead: int = 2):
-    """Dry-run preview of what alerts *would* fire for one user right now."""
-    if not _WXA_AVAILABLE:
-        return {"status": "unavailable"}
-    return _wx_alerts.run(dry_run=True, days_ahead=days_ahead, user_id=user_id)
 
 
 # ============================================================================
@@ -3009,7 +3027,6 @@ except Exception as _wae_err:
     print(f"[API] weather_alerts endpoint import failed: {_wae_err}")
     _WEATHER_ALERTS_EP_AVAILABLE = False
 
-_CRON_SECRET = os.getenv("CRON_SECRET", "")
 
 _FARM_DIGEST_AVAILABLE = False
 try:

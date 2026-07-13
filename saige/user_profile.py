@@ -10,7 +10,7 @@ Tables used (read-only):
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 from config import DB_CONFIG
 
@@ -213,6 +213,75 @@ def get_business_name(business_id: str) -> Optional[str]:
     return str(name).strip() if name else None
 
 
+def get_business_email(business_id: str) -> Optional[str]:
+    """Return the business contact email for a BusinessID."""
+    if not business_id:
+        return None
+    rows = _query(
+        "SELECT BusinessEmail FROM Business WHERE BusinessID = %s",
+        (int(business_id),),
+    )
+    if not rows:
+        return None
+    email = (rows[0].get("BusinessEmail") or "").strip()
+    return email or None
+
+
+def get_business_address(business_id: str) -> Optional[str]:
+    """Return formatted business address from the Address table."""
+    if not business_id:
+        return None
+    rows = _query(
+        """
+        SELECT a.AddressStreet, a.AddressCity, a.AddressState,
+               a.AddressZip, a.AddressCountry
+        FROM Business b
+        LEFT JOIN Address a ON a.AddressID = b.AddressID
+        WHERE b.BusinessID = %s
+        """,
+        (int(business_id),),
+    )
+    if not rows:
+        return None
+    r = rows[0]
+    parts = [
+        (r.get("AddressStreet") or "").strip(),
+        (r.get("AddressCity") or "").strip(),
+        (r.get("AddressState") or "").strip(),
+        (r.get("AddressZip") or "").strip(),
+        (r.get("AddressCountry") or "").strip(),
+    ]
+    address = ", ".join(p for p in parts if p)
+    return address or None
+
+
+def get_business_weather_coords(business_id: str) -> Optional[Dict[str, Any]]:
+    """Return saved GPS coordinates from BusinessLocation (same table as main weather API)."""
+    if not business_id:
+        return None
+    rows = _query(
+        """
+        SELECT Latitude, Longitude, LocationName, Timezone
+        FROM BusinessLocation
+        WHERE BusinessID = %s
+        """,
+        (int(business_id),),
+    )
+    if not rows:
+        return None
+    r = rows[0]
+    lat = r.get("Latitude")
+    lon = r.get("Longitude")
+    if lat is None or lon is None:
+        return None
+    return {
+        "latitude": float(lat),
+        "longitude": float(lon),
+        "location_name": (r.get("LocationName") or "").strip() or None,
+        "timezone": (r.get("Timezone") or "auto").strip(),
+    }
+
+
 def get_business_location(business_id: str) -> Optional[str]:
     """Return city/state/country for a business, used for weather and regional advice."""
     if not business_id:
@@ -325,6 +394,8 @@ def get_safe_profile(people_id: str) -> Dict[str, Optional[str] | List[str] | Di
     user_name = (row.get("PeopleUserName") or "").strip() or None
     business_id = get_primary_business_id(people_id) if people_id else None
     business_name = get_business_name(str(business_id)) if business_id else None
+    business_email = get_business_email(str(business_id)) if business_id else None
+    business_address = get_business_address(str(business_id)) if business_id else None
     org_member_ids = get_org_member_ids(str(business_id)) if business_id else []
     org_member_names = get_org_member_names(str(business_id)) if business_id else {}
 
@@ -338,7 +409,10 @@ def get_safe_profile(people_id: str) -> Dict[str, Optional[str] | List[str] | Di
         "phone": phone,
         "address": address,
         "location": location,
+        "business_id": business_id,
         "business_name": business_name,
+        "business_email": business_email,
+        "business_address": business_address,
         "primary_business_id": business_id,
         "org_member_ids": org_member_ids,
         "org_member_names": org_member_names,

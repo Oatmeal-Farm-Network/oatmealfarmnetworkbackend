@@ -77,7 +77,10 @@ GCP_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
 # ============================================================================
 
 EMBEDDING_MODEL = "text-embedding-004"
-TOP_K_RESULTS = 10
+TOP_K_RESULTS = int(os.getenv("RAG_TOP_K", "3"))
+RAG_PARALLEL_WORKERS = int(os.getenv("RAG_PARALLEL_WORKERS", "4"))
+ADVISORY_MAX_ITERATIONS = int(os.getenv("ADVISORY_MAX_ITERATIONS", "2"))
+COMMUNITY_LEARNINGS_ENABLED = os.getenv("COMMUNITY_LEARNINGS_ENABLED", "false").lower() == "true"
 FIRESTORE_DATABASE = os.getenv("FIRESTORE_DATABASE", "charlie").strip()
 CHAT_HISTORY_DATABASE = os.getenv("CHAT_HISTORY_DATABASE", "chat-history").strip()
 LIVESTOCK_KNOWLEDGE_COLLECTION = "livestock_knowledge"
@@ -98,7 +101,7 @@ SYNC_INTERVAL_HOURS = int(os.getenv("SYNC_INTERVAL_HOURS", "24"))
 # ASSESSMENT CONFIGURATION
 # ============================================================================
 
-MAX_QUESTIONS = 2
+MAX_QUESTIONS = int(os.getenv("MAX_QUESTIONS", "0"))
 
 # ============================================================================
 # API CONFIGURATION
@@ -149,7 +152,7 @@ ASSESSMENT_CLASSIFICATION_TIMEOUT_SECONDS = float(
     os.getenv("ASSESSMENT_CLASSIFICATION_TIMEOUT_SECONDS", "3.0")
 )
 ASSESSMENT_USE_LLM_CLASSIFIER = os.getenv(
-    "ASSESSMENT_USE_LLM_CLASSIFIER", "true"
+    "ASSESSMENT_USE_LLM_CLASSIFIER", "false"
 ).lower() == "true"
 
 # Message buffer settings (Task 3 names)

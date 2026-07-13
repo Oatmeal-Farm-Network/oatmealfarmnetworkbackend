@@ -43,14 +43,16 @@ class WeatherService:
 
     def __init__(self):
         self._api_key = os.getenv("WEATHER_API_KEY", "").strip()
-        # Default provider is "nws" (National Weather Service + Open-Meteo) —
-        # both are free and require no API key. WEATHER_API_KEY only matters
-        # if WEATHER_API_PROVIDER is explicitly set to "openweathermap" or
-        # "weatherapi".
-        self._provider = os.getenv("WEATHER_API_PROVIDER", "nws").strip().lower()
+        # Default: match main backend `routers/weather.py` (Open-Meteo only, °F/mph).
+        # Set WEATHER_API_PROVIDER=nws to use NWS-first with Open-Meteo fallback.
+        # WEATHER_API_KEY only matters for "openweathermap" or "weatherapi".
+        self._provider = os.getenv("WEATHER_API_PROVIDER", "openmeteo").strip().lower()
         self._cache = {}
         self._cache_ttl = 300  # 5 minutes
-        self._available = WEATHER_AVAILABLE and (self._provider == "nws" or bool(self._api_key))
+        self._use_fahrenheit = self._provider == "openmeteo"
+        self._available = WEATHER_AVAILABLE and (
+            self._provider in ("nws", "openmeteo") or bool(self._api_key)
+        )
 
     def _is_cache_valid(self, location: str) -> bool:
         """Check if cached data is still valid."""
@@ -68,6 +70,18 @@ class WeatherService:
     def _save_to_cache(self, location: str, data: Dict[str, Any]):
         """Save weather data to cache."""
         self._cache[location] = (data, time.time())
+
+    def _open_meteo_unit_params(self) -> Dict[str, str]:
+        """Fahrenheit + mph when using Open-Meteo directly."""
+        if self._use_fahrenheit:
+            return {"temperature_unit": "fahrenheit", "wind_speed_unit": "mph"}
+        return {}
+
+    def _temp_label(self) -> str:
+        return "F" if self._use_fahrenheit else "C"
+
+    def _wind_label(self) -> str:
+        return "mph" if self._use_fahrenheit else "km/h"
 
     @staticmethod
     def _normalize_location_text(text: str) -> str:
@@ -525,22 +539,17 @@ class WeatherService:
             print(f"[Weather] NWS points lookup error: {e}")
             return None
 
-    def _fetch_nws(self, location: str) -> Optional[Dict[str, Any]]:
-        """Current conditions from the nearest NWS observation station, with a
-        same-day forecast-period fallback if live station data is unavailable."""
-        geo = self._geocode_best(location)
-        if not geo:
-            return None
-        lat, lon = geo["lat"], geo["lon"]
+    def _fetch_nws_at(self, lat: float, lon: float, display_name: str = "") -> Optional[Dict[str, Any]]:
+        """Current conditions from NWS at GPS coordinates (US locations)."""
         points = self._fetch_nws_points(lat, lon)
         if not points:
             return None
 
         props = points.get("properties", {}) or {}
         rel = (props.get("relativeLocation") or {}).get("properties", {}) or {}
-        display_name = self._build_display_name(
-            rel.get("city") or geo["city"], rel.get("state") or geo["state"], ""
-        ) or location
+        resolved_name = display_name or self._build_display_name(
+            rel.get("city", ""), rel.get("state", ""), ""
+        ) or f"{lat:.4f}, {lon:.4f}"
 
         try:
             stations_url = props.get("observationStations")
@@ -564,7 +573,7 @@ class WeatherService:
                                 visibility_m = (obs.get("visibility") or {}).get("value")
                                 humidity = (obs.get("relativeHumidity") or {}).get("value")
                                 return {
-                                    "location": display_name,
+                                    "location": resolved_name,
                                     "temperature": round(temp_c),
                                     "feels_like": round(heat_c) if heat_c is not None else round(temp_c),
                                     "condition": obs.get("textDescription") or "Unknown",
@@ -573,12 +582,12 @@ class WeatherService:
                                     "pressure": round(pressure_pa / 100) if pressure_pa else None,
                                     "clouds": None,
                                     "visibility": round(visibility_m / 1000, 1) if visibility_m else None,
+                                    "temp_unit": "C",
+                                    "wind_unit": "km/h",
                                 }
         except Exception as e:
             print(f"[Weather] NWS observation lookup error: {e}")
 
-        # Fall back to the first (current) forecast period if live station
-        # observations aren't available for this station.
         try:
             forecast_url = props.get("forecast")
             if not forecast_url:
@@ -595,7 +604,7 @@ class WeatherService:
             wind_match = re.search(r"[\d.]+", period.get("windSpeed") or "")
             wind_mph = float(wind_match.group()) if wind_match else 0.0
             return {
-                "location": display_name,
+                "location": resolved_name,
                 "temperature": temp_c,
                 "feels_like": temp_c,
                 "condition": period.get("shortForecast") or "Unknown",
@@ -604,16 +613,22 @@ class WeatherService:
                 "pressure": None,
                 "clouds": None,
                 "visibility": None,
+                "temp_unit": "C",
+                "wind_unit": "km/h",
             }
         except Exception as e:
             print(f"[Weather] NWS forecast-period fallback error: {e}")
             return None
 
-    def _fetch_nws_forecast(self, location: str, days: int = 5) -> Optional[Dict[str, Any]]:
+    def _fetch_nws(self, location: str) -> Optional[Dict[str, Any]]:
+        """Current conditions from NWS (US), geocoded by location name."""
         geo = self._geocode_best(location)
         if not geo:
             return None
-        lat, lon = geo["lat"], geo["lon"]
+        return self._fetch_nws_at(geo["lat"], geo["lon"], geo["display_name"] or location)
+
+    def _fetch_nws_forecast_at(self, lat: float, lon: float, days: int, display_name: str = "") -> Optional[Dict[str, Any]]:
+        """Multi-day forecast from NWS at GPS coordinates (US locations)."""
         points = self._fetch_nws_points(lat, lon)
         if not points:
             return None
@@ -632,7 +647,6 @@ class WeatherService:
             print(f"[Weather] NWS forecast error: {e}")
             return None
 
-        # NWS gives day/night period pairs — group them into one entry per date.
         by_date: Dict[str, Dict[str, Any]] = {}
         order: List[str] = []
         for period in periods:
@@ -659,9 +673,9 @@ class WeatherService:
                 by_date[date]["wind"] = max(by_date[date]["wind"], float(wind_match.group()) * 1.60934)
 
         rel = (props.get("relativeLocation") or {}).get("properties", {}) or {}
-        display_name = self._build_display_name(
-            rel.get("city") or geo["city"], rel.get("state") or geo["state"], ""
-        ) or location
+        resolved_name = display_name or self._build_display_name(
+            rel.get("city", ""), rel.get("state", ""), ""
+        ) or f"{lat:.4f}, {lon:.4f}"
 
         forecast_days = []
         for date in order[:days]:
@@ -684,25 +698,31 @@ class WeatherService:
             return None
 
         return {
-            "location": display_name,
+            "location": resolved_name,
             "current": {"temperature": forecast_days[0]["max_temp"], "condition": forecast_days[0]["condition"]},
             "forecast": forecast_days,
             "forecast_days": len(forecast_days),
+            "temp_unit": "C",
+            "wind_unit": "km/h",
         }
 
-    # ── Open-Meteo (free, keyless, worldwide) — fallback for non-US locations ──
-
-    def _fetch_open_meteo_current(self, location: str) -> Optional[Dict[str, Any]]:
+    def _fetch_nws_forecast(self, location: str, days: int = 5) -> Optional[Dict[str, Any]]:
         geo = self._geocode_best(location)
         if not geo:
             return None
-        lat, lon = geo["lat"], geo["lon"]
+        return self._fetch_nws_forecast_at(geo["lat"], geo["lon"], days, geo["display_name"] or location)
+
+    # ── Open-Meteo (free, keyless, worldwide) — fallback for non-US locations ──
+
+    def _fetch_open_meteo_current_at(self, lat: float, lon: float, display_name: str = "") -> Optional[Dict[str, Any]]:
+        """Fetch current conditions at GPS coordinates (no geocoding)."""
         try:
             params = {
                 "latitude": lat, "longitude": lon,
                 "current": "temperature_2m,relative_humidity_2m,apparent_temperature,"
                            "weather_code,wind_speed_10m,surface_pressure,cloud_cover",
                 "timezone": "auto",
+                **self._open_meteo_unit_params(),
             }
             resp = requests.get(_OPEN_METEO_FORECAST_URL, params=params, timeout=8)
             if resp.status_code != 200:
@@ -712,7 +732,7 @@ class WeatherService:
             if current.get("temperature_2m") is None:
                 return None
             return {
-                "location": geo["display_name"] or location,
+                "location": display_name or f"{lat:.4f}, {lon:.4f}",
                 "temperature": round(current["temperature_2m"]),
                 "feels_like": round(current.get("apparent_temperature", current["temperature_2m"])),
                 "condition": _WMO_CODE_TEXT.get(current.get("weather_code"), "Unknown"),
@@ -721,16 +741,24 @@ class WeatherService:
                 "pressure": round(current["surface_pressure"]) if current.get("surface_pressure") else None,
                 "clouds": current.get("cloud_cover"),
                 "visibility": None,
+                "temp_unit": self._temp_label(),
+                "wind_unit": self._wind_label(),
             }
         except Exception as e:
-            print(f"[Weather] Open-Meteo forecast error: {e}")
+            print(f"[Weather] Open-Meteo coords error: {e}")
             return None
 
-    def _fetch_open_meteo_forecast(self, location: str, days: int = 5) -> Optional[Dict[str, Any]]:
+    def _fetch_open_meteo_current(self, location: str) -> Optional[Dict[str, Any]]:
         geo = self._geocode_best(location)
         if not geo:
             return None
-        lat, lon = geo["lat"], geo["lon"]
+        data = self._fetch_open_meteo_current_at(geo["lat"], geo["lon"], geo["display_name"] or location)
+        if data and not data.get("location"):
+            data["location"] = location
+        return data
+
+    def _fetch_open_meteo_forecast_at(self, lat: float, lon: float, days: int, display_name: str = "") -> Optional[Dict[str, Any]]:
+        """Fetch multi-day forecast at GPS coordinates (no geocoding)."""
         try:
             params = {
                 "latitude": lat, "longitude": lon,
@@ -738,6 +766,7 @@ class WeatherService:
                          "precipitation_probability_max,wind_speed_10m_max,relative_humidity_2m_mean",
                 "timezone": "auto",
                 "forecast_days": min(days, 16),
+                **self._open_meteo_unit_params(),
             }
             resp = requests.get(_OPEN_METEO_FORECAST_URL, params=params, timeout=8)
             if resp.status_code != 200:
@@ -768,14 +797,62 @@ class WeatherService:
                 })
 
             return {
-                "location": geo["display_name"] or location,
+                "location": display_name or f"{lat:.4f}, {lon:.4f}",
                 "current": {"temperature": forecast_days[0]["max_temp"], "condition": forecast_days[0]["condition"]},
                 "forecast": forecast_days,
                 "forecast_days": len(forecast_days),
+                "temp_unit": self._temp_label(),
+                "wind_unit": self._wind_label(),
             }
         except Exception as e:
-            print(f"[Weather] Open-Meteo forecast error: {e}")
+            print(f"[Weather] Open-Meteo forecast coords error: {e}")
             return None
+
+    def _fetch_open_meteo_forecast(self, location: str, days: int = 5) -> Optional[Dict[str, Any]]:
+        geo = self._geocode_best(location)
+        if not geo:
+            return None
+        return self._fetch_open_meteo_forecast_at(
+            geo["lat"], geo["lon"], days, geo["display_name"] or location
+        )
+
+    def get_weather_by_coords(self, lat: float, lon: float, location_name: str = "") -> Optional[Dict[str, Any]]:
+        """Fetch current weather at GPS coordinates — NWS first, Open-Meteo fallback."""
+        if not self._available:
+            return None
+        cache_key = f"coords:{lat:.4f},{lon:.4f}"
+        cached = self._get_from_cache(cache_key)
+        if cached:
+            return cached
+        if self._provider == "openmeteo":
+            data = self._fetch_open_meteo_current_at(lat, lon, location_name)
+        else:
+            data = self._fetch_nws_at(lat, lon, location_name)
+            if not data:
+                print(f"[Weather] NWS unavailable at {lat},{lon} — trying Open-Meteo")
+                data = self._fetch_open_meteo_current_at(lat, lon, location_name)
+        if data:
+            self._save_to_cache(cache_key, data)
+        return data
+
+    def get_forecast_by_coords(self, lat: float, lon: float, days: int = 7, location_name: str = "") -> Optional[Dict[str, Any]]:
+        """Fetch forecast at GPS coordinates — NWS first, Open-Meteo fallback."""
+        if not self._available:
+            return None
+        cache_key = f"coords_fc:{lat:.4f},{lon:.4f}:{days}"
+        cached = self._get_from_cache(cache_key)
+        if cached:
+            return cached
+        if self._provider == "openmeteo":
+            data = self._fetch_open_meteo_forecast_at(lat, lon, days, location_name)
+        else:
+            data = self._fetch_nws_forecast_at(lat, lon, days, location_name)
+            if not data:
+                print(f"[Weather] NWS forecast unavailable at {lat},{lon} — trying Open-Meteo")
+                data = self._fetch_open_meteo_forecast_at(lat, lon, days, location_name)
+        if data:
+            self._save_to_cache(cache_key, data)
+        return data
 
     def get_forecast(self, location: str, days: int = 5) -> Optional[Dict[str, Any]]:
         """Fetch weather forecast for location."""
@@ -789,8 +866,10 @@ class WeatherService:
         elif self._provider == "openweathermap":
             print(f"[Weather] Forecast not available with OpenWeatherMap provider (current-weather only)")
             data = None
+        elif self._provider == "openmeteo":
+            data = self._fetch_open_meteo_forecast(location, days)
         else:
-            # Free path: NWS first (USA, official), Open-Meteo worldwide fallback.
+            # NWS first (USA), Open-Meteo worldwide fallback.
             data = self._fetch_nws_forecast(location, days)
             if not data:
                 print(f"[Weather] NWS forecast unavailable for '{location}' — trying Open-Meteo (worldwide)")
@@ -809,12 +888,14 @@ class WeatherService:
         parts = [f"Weather forecast for {forecast_data['location']}:\n"]
 
         if forecast_data.get("current"):
-            parts.append(f"Current: {forecast_data['current']['temperature']}C, {forecast_data['current']['condition']}\n")
+            tu = forecast_data.get("temp_unit") or self._temp_label()
+            parts.append(f"Current: {forecast_data['current']['temperature']}°{tu}, {forecast_data['current']['condition']}\n")
 
         parts.append("Forecast:")
+        tu = forecast_data.get("temp_unit") or self._temp_label()
         for day in forecast_data["forecast"]:
             rain_str = f", {day['rain_chance']}% rain" if day.get('rain_chance', 0) > 0 else ""
-            parts.append(f"  {day['date']}: {day['min_temp']}C - {day['max_temp']}C, {day['condition']}{rain_str}")
+            parts.append(f"  {day['date']}: {day['min_temp']}°{tu} - {day['max_temp']}°{tu}, {day['condition']}{rain_str}")
 
         return "\n".join(parts)
 
@@ -833,8 +914,10 @@ class WeatherService:
             data = self._fetch_weatherapi(location)
         elif self._provider == "openweathermap":
             data = self._fetch_openweathermap(location)
+        elif self._provider == "openmeteo":
+            data = self._fetch_open_meteo_current(location)
         else:
-            # Free path: NWS first (USA, official), Open-Meteo worldwide fallback.
+            # NWS first (USA), Open-Meteo worldwide fallback.
             data = self._fetch_nws(location)
             if not data:
                 print(f"[Weather] NWS unavailable for '{location}' — trying Open-Meteo (worldwide)")
@@ -852,10 +935,12 @@ class WeatherService:
             return ""
 
         parts = ["Current weather conditions:\n"]
-        parts.append(f"Temperature: {weather_data['temperature']}C (feels like {weather_data['feels_like']}C)")
+        tu = weather_data.get("temp_unit") or self._temp_label()
+        wu = weather_data.get("wind_unit") or self._wind_label()
+        parts.append(f"Temperature: {weather_data['temperature']}°{tu} (feels like {weather_data['feels_like']}°{tu})")
         parts.append(f"Condition: {weather_data['condition']}")
         parts.append(f"Humidity: {weather_data['humidity']}%")
-        parts.append(f"Wind Speed: {weather_data['wind_speed']} km/h")
+        parts.append(f"Wind Speed: {weather_data['wind_speed']} {wu}")
         parts.append(f"Pressure: {weather_data['pressure']} hPa")
         if weather_data.get('visibility'):
             parts.append(f"Visibility: {weather_data['visibility']} km")
