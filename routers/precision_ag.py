@@ -87,7 +87,7 @@ def get_fields(business_id: int, db: Session = Depends(get_db)):
             SELECT
                 F.FieldID, F.BusinessID, F.Name, F.Address,
                 F.Latitude, F.Longitude, F.FieldSizeHectares,
-                F.CropType, F.PlantingDate,
+                F.CropType, F.PlantingDate, F.BoundaryGeoJSON,
                 F.MonitoringEnabled, F.MonitoringIntervalDays, F.AlertThresholdHealth,
                 LA.AnalysisDate  AS LatestAnalysisDate,
                 LA.HealthScore   AS LatestHealthScore,
@@ -115,6 +115,7 @@ def get_fields(business_id: int, db: Session = Depends(get_db)):
                 "field_size_hectares":      float(r.FieldSizeHectares) if r.FieldSizeHectares is not None else None,
                 "crop_type":                r.CropType,
                 "planting_date":            str(r.PlantingDate) if r.PlantingDate else None,
+                "boundary_geojson":         r.BoundaryGeoJSON,
                 "monitoring_enabled":       bool(r.MonitoringEnabled) if r.MonitoringEnabled is not None else True,
                 "monitoring_interval_days": r.MonitoringIntervalDays,
                 "alert_threshold_health":   r.AlertThresholdHealth,
@@ -132,6 +133,15 @@ def get_fields(business_id: int, db: Session = Depends(get_db)):
 
 @router.post("/fields")
 def create_field(field: FieldCreate, db: Session = Depends(get_db)):
+    # Address/Latitude/Longitude are NOT NULL columns in dbo.Field — the
+    # working add-field flow (Crop Detection) always derives these from a
+    # drawn boundary, but guard here too so a bad/direct API call gets a
+    # clean 400 instead of a raw SQL IntegrityError.
+    if field.latitude is None or field.longitude is None:
+        raise HTTPException(status_code=400, detail="latitude and longitude are required")
+    if not field.address:
+        field.address = field.name
+
     try:
         planting_date = None
         if field.planting_date:
@@ -175,7 +185,11 @@ def create_field(field: FieldCreate, db: Session = Depends(get_db)):
 @router.put("/fields/{field_id}")
 def update_field(field_id: int, field: FieldCreate, db: Session = Depends(get_db)):
     try:
-        existing = db.query(models.Field).filter(models.Field.FieldID == field_id).first()
+        existing = (
+            db.query(models.Field)
+            .filter(models.Field.FieldID == field_id, models.Field.DeletedAt.is_(None))
+            .first()
+        )
         if not existing:
             raise HTTPException(status_code=404, detail="Field not found")
         planting_date = None
@@ -194,7 +208,11 @@ def update_field(field_id: int, field: FieldCreate, db: Session = Depends(get_db
             computed_size if computed_size is not None else field.field_size_hectares
         )
         existing.PlantingDate           = planting_date
-        existing.BoundaryGeoJSON        = field.boundary_geojson
+        # Only overwrite the saved boundary when the caller actually sent a new
+        # one — an empty/omitted value (e.g. the edit form loaded without
+        # re-drawing) must never wipe out a previously drawn polygon.
+        if field.boundary_geojson:
+            existing.BoundaryGeoJSON    = field.boundary_geojson
         existing.MonitoringIntervalDays = field.monitoring_interval_days
         existing.AlertThresholdHealth   = field.alert_threshold_health
         db.commit()
@@ -212,10 +230,19 @@ def update_field(field_id: int, field: FieldCreate, db: Session = Depends(get_db
 @router.delete("/fields/{field_id}")
 def delete_field(field_id: int, db: Session = Depends(get_db)):
     try:
-        field = db.query(models.Field).filter(models.Field.FieldID == field_id).first()
+        field = (
+            db.query(models.Field)
+            .filter(models.Field.FieldID == field_id, models.Field.DeletedAt.is_(None))
+            .first()
+        )
         if not field:
             raise HTTPException(status_code=404, detail="Field not found")
-        db.delete(field)
+        # Soft delete — permanently deleting the row would cascade-orphan (or
+        # foreign-key-fail on) years of Analysis/FieldScout/FieldNote/biomass
+        # history tied to this FieldID. get_fields() already filters on
+        # DeletedAt, so this is enough to make the field disappear from the UI
+        # while keeping the history recoverable/auditable.
+        field.DeletedAt = datetime.utcnow()
         db.commit()
         return {"success": True, "deleted_id": field_id}
     except HTTPException:
@@ -394,7 +421,11 @@ def _call_estimator_upload(image_bytes: bytes, filename: str, content_type: str,
 def get_biomass(field_id: int, db: Session = Depends(get_db)):
     """Latest satellite + latest upload analysis for a field. Returns empty
     payload (not 500) when the FieldBiomassAnalysis table hasn't been migrated yet."""
-    field = db.query(models.Field).filter(models.Field.FieldID == field_id).first()
+    field = (
+        db.query(models.Field)
+        .filter(models.Field.FieldID == field_id, models.Field.DeletedAt.is_(None))
+        .first()
+    )
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
 
@@ -436,7 +467,11 @@ def get_biomass(field_id: int, db: Session = Depends(get_db)):
 def _run_satellite_biomass(field_id: int, db: Session) -> "models.FieldBiomassAnalysis":
     """Pull the latest NDVI analysis, convert to biomass, persist, and return the row.
     Shared by the manual-trigger satellite endpoint and the auto-resolver endpoint."""
-    field = db.query(models.Field).filter(models.Field.FieldID == field_id).first()
+    field = (
+        db.query(models.Field)
+        .filter(models.Field.FieldID == field_id, models.Field.DeletedAt.is_(None))
+        .first()
+    )
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
 
@@ -546,7 +581,11 @@ async def analyze_upload(
     db: Session = Depends(get_db),
 ):
     """User-uploaded ground-level image → estimator → stored analysis."""
-    field = db.query(models.Field).filter(models.Field.FieldID == field_id).first()
+    field = (
+        db.query(models.Field)
+        .filter(models.Field.FieldID == field_id, models.Field.DeletedAt.is_(None))
+        .first()
+    )
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
 
