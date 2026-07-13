@@ -43,10 +43,15 @@ from config import (
     MAX_QUESTIONS,
     ASSESSMENT_CLASSIFICATION_TIMEOUT_SECONDS,
     ASSESSMENT_USE_LLM_CLASSIFIER,
+    ADVISORY_MAX_ITERATIONS,
+    COMMUNITY_LEARNINGS_ENABLED,
 )
 from saige_models import FarmState, AssessmentDecision, QueryClassification, QueryTypeClassification, WeatherQueryParsed, FollowUpEntityExtraction
 from llm import llm
-from rag import rag_livestock, rag_plant, rag_crop, rag_soil, rag_field, rag_bakasura, rag_news, rag_hitl_charlie
+from rag import (
+    rag_livestock, rag_plant, rag_crop, rag_soil, rag_field, rag_bakasura, rag_news, rag_hitl_charlie,
+    gather_rag_context,
+)
 from weather import weather_service, get_weather_tool, weather_tools
 try:
     from companion_planting import companion_tools, companion_planting_tool, check_companion_pair_tool
@@ -410,7 +415,7 @@ except Exception as _e:
     tell_joke_tool = None
     JOKES_AVAILABLE = False
 
-VALID_ADVISORY_TYPES = {"weather", "livestock", "crops", "soil", "field", "mixed", "news", "bakasura", "joke"}
+VALID_ADVISORY_TYPES = {"weather", "livestock", "crops", "soil", "field", "mixed", "news", "bakasura", "joke", "user_data"}
 ADVISORY_TYPE_ALIASES = {
     "crop": "crops",
     "crops": "crops",
@@ -438,6 +443,12 @@ ADVISORY_TYPE_ALIASES = {
     "joke": "joke",
     "jokes": "joke",
     "funny": "joke",
+    "user_data": "user_data",
+    "user data": "user_data",
+    "profile": "user_data",
+    "account": "user_data",
+    "my profile": "user_data",
+    "my account": "user_data",
 }
 
 
@@ -457,6 +468,148 @@ def _keyword_present(text: str, keyword: str) -> bool:
 
 def _count_keyword_matches(text: str, keywords: List[str]) -> int:
     return sum(1 for keyword in keywords if _keyword_present(text, keyword))
+
+
+_USER_DATA_KEYWORDS = (
+    "who am i", "my profile", "my account", "my email", "my phone", "my address",
+    "my username", "my user name", "business name", "business email", "business address",
+    "business id", "businessid", "people id", "peopleid", "user id", "userid",
+    "account details", "account info", "tell me about me", "what is my name",
+    "what's my name", "whats my name", "my name", "signed in with", "which account",
+)
+
+_AGRICULTURE_KEYWORDS = (
+    "crop", "farm", "soil", "livestock", "cattle", "sheep", "goat", "pig", "chicken",
+    "plant", "harvest", "irrigation", "fertiliz", "pest", "disease", "weed", "seed",
+    "pasture", "hay", "silage", "grazing", "tillage", "cover crop", "rotation",
+    "greenhouse", "orchard", "vineyard", "dairy", "beef", "poultry", "agronom",
+    "field", "ndvi", "yield", "planting", "sowing", "transplant", "compost", "manure",
+    "organic", "regenerative", "permaculture", "aquaculture", "bee", "pollinat",
+)
+
+
+def _is_user_data_query(text: str) -> bool:
+    t = (text or "").lower()
+    return any(k in t for k in _USER_DATA_KEYWORDS)
+
+
+def _is_agriculture_query(text: str) -> bool:
+    t = (text or "").lower()
+    return any(k in t for k in _AGRICULTURE_KEYWORDS)
+
+
+def _is_vertex_quota_error(err) -> bool:
+    s = str(err).lower()
+    return (
+        "429" in s
+        or "resource exhausted" in s
+        or "resourceexhausted" in s
+        or "quota exceeded" in s
+        or "rate limit" in s
+    )
+
+
+def _llm_direct_ag_answer(
+    question: str,
+    location: str = "",
+    crops: Optional[List[str]] = None,
+    role_hint: str = "",
+) -> str:
+    """Direct LLM answer when RAG/tools fail or Vertex returns 429."""
+    prompt = (
+        f"{_SAIGE_PERSONA}\n\n"
+        f"{role_hint}\n"
+        "Answer the farmer's question directly with accurate, practical agricultural advice. "
+        "Be specific and actionable. Do NOT refuse to answer or say you lack data.\n\n"
+        f"Question: {question}\n"
+        f"Location: {location or 'unspecified'}\n"
+        f"Crops/livestock: {', '.join(crops) if crops else 'unspecified'}"
+    )
+    resp = llm.invoke(prompt)
+    return resp.content if hasattr(resp, "content") else str(resp)
+
+
+def _format_safe_profile_answer(profile: dict, user_message: str = "") -> str:
+    """Format non-sensitive profile fields for user-data responses."""
+    if not profile:
+        return (
+            "I don't have your profile details on file for this session. "
+            "Make sure you're signed in, then try again."
+        )
+
+    ml = (user_message or "").lower()
+    wants_all = not ml or any(k in ml for k in ("who am i", "my profile", "account info", "account details", "tell me about me"))
+
+    def _line(label: str, key: str) -> Optional[str]:
+        val = profile.get(key)
+        if val is None or val == "" or val == []:
+            return None
+        if isinstance(val, dict):
+            return f"{label}: {len(val)} team member(s) on file."
+        return f"{label}: {val}"
+
+    fields = [
+        ("Full name", "full_name"),
+        ("Username", "user_name"),
+        ("Email", "email"),
+        ("Phone", "phone"),
+        ("Address", "address"),
+        ("Business ID", "business_id"),
+        ("Business name", "business_name"),
+        ("Business email", "business_email"),
+        ("Business address", "business_address"),
+        ("People ID", "people_id"),
+        ("Timezone", "timezone"),
+    ]
+
+    if wants_all:
+        parts = [_line(lbl, key) for lbl, key in fields]
+        lines = [p for p in parts if p]
+        if not lines:
+            return "Your account is linked, but I couldn't load profile details right now."
+        return "Here's what I have on file for your account:\n" + "\n".join(f"• {line}" for line in lines)
+
+    parts = []
+    if any(k in ml for k in ("name", "who am i")):
+        p = _line("Full name", "full_name")
+        if p:
+            parts.append(p)
+    if "username" in ml or "user name" in ml:
+        p = _line("Username", "user_name")
+        if p:
+            parts.append(p)
+    if "email" in ml:
+        p = _line("Email", "email")
+        if p:
+            parts.append(p)
+        p = _line("Business email", "business_email")
+        if p:
+            parts.append(p)
+    if "phone" in ml:
+        p = _line("Phone", "phone")
+        if p:
+            parts.append(p)
+    if "address" in ml:
+        p = _line("Address", "address")
+        if p:
+            parts.append(p)
+        p = _line("Business address", "business_address")
+        if p:
+            parts.append(p)
+    if any(k in ml for k in ("business", "businessid", "business id")):
+        for lbl, key in [("Business name", "business_name"), ("Business ID", "business_id"),
+                         ("Business email", "business_email"), ("Business address", "business_address")]:
+            p = _line(lbl, key)
+            if p:
+                parts.append(p)
+    if any(k in ml for k in ("peopleid", "people id", "user id", "userid")):
+        p = _line("People ID", "people_id")
+        if p:
+            parts.append(p)
+
+    if not parts:
+        return _format_safe_profile_answer(profile, "who am i")
+    return "\n".join(parts)
 
 
 def _infer_answer_slot(question_text: str, has_existing_issue: bool) -> str:
@@ -702,13 +855,17 @@ def assessment_node(state: FarmState):
                               "map", "zip code", "zipcode",
                               "field", "sensor", "my ranch", "my farm data")
             _kw_joke       = ("joke", "something funny", "make me laugh", "tell me something funny")
+            _kw_user_data  = _USER_DATA_KEYWORDS
+            _kw_news       = ("agricultural news", "farm news", "market news", "headline", "headlines",
+                              "news this week", "what's in the news", "commodity news")
+            _kw_bakasura   = ("bakasura", "equipment manual", "product manual", "ofn docs", "platform docs")
             _kw_general    = ("hello", "hi ", "hey ", "good morning", "good afternoon",
                               # Saige identity
                               "what is your name", "what's your name", "whats your name",
                               "who are you", "what are you", "tell me about yourself",
                               "introduce yourself", "what can you do", "what can you help",
                               "how do you work", "how are you",
-                              # User identity
+                              # User identity — route to dedicated user_data node when specific
                               "what is my people", "what is my user", "what is my business",
                               "what is my name", "what's my name", "whats my name",
                               "my name", "my businessid", "my peopleid", "my people id",
@@ -720,6 +877,12 @@ def assessment_node(state: FarmState):
             _ft = None
             if _kw_any(_kw_joke, msg_lower):
                 _ft = ("joke", [first_user_message], [])
+            elif _kw_any(_kw_user_data, msg_lower):
+                _ft = ("user_data", [first_user_message], [])
+            elif _kw_any(_kw_news, msg_lower):
+                _ft = ("news", [first_user_message], [])
+            elif _kw_any(_kw_bakasura, msg_lower):
+                _ft = ("bakasura", [first_user_message], [])
             elif _kw_any(_kw_general, msg_lower) or len(first_user_message.split()) <= 2:
                 _ft = ("general", [first_user_message], [])
             elif _kw_any(_kw_weather, msg_lower):
@@ -829,8 +992,15 @@ Examples:
                 needs_clarification = classification_result.needs_clarification
                 detected_items = classification_result.items
 
-                # Handle general (non-farming) queries — answer directly, no quiz
+                # Handle general (non-farming) queries — route profile lookups to user_data
                 if classification_result.query_type.lower() == "general":
+                    if _is_user_data_query(first_user_message):
+                        print(f"[Assessment] User profile query - fast-tracking to user_data")
+                        return {
+                            "assessment_summary": f"User profile request: {first_user_message}",
+                            "current_issues": [first_user_message],
+                            "advisory_type": "user_data",
+                        }
                     print(f"[Assessment] General (non-farming) query - fast-tracking")
                     return {
                         "assessment_summary": f"General question: {first_user_message}",
@@ -1090,6 +1260,12 @@ def routing_node(state: FarmState) -> Dict[str, str]:
         "soil test", "soil ph", "soil health", "organic matter", "cec", "salinity",
         "soil texture", "soil nutrient", "soil compaction", "soil fertility", "soil sample",
     ]
+    news_keywords = [
+        "agricultural news", "farm news", "market news", "headline", "headlines",
+        "news this week", "commodity news", "usda news", "crop report",
+    ]
+    bakasura_keywords = ["bakasura", "equipment manual", "product manual", "ofn docs", "platform docs"]
+    user_data_keywords = list(_USER_DATA_KEYWORDS)
 
     weather_matches = _count_keyword_matches(query_text, weather_keywords)
     livestock_strong_matches = _count_keyword_matches(query_text, livestock_strong_keywords)
@@ -1098,14 +1274,30 @@ def routing_node(state: FarmState) -> Dict[str, str]:
     crop_weak_matches = _count_keyword_matches(query_text, crop_weak_keywords)
     field_matches = _count_keyword_matches(query_text, field_keywords)
     soil_matches = _count_keyword_matches(query_text, soil_keywords)
+    news_matches = _count_keyword_matches(query_text, news_keywords)
+    bakasura_matches = _count_keyword_matches(query_text, bakasura_keywords)
+    user_data_matches = _count_keyword_matches(query_text, user_data_keywords)
 
     print(
         "[Routing] Keywords - "
         f"Weather: {weather_matches}, "
         f"Livestock(strong/weak): {livestock_strong_matches}/{livestock_weak_matches}, "
         f"Crops(strong/weak): {crop_strong_matches}/{crop_weak_matches}, "
-        f"Field: {field_matches}, Soil: {soil_matches}"
+        f"Field: {field_matches}, Soil: {soil_matches}, "
+        f"News: {news_matches}, UserData: {user_data_matches}"
     )
+
+    if user_data_matches > 0 and weather_matches == 0 and livestock_strong_matches == 0 and crop_strong_matches == 0:
+        print("[Routing] -> user_data (profile/account keywords)")
+        return {"advisory_type": "user_data"}
+
+    if news_matches > 0 and livestock_strong_matches == 0 and crop_strong_matches == 0 and field_matches == 0:
+        print("[Routing] -> news (news keywords)")
+        return {"advisory_type": "news"}
+
+    if bakasura_matches > 0:
+        print("[Routing] -> bakasura (docs keywords)")
+        return {"advisory_type": "bakasura"}
 
     if field_matches > 0 and livestock_strong_matches == 0 and crop_strong_matches == 0:
         print("[Routing] -> field (precision-ag keywords)")
@@ -1137,31 +1329,8 @@ def routing_node(state: FarmState) -> Dict[str, str]:
         print(f"[Routing] -> crops (weak keyword fallback)")
         return {"advisory_type": "crops"}
 
-    # LLM fallback (only for ambiguous cases)
-    print(f"[Routing] Using LLM fallback...")
-    classifier = llm.with_structured_output(QueryClassification)
-    prompt = f"""Classify as 'livestock', 'crops', 'mixed', or 'weather':
-Crops/Animals: {', '.join(crops) if crops else 'Not specified'}
-Issues: {', '.join(issues) if issues else 'None'}
-Assessment: {assessment}
-
-If the query is not actually about farming (e.g. personal account details like
-name/email/PeopleID, greetings, small talk, or general questions about Saige
-itself), classify it as 'mixed' — do NOT guess 'weather' or another farming
-category just because no farming signal is present."""
-
-    try:
-        result = classifier.invoke(prompt)
-        print(f"[Routing] LLM: {result.category}")
-        llm_type = normalize_advisory_type(result.category)
-        if llm_type:
-            return {"advisory_type": llm_type}
-    except Exception as e:
-        print(f"[Routing] LLM error: {e}")
-
-    # "mixed" is the safest catch-all: run_advisory_agent's identity/general
-    # path handles non-farming questions gracefully, whereas defaulting to
-    # "crops" would force farm advice onto e.g. an account/identity question.
+    # LLM fallback only when keywords are ambiguous — default to mixed (fast).
+    print("[Routing] Keyword fallback -> mixed")
     return {"advisory_type": "mixed"}
 
 
@@ -1345,13 +1514,16 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
     ))
 
     _INTENT_PRECISION_AG = any(k in _rl for k in (
-        "my field", "ndvi", "evi", "savi", "my crop monitoring",
+        "my field", "my fields", "ndvi", "evi", "savi", "my crop monitoring",
         "field analysis", "field alert", "field health", "field soil",
         "biomass confidence", "improve confidence", "field zones",
         "management zone", "yield forecast", "gdd", "growing degree",
         "irrigation recom", "field weather", "scouting report",
         "field activity", "field assessment", "log scouting",
-        "log field", "add soil sample",
+        "log field", "add soil sample", "precision ag", "precision agriculture",
+        "crop monitor", "satellite", "vegetation index", "list my fields",
+        "how are my fields", "field biomass", "field maturity", "field irrigation",
+        "field yield", "field carbon", "farm benchmark", "field agronomy",
     ))
 
     _INTENT_ACCOUNTING = any(k in _rl for k in (
@@ -1387,21 +1559,13 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
             soil_lines.append(f"- raw_report: {str(soil_info['raw_text'])[:600]}")
     soil_section = "Soil test data:\n" + "\n".join(soil_lines) if soil_lines else "Soil test data: Not provided"
 
-    # 2. RAG Retrieval (Centralized)
+    # 2. RAG Retrieval (parallel, single embedding)
     rag_context = ""
     if rag_systems and RAG_AVAILABLE:
         query_text = f"{', '.join(crops)} {', '.join(issues)} {assessment} {latest_user_message}"
-        context_parts = []
-        for rag_sys in rag_systems:
-            try:
-                rag_sys.initialize()
-                ctx = rag_sys.get_context_for_query(query_text)
-                if ctx:
-                    context_parts.append(ctx)
-                    print(f"[Advisory Agent] RAG context retrieved from {rag_sys._label}")
-            except Exception as e:
-                print(f"[Advisory Agent] RAG error ({rag_sys._label}): {e}")
-        rag_context = "\n\n".join(context_parts)
+        rag_context = gather_rag_context(rag_systems, query_text)
+        if rag_context:
+            print(f"[Advisory Agent] RAG context retrieved ({len(rag_systems)} collections, parallel)")
 
     # 2.5  Business Context Pre-fetch (conditional)
     # Only fetch when business data is likely relevant — skip for pure weather/crop/livestock
@@ -1453,14 +1617,21 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
 
     # 3. Construct Full Prompt
     rag_section = f"RELEVANT KNOWLEDGE BASE:\n{rag_context}" if rag_context else ""
+    if not rag_context and _is_agriculture_query(latest_user_message):
+        rag_section = (
+            "KNOWLEDGE BASE: No close document match was found for this query. "
+            "Answer using your deep agricultural expertise — provide accurate, practical, "
+            "science-based guidance. Do NOT say you lack information or cannot help."
+        )
 
-    # Community learnings from data flywheel (cross-user anonymized insights)
+    # Community learnings from data flywheel (optional — off by default for latency)
     _community_section = ""
-    try:
-        from learning import get_community_context as _get_community_ctx
-        _community_section = _get_community_ctx(latest_user_message, n=3)
-    except Exception as _lrn_err:
-        pass  # flywheel unavailable — degrade silently
+    if COMMUNITY_LEARNINGS_ENABLED:
+        try:
+            from learning import get_community_context as _get_community_ctx
+            _community_section = _get_community_ctx(latest_user_message, n=2)
+        except Exception:
+            pass
 
     _people_id_ctx = state.get("people_id") or ""
     _business_id_ctx = state.get("business_id") or ""
@@ -1476,12 +1647,18 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
         f"{_business_name_ctx} (ID {_business_id_ctx})" if _business_name_ctx
         else (_business_id_ctx or "unknown")
     )
+    _field_id_ctx = state.get("field_id")
     identity_section = (
         f"AUTHENTICATED IDENTITY (already known — do NOT ask the user for these):\n"
         + (f"- Name: {_user_name_ctx}\n" if _user_name_ctx else "")
         + f"- PeopleID: {_people_id_ctx or 'unknown'}\n"
-        f"- Business: {_biz_label}\n"
-        "Every tool that needs people_id or business_id receives them automatically from "
+        + f"- Business: {_biz_label}\n"
+        + (
+            f"- Active field (from dashboard): #{_field_id_ctx}\n"
+            "  Use this field_id for precision-ag tools unless the user names another field.\n"
+            if _field_id_ctx else ""
+        )
+        + "Every tool that needs people_id or business_id receives them automatically from "
         "this session. Call the tool directly — never ask the user to 'link their account' "
         "or provide these IDs. If a tool returns no data, say so plainly; do not blame "
         "missing authentication.\n"
@@ -1912,7 +2089,21 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
         _acct_tool_names = {t.name for t in business_ops_tools if BUSINESS_OPS_AVAILABLE}
         bound_tools = [t for t in bound_tools if t.name in _acct_tool_names]
         print(f"[Intent Router] Tool list pruned to accounting/events tools ({len(bound_tools)} tools)")
-    # _INTENT_KNOWLEDGE_ONLY: keep tools, but constrain knowledge-base tools by advisory type
+    elif _INTENT_KNOWLEDGE_ONLY:
+        # Pure knowledge/advice queries — drop business/precision/draft tools (major latency win).
+        _knowledge_tool_names = {
+            "get_weather_tool",
+            "companion_planting_tool", "check_companion_pair_tool",
+            "crop_name_tool", "weather_mitigation_tool", "region_crops_tool",
+            "soil_challenge_tool", "price_forecast_tool", "subsidies_tool", "insurance_tool",
+            "planting_calendar_tool", "irrigation_schedule_tool", "manure_pairing_tool",
+            "tell_joke_tool",
+        }
+        if KNOWLEDGE_BASE_AVAILABLE:
+            _knowledge_tool_names |= {t.name for t in knowledge_base_tools}
+        bound_tools = [t for t in bound_tools if t.name in _knowledge_tool_names]
+        print(f"[Intent Router] Tool list pruned to knowledge tools ({len(bound_tools)} tools)")
+    # _INTENT_KNOWLEDGE_ONLY: constrain plant/animal KB tools by advisory type
     if _INTENT_KNOWLEDGE_ONLY and KNOWLEDGE_BASE_AVAILABLE:
         advisory_hint = normalize_advisory_type(state.get("advisory_type"))
         if advisory_hint == "livestock":
@@ -1953,8 +2144,9 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
     weather_alerts_context = ""
     history_context = ""
     grants_context = ""
-    max_iterations = 3
+    max_iterations = max(1, ADVISORY_MAX_ITERATIONS)
     final_response = ""
+    quota_hit = False
     _map_cmd_collected = ""  # [MAP_CMD: ...] extracted from geocode tool result
     people_id_for_tools = state.get("people_id") or ""
     business_id_for_tools = 0
@@ -2058,10 +2250,36 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
                             _stream_q.put(_tok)
                 except Exception as _se:
                     print(f"[Advisory Agent] Streaming error, falling back to invoke: {_se}")
-                    _accumulated = llm_with_tools.invoke(_llm_input)
-                response = _accumulated if _accumulated is not None else llm_with_tools.invoke(_llm_input)
+                    if _is_vertex_quota_error(_se):
+                        quota_hit = True
+                        break
+                    try:
+                        _accumulated = llm_with_tools.invoke(_llm_input)
+                    except Exception as _ie:
+                        if _is_vertex_quota_error(_ie):
+                            quota_hit = True
+                            break
+                        raise
+                if quota_hit:
+                    break
+                try:
+                    response = _accumulated if _accumulated is not None else llm_with_tools.invoke(_llm_input)
+                except Exception as _ie:
+                    if _is_vertex_quota_error(_ie):
+                        quota_hit = True
+                        break
+                    raise
             else:
-                response = llm_with_tools.invoke(_llm_input)
+                try:
+                    response = llm_with_tools.invoke(_llm_input)
+                except Exception as _ie:
+                    if _is_vertex_quota_error(_ie):
+                        quota_hit = True
+                        break
+                    raise
+
+            if quota_hit:
+                break
 
             # Check for tool calls
             if hasattr(response, 'tool_calls') and response.tool_calls and iteration < max_iterations - 1:
@@ -2821,6 +3039,14 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
 
     except Exception as e:
         print(f"[Advisory Agent] Error: {e}")
+        if _is_vertex_quota_error(e):
+            try:
+                ans = _llm_direct_ag_answer(
+                    latest_user_message, location, crops, role_prompt[:300],
+                )
+                return {"diagnosis": ans, "recommendations": ["Consult a local expert"]}
+            except Exception as _qe:
+                print(f"[Advisory Agent] Quota fallback LLM error: {_qe}")
         return {
             "diagnosis": "I'm having trouble generating advice right now. Please try again.",
             "recommendations": ["Consult a local expert"]
@@ -2835,12 +3061,25 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
         if _map_cmd_collected not in final_response:
             final_response = final_response + "\n" + _map_cmd_collected
 
-    if not final_response or not final_response.strip():
-        final_response = (
-            "I'm not quite sure I caught what y'all are asking about — could you give me a bit more detail? "
-            "Are you asking about a specific field, your livestock, crop conditions, or the weather? "
-            "Holler at me with a little more context and I'll get you sorted right out."
-        )
+    if (not final_response or not final_response.strip()) or quota_hit:
+        try:
+            final_response = _llm_direct_ag_answer(
+                latest_user_message, location, crops, role_prompt[:300],
+            )
+        except Exception as _ag_err:
+            print(f"[Advisory Agent] Direct LLM fallback error: {_ag_err}")
+            if _is_agriculture_query(latest_user_message):
+                final_response = (
+                    "Based on general agricultural best practices, I'd recommend reviewing your "
+                    "specific crop or livestock needs against your local extension guidance. "
+                    "Tell me more about your crop, soil, or animal and I'll give targeted advice."
+                )
+            else:
+                final_response = (
+                    "I'm not quite sure I caught what y'all are asking about — could you give me a bit more detail? "
+                    "Are you asking about a specific field, your livestock, crop conditions, or the weather? "
+                    "Holler at me with a little more context and I'll get you sorted right out."
+                )
 
     # 6. Parse Recommendations (Simple Heuristic)
     recommendations = []
@@ -2920,6 +3159,40 @@ def news_advisory_node(state: FarmState):
     )
 
 
+def user_data_advisory_node(state: FarmState):
+    """Dedicated node for non-sensitive user and business profile lookups."""
+    print("\n[User Data Advisory] Processing profile request...")
+    people_id = state.get("people_id")
+    history = state.get("history") or []
+    user_message = ""
+    for msg in reversed(history):
+        if msg.startswith("User:"):
+            user_message = msg.replace("User:", "", 1).strip()
+            break
+
+    if not people_id:
+        return {
+            "diagnosis": (
+                "I need you to be signed in to look up your profile. "
+                "Please log in to your Oatmeal Farm Network account and try again."
+            ),
+            "recommendations": [],
+        }
+
+    try:
+        from user_profile import get_safe_profile
+        profile = get_safe_profile(str(people_id))
+        bid = state.get("business_id")
+        if bid and not profile.get("business_id"):
+            profile["business_id"] = str(bid)
+        answer = _format_safe_profile_answer(profile, user_message)
+    except Exception as e:
+        print(f"[User Data Advisory] Error: {e}")
+        answer = "I couldn't load your profile right now. Please try again in a moment."
+
+    return {"diagnosis": answer, "recommendations": []}
+
+
 def joke_node(state: FarmState):
     """Dedicated joke node — calls tell_joke_tool directly, zero LLM involvement."""
     people_id = str(state.get("people_id") or "")
@@ -2931,13 +3204,12 @@ def joke_node(state: FarmState):
 
 
 def mixed_advisory_node(state: FarmState):
-    """Integrated advisory using all knowledge RAG collections and weather tool."""
+    """Integrated advisory using core knowledge RAG collections and weather tool."""
     return run_advisory_agent(
         state,
         role_prompt="You are Saige — an integrated farming systems expert with deep roots in permaculture, mixed farming, and sustainable ag. You see the whole picture: how the livestock, crops, soil, fields, and weather all connect. Give holistic but practical advice that farmers can actually act on.",
         rag_systems=[
-            rag_livestock, rag_plant, rag_crop, rag_soil, rag_field,
-            rag_bakasura, rag_hitl_charlie, rag_news,
+            rag_livestock, rag_plant, rag_crop, rag_soil, rag_news,
         ]
     )
 
@@ -2951,16 +3223,57 @@ def weather_advisory_node(state: FarmState):
     issues = state.get("current_issues") or []
     assessment = state.get("assessment_summary", "")
     history = state.get("history") or []
-    
+    business_id = state.get("business_id")
+    people_id = state.get("people_id")
+
     # Build user query from multiple sources
     user_query = ' '.join(issues) if issues else assessment
     if not user_query or len(user_query.strip()) < 5:
-        # Try to get from history
         for msg in reversed(history):
             if msg.startswith("User:"):
                 user_query = msg.replace("User:", "").strip()
                 break
-    
+
+    # Fast path: use saved BusinessLocation GPS (same as main OFN weather API)
+    _coords = None
+    if business_id:
+        try:
+            from user_profile import get_business_weather_coords
+            _coords = get_business_weather_coords(str(business_id))
+        except Exception as _wc_err:
+            print(f"[Weather Advisory] BusinessLocation lookup failed: {_wc_err}")
+
+    _needs_location_in_query = not _coords and (not location or location == "Unknown")
+    _is_forecast_query = any(k in (user_query or "").lower() for k in (
+        "forecast", "next week", "coming days", "tomorrow", "next few days", "this week",
+    ))
+    forecast_days = 7 if _is_forecast_query else None
+
+    if _coords:
+        lat, lon = _coords["latitude"], _coords["longitude"]
+        loc_name = _coords.get("location_name") or "your farm location"
+        print(f"[Weather Advisory] Fast path via BusinessLocation: {lat}, {lon}")
+        try:
+            if forecast_days:
+                weather_data = weather_service.get_forecast_by_coords(lat, lon, forecast_days, loc_name)
+                if weather_data:
+                    formatted = weather_service.format_forecast_for_llm(weather_data)
+                    return {
+                        "diagnosis": f"Here's the {forecast_days}-day weather forecast for {weather_data.get('location', loc_name)}:\n\n{formatted}",
+                        "recommendations": [],
+                        "weather_conditions": weather_data,
+                    }
+            weather_data = weather_service.get_weather_by_coords(lat, lon, loc_name)
+            if weather_data:
+                formatted = weather_service.format_for_llm(weather_data)
+                return {
+                    "diagnosis": f"Here's the current weather for {weather_data.get('location', loc_name)}:\n\n{formatted}",
+                    "recommendations": [],
+                    "weather_conditions": weather_data,
+                }
+        except Exception as _fc_err:
+            print(f"[Weather Advisory] Coords fetch failed, falling back to location parse: {_fc_err}")
+
     print(f"[Weather Advisory] User query: {user_query[:100] if user_query else 'None'}...")
     print(f"[Weather Advisory] Location from state: {location}")
     print(f"[Weather Advisory] Current issues: {issues}")
@@ -2979,7 +3292,10 @@ def weather_advisory_node(state: FarmState):
         return cleaned
 
     # Use LLM to parse weather query if location or forecast info is missing
-    forecast_days = None
+    if _is_forecast_query:
+        forecast_days = forecast_days or 7
+    else:
+        forecast_days = None
 
     # Quick check for existing forecast tag in assessment
     forecast_match = re.search(r'\[forecast:(\d+)days\]', assessment)
@@ -2988,7 +3304,7 @@ def weather_advisory_node(state: FarmState):
         print(f"[Weather Advisory] Forecast from assessment: {forecast_days} days")
 
     # If location missing or no forecast info, try structured extraction first, then fallback parsing.
-    if not location or location == "Unknown" or not forecast_days:
+    if _needs_location_in_query or not forecast_days:
         print(f"[Weather Advisory] Extracting location and forecast from query: {user_query[:50]}...")
 
         # STEP 1: Structured extraction first (LLM). Regex stays fallback.
@@ -3024,7 +3340,7 @@ Examples:
             thread = threading.Thread(target=llm_call_primary)
             thread.daemon = True
             thread.start()
-            thread.join(timeout=10)
+            thread.join(timeout=4)
 
             if thread.is_alive():
                 print(f"[Weather Advisory] Primary LLM extraction timed out after 10 seconds")
@@ -3177,7 +3493,7 @@ Examples:
                 thread = threading.Thread(target=llm_call)
                 thread.daemon = True
                 thread.start()
-                thread.join(timeout=10)  # 10 second timeout
+                thread.join(timeout=4)  # 10 second timeout
                 
                 if thread.is_alive():
                     print(f"[Weather Advisory] LLM extraction timed out after 10 seconds, skipping")
@@ -3371,4 +3687,6 @@ def route_to_advisory(state: FarmState) -> str:
         return "bakasura_advisory_node"
     elif advisory_type == "news":
         return "news_advisory_node"
+    elif advisory_type == "user_data":
+        return "user_data_advisory_node"
     return "crop_advisory_node"

@@ -29,6 +29,7 @@ class FarmState(TypedDict, total=False):
     long_term_memory: Optional[Dict[str, Any]]  # per-user memory
     org_memory: Optional[Dict[str, Any]]         # shared across all org members
     image_data: Optional[str]
+    field_id: Optional[str]
 
 
 # ============================================================================
@@ -43,7 +44,12 @@ class AssessmentDecision(BaseModel):
 
 
 class QueryClassification(BaseModel):
-    category: str = Field(description="'weather', 'livestock', 'crops', or 'mixed'")
+    category: str = Field(
+        description=(
+            "'weather', 'livestock', 'crops', 'soil', 'field', 'news', "
+            "'bakasura', 'user_data', or 'mixed'"
+        )
+    )
     confidence: str = Field(description="'high' or 'low'")
     reasoning: str = Field(description="Brief explanation")
 
@@ -62,9 +68,11 @@ class QueryTypeClassification(BaseModel):
     """Structured classification of farmer's query for fast-tracking assessment."""
     query_type: str = Field(
         description=(
-            "Type of query: 'weather', 'livestock', 'crops', 'mixed', or 'general'. "
-            "Use 'general' for any non-farming question: greetings, identity questions, "
-            "account info, tech support, general chat, or anything unrelated to crops/livestock/weather."
+            "Type of query: 'weather', 'livestock', 'crops', 'soil', 'field', 'news', "
+            "'user_data', 'mixed', or 'general'. "
+            "Use 'user_data' for profile/account lookups (name, email, phone, address, business info). "
+            "Use 'general' for greetings, Saige identity, or non-farming small talk. "
+            "Use 'field' for precision ag, NDVI, satellite field monitoring."
         )
     )
     is_specific: bool = Field(
