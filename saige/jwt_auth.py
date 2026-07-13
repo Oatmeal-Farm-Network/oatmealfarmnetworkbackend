@@ -11,7 +11,14 @@ _bearer = HTTPBearer(auto_error=False)
 _bearer_optional = HTTPBearer(auto_error=False)
 
 # Must match the main OFN backend SECRET_KEY (auth.py). Treat blank env as unset.
-SECRET_KEY = (os.getenv("SECRET_KEY") or "").strip() or "change-me-in-production"
+_SECRET_RAW = (os.getenv("SECRET_KEY") or "").strip()
+if _SECRET_RAW:
+    SECRET_KEY = _SECRET_RAW
+elif os.getenv("GOOGLE_CLOUD_PROJECT"):
+    # Production must have SECRET_KEY set — never fall back to a dev default.
+    SECRET_KEY = ""
+else:
+    SECRET_KEY = "change-me-in-production"
 ALGORITHM = "HS256"
 
 
