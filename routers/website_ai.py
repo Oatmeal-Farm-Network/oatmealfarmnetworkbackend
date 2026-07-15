@@ -4003,8 +4003,7 @@ def _narrate_as_expert(
 ) -> str:
     """Re-render tool output as a senior-designer critique, grounded in the RAG."""
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
+        import ai_vertex as av
 
         # Pull extra design-theory chunks on top of whatever was retrieved for
         # the user's raw query — critique-specific keywords bias retrieval
@@ -4062,15 +4061,8 @@ def _narrate_as_expert(
         # which was silently truncating critiques after ~40 words. Generous
         # ceiling + explicit thinking budget keeps visible output intact.
         gen_cfg = {"temperature": 0.6, "max_output_tokens": 8192}
-        try:
-            from google.generativeai.types import GenerationConfig  # noqa: F401
-        except Exception:
-            pass
-        model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash",
-            generation_config=gen_cfg,
-        )
-        resp = model.generate_content(prompt)
+        model = av.make_model("gemini-2.5-flash", generation_config=gen_cfg)
+        resp = av.generate_content(model, prompt)
 
         # Defensive extraction: resp.text only returns the first text part and
         # raises when finish_reason isn't STOP. Walk every candidate + part so
@@ -4408,33 +4400,26 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
         }
 
     try:
-        import google.generativeai as genai
-        from google.generativeai.types import Tool, FunctionDeclaration
-        genai.configure(api_key=api_key)
+        import ai_vertex as av
 
         # Build tool declarations for Gemini
-        gemini_tools = [Tool(function_declarations=[
-            FunctionDeclaration(
-                name=t["name"],
-                description=t["description"],
-                parameters=t["parameters"]
-            ) for t in TOOLS
-        ])]
+        gemini_tools = av.make_tools([
+            {"name": t["name"], "description": t["description"], "parameters": t.get("parameters")}
+            for t in TOOLS
+        ])
 
         def _build_model(model_name: str, max_tokens: int = 8192):
-            return genai.GenerativeModel(
-                model_name=model_name,
+            return av.make_model(
+                model_name,
                 system_instruction=system_prompt,
                 tools=gemini_tools,
                 generation_config={"temperature": 0.7, "max_output_tokens": max_tokens},
             )
 
-        history = []
-        for msg in body.messages[:-1]:
-            history.append({
-                "role": "user" if msg.role == "user" else "model",
-                "parts": [msg.content]
-            })
+        history = av.make_history([
+            ("user" if msg.role == "user" else "model", msg.content)
+            for msg in body.messages[:-1]
+        ])
 
         def _has_useful_output(resp) -> bool:
             try:
@@ -4460,7 +4445,7 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
             try:
                 _model = _build_model(model_name)
                 _chat = _model.start_chat(history=history)
-                _resp = _chat.send_message(last_user_msg)
+                _resp = av.send_message(_chat, last_user_msg)
             except Exception as _mex:
                 last_error = _mex
                 print(f"[Lavendir] {model_name} send failed: {_mex}")
