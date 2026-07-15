@@ -684,16 +684,11 @@ def _rag_search(query: str, n: int = RAG_TOP_K) -> str:
         try:
             from google.cloud.firestore_v1.vector import Vector
             from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
-            import google.generativeai as genai
-            genai.configure(api_key=os.getenv("GOOGLE_API_KEY", ""))
-            emb = genai.embed_content(
-                model="models/text-embedding-004",
-                content=query,
-                task_type="retrieval_query",
-            )
+            import ai_vertex as av
+            emb_vec = av.embed_query(query)
             vq = col.find_nearest(
                 vector_field="embedding",
-                query_vector=Vector(emb["embedding"]),
+                query_vector=Vector(emb_vec),
                 distance_measure=DistanceMeasure.COSINE,
                 limit=n,
             )
@@ -851,21 +846,25 @@ def _proto_to_py(v: Any) -> Any:
     return v
 
 
+_JSON_TYPE = {"STRING": "string", "OBJECT": "object", "INTEGER": "integer",
+              "NUMBER": "number", "BOOLEAN": "boolean", "ARRAY": "array"}
+
+
 def _build_gemini_tools(registry: Dict[str, Dict[str, Any]]):
-    decls = []
+    import ai_vertex as av
+    specs = []
     for name, entry in registry.items():
         params_def = entry.get("params") or {}
         properties = {}
         for pname, pdef in params_def.items():
             ptype = (pdef.get("type_") or pdef.get("type") or "STRING").upper()
-            properties[pname] = {"type_": ptype, "description": pdef.get("description", "")}
-        decl: Dict[str, Any] = {"name": name, "description": entry["desc"]}
+            properties[pname] = {"type": _JSON_TYPE.get(ptype, "string"),
+                                 "description": pdef.get("description", "")}
+        spec: Dict[str, Any] = {"name": name, "description": entry["desc"]}
         if properties:
-            decl["parameters"] = {"type_": "OBJECT", "properties": properties}
-        decls.append(decl)
-    if not decls:
-        return None
-    return [{"function_declarations": decls}]
+            spec["parameters"] = {"type": "object", "properties": properties}
+        specs.append(spec)
+    return av.make_tools(specs)
 
 
 def _call_gemini_with_tools(
@@ -876,26 +875,21 @@ def _call_gemini_with_tools(
 ) -> Dict[str, Any]:
     tools_called: List[str] = []
     try:
-        import google.generativeai as genai
-        api_key = os.getenv("GOOGLE_API_KEY", "").strip()
-        if not api_key:
-            return {"content": "Tarrigon isn't configured — GOOGLE_API_KEY is missing on the backend.",
-                    "tools_called": [], "error": "missing_api_key"}
-        genai.configure(api_key=api_key)
+        import ai_vertex as av
         tools = _build_gemini_tools(registry)
-        model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash",
+        model = av.make_model(
+            "gemini-2.5-flash",
             system_instruction=system,
             generation_config={"temperature": 0.3, "max_output_tokens": 4096},
             tools=tools,
         )
-        chat_history = []
+        turns = []
         for m in history:
             role = "model" if m.get("role") == "assistant" else "user"
-            chat_history.append({"role": role, "parts": [{"text": m.get("content", "")}]})
-        chat = model.start_chat(history=chat_history)
+            turns.append((role, m.get("content", "")))
+        chat = model.start_chat(history=av.make_history(turns))
 
-        resp = chat.send_message(user_msg)
+        resp = av.send_message(chat, user_msg)
         text_chunks: List[str] = []
         max_loops = 4
 
@@ -931,13 +925,8 @@ def _call_gemini_with_tools(
                             payload = {"error": str(ex)}
                     except Exception as ex:
                         payload = {"error": str(ex)}
-                response_parts.append({
-                    "function_response": {
-                        "name": name,
-                        "response": payload if isinstance(payload, dict) else {"value": payload},
-                    }
-                })
-            resp = chat.send_message(response_parts)
+                response_parts.append(av.function_response_part(name, payload))
+            resp = av.send_message(chat, response_parts)
 
         final_text = "\n".join(text_chunks).strip()
         if not final_text:

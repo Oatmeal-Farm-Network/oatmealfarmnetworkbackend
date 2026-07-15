@@ -103,14 +103,8 @@ def _rag_search(query: str, n: int = 10) -> str:
         try:
             from google.cloud.firestore_v1.vector import Vector
             from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
-            import google.generativeai as genai
-            genai.configure(api_key=os.getenv("GOOGLE_API_KEY", ""))
-            result = genai.embed_content(
-                model="models/text-embedding-004",
-                content=query,
-                task_type="retrieval_query"
-            )
-            q_vec = result["embedding"]
+            import ai_vertex as av
+            q_vec = av.embed_query(query)
             vq = col.find_nearest(
                 vector_field="embedding",
                 query_vector=Vector(q_vec),
@@ -4003,8 +3997,7 @@ def _narrate_as_expert(
 ) -> str:
     """Re-render tool output as a senior-designer critique, grounded in the RAG."""
     try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
+        import ai_vertex as av
 
         # Pull extra design-theory chunks on top of whatever was retrieved for
         # the user's raw query — critique-specific keywords bias retrieval
@@ -4062,15 +4055,8 @@ def _narrate_as_expert(
         # which was silently truncating critiques after ~40 words. Generous
         # ceiling + explicit thinking budget keeps visible output intact.
         gen_cfg = {"temperature": 0.6, "max_output_tokens": 8192}
-        try:
-            from google.generativeai.types import GenerationConfig  # noqa: F401
-        except Exception:
-            pass
-        model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash",
-            generation_config=gen_cfg,
-        )
-        resp = model.generate_content(prompt)
+        model = av.make_model("gemini-2.5-flash", generation_config=gen_cfg)
+        resp = av.generate_content(model, prompt)
 
         # Defensive extraction: resp.text only returns the first text part and
         # raises when finish_reason isn't STOP. Walk every candidate + part so
@@ -4344,7 +4330,8 @@ def _draft_placeholder_post_body(title: str) -> str:
 @router.post("/chat")
 async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-    if not api_key:
+    import ai_vertex as av
+    if not api_key and not av.use_vertex():
         raise HTTPException(status_code=503, detail="AI service not configured")
 
     # Build context
@@ -4408,39 +4395,32 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
         }
 
     try:
-        import google.generativeai as genai
-        from google.generativeai.types import Tool, FunctionDeclaration
-        genai.configure(api_key=api_key)
+        import ai_vertex as av
 
         # Build tool declarations for Gemini
-        gemini_tools = [Tool(function_declarations=[
-            FunctionDeclaration(
-                name=t["name"],
-                description=t["description"],
-                parameters=t["parameters"]
-            ) for t in TOOLS
-        ])]
+        gemini_tools = av.make_tools([
+            {"name": t["name"], "description": t["description"], "parameters": t.get("parameters")}
+            for t in TOOLS
+        ])
 
         def _build_model(model_name: str, max_tokens: int = 8192):
-            return genai.GenerativeModel(
-                model_name=model_name,
+            return av.make_model(
+                model_name,
                 system_instruction=system_prompt,
                 tools=gemini_tools,
                 generation_config={"temperature": 0.7, "max_output_tokens": max_tokens},
             )
 
-        history = []
-        for msg in body.messages[:-1]:
-            history.append({
-                "role": "user" if msg.role == "user" else "model",
-                "parts": [msg.content]
-            })
+        history = av.make_history([
+            ("user" if msg.role == "user" else "model", msg.content)
+            for msg in body.messages[:-1]
+        ])
 
         def _has_useful_output(resp) -> bool:
             try:
                 cand = resp.candidates[0]
                 for p in getattr(cand.content, "parts", []) or []:
-                    if hasattr(p, "function_call") and p.function_call.name:
+                    if getattr(p, "function_call", None) and p.function_call.name:
                         return True
                     if getattr(p, "text", None):
                         return True
@@ -4460,7 +4440,7 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
             try:
                 _model = _build_model(model_name)
                 _chat = _model.start_chat(history=history)
-                _resp = _chat.send_message(last_user_msg)
+                _resp = av.send_message(_chat, last_user_msg)
             except Exception as _mex:
                 last_error = _mex
                 print(f"[Lavendir] {model_name} send failed: {_mex}")
@@ -4489,7 +4469,7 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
             _cand = response.candidates[0]
             _fr = getattr(_cand, "finish_reason", "?")
             _parts = getattr(_cand.content, "parts", []) or []
-            _fc_names = [p.function_call.name for p in _parts if hasattr(p, "function_call") and p.function_call.name]
+            _fc_names = [p.function_call.name for p in _parts if getattr(p, "function_call", None) and p.function_call.name]
             _has_text = any(getattr(p, "text", None) for p in _parts)
             print(f"[Lavendir] chat question={last_user_msg!r} wid={body.website_id} bid={body.business_id} "
                   f"finish={_fr} parts={len(_parts)} fc={_fc_names} has_text={_has_text} tools={len(TOOLS)}")
@@ -4499,7 +4479,7 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
         # Check if Gemini wants to call a tool
         candidate = response.candidates[0]
         for part in candidate.content.parts:
-            if hasattr(part, "function_call") and part.function_call.name:
+            if getattr(part, "function_call", None) and part.function_call.name:
                 fc = part.function_call
                 action = fc.name
                 params = dict(fc.args)

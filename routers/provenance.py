@@ -148,13 +148,9 @@ def generate_narrative(
 
 def _call_gemini(prompt: str) -> Optional[str]:
     try:
-        import google.generativeai as genai
-        api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            return None
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        resp = model.generate_content(prompt)
+        import ai_vertex as av
+        model = av.make_model("gemini-2.0-flash")
+        resp = av.generate_content(model, prompt)
         return resp.text.strip() if resp and resp.text else None
     except Exception as e:
         print(f"[provenance] Gemini error: {e}")
