@@ -1524,6 +1524,11 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
         "crop monitor", "satellite", "vegetation index", "list my fields",
         "how are my fields", "field biomass", "field maturity", "field irrigation",
         "field yield", "field carbon", "farm benchmark", "field agronomy",
+        # Natural phrasings for "list my fields" that omit the word "my".
+        "what field", "what fields", "which field", "which fields",
+        "fields do i have", "field do i have", "do i have any field",
+        "do i have field", "my plot", "my plots", "show my field",
+        "list my plot", "how many field", "any fields", "see my field",
     ))
 
     _INTENT_ACCOUNTING = any(k in _rl for k in (
