@@ -31,14 +31,28 @@ from fastapi import FastAPI
 
 # ── Path resolution ─────────────────────────────────────────────────────────
 HERE        = Path(__file__).resolve().parent                  # .../Backend/oatmealfarmnetworkbackend
-BACKEND_DIR = HERE.parent                                       # .../Backend
+BACKEND_DIR = HERE.parent                                       # .../Backend  (or oatmeal/)
 REPO_ROOT   = BACKEND_DIR.parent                                # .../OatmealFarmNetwork Repo
 SAIGE_CODE_DIR = HERE / "saige"
 SAIGE_ENV_DIR  = BACKEND_DIR / "saige"                          # legacy env location
-CROP_DIR    = REPO_ROOT / "CropMonitoringBackend"
+# Prefer sibling of this backend (oatmeal/CropMonitoringBackend), then repo-root layout.
+CROP_DIR = next(
+    (
+        p
+        for p in (
+            BACKEND_DIR / "CropMonitoringBackend",
+            REPO_ROOT / "CropMonitoringBackend",
+        )
+        if p.is_dir()
+    ),
+    None,
+)
 
-if not CROP_DIR.is_dir():
-    raise RuntimeError(f"CropMonitoringBackend not found at {CROP_DIR}")
+if CROP_DIR is None:
+    raise RuntimeError(
+        "CropMonitoringBackend not found at "
+        f"{BACKEND_DIR / 'CropMonitoringBackend'} or {REPO_ROOT / 'CropMonitoringBackend'}"
+    )
 
 print("[serve_all] paths:")
 print(f"  HERE       = {HERE}")
@@ -47,7 +61,7 @@ print(f"  SAIGE_CODE = {SAIGE_CODE_DIR}")
 
 
 # ── Load all .env files (later overrides) ───────────────────────────────────
-for env_path in [CROP_DIR / ".env", SAIGE_ENV_DIR / ".env", BACKEND_DIR / ".env"]:
+for env_path in [CROP_DIR / ".env", SAIGE_ENV_DIR / ".env", BACKEND_DIR / ".env", HERE / ".env"]:
     if env_path.is_file():
         load_dotenv(env_path, override=True)
         print(f"[serve_all] loaded env: {env_path}")
@@ -133,12 +147,20 @@ _remove_path(HERE)
 # CropMonitor uses cwd-relative paths (`StaticFiles(directory="static")` and
 # `FileResponse("static/index.html")`). We chdir into its dir and stay there
 # for the rest of the process lifetime — main backend has no cwd dependencies.
+# Soft-fail so a broken local Python/stdlib (or missing CropMonitor deps)
+# does not take down the main backend + Saige.
+crop_app = None
 _add_path_front(CROP_DIR)
 os.chdir(CROP_DIR)
 print(f"[serve_all] phase 3: chdir -> {CROP_DIR}, loading CropMonitor")
-import backend as _crop_module                                # noqa: E402
-crop_app = _crop_module.app
-print("[serve_all] CropMonitor loaded")
+try:
+    import backend as _crop_module                                # noqa: E402
+    crop_app = _crop_module.app
+    print("[serve_all] CropMonitor loaded")
+except Exception as e:
+    print(f"[serve_all] CropMonitor FAILED to load ({type(e).__name__}: {e})")
+    print("[serve_all] continuing without /cm mount")
+    _remove_path(CROP_DIR)
 
 
 # ── Phase 4: load Saige ────────────────────────────────────────────────────
@@ -174,7 +196,10 @@ else:
 @asynccontextmanager
 async def unified_lifespan(app: FastAPI):
     async with AsyncExitStack() as stack:
-        for label, sub in [("main", main_app), ("crop", crop_app)]:
+        subs = [("main", main_app)]
+        if crop_app is not None:
+            subs.append(("crop", crop_app))
+        for label, sub in subs:
             for handler in sub.router.on_startup:
                 try:
                     result = handler()
@@ -190,7 +215,11 @@ async def unified_lifespan(app: FastAPI):
         try:
             yield
         finally:
-            for label, sub in [("crop", crop_app), ("main", main_app)]:
+            shutdown_subs = []
+            if crop_app is not None:
+                shutdown_subs.append(("crop", crop_app))
+            shutdown_subs.append(("main", main_app))
+            for label, sub in shutdown_subs:
                 for handler in sub.router.on_shutdown:
                     try:
                         result = handler()
@@ -204,9 +233,11 @@ async def unified_lifespan(app: FastAPI):
 app = main_app
 app.router.lifespan_context = unified_lifespan
 app.mount("/saige", saige_app)
-app.mount("/cm",    crop_app)
-
-print("[serve_all] mounted: /saige (Saige), /cm (CropMonitor)")
+if crop_app is not None:
+    app.mount("/cm", crop_app)
+    print("[serve_all] mounted: /saige (Saige), /cm (CropMonitor)")
+else:
+    print("[serve_all] mounted: /saige (Saige); /cm skipped (CropMonitor unavailable)")
 print("[serve_all] main backend at root with all original routes")
 print("[serve_all] ready.")
 

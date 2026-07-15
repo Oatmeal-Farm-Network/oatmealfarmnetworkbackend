@@ -77,11 +77,17 @@ GCP_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
 # ============================================================================
 
 EMBEDDING_MODEL = "text-embedding-004"
-TOP_K_RESULTS = 10
+TOP_K_RESULTS = int(os.getenv("RAG_TOP_K", "3"))
+RAG_PARALLEL_WORKERS = int(os.getenv("RAG_PARALLEL_WORKERS", "4"))
+ADVISORY_MAX_ITERATIONS = int(os.getenv("ADVISORY_MAX_ITERATIONS", "2"))
+COMMUNITY_LEARNINGS_ENABLED = os.getenv("COMMUNITY_LEARNINGS_ENABLED", "false").lower() == "true"
 FIRESTORE_DATABASE = os.getenv("FIRESTORE_DATABASE", "charlie").strip()
 CHAT_HISTORY_DATABASE = os.getenv("CHAT_HISTORY_DATABASE", "chat-history").strip()
 LIVESTOCK_KNOWLEDGE_COLLECTION = "livestock_knowledge"
 PLANT_KNOWLEDGE_COLLECTION = "plant_knowledge"
+CROP_KNOWLEDGE_COLLECTION = "crop_knowledge"
+SOIL_KNOWLEDGE_COLLECTION = "soil_knowledge"
+FIELD_KNOWLEDGE_COLLECTION = "field_knowledge"
 BAKASURA_DOCS_COLLECTION = "bakasura-docs"
 NEWS_ARTICLES_COLLECTION = "news_articles"
 HITL_CHARLIE_COLLECTION = "hitl-charlie"
@@ -95,7 +101,7 @@ SYNC_INTERVAL_HOURS = int(os.getenv("SYNC_INTERVAL_HOURS", "24"))
 # ASSESSMENT CONFIGURATION
 # ============================================================================
 
-MAX_QUESTIONS = 2
+MAX_QUESTIONS = int(os.getenv("MAX_QUESTIONS", "0"))
 
 # ============================================================================
 # API CONFIGURATION
@@ -146,7 +152,7 @@ ASSESSMENT_CLASSIFICATION_TIMEOUT_SECONDS = float(
     os.getenv("ASSESSMENT_CLASSIFICATION_TIMEOUT_SECONDS", "3.0")
 )
 ASSESSMENT_USE_LLM_CLASSIFIER = os.getenv(
-    "ASSESSMENT_USE_LLM_CLASSIFIER", "true"
+    "ASSESSMENT_USE_LLM_CLASSIFIER", "false"
 ).lower() == "true"
 
 # Message buffer settings (Task 3 names)
@@ -214,7 +220,13 @@ def get_redis_display_target() -> str:
 # AUTHENTICATION
 # ============================================================================
 
-JWT_SECRET = os.getenv("SECRET_KEY", "")
+_JWT_SECRET_RAW = (os.getenv("SECRET_KEY") or "").strip()
+if _JWT_SECRET_RAW:
+    JWT_SECRET = _JWT_SECRET_RAW
+elif GCP_PROJECT:
+    JWT_SECRET = ""
+else:
+    JWT_SECRET = "change-me-in-production"
 JWT_ALGORITHM = "HS256"
 
 # ============================================================================

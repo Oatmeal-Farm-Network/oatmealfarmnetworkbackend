@@ -4,7 +4,9 @@ Precision Ag — Scouting, Soil Samples, Prescriptions, Weather, Reports
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, text
+from pydantic import BaseModel
+from typing import Optional
 from database import get_db
 from datetime import datetime, date
 import json, csv, io, os, requests
@@ -37,7 +39,11 @@ CROP_MONITOR_URL = os.getenv(
 # ─── helpers ────────────────────────────────────────────────────────────────
 
 def _field_or_404(field_id: int, db: Session):
-    f = db.query(models.Field).filter(models.Field.FieldID == field_id).first()
+    f = (
+        db.query(models.Field)
+        .filter(models.Field.FieldID == field_id, models.Field.DeletedAt.is_(None))
+        .first()
+    )
     if not f:
         raise HTTPException(status_code=404, detail="Field not found")
     return f
@@ -987,10 +993,96 @@ def get_yield_forecast(field_id: int, db: Session = Depends(get_db)):
 # ALERTS  (generated from own data + crop monitoring backend)
 # ═══════════════════════════════════════════════════════════════════
 
+# Manually-created alerts (e.g. from the Change Detection panel's "Create
+# alert" button) are the only alert source that isn't derived on-the-fly from
+# other tables, so they need somewhere to actually persist.
+_manual_alert_table_ready = False
+
+def _ensure_manual_alert_table(db: Session):
+    global _manual_alert_table_ready
+    if _manual_alert_table_ready:
+        return
+    db.execute(text("""
+        IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'FieldManualAlert')
+        CREATE TABLE FieldManualAlert (
+            AlertID      INT IDENTITY(1,1) PRIMARY KEY,
+            FieldID      INT NOT NULL,
+            AlertType    NVARCHAR(100),
+            Severity     NVARCHAR(20),
+            Message      NVARCHAR(1000),
+            Source       NVARCHAR(50),
+            Acknowledged BIT NOT NULL DEFAULT 0,
+            CreatedAt    DATETIME NOT NULL DEFAULT GETDATE()
+        )
+    """))
+    db.commit()
+    _manual_alert_table_ready = True
+
+
+class ManualAlertCreate(BaseModel):
+    type: str
+    severity: str = "Medium"
+    message: str
+    source: Optional[str] = None
+
+
+@router.post("/fields/{field_id}/alerts")
+def create_field_alert(field_id: int, payload: ManualAlertCreate, db: Session = Depends(get_db)):
+    """Persist a manually-generated alert (e.g. from Change Detection's
+    "Create alert" button) so it actually survives a page reload instead of
+    only flashing a success state client-side."""
+    _field_or_404(field_id, db)
+    _ensure_manual_alert_table(db)
+    row = db.execute(
+        text("""
+            INSERT INTO FieldManualAlert (FieldID, AlertType, Severity, Message, Source)
+            OUTPUT INSERTED.AlertID, INSERTED.CreatedAt
+            VALUES (:fid, :type, :severity, :message, :source)
+        """),
+        {
+            "fid": field_id,
+            "type": payload.type,
+            "severity": payload.severity,
+            "message": payload.message,
+            "source": payload.source or "manual",
+        },
+    ).fetchone()
+    db.commit()
+    return {
+        "alert_id":     f"manual_{row.AlertID}",
+        "type":         payload.type,
+        "severity":     payload.severity,
+        "message":      payload.message,
+        "date":         row.CreatedAt.strftime("%Y-%m-%d") if row.CreatedAt else None,
+        "source":       payload.source or "manual",
+        "acknowledged": False,
+    }
+
+
 @router.get("/fields/{field_id}/alerts")
 def get_field_alerts(field_id: int, db: Session = Depends(get_db)):
     field = _field_or_404(field_id, db)
+    _ensure_manual_alert_table(db)
     alerts = []
+
+    # 0. Previously-created manual alerts (Change Detection "Create alert")
+    manual_rows = db.execute(
+        text("""
+            SELECT AlertID, AlertType, Severity, Message, Source, Acknowledged, CreatedAt
+            FROM FieldManualAlert WHERE FieldID = :fid ORDER BY CreatedAt DESC
+        """),
+        {"fid": field_id},
+    ).fetchall()
+    for r in manual_rows:
+        alerts.append({
+            "alert_id":     f"manual_{r.AlertID}",
+            "type":         r.AlertType,
+            "severity":     r.Severity,
+            "message":      r.Message,
+            "date":         r.CreatedAt.strftime("%Y-%m-%d") if r.CreatedAt else None,
+            "source":       r.Source or "manual",
+            "acknowledged": bool(r.Acknowledged),
+        })
 
     # 1. Low health score from latest analysis
     analyses = _latest_analyses(field_id, limit=3, db=db)
