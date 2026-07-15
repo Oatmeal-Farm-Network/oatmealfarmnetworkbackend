@@ -4420,7 +4420,7 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
             try:
                 cand = resp.candidates[0]
                 for p in getattr(cand.content, "parts", []) or []:
-                    if hasattr(p, "function_call") and p.function_call.name:
+                    if getattr(p, "function_call", None) and p.function_call.name:
                         return True
                     if getattr(p, "text", None):
                         return True
@@ -4469,7 +4469,7 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
             _cand = response.candidates[0]
             _fr = getattr(_cand, "finish_reason", "?")
             _parts = getattr(_cand.content, "parts", []) or []
-            _fc_names = [p.function_call.name for p in _parts if hasattr(p, "function_call") and p.function_call.name]
+            _fc_names = [p.function_call.name for p in _parts if getattr(p, "function_call", None) and p.function_call.name]
             _has_text = any(getattr(p, "text", None) for p in _parts)
             print(f"[Lavendir] chat question={last_user_msg!r} wid={body.website_id} bid={body.business_id} "
                   f"finish={_fr} parts={len(_parts)} fc={_fc_names} has_text={_has_text} tools={len(TOOLS)}")
@@ -4479,7 +4479,7 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
         # Check if Gemini wants to call a tool
         candidate = response.candidates[0]
         for part in candidate.content.parts:
-            if hasattr(part, "function_call") and part.function_call.name:
+            if getattr(part, "function_call", None) and part.function_call.name:
                 fc = part.function_call
                 action = fc.name
                 params = dict(fc.args)
