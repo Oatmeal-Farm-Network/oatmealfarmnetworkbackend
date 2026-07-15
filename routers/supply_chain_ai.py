@@ -684,16 +684,11 @@ def _rag_search(query: str, n: int = RAG_TOP_K) -> str:
         try:
             from google.cloud.firestore_v1.vector import Vector
             from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
-            import google.generativeai as genai
-            genai.configure(api_key=os.getenv("GOOGLE_API_KEY", ""))
-            emb = genai.embed_content(
-                model="models/text-embedding-004",
-                content=query,
-                task_type="retrieval_query",
-            )
+            import ai_vertex as av
+            emb_vec = av.embed_query(query)
             vq = col.find_nearest(
                 vector_field="embedding",
-                query_vector=Vector(emb["embedding"]),
+                query_vector=Vector(emb_vec),
                 distance_measure=DistanceMeasure.COSINE,
                 limit=n,
             )

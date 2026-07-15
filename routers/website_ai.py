@@ -103,14 +103,8 @@ def _rag_search(query: str, n: int = 10) -> str:
         try:
             from google.cloud.firestore_v1.vector import Vector
             from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
-            import google.generativeai as genai
-            genai.configure(api_key=os.getenv("GOOGLE_API_KEY", ""))
-            result = genai.embed_content(
-                model="models/text-embedding-004",
-                content=query,
-                task_type="retrieval_query"
-            )
-            q_vec = result["embedding"]
+            import ai_vertex as av
+            q_vec = av.embed_query(query)
             vq = col.find_nearest(
                 vector_field="embedding",
                 query_vector=Vector(q_vec),
@@ -4336,7 +4330,8 @@ def _draft_placeholder_post_body(title: str) -> str:
 @router.post("/chat")
 async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-    if not api_key:
+    import ai_vertex as av
+    if not api_key and not av.use_vertex():
         raise HTTPException(status_code=503, detail="AI service not configured")
 
     # Build context

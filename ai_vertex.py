@@ -177,6 +177,29 @@ def make_history(turns):
     return [{"role": role, "parts": [{"text": text or ""}]} for role, text in turns]
 
 
+def embed_query(text, model="text-embedding-004", task_type="RETRIEVAL_QUERY"):
+    """Return the embedding vector (list[float]) for a retrieval query.
+
+    Vertex needs no API key (uses ADC); the Developer-API fallback needs
+    GOOGLE_API_KEY. Same underlying text-embedding-004 model either way, so
+    vectors stay compatible with what sync_embeddings.py stored.
+    """
+    if use_vertex():
+        _ensure_vertex()
+        from vertexai.language_models import TextEmbeddingModel, TextEmbeddingInput
+        emb_model = TextEmbeddingModel.from_pretrained(model)
+        inp = TextEmbeddingInput(text=text, task_type=task_type)
+        result = with_retry(emb_model.get_embeddings, [inp])
+        return list(result[0].values)
+
+    _configure_dev()
+    import google.generativeai as genai
+    dev_model = model if model.startswith("models/") else f"models/{model}"
+    out = with_retry(genai.embed_content, model=dev_model, content=text,
+                     task_type=task_type.lower())
+    return out["embedding"]
+
+
 def function_response_part(name, response):
     """Build a single function-response part for sending tool results back."""
     resp = response if isinstance(response, dict) else {"value": response}
