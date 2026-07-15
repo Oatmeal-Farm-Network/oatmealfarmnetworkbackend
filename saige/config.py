@@ -52,11 +52,14 @@ except ImportError:
 # ============================================================================
 
 DB_CONFIG = {
-    "host": os.getenv("DB_HOST", "").strip(),
+    # Accept either DB_HOST (Saige/prod convention) or DB_SERVER (main-backend
+    # convention) so precision-ag field lookups work under the unified local
+    # backend, whose .env only defines DB_SERVER.
+    "host": (os.getenv("DB_HOST") or os.getenv("DB_SERVER") or "").strip(),
     "port": int(os.getenv("DB_PORT", "1433").strip()) if os.getenv("DB_PORT") else 1433,
     "user": os.getenv("DB_USER", "").strip(),
     "password": os.getenv("DB_PASSWORD", ""),
-    "database": os.getenv("DB_NAME", "").strip(),
+    "database": (os.getenv("DB_NAME") or os.getenv("DB_DATABASE") or "").strip(),
 }
 
 ALLOWED_TABLES = [
