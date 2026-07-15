@@ -879,48 +879,6 @@ Examples:
             headers={"Access-Control-Allow-Origin": "*"},
         )
 
-
-@app.get("/market/usda/ams/{report_id}")
-async def get_usda_ams_report(report_id: str):
-    """Server-side USDA AMS proxy to avoid browser CORS failures."""
-    report_id = (report_id or "").strip().upper()
-    if not _USDA_REPORT_ID_RE.match(report_id):
-        return JSONResponse(status_code=400, content={"error": "Invalid report_id"})
-
-    try:
-        url = (
-            "https://mpr.datamart.ams.usda.gov/services/public/LMR/Report"
-            f"?Report_ID={report_id}&key=&q="
-        )
-        resp = requests.get(
-            url,
-            timeout=10,
-            headers={
-                "User-Agent": "OatmealFarmNetwork-Saige/1.0",
-                "Accept": "application/json",
-            },
-        )
-        if resp.status_code != 200:
-            return JSONResponse(
-                status_code=502,
-                content={
-                    "status": "error",
-                    "message": f"USDA upstream returned HTTP {resp.status_code}",
-                },
-            )
-        payload = resp.json() if resp.content else {}
-        return {
-            "status": "ok",
-            "report_id": report_id,
-            "results": (payload or {}).get("results") or [],
-        }
-    except Exception as e:
-        logger.warning("[USDA] Proxy error for report %s: %s", report_id, e)
-        return JSONResponse(
-            status_code=502,
-            content={"status": "error", "message": "Unable to fetch USDA report right now."},
-        )
-
     try:
         final_state = graph.get_state(config)
     except Exception as state_error:
@@ -1043,6 +1001,49 @@ async def get_usda_ams_report(report_id: str):
         "assessment_summary": assessment_summary,
         "processing_stage": processing_stage
     }
+
+
+@app.get("/market/usda/ams/{report_id}")
+async def get_usda_ams_report(report_id: str):
+    """Server-side USDA AMS proxy to avoid browser CORS failures."""
+    report_id = (report_id or "").strip().upper()
+    if not _USDA_REPORT_ID_RE.match(report_id):
+        return JSONResponse(status_code=400, content={"error": "Invalid report_id"})
+
+    try:
+        url = (
+            "https://mpr.datamart.ams.usda.gov/services/public/LMR/Report"
+            f"?Report_ID={report_id}&key=&q="
+        )
+        resp = requests.get(
+            url,
+            timeout=10,
+            headers={
+                "User-Agent": "OatmealFarmNetwork-Saige/1.0",
+                "Accept": "application/json",
+            },
+        )
+        if resp.status_code != 200:
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "status": "error",
+                    "message": f"USDA upstream returned HTTP {resp.status_code}",
+                },
+            )
+        payload = resp.json() if resp.content else {}
+        return {
+            "status": "ok",
+            "report_id": report_id,
+            "results": (payload or {}).get("results") or [],
+        }
+    except Exception as e:
+        logger.warning("[USDA] Proxy error for report %s: %s", report_id, e)
+        return JSONResponse(
+            status_code=502,
+            content={"status": "error", "message": "Unable to fetch USDA report right now."},
+        )
+
 
 # ============================================================================
 # STREAMING CHAT ENDPOINT
