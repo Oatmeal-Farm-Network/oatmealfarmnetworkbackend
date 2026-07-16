@@ -26,6 +26,8 @@ def pytest_collection_modifyitems(session: pytest.Session, config: pytest.Config
         seen.add(item.nodeid)
         unique_items.append(item)
     items[:] = unique_items
+
+
 @dataclass
 class FakeNewsDoc:
     id: str
