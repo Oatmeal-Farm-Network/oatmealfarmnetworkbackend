@@ -1,7 +1,7 @@
 # routers/accounting.py
 # Full accounting API for the Oatmeal Farm Network.
-# All routes require a valid JWT (get_current_user) AND BusinessAccess with
-# AccessLevelID >= 3 for the requested BusinessID.
+# All routes require a valid JWT (get_current_user) AND an active BusinessAccess
+# row for the requested BusinessID (any access level).
 # Same tables / logic as oatmeal_main accounting.routes.js — scoped by BusinessID.
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -26,14 +26,18 @@ def require_accounting_access(
     current_user: models.People = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Verify the caller has AccessLevelID >= 3 on the requested business."""
+    """Verify the caller has access to the requested business (any access level).
+
+    Accounting is open to anyone with an active BusinessAccess row for this
+    business; only non-members are blocked.
+    """
     access = db.query(models.BusinessAccess).filter(
         models.BusinessAccess.BusinessID == business_id,
         models.BusinessAccess.PeopleID == current_user.PeopleID,
         models.BusinessAccess.Active == 1,
     ).first()
-    if not access or access.AccessLevelID < 3:
-        raise HTTPException(status_code=403, detail="Accounting access requires AccessLevelID >= 3.")
+    if not access:
+        raise HTTPException(status_code=403, detail="You do not have access to this business.")
     return {"business_id": business_id, "people_id": current_user.PeopleID, "access_level": access.AccessLevelID}
 
 

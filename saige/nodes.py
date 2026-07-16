@@ -1620,6 +1620,34 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
     elif _bid_prefetch and not _prefetch_needed:
         print(f"[Advisory Agent] Business pre-fetch skipped (query not business-data-related)")
 
+    # 2.6  Precision-Ag Field List Pre-fetch (deterministic)
+    # gemini-flash-lite is unreliable at *choosing* to call list_my_fields_tool,
+    # so for field-listing questions fetch the field list up front and inject it
+    # into the prompt. The model then answers directly instead of guessing.
+    fields_snapshot = ""
+    _pid_prefetch = state.get("people_id")
+    _lum_fields = latest_user_message.lower()
+    _field_list_kw = (
+        "my field", "my fields", "what field", "what fields", "which field",
+        "which fields", "list my field", "list my plot", "my plot", "my plots",
+        "fields do i have", "field do i have", "do i have any field",
+        "do i have field", "how many field", "any fields", "see my field",
+        "show my field", "how are my fields", "my farm plot",
+    )
+    if _pid_prefetch and PRECISION_AG_AVAILABLE and list_my_fields_tool and any(
+        k in _lum_fields for k in _field_list_kw
+    ):
+        try:
+            _fields_raw = list_my_fields_tool.invoke({"people_id": str(_pid_prefetch)})
+            fields_snapshot = (
+                "CURRENT FIELDS (live from the precision-ag database — this IS the answer "
+                "to 'what fields do I have'; present this list to the user, do not ask for "
+                "more detail or call another tool):\n" + _fields_raw
+            )
+            print(f"[Advisory Agent] Fields snapshot pre-fetched for PeopleID={_pid_prefetch}")
+        except Exception as _ff_err:
+            print(f"[Advisory Agent] Fields pre-fetch failed: {_ff_err}")
+
     # 3. Construct Full Prompt
     rag_section = f"RELEVANT KNOWLEDGE BASE:\n{rag_context}" if rag_context else ""
     if not rag_context and _is_agriculture_query(latest_user_message):
@@ -1839,6 +1867,7 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
 
 {identity_section}
 {business_snapshot}
+{fields_snapshot}
 {_tool_directive}
 {onboarding_section}
 {memory_section}
