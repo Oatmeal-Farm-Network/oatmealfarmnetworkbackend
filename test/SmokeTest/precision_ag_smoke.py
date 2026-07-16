@@ -98,7 +98,13 @@ def _install_import_shims() -> dict[str, object | None]:
     router_directory = repo_root / "app" / "routers"
     for path in router_directory.glob("*.py"):
         module_stem = path.stem
-        if module_stem in {"__init__", "precision_ag", "land_leasing", "food_wanted"}:
+        if module_stem in {
+            "__init__",
+            "precision_ag",
+            "land_leasing",
+            "food_wanted",
+            "livestock_knowledgebase",
+        }:
             continue
         module_name = f"app.routers.{module_stem}"
         sys.modules[module_name] = _stub_module(module_name)

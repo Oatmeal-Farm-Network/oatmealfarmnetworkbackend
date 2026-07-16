@@ -27,4 +27,4 @@ jobs:
           pip install pytest fastapi httpx
 
       - name: Run smoke tests
-        run: pytest test/SmokeTest/precision_ag_smoke.py test/SmokeTest/land_leasing_smoke.py test/SmokeTest/food_wanted_smoke.py --verbose
+        run: pytest test/SmokeTest/precision_ag_smoke.py test/SmokeTest/land_leasing_smoke.py test/SmokeTest/food_wanted_smoke.py test/SmokeTest/livestock_knowledgebase_smoke.py --verbose
