@@ -64,7 +64,11 @@ def _query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
         cursor = conn.cursor()
         cursor.execute(sql, params)
         rows = cursor.fetchall() or []
-        return rows
+        # Normalize column keys to lowercase — every tool below reads lowercase
+        # keys (f["fieldid"], r["businessid"], ...), but pymssql/as_dict can
+        # preserve the SQL column case (BusinessID, FieldID), which silently
+        # produced empty results.
+        return [{(k.lower() if isinstance(k, str) else k): v for k, v in r.items()} for r in rows]
     except Exception as e:
         print(f"[precision_ag] query error: {e}")
         return []
