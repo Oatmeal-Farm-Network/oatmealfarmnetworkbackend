@@ -26,8 +26,8 @@
 - [x] Workflow: `.github/workflows/deploy-staging.yml`
 - [x] Process: **`uvicorn app.main:app`** (backend only — not `server_all` / Saige)
 - [x] Runtime SA: `stg-to-prod-db-ro-dev-project@oatmeal-farm-staging.iam.gserviceaccount.com`
-- [x] DB: Cloud SQL Python Connector → prod `oatmealailive` (RO)
-- [x] Env: `INSTANCE_CONNECTION_NAME`, `SKIP_SCHEMA_ENSURE=true`
+- [x] DB: Cloud SQL Python Connector → **writable** staging `oatmeal-staging-sqlserver` (cloned from prod; see [staging/STAGING_WRITABLE_DB.md](./staging/STAGING_WRITABLE_DB.md))
+- [x] Env: `INSTANCE_CONNECTION_NAME` (staging), `SKIP_SCHEMA_ENSURE=false`
 - [x] Secrets: `DB_SERVER`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `SECRET_KEY`
 - [x] `min-instances: 1`
 
