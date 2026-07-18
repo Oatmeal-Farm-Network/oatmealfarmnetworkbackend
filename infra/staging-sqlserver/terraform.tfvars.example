@@ -1,0 +1,3 @@
+# Copy to terraform.tfvars and fill with real values. Do NOT commit terraform.tfvars.
+sa_admin_root_password = "CHANGE_ME_strong_root_pw"
+app_db_password        = "CHANGE_ME_strong_app_pw"
