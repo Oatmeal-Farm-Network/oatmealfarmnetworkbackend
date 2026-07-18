@@ -4,10 +4,11 @@
 **GCP staging project:** `oatmeal-farm-staging`
 **Last updated:** July 2026
 
-> **Important:** Staging does **not** use a separate writable app database.
-> The staging backend connects **read-only** to the **production** Cloud SQL
-> SQL Server instance. On Cloud Run this uses the **Cloud SQL Python Connector**
-> (not localhost Auth Proxy TCP). See also [BACKEND_STAGING_DEPLOY.md](./BACKEND_STAGING_DEPLOY.md).
+> **⚠️ SUPERSEDED (July 2026):** Staging no longer connects read-only to prod.
+> It now uses its own **writable** Cloud SQL SQL Server instance
+> (`oatmeal-staging-sqlserver`) cloned from prod. See
+> [STAGING_WRITABLE_DB.md](./STAGING_WRITABLE_DB.md) for the current design.
+> The read-only design below is kept for historical reference only.
 
 ---
 

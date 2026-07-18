@@ -7,6 +7,12 @@
 **Workflow:** `.github/workflows/deploy-staging.yml`  
 **Last updated:** July 2026
 
+> **⚠️ Updated (July 2026):** Staging now targets its own **writable** instance
+> `oatmeal-farm-staging:us-central1:oatmeal-staging-sqlserver` with
+> `SKIP_SCHEMA_ENSURE=false` and `DB_USER=oatmeal_app`. The prod read-only
+> wiring described below is historical. See
+> [STAGING_WRITABLE_DB.md](./STAGING_WRITABLE_DB.md).
+
 ---
 
 ## What staging deploys
@@ -17,7 +23,7 @@
 | Image | `us-central1-docker.pkg.dev/oatmeal-farm-staging/oatmeal-farm-registry/backend:<short-sha>` |
 | Process | **Backend only** — `uvicorn app.main:app` (not `server_all`) |
 | Saige | **Out of scope** — separate Cloud Run service + CD |
-| Database | Read-only → prod Cloud SQL SQL Server (see [STAGING_CLOUD_SQL_SETUP.md](./STAGING_CLOUD_SQL_SETUP.md)) |
+| Database | Writable staging Cloud SQL SQL Server, cloned from prod (see [STAGING_WRITABLE_DB.md](./STAGING_WRITABLE_DB.md)) |
 
 Dockerfile default `CMD` is still `server_all:app` (local/unified). Staging **overrides** command/args in the deploy workflow so Saige LLM secrets are not required on this service.
 
