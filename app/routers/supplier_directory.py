@@ -6,41 +6,63 @@ from app.database import get_db, engine
 from typing import Optional
 from pydantic import BaseModel
 
-router = APIRouter(prefix="/api/suppliers", tags=["suppliers"])
+_schema_ready = False
 
-with engine.begin() as _c:
-    _c.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='SupplierListings')
-        CREATE TABLE SupplierListings (
-            SupplierID      INT IDENTITY(1,1) PRIMARY KEY,
-            BusinessID      INT NULL,
-            CompanyName     NVARCHAR(200) NOT NULL,
-            Category        VARCHAR(60) NOT NULL,
-            Description     NVARCHAR(MAX) NULL,
-            ProductsServices NVARCHAR(MAX) NULL,
-            City            NVARCHAR(100) NULL,
-            StateProvince   NVARCHAR(60) NULL,
-            Website         NVARCHAR(300) NULL,
-            Phone           NVARCHAR(30) NULL,
-            Email           NVARCHAR(200) NULL,
-            ServesRadius    INT NULL,
-            IsVerified      BIT NOT NULL DEFAULT 0,
-            IsActive        BIT NOT NULL DEFAULT 1,
-            CreatedAt       DATETIME NOT NULL DEFAULT GETDATE()
-        )
-    """))
-    _c.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='SupplierReviews')
-        CREATE TABLE SupplierReviews (
-            ReviewID        INT IDENTITY(1,1) PRIMARY KEY,
-            SupplierID      INT NOT NULL,
-            PeopleID        INT NULL,
-            ReviewerName    NVARCHAR(150) NOT NULL,
-            Rating          INT NOT NULL,
-            Comment         NVARCHAR(MAX) NULL,
-            CreatedAt       DATETIME NOT NULL DEFAULT GETDATE()
-        )
-    """))
+
+def _ensure_schema() -> None:
+    """Lazy schema/seed — never runs at import time."""
+    global _schema_ready
+    if _schema_ready:
+        return
+    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
+    if skip_schema_ensure():
+        return
+
+    def _run() -> None:
+        global _schema_ready
+        
+        with engine.begin() as _c:
+            _c.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='SupplierListings')
+                CREATE TABLE SupplierListings (
+                    SupplierID      INT IDENTITY(1,1) PRIMARY KEY,
+                    BusinessID      INT NULL,
+                    CompanyName     NVARCHAR(200) NOT NULL,
+                    Category        VARCHAR(60) NOT NULL,
+                    Description     NVARCHAR(MAX) NULL,
+                    ProductsServices NVARCHAR(MAX) NULL,
+                    City            NVARCHAR(100) NULL,
+                    StateProvince   NVARCHAR(60) NULL,
+                    Website         NVARCHAR(300) NULL,
+                    Phone           NVARCHAR(30) NULL,
+                    Email           NVARCHAR(200) NULL,
+                    ServesRadius    INT NULL,
+                    IsVerified      BIT NOT NULL DEFAULT 0,
+                    IsActive        BIT NOT NULL DEFAULT 1,
+                    CreatedAt       DATETIME NOT NULL DEFAULT GETDATE()
+                )
+            """))
+            _c.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='SupplierReviews')
+                CREATE TABLE SupplierReviews (
+                    ReviewID        INT IDENTITY(1,1) PRIMARY KEY,
+                    SupplierID      INT NOT NULL,
+                    PeopleID        INT NULL,
+                    ReviewerName    NVARCHAR(150) NOT NULL,
+                    Rating          INT NOT NULL,
+                    Comment         NVARCHAR(MAX) NULL,
+                    CreatedAt       DATETIME NOT NULL DEFAULT GETDATE()
+                )
+            """))
+        _schema_ready = True
+
+    run_schema_ensure("supplier-directory", _run)
+
+
+def _schema_dep() -> None:
+    _ensure_schema()
+
+router = APIRouter(prefix="/api/suppliers", tags=["suppliers"], dependencies=[Depends(_schema_dep)])
 
 CATEGORIES = [
     "Seeds & Plants", "Fertilizers & Soil Amendments", "Pesticides & Herbicides",

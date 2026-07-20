@@ -167,6 +167,9 @@ ALLOWED_ORIGINS = [
     "https://lkm-frontend-802455386518.us-central1.run.app",
     "https://lkm-frontend-mt7mh6zhoa-uc.a.run.app",
     "https://www.lkmcpa.com", "https://lkmcpa.com",
+    # Staging frontend (oatmeal-farm-staging)
+    "https://oatmeal-frontend-staging-1087130530284.us-central1.run.app",
+    "https://oatmeal-frontend-staging-lrviw4iujq-uc.a.run.app",
 ]
 
 def _is_allowed_origin(origin: str) -> bool:

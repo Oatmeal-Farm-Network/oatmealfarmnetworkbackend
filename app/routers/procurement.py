@@ -172,7 +172,7 @@ def create_order(body: dict, db: Session = Depends(get_db)):
             UPDATE PurchaseOrder SET Status='pending_approval', UpdatedAt=GETDATE() WHERE POID=:pid
         """), {"pid": po_id})
         try:
-            from routers.notifications import notify_business
+            from app.routers.notifications import notify_business
             notify_business(
                 db, body["BusinessID"], type="po_approval_required",
                 title=f"PO approval required: {po_num}",
@@ -221,7 +221,7 @@ def approve_order(po_id: int, body: dict, db: Session = Depends(get_db)):
     db.commit()
 
     try:
-        from routers.notifications import notify_business
+        from app.routers.notifications import notify_business
         po = db.execute(text("SELECT PONumber, SupplierName, TotalAmount FROM PurchaseOrder WHERE POID=:pid"),
                         {"pid": po_id}).fetchone()
         if po:
@@ -329,7 +329,7 @@ def reject_order(po_id: int, body: dict, db: Session = Depends(get_db)):
     """), {"reason": body.get("Reason"), "pid": po_id, "bid": bid})
     db.commit()
     try:
-        from routers.notifications import notify_business
+        from app.routers.notifications import notify_business
         po = db.execute(text("SELECT PONumber, SupplierName FROM PurchaseOrder WHERE POID=:pid"), {"pid": po_id}).fetchone()
         if po:
             notify_business(

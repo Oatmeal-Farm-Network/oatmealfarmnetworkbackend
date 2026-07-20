@@ -1593,7 +1593,7 @@ def configure_subscription_features_tool(
 
     # Invalidate the features cache in company_features router if accessible
     try:
-        from routers.company_features import _features_cache
+        from app.routers.company_features import _features_cache
         _features_cache.pop(bid, None)
     except Exception:
         pass

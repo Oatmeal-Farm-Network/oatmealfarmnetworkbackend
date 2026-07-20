@@ -137,22 +137,44 @@ _FV_COMMODITIES = [
 _MLR_BASE = "https://mpr.datamart.ams.usda.gov/services/public/LMR/Report"
 _FV_BASE  = "https://www.marketnews.usda.gov/mnp/fv-report-top-filters"
 
-router = APIRouter(prefix="/api/commodity-prices", tags=["commodity_history"])
+_schema_ready = False
 
-with engine.begin() as _conn:
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='CommodityPriceHistory')
-        BEGIN
-            CREATE TABLE CommodityPriceHistory (
-                HistoryID   INT IDENTITY(1,1) PRIMARY KEY,
-                Commodity   VARCHAR(80)   NOT NULL,
-                PriceUSD    DECIMAL(12,4) NOT NULL,
-                FetchedAt   DATETIME      NOT NULL DEFAULT GETDATE()
-            )
-            CREATE INDEX IX_CommodityHistory_Commodity
-                ON CommodityPriceHistory (Commodity, FetchedAt DESC)
-        END
-    """))
+
+def _ensure_schema() -> None:
+    """Lazy schema/seed — never runs at import time."""
+    global _schema_ready
+    if _schema_ready:
+        return
+    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
+    if skip_schema_ensure():
+        return
+
+    def _run() -> None:
+        global _schema_ready
+        
+        with engine.begin() as _conn:
+            _conn.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='CommodityPriceHistory')
+                BEGIN
+                    CREATE TABLE CommodityPriceHistory (
+                        HistoryID   INT IDENTITY(1,1) PRIMARY KEY,
+                        Commodity   VARCHAR(80)   NOT NULL,
+                        PriceUSD    DECIMAL(12,4) NOT NULL,
+                        FetchedAt   DATETIME      NOT NULL DEFAULT GETDATE()
+                    )
+                    CREATE INDEX IX_CommodityHistory_Commodity
+                        ON CommodityPriceHistory (Commodity, FetchedAt DESC)
+                END
+            """))
+        _schema_ready = True
+
+    run_schema_ensure("commodity-history", _run)
+
+
+def _schema_dep() -> None:
+    _ensure_schema()
+
+router = APIRouter(prefix="/api/commodity-prices", tags=["commodity_history"], dependencies=[Depends(_schema_dep)])
 
 
 def _fetch_and_store_prices() -> dict:

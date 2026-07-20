@@ -12,7 +12,25 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database import get_db, SessionLocal
 
-router = APIRouter()
+def _ensure_schema() -> None:
+    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
+    if skip_schema_ensure():
+        return
+
+    def _run() -> None:
+        with SessionLocal() as _db:
+            ensure_tables(_db)
+            ensure_cart_columns(_db)
+            ensure_attendee_table(_db)
+
+    run_schema_ensure("event-registration-cart", _run)
+
+
+def _schema_dep() -> None:
+    _ensure_schema()
+
+
+router = APIRouter(dependencies=[Depends(_schema_dep)])
 
 CART_LINKED_TABLES = [
     "OFNEventHalterEntries",
@@ -124,15 +142,6 @@ def ensure_cart_columns(db: Session):
     db.commit()
 
 
-with SessionLocal() as _db:
-    try:
-        ensure_tables(_db)
-        ensure_cart_columns(_db)
-        ensure_attendee_table(_db)
-    except Exception as e:
-        print(f"Registration cart setup error: {e}")
-
-
 @router.post("/api/events/{event_id}/cart")
 def create_cart(event_id: int, payload: dict, db: Session = Depends(get_db)):
     """Create a new draft cart for an attendee. Called at wizard start."""
@@ -186,7 +195,7 @@ def _recalc_totals(db: Session, cart_id: int):
     promo_code_str = None
     if cart and cart.get("PromoCodeID"):
         try:
-            from routers.event_promo_codes import compute_discount
+            from app.routers.event_promo_codes import compute_discount
             promo = db.execute(text("""
                 SELECT * FROM OFNEventPromoCodes WHERE CodeID = :id
             """), {"id": cart["PromoCodeID"]}).mappings().first()
@@ -262,7 +271,7 @@ def add_items(cart_id: int, payload: dict, db: Session = Depends(get_db)):
 @router.post("/api/events/cart/{cart_id}/promo-code")
 def apply_promo(cart_id: int, payload: dict, db: Session = Depends(get_db)):
     """Apply a promo code to an existing cart. Validates + recalculates totals."""
-    from routers.event_promo_codes import _validate_promo, _normalize_code
+    from app.routers.event_promo_codes import _validate_promo, _normalize_code
     cart = db.execute(text("""
         SELECT EventID, Subtotal FROM OFNEventRegistrationCart WHERE CartID = :c
     """), {"c": cart_id}).mappings().first()

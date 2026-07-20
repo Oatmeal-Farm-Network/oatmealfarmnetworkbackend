@@ -464,7 +464,7 @@ def invite_farm(business_id: int, body: dict, db: Session = Depends(get_db)):
     Returns { FarmID, BusinessID, PeopleID, alreadyExisted }.
     """
     from app.core.auth import hash_password
-    from routers.services import SENDGRID_API_KEY, SENDGRID_URL, FROM_EMAIL
+    from app.routers.services import SENDGRID_API_KEY, SENDGRID_URL, FROM_EMAIL
     import httpx, secrets
 
     farm_name    = (body.get("FarmName") or "").strip()

@@ -107,7 +107,7 @@ def _ser(row) -> dict:
 
 def _dashboard_kpis(db: Session, business_id: int) -> Dict[str, Any]:
     try:
-        from routers.esci import _ensure_tables as _ensure_esci
+        from app.routers.esci import _ensure_tables as _ensure_esci
         _ensure_esci(db)
     except Exception:
         pass

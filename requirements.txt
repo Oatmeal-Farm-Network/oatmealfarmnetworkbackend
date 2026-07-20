@@ -83,6 +83,9 @@ sqlalchemy>=2.0.0
 
 # SQL Server
 pymssql
+# Cloud Run / Cloud SQL (SQL Server) — Connector uses pytds, not localhost Auth Proxy
+cloud-sql-python-connector[pytds]
+sqlalchemy-pytds
 
 
 

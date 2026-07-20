@@ -6,12 +6,15 @@ from app.core.auth import get_current_user
 import app.models as models
 import datetime
 
-router = APIRouter(prefix="/api/meetings", tags=["meetings"])
+_schema_ready = False
 
 
 # ── One-time table creation ──────────────────────────────────────────────────
 
 def _ensure_tables():
+    from app.schema_ensure import skip_schema_ensure
+    if skip_schema_ensure():
+        return
     ddl = [
         """IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name='MeetingProject')
            CREATE TABLE MeetingProject (
@@ -79,16 +82,31 @@ def _ensure_tables():
              DueDate     NVARCHAR(50)  NULL
            )""",
     ]
-    try:
-        with SessionLocal() as db:
-            for stmt in ddl:
-                db.execute(text(stmt))
-            db.commit()
-    except Exception as e:
-        print(f"[meetings] table-ensure error: {e}")
+    with SessionLocal() as db:
+        for stmt in ddl:
+            db.execute(text(stmt))
+        db.commit()
 
 
-_ensure_tables()
+def _ensure_schema() -> None:
+    global _schema_ready
+    if _schema_ready:
+        return
+    from app.schema_ensure import run_schema_ensure
+
+    def _run() -> None:
+        global _schema_ready
+        _ensure_tables()
+        _schema_ready = True
+
+    run_schema_ensure("meetings", _run)
+
+
+def _schema_dep() -> None:
+    _ensure_schema()
+
+
+router = APIRouter(prefix="/api/meetings", tags=["meetings"], dependencies=[Depends(_schema_dep)])
 
 
 # ── Auth helper ──────────────────────────────────────────────────────────────

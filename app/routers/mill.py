@@ -14,138 +14,160 @@ from app.database import get_db, engine
 from typing import Optional
 from datetime import datetime
 
-router = APIRouter(prefix="/api/admin/mill", tags=["mill"])
+_schema_ready = False
 
-# ── Auto-create tables ────────────────────────────────────────────────────────
 
-with engine.begin() as _c:
-    _c.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='OTFCommunities')
-        CREATE TABLE OTFCommunities (
-            CommunityID   INT IDENTITY(1,1) PRIMARY KEY,
-            Name          NVARCHAR(120) NOT NULL,
-            Description   NVARCHAR(500) NULL,
-            IsPublic      BIT NOT NULL DEFAULT 1,
-            CreatedBy     INT NULL,
-            CreatedAt     DATETIME NOT NULL DEFAULT GETDATE()
-        )
-    """))
-    _c.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='OTFCommunityMembers')
-        CREATE TABLE OTFCommunityMembers (
-            MemberID      INT IDENTITY(1,1) PRIMARY KEY,
-            CommunityID   INT NOT NULL,
-            PeopleID      INT NOT NULL,
-            JoinedAt      DATETIME NOT NULL DEFAULT GETDATE(),
-            CONSTRAINT UQ_OTFCommMem UNIQUE (CommunityID, PeopleID)
-        )
-    """))
-    _c.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='OTFChannels')
-        CREATE TABLE OTFChannels (
-            ChannelID     INT IDENTITY(1,1) PRIMARY KEY,
-            CommunityID   INT NULL,
-            Name          NVARCHAR(120) NULL,
-            Description   NVARCHAR(500) NULL,
-            ChannelType   VARCHAR(20) NOT NULL DEFAULT 'text',
-            CreatedBy     INT NULL,
-            CreatedAt     DATETIME NOT NULL DEFAULT GETDATE()
-        )
-    """))
-    _c.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='OTFChannelMembers')
-        CREATE TABLE OTFChannelMembers (
-            ID            INT IDENTITY(1,1) PRIMARY KEY,
-            ChannelID     INT NOT NULL,
-            PeopleID      INT NOT NULL,
-            LastReadAt    DATETIME NULL,
-            JoinedAt      DATETIME NOT NULL DEFAULT GETDATE(),
-            CONSTRAINT UQ_OTFChanMem UNIQUE (ChannelID, PeopleID)
-        )
-    """))
-    _c.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='OTFMessages')
-        CREATE TABLE OTFMessages (
-            MessageID     INT IDENTITY(1,1) PRIMARY KEY,
-            ChannelID     INT NOT NULL,
-            SenderID      INT NOT NULL,
-            SenderName    NVARCHAR(120) NULL,
-            Body          NVARCHAR(MAX) NOT NULL,
-            IsDeleted     BIT NOT NULL DEFAULT 0,
-            CreatedAt     DATETIME NOT NULL DEFAULT GETDATE(),
-            EditedAt      DATETIME NULL
-        )
-    """))
-    # ── Forums ───────────────────────────────────────────────────────────────
-    _c.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='OTFForumCategories')
-        CREATE TABLE OTFForumCategories (
-            CategoryID    INT IDENTITY(1,1) PRIMARY KEY,
-            Name          NVARCHAR(120) NOT NULL,
-            Description   NVARCHAR(500) NULL,
-            Icon          VARCHAR(40) NULL,
-            SortOrder     INT NOT NULL DEFAULT 0,
-            CreatedAt     DATETIME NOT NULL DEFAULT GETDATE()
-        )
-    """))
-    _c.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='OTFForumThreads')
-        CREATE TABLE OTFForumThreads (
-            ThreadID      INT IDENTITY(1,1) PRIMARY KEY,
-            CategoryID    INT NOT NULL,
-            Title         NVARCHAR(300) NOT NULL,
-            Body          NVARCHAR(MAX) NOT NULL,
-            AuthorID      INT NOT NULL,
-            AuthorName    NVARCHAR(120) NULL,
-            IsPinned      BIT NOT NULL DEFAULT 0,
-            IsLocked      BIT NOT NULL DEFAULT 0,
-            ViewCount     INT NOT NULL DEFAULT 0,
-            ReplyCount    INT NOT NULL DEFAULT 0,
-            LastPostAt    DATETIME NULL,
-            CreatedAt     DATETIME NOT NULL DEFAULT GETDATE()
-        )
-    """))
-    _c.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='OTFForumPosts')
-        CREATE TABLE OTFForumPosts (
-            PostID        INT IDENTITY(1,1) PRIMARY KEY,
-            ThreadID      INT NOT NULL,
-            AuthorID      INT NOT NULL,
-            AuthorName    NVARCHAR(120) NULL,
-            Body          NVARCHAR(MAX) NOT NULL,
-            IsDeleted     BIT NOT NULL DEFAULT 0,
-            CreatedAt     DATETIME NOT NULL DEFAULT GETDATE(),
-            EditedAt      DATETIME NULL
-        )
-    """))
-    # Add IsFlagged column to threads/posts if not present (idempotent)
-    _c.execute(text("""
-        IF NOT EXISTS (
-            SELECT * FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_NAME='OTFForumThreads' AND COLUMN_NAME='IsFlagged'
-        )
-        ALTER TABLE OTFForumThreads ADD IsFlagged BIT NOT NULL DEFAULT 0
-    """))
-    _c.execute(text("""
-        IF NOT EXISTS (
-            SELECT * FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_NAME='OTFForumPosts' AND COLUMN_NAME='IsFlagged'
-        )
-        ALTER TABLE OTFForumPosts ADD IsFlagged BIT NOT NULL DEFAULT 0
-    """))
-    # Seed default forum categories if empty
-    _c.execute(text("""
-        IF NOT EXISTS (SELECT 1 FROM OTFForumCategories)
-        BEGIN
-            INSERT INTO OTFForumCategories (Name, Description, Icon, SortOrder) VALUES
-            ('Crop Talk',        'Planting, growing, harvesting — all things crops',         'crop',       1),
-            ('Livestock Corner', 'Cattle, swine, poultry, sheep, and more',                  'livestock',  2),
-            ('Equipment',        'Machinery advice, repairs, buying/selling tips',            'equipment',  3),
-            ('Markets & Prices', 'Commodity prices, buyer/seller tips, market trends',        'market',     4),
-            ('Sustainability',   'Cover crops, soil health, carbon, conservation programs',  'leaf',       5),
-            ('Farm Life',        'General farming lifestyle, community, off-topic',          'farm',       6)
-        END
-    """))
+def _ensure_schema() -> None:
+    """Lazy schema/seed — never runs at import time."""
+    global _schema_ready
+    if _schema_ready:
+        return
+    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
+    if skip_schema_ensure():
+        return
+
+    def _run() -> None:
+        global _schema_ready
+        
+        # ── Auto-create tables ────────────────────────────────────────────────────────
+        
+        with engine.begin() as _c:
+            _c.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='OTFCommunities')
+                CREATE TABLE OTFCommunities (
+                    CommunityID   INT IDENTITY(1,1) PRIMARY KEY,
+                    Name          NVARCHAR(120) NOT NULL,
+                    Description   NVARCHAR(500) NULL,
+                    IsPublic      BIT NOT NULL DEFAULT 1,
+                    CreatedBy     INT NULL,
+                    CreatedAt     DATETIME NOT NULL DEFAULT GETDATE()
+                )
+            """))
+            _c.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='OTFCommunityMembers')
+                CREATE TABLE OTFCommunityMembers (
+                    MemberID      INT IDENTITY(1,1) PRIMARY KEY,
+                    CommunityID   INT NOT NULL,
+                    PeopleID      INT NOT NULL,
+                    JoinedAt      DATETIME NOT NULL DEFAULT GETDATE(),
+                    CONSTRAINT UQ_OTFCommMem UNIQUE (CommunityID, PeopleID)
+                )
+            """))
+            _c.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='OTFChannels')
+                CREATE TABLE OTFChannels (
+                    ChannelID     INT IDENTITY(1,1) PRIMARY KEY,
+                    CommunityID   INT NULL,
+                    Name          NVARCHAR(120) NULL,
+                    Description   NVARCHAR(500) NULL,
+                    ChannelType   VARCHAR(20) NOT NULL DEFAULT 'text',
+                    CreatedBy     INT NULL,
+                    CreatedAt     DATETIME NOT NULL DEFAULT GETDATE()
+                )
+            """))
+            _c.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='OTFChannelMembers')
+                CREATE TABLE OTFChannelMembers (
+                    ID            INT IDENTITY(1,1) PRIMARY KEY,
+                    ChannelID     INT NOT NULL,
+                    PeopleID      INT NOT NULL,
+                    LastReadAt    DATETIME NULL,
+                    JoinedAt      DATETIME NOT NULL DEFAULT GETDATE(),
+                    CONSTRAINT UQ_OTFChanMem UNIQUE (ChannelID, PeopleID)
+                )
+            """))
+            _c.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='OTFMessages')
+                CREATE TABLE OTFMessages (
+                    MessageID     INT IDENTITY(1,1) PRIMARY KEY,
+                    ChannelID     INT NOT NULL,
+                    SenderID      INT NOT NULL,
+                    SenderName    NVARCHAR(120) NULL,
+                    Body          NVARCHAR(MAX) NOT NULL,
+                    IsDeleted     BIT NOT NULL DEFAULT 0,
+                    CreatedAt     DATETIME NOT NULL DEFAULT GETDATE(),
+                    EditedAt      DATETIME NULL
+                )
+            """))
+            # ── Forums ───────────────────────────────────────────────────────────────
+            _c.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='OTFForumCategories')
+                CREATE TABLE OTFForumCategories (
+                    CategoryID    INT IDENTITY(1,1) PRIMARY KEY,
+                    Name          NVARCHAR(120) NOT NULL,
+                    Description   NVARCHAR(500) NULL,
+                    Icon          VARCHAR(40) NULL,
+                    SortOrder     INT NOT NULL DEFAULT 0,
+                    CreatedAt     DATETIME NOT NULL DEFAULT GETDATE()
+                )
+            """))
+            _c.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='OTFForumThreads')
+                CREATE TABLE OTFForumThreads (
+                    ThreadID      INT IDENTITY(1,1) PRIMARY KEY,
+                    CategoryID    INT NOT NULL,
+                    Title         NVARCHAR(300) NOT NULL,
+                    Body          NVARCHAR(MAX) NOT NULL,
+                    AuthorID      INT NOT NULL,
+                    AuthorName    NVARCHAR(120) NULL,
+                    IsPinned      BIT NOT NULL DEFAULT 0,
+                    IsLocked      BIT NOT NULL DEFAULT 0,
+                    ViewCount     INT NOT NULL DEFAULT 0,
+                    ReplyCount    INT NOT NULL DEFAULT 0,
+                    LastPostAt    DATETIME NULL,
+                    CreatedAt     DATETIME NOT NULL DEFAULT GETDATE()
+                )
+            """))
+            _c.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='OTFForumPosts')
+                CREATE TABLE OTFForumPosts (
+                    PostID        INT IDENTITY(1,1) PRIMARY KEY,
+                    ThreadID      INT NOT NULL,
+                    AuthorID      INT NOT NULL,
+                    AuthorName    NVARCHAR(120) NULL,
+                    Body          NVARCHAR(MAX) NOT NULL,
+                    IsDeleted     BIT NOT NULL DEFAULT 0,
+                    CreatedAt     DATETIME NOT NULL DEFAULT GETDATE(),
+                    EditedAt      DATETIME NULL
+                )
+            """))
+            # Add IsFlagged column to threads/posts if not present (idempotent)
+            _c.execute(text("""
+                IF NOT EXISTS (
+                    SELECT * FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_NAME='OTFForumThreads' AND COLUMN_NAME='IsFlagged'
+                )
+                ALTER TABLE OTFForumThreads ADD IsFlagged BIT NOT NULL DEFAULT 0
+            """))
+            _c.execute(text("""
+                IF NOT EXISTS (
+                    SELECT * FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_NAME='OTFForumPosts' AND COLUMN_NAME='IsFlagged'
+                )
+                ALTER TABLE OTFForumPosts ADD IsFlagged BIT NOT NULL DEFAULT 0
+            """))
+            # Seed default forum categories if empty
+            _c.execute(text("""
+                IF NOT EXISTS (SELECT 1 FROM OTFForumCategories)
+                BEGIN
+                    INSERT INTO OTFForumCategories (Name, Description, Icon, SortOrder) VALUES
+                    ('Crop Talk',        'Planting, growing, harvesting — all things crops',         'crop',       1),
+                    ('Livestock Corner', 'Cattle, swine, poultry, sheep, and more',                  'livestock',  2),
+                    ('Equipment',        'Machinery advice, repairs, buying/selling tips',            'equipment',  3),
+                    ('Markets & Prices', 'Commodity prices, buyer/seller tips, market trends',        'market',     4),
+                    ('Sustainability',   'Cover crops, soil health, carbon, conservation programs',  'leaf',       5),
+                    ('Farm Life',        'General farming lifestyle, community, off-topic',          'farm',       6)
+                END
+            """))
+        _schema_ready = True
+
+    run_schema_ensure("mill", _run)
+
+
+def _schema_dep() -> None:
+    _ensure_schema()
+
+router = APIRouter(prefix="/api/admin/mill", tags=["mill"], dependencies=[Depends(_schema_dep)])
 
 
 # ── Content moderation ────────────────────────────────────────────────────────

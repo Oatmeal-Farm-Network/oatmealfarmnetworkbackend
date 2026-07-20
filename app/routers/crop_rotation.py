@@ -6,11 +6,32 @@ from typing import Optional
 from pydantic import BaseModel
 from app import models
 
-router = APIRouter(prefix="/api", tags=["crop-rotation"])
+_schema_ready = False
 
-Base.metadata.create_all(
-    bind=engine, tables=[models.CropRotationEntry.__table__], checkfirst=True
-)
+
+def _ensure_schema() -> None:
+    global _schema_ready
+    if _schema_ready:
+        return
+    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
+    if skip_schema_ensure():
+        return
+
+    def _run() -> None:
+        global _schema_ready
+        Base.metadata.create_all(
+            bind=engine, tables=[models.CropRotationEntry.__table__], checkfirst=True
+        )
+        _schema_ready = True
+
+    run_schema_ensure("crop-rotation", _run)
+
+
+def _schema_dep() -> None:
+    _ensure_schema()
+
+
+router = APIRouter(prefix="/api", tags=["crop-rotation"], dependencies=[Depends(_schema_dep)])
 
 
 class RotationCreate(BaseModel):

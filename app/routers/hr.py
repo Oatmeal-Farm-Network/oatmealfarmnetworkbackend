@@ -833,7 +833,7 @@ def confirm_pay_slips(period_id: int, body: dict, db: Session = Depends(get_db))
 
     # Notify
     try:
-        from routers.notifications import notify_business
+        from app.routers.notifications import notify_business
         notify_business(
             db, business_id, type="payroll_confirmed",
             title=f"Payroll confirmed: ${round(total_gross, 2):,.2f} gross",

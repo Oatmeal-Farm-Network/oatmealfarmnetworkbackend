@@ -1,3 +1,7 @@
+import json
+import re
+import uuid
+from app import models
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -6,117 +10,141 @@ from app.database import get_db, engine, Base
 from datetime import datetime, date
 from typing import Optional, List
 from pydantic import BaseModel
-from app import models, json, re, uuid
 
-router = APIRouter(prefix="/api/website", tags=["website-builder"])
 
-Base.metadata.create_all(
-    bind=engine,
-    tables=[
-        models.BusinessWebsite.__table__,
-        models.BusinessWebPage.__table__,
-        models.BusinessWebBlock.__table__,
-    ],
-    checkfirst=True,
-)
+_schema_ready = False
 
-# Auto-create supplemental tables
-with engine.connect() as _conn:
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'WebsiteHeaderImages')
-        CREATE TABLE WebsiteHeaderImages (
-            HeaderImageID INT IDENTITY(1,1) PRIMARY KEY,
-            WebsiteID     INT NOT NULL,
-            ImageURL      NVARCHAR(500) NOT NULL,
-            StartDate     DATE,
-            EndDate       DATE,
-            SortOrder     INT DEFAULT 0,
-            CreatedAt     DATETIME DEFAULT GETDATE()
+
+def _ensure_schema() -> None:
+    global _schema_ready
+    if _schema_ready:
+        return
+    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
+    if skip_schema_ensure():
+        return
+
+    def _run() -> None:
+        global _schema_ready
+        
+        Base.metadata.create_all(
+            bind=engine,
+            tables=[
+                models.BusinessWebsite.__table__,
+                models.BusinessWebPage.__table__,
+                models.BusinessWebBlock.__table__,
+            ],
+            checkfirst=True,
         )
-    """))
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'WebsiteVersionHistory')
-        CREATE TABLE WebsiteVersionHistory (
-            VersionID    INT IDENTITY(1,1) PRIMARY KEY,
-            WebsiteID    INT NOT NULL,
-            VersionLabel NVARCHAR(255),
-            SnapshotJSON NVARCHAR(MAX) NOT NULL,
-            CreatedAt    DATETIME DEFAULT GETDATE()
-        )
-    """))
-    # Add new design columns to BusinessWebsite if they don't exist yet
-    for col_ddl in [
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='HeaderContentWidth') ALTER TABLE BusinessWebsite ADD HeaderContentWidth NVARCHAR(20) DEFAULT '100%'",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='BodyContentWidth') ALTER TABLE BusinessWebsite ADD BodyContentWidth NVARCHAR(20) DEFAULT '100%'",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='BodyBgWidth') ALTER TABLE BusinessWebsite ADD BodyBgWidth NVARCHAR(20) DEFAULT '100%'",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterContentWidth') ALTER TABLE BusinessWebsite ADD FooterContentWidth NVARCHAR(20) DEFAULT '100%'",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='TopBarEnabled') ALTER TABLE BusinessWebsite ADD TopBarEnabled BIT DEFAULT 0",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='TopBarHTML') ALTER TABLE BusinessWebsite ADD TopBarHTML NVARCHAR(MAX)",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='TopBarBgColor') ALTER TABLE BusinessWebsite ADD TopBarBgColor NVARCHAR(20) DEFAULT '#f8f5ef'",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='TopBarTextColor') ALTER TABLE BusinessWebsite ADD TopBarTextColor NVARCHAR(20) DEFAULT '#333333'",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='TopBarAlign') ALTER TABLE BusinessWebsite ADD TopBarAlign NVARCHAR(10) DEFAULT 'right'",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='HeaderBannerURL') ALTER TABLE BusinessWebsite ADD HeaderBannerURL NVARCHAR(1000)",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='HeaderHeight') ALTER TABLE BusinessWebsite ADD HeaderHeight INT DEFAULT 120",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='ShowSiteName') ALTER TABLE BusinessWebsite ADD ShowSiteName BIT DEFAULT 1",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='NavBgImageURL') ALTER TABLE BusinessWebsite ADD NavBgImageURL NVARCHAR(1000)",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterBgImageURL') ALTER TABLE BusinessWebsite ADD FooterBgImageURL NVARCHAR(1000)",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterHTML') ALTER TABLE BusinessWebsite ADD FooterHTML NVARCHAR(MAX)",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterHeight') ALTER TABLE BusinessWebsite ADD FooterHeight INT DEFAULT 200",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='BgImageURL') ALTER TABLE BusinessWebsite ADD BgImageURL NVARCHAR(1000)",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='BgGradient') ALTER TABLE BusinessWebsite ADD BgGradient NVARCHAR(500)",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='HeaderBgWidth') ALTER TABLE BusinessWebsite ADD HeaderBgWidth NVARCHAR(20) DEFAULT '100%'",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterBgWidth') ALTER TABLE BusinessWebsite ADD FooterBgWidth NVARCHAR(20) DEFAULT '100%'",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebPage' AND COLUMN_NAME='ParentPageID') ALTER TABLE BusinessWebPage ADD ParentPageID INT NULL",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebPage' AND COLUMN_NAME='IsNavHeading') ALTER TABLE BusinessWebPage ADD IsNavHeading BIT NOT NULL DEFAULT 0",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebPage' AND COLUMN_NAME='LinkURL') ALTER TABLE BusinessWebPage ADD LinkURL NVARCHAR(500) NULL",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='DropdownBgColor') ALTER TABLE BusinessWebsite ADD DropdownBgColor NVARCHAR(50)",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='DropdownHoverColor') ALTER TABLE BusinessWebsite ADD DropdownHoverColor NVARCHAR(50)",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='DropdownBgColor2') ALTER TABLE BusinessWebsite ADD DropdownBgColor2 NVARCHAR(50)",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='DropdownGradientDir') ALTER TABLE BusinessWebsite ADD DropdownGradientDir NVARCHAR(20) DEFAULT '135deg'",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='HeaderBannerBgColor') ALTER TABLE BusinessWebsite ADD HeaderBannerBgColor NVARCHAR(20)",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='CopyrightBarBgColor') ALTER TABLE BusinessWebsite ADD CopyrightBarBgColor NVARCHAR(20)",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FaviconURL') ALTER TABLE BusinessWebsite ADD FaviconURL NVARCHAR(1000)",
-        "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterBottomRadius') ALTER TABLE BusinessWebsite ADD FooterBottomRadius INT DEFAULT 0",
-    ]:
-        _conn.execute(text(col_ddl))
+        
+        # Auto-create supplemental tables
+        with engine.connect() as _conn:
+            _conn.execute(text("""
+                IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'WebsiteHeaderImages')
+                CREATE TABLE WebsiteHeaderImages (
+                    HeaderImageID INT IDENTITY(1,1) PRIMARY KEY,
+                    WebsiteID     INT NOT NULL,
+                    ImageURL      NVARCHAR(500) NOT NULL,
+                    StartDate     DATE,
+                    EndDate       DATE,
+                    SortOrder     INT DEFAULT 0,
+                    CreatedAt     DATETIME DEFAULT GETDATE()
+                )
+            """))
+            _conn.execute(text("""
+                IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'WebsiteVersionHistory')
+                CREATE TABLE WebsiteVersionHistory (
+                    VersionID    INT IDENTITY(1,1) PRIMARY KEY,
+                    WebsiteID    INT NOT NULL,
+                    VersionLabel NVARCHAR(255),
+                    SnapshotJSON NVARCHAR(MAX) NOT NULL,
+                    CreatedAt    DATETIME DEFAULT GETDATE()
+                )
+            """))
+            # Add new design columns to BusinessWebsite if they don't exist yet
+            for col_ddl in [
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='HeaderContentWidth') ALTER TABLE BusinessWebsite ADD HeaderContentWidth NVARCHAR(20) DEFAULT '100%'",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='BodyContentWidth') ALTER TABLE BusinessWebsite ADD BodyContentWidth NVARCHAR(20) DEFAULT '100%'",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='BodyBgWidth') ALTER TABLE BusinessWebsite ADD BodyBgWidth NVARCHAR(20) DEFAULT '100%'",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterContentWidth') ALTER TABLE BusinessWebsite ADD FooterContentWidth NVARCHAR(20) DEFAULT '100%'",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='TopBarEnabled') ALTER TABLE BusinessWebsite ADD TopBarEnabled BIT DEFAULT 0",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='TopBarHTML') ALTER TABLE BusinessWebsite ADD TopBarHTML NVARCHAR(MAX)",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='TopBarBgColor') ALTER TABLE BusinessWebsite ADD TopBarBgColor NVARCHAR(20) DEFAULT '#f8f5ef'",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='TopBarTextColor') ALTER TABLE BusinessWebsite ADD TopBarTextColor NVARCHAR(20) DEFAULT '#333333'",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='TopBarAlign') ALTER TABLE BusinessWebsite ADD TopBarAlign NVARCHAR(10) DEFAULT 'right'",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='HeaderBannerURL') ALTER TABLE BusinessWebsite ADD HeaderBannerURL NVARCHAR(1000)",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='HeaderHeight') ALTER TABLE BusinessWebsite ADD HeaderHeight INT DEFAULT 120",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='ShowSiteName') ALTER TABLE BusinessWebsite ADD ShowSiteName BIT DEFAULT 1",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='NavBgImageURL') ALTER TABLE BusinessWebsite ADD NavBgImageURL NVARCHAR(1000)",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterBgImageURL') ALTER TABLE BusinessWebsite ADD FooterBgImageURL NVARCHAR(1000)",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterHTML') ALTER TABLE BusinessWebsite ADD FooterHTML NVARCHAR(MAX)",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterHeight') ALTER TABLE BusinessWebsite ADD FooterHeight INT DEFAULT 200",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='BgImageURL') ALTER TABLE BusinessWebsite ADD BgImageURL NVARCHAR(1000)",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='BgGradient') ALTER TABLE BusinessWebsite ADD BgGradient NVARCHAR(500)",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='HeaderBgWidth') ALTER TABLE BusinessWebsite ADD HeaderBgWidth NVARCHAR(20) DEFAULT '100%'",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterBgWidth') ALTER TABLE BusinessWebsite ADD FooterBgWidth NVARCHAR(20) DEFAULT '100%'",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebPage' AND COLUMN_NAME='ParentPageID') ALTER TABLE BusinessWebPage ADD ParentPageID INT NULL",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebPage' AND COLUMN_NAME='IsNavHeading') ALTER TABLE BusinessWebPage ADD IsNavHeading BIT NOT NULL DEFAULT 0",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebPage' AND COLUMN_NAME='LinkURL') ALTER TABLE BusinessWebPage ADD LinkURL NVARCHAR(500) NULL",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='DropdownBgColor') ALTER TABLE BusinessWebsite ADD DropdownBgColor NVARCHAR(50)",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='DropdownHoverColor') ALTER TABLE BusinessWebsite ADD DropdownHoverColor NVARCHAR(50)",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='DropdownBgColor2') ALTER TABLE BusinessWebsite ADD DropdownBgColor2 NVARCHAR(50)",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='DropdownGradientDir') ALTER TABLE BusinessWebsite ADD DropdownGradientDir NVARCHAR(20) DEFAULT '135deg'",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='HeaderBannerBgColor') ALTER TABLE BusinessWebsite ADD HeaderBannerBgColor NVARCHAR(20)",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='CopyrightBarBgColor') ALTER TABLE BusinessWebsite ADD CopyrightBarBgColor NVARCHAR(20)",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FaviconURL') ALTER TABLE BusinessWebsite ADD FaviconURL NVARCHAR(1000)",
+                "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='BusinessWebsite' AND COLUMN_NAME='FooterBottomRadius') ALTER TABLE BusinessWebsite ADD FooterBottomRadius INT DEFAULT 0",
+            ]:
+                _conn.execute(text(col_ddl))
+        
+            # ── WebsiteCustomDomain — indexed custom-domain lookup table ──────────────
+            # One row per bare domain (e.g. "alpacasontheweb.com").  Replaces the slow
+            # LIKE '%domain%' full-table scan on CanonicalURL that times out on cold starts.
+            _conn.execute(text("""
+                IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'WebsiteCustomDomain')
+                BEGIN
+                    CREATE TABLE WebsiteCustomDomain (
+                        DomainID  INT IDENTITY(1,1) PRIMARY KEY,
+                        WebsiteID INT NOT NULL,
+                        Domain    NVARCHAR(255) NOT NULL,
+                        IsActive  BIT NOT NULL DEFAULT 1,
+                        CreatedAt DATETIME DEFAULT GETDATE(),
+                        CONSTRAINT UQ_WebsiteCustomDomain_Domain UNIQUE (Domain)
+                    );
+                    CREATE INDEX IX_WebsiteCustomDomain_WebsiteID ON WebsiteCustomDomain(WebsiteID);
+                END
+            """))
+        
+            # Back-fill from existing CanonicalURL values (idempotent — skips conflicts).
+            _conn.execute(text("""
+                INSERT INTO WebsiteCustomDomain (WebsiteID, Domain)
+                SELECT WebsiteID,
+                       LOWER(
+                         LTRIM(RTRIM(
+                           REPLACE(REPLACE(REPLACE(REPLACE(CanonicalURL,
+                             'https://', ''), 'http://', ''), 'www.', ''), '/', '')
+                         ))
+                       )
+                FROM BusinessWebsite
+                WHERE CanonicalURL IS NOT NULL AND LEN(LTRIM(RTRIM(CanonicalURL))) > 0
+                AND LOWER(LTRIM(RTRIM(REPLACE(REPLACE(REPLACE(REPLACE(CanonicalURL,
+                      'https://', ''), 'http://', ''), 'www.', ''), '/', '')))) NOT IN (
+                    SELECT Domain FROM WebsiteCustomDomain
+                )
+            """))
+        
+            _conn.commit()
+        _schema_ready = True
 
-    # ── WebsiteCustomDomain — indexed custom-domain lookup table ──────────────
-    # One row per bare domain (e.g. "alpacasontheweb.com").  Replaces the slow
-    # LIKE '%domain%' full-table scan on CanonicalURL that times out on cold starts.
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'WebsiteCustomDomain')
-        BEGIN
-            CREATE TABLE WebsiteCustomDomain (
-                DomainID  INT IDENTITY(1,1) PRIMARY KEY,
-                WebsiteID INT NOT NULL,
-                Domain    NVARCHAR(255) NOT NULL,
-                IsActive  BIT NOT NULL DEFAULT 1,
-                CreatedAt DATETIME DEFAULT GETDATE(),
-                CONSTRAINT UQ_WebsiteCustomDomain_Domain UNIQUE (Domain)
-            );
-            CREATE INDEX IX_WebsiteCustomDomain_WebsiteID ON WebsiteCustomDomain(WebsiteID);
-        END
-    """))
+    run_schema_ensure("website-builder", _run)
 
-    # Back-fill from existing CanonicalURL values (idempotent — skips conflicts).
-    _conn.execute(text("""
-        INSERT INTO WebsiteCustomDomain (WebsiteID, Domain)
-        SELECT WebsiteID,
-               LOWER(
-                 LTRIM(RTRIM(
-                   REPLACE(REPLACE(REPLACE(REPLACE(CanonicalURL,
-                     'https://', ''), 'http://', ''), 'www.', ''), '/', '')
-                 ))
-               )
-        FROM BusinessWebsite
-        WHERE CanonicalURL IS NOT NULL AND LEN(LTRIM(RTRIM(CanonicalURL))) > 0
-        AND LOWER(LTRIM(RTRIM(REPLACE(REPLACE(REPLACE(REPLACE(CanonicalURL,
-              'https://', ''), 'http://', ''), 'www.', ''), '/', '')))) NOT IN (
-            SELECT Domain FROM WebsiteCustomDomain
-        )
-    """))
 
-    _conn.commit()
+def _schema_dep() -> None:
+    _ensure_schema()
+
+
+router = APIRouter(prefix="/api/website", tags=["website-builder"], dependencies=[Depends(_schema_dep)])
+
+
 
 
 def _normalize_domain(raw: str) -> str:

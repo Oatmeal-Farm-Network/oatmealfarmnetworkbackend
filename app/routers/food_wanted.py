@@ -10,57 +10,79 @@ from app.core.auth import get_current_user
 from pydantic import BaseModel
 from typing import Optional, List
 
-food_wanted_router = APIRouter()
+_schema_ready = False
 
-# ── Auto-create tables ─────────────────────────────────────────────────────────
-with engine.begin() as _conn:
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='FoodWantedAds')
-        BEGIN
-            CREATE TABLE FoodWantedAds (
-                AdID                INT IDENTITY(1,1) PRIMARY KEY,
-                BusinessID          INT NOT NULL,
-                Title               VARCHAR(300) NOT NULL,
-                Description         NVARCHAR(MAX),
-                BuyerType           VARCHAR(100),
-                DeliveryPreference  VARCHAR(50) DEFAULT 'either',
-                LocationCity        VARCHAR(100),
-                LocationState       VARCHAR(100),
-                NeededBy            DATE,
-                IsActive            BIT DEFAULT 1,
-                CreatedAt           DATETIME DEFAULT GETDATE(),
-                UpdatedAt           DATETIME DEFAULT GETDATE()
-            )
-        END
-    """))
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='FoodWantedItems')
-        BEGIN
-            CREATE TABLE FoodWantedItems (
-                ItemID          INT IDENTITY(1,1) PRIMARY KEY,
-                AdID            INT NOT NULL,
-                IngredientName  VARCHAR(200) NOT NULL,
-                Quantity        VARCHAR(100),
-                Unit            VARCHAR(50),
-                Notes           VARCHAR(500)
-            )
-        END
-    """))
-    _conn.execute(text("""
-        IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='FoodWantedResponses')
-        BEGIN
-            CREATE TABLE FoodWantedResponses (
-                ResponseID      INT IDENTITY(1,1) PRIMARY KEY,
-                AdID            INT NOT NULL,
-                FromBusinessID  INT,
-                SenderName      VARCHAR(200),
-                SenderEmail     VARCHAR(200),
-                Message         NVARCHAR(MAX) NOT NULL,
-                Status          VARCHAR(20) DEFAULT 'pending',
-                CreatedAt       DATETIME DEFAULT GETDATE()
-            )
-        END
-    """))
+
+def _ensure_schema() -> None:
+    """Lazy schema/seed — never runs at import time."""
+    global _schema_ready
+    if _schema_ready:
+        return
+    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
+    if skip_schema_ensure():
+        return
+
+    def _run() -> None:
+        global _schema_ready
+        
+        # ── Auto-create tables ─────────────────────────────────────────────────────────
+        with engine.begin() as _conn:
+            _conn.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='FoodWantedAds')
+                BEGIN
+                    CREATE TABLE FoodWantedAds (
+                        AdID                INT IDENTITY(1,1) PRIMARY KEY,
+                        BusinessID          INT NOT NULL,
+                        Title               VARCHAR(300) NOT NULL,
+                        Description         NVARCHAR(MAX),
+                        BuyerType           VARCHAR(100),
+                        DeliveryPreference  VARCHAR(50) DEFAULT 'either',
+                        LocationCity        VARCHAR(100),
+                        LocationState       VARCHAR(100),
+                        NeededBy            DATE,
+                        IsActive            BIT DEFAULT 1,
+                        CreatedAt           DATETIME DEFAULT GETDATE(),
+                        UpdatedAt           DATETIME DEFAULT GETDATE()
+                    )
+                END
+            """))
+            _conn.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='FoodWantedItems')
+                BEGIN
+                    CREATE TABLE FoodWantedItems (
+                        ItemID          INT IDENTITY(1,1) PRIMARY KEY,
+                        AdID            INT NOT NULL,
+                        IngredientName  VARCHAR(200) NOT NULL,
+                        Quantity        VARCHAR(100),
+                        Unit            VARCHAR(50),
+                        Notes           VARCHAR(500)
+                    )
+                END
+            """))
+            _conn.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='FoodWantedResponses')
+                BEGIN
+                    CREATE TABLE FoodWantedResponses (
+                        ResponseID      INT IDENTITY(1,1) PRIMARY KEY,
+                        AdID            INT NOT NULL,
+                        FromBusinessID  INT,
+                        SenderName      VARCHAR(200),
+                        SenderEmail     VARCHAR(200),
+                        Message         NVARCHAR(MAX) NOT NULL,
+                        Status          VARCHAR(20) DEFAULT 'pending',
+                        CreatedAt       DATETIME DEFAULT GETDATE()
+                    )
+                END
+            """))
+        _schema_ready = True
+
+    run_schema_ensure("food-wanted", _run)
+
+
+def _schema_dep() -> None:
+    _ensure_schema()
+
+food_wanted_router = APIRouter(dependencies=[Depends(_schema_dep)])
 
 # ── Pydantic models ────────────────────────────────────────────────────────────
 

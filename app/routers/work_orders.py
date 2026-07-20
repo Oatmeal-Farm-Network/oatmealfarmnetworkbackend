@@ -8,8 +8,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database import get_db
 from typing import Optional
-from routers.rbac import record_audit
-from routers.notifications import notify_business
+from app.routers.rbac import record_audit
+from app.routers.notifications import notify_business
 
 router = APIRouter(prefix="/api/work-orders", tags=["work_orders"])
 _ready = False
