@@ -11,6 +11,7 @@ from datetime import datetime, date
 from typing import Optional, List
 from pydantic import BaseModel
 
+
 _schema_ready = False
 
 

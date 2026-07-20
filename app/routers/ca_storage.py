@@ -172,7 +172,7 @@ def _check_ca_alerts(db, bid: int, room_id: int, reading: ReadingIn):
         """, [room_id, atype, room_id, bid, atype, msg, sev, cur_val, tgt_val])
 
     TOLERANCE = 0.5  # pct units
-    TEMP_TOL = 0.5   # °C
+    TEMP_TOL = 0.5   # C
     RH_TOL = 3.0
 
     if t_o2 and reading.o2_pct is not None:
@@ -190,9 +190,9 @@ def _check_ca_alerts(db, bid: int, room_id: int, reading: ReadingIn):
     if t_temp and reading.temp_c is not None:
         diff = abs(reading.temp_c - float(t_temp))
         if diff > TEMP_TOL * 2:
-            _alert("temp_drift", f"Temp {reading.temp_c}°C vs target {t_temp}°C", "critical", reading.temp_c, float(t_temp))
+            _alert("temp_drift", f"Temp {reading.temp_c}C vs target {t_temp}C", "critical", reading.temp_c, float(t_temp))
         elif diff > TEMP_TOL:
-            _alert("temp_drift", f"Temp {reading.temp_c}°C vs target {t_temp}°C", "warning", reading.temp_c, float(t_temp))
+            _alert("temp_drift", f"Temp {reading.temp_c}C vs target {t_temp}C", "warning", reading.temp_c, float(t_temp))
 
     if t_rh and reading.humidity_pct is not None and abs(reading.humidity_pct - float(t_rh)) > RH_TOL:
         _alert("humidity_drift", f"RH {reading.humidity_pct}% vs target {t_rh}%", "warning", reading.humidity_pct, float(t_rh))
@@ -422,12 +422,12 @@ def get_protocol(commodity: str):
         available = list(CA_PROTOCOLS.keys())
         raise HTTPException(404, f"No protocol for '{commodity}'. Available: {', '.join(available)}")
     return {"commodity": commodity, "protocol": proto,
-            "note": "Tolerances: O2/CO2 ±0.5%, Temp ±0.5°C, RH ±3%"}
+            "note": "Tolerances: O2/CO2 0.5%, Temp 0.5C, RH 3%"}
 
 
 @router.post("/webhook/rooms/{room_id}/readings", status_code=201)
 def webhook_room_reading(room_id: int, token: str, body: ReadingIn, db=Depends(get_raw_conn)):
-    """IoT sensor endpoint — no JWT, authenticates via per-room webhook token."""
+    """IoT sensor endpoint  no JWT, authenticates via per-room webhook token."""
     _ensure_tables(db)
     cur = db.cursor()
     cur.execute("SELECT RoomID, BusinessID, WebhookToken FROM CARoom WHERE RoomID=?", [room_id])

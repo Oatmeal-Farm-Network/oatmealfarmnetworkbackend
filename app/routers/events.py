@@ -269,6 +269,7 @@ def generate_recap_draft(event_id: int, db: Session = Depends(get_db)):
     return {"blog_id": blog_id}
 
 
+
 # ── Public: social feed (platform-generated event announcements) ──────────────
 @router.get("/api/feed")
 def list_feed(
