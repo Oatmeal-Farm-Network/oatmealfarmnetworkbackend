@@ -62,6 +62,8 @@ GitHub Actions: Deploy to Staging
 | Env | `SKIP_SCHEMA_ENSURE=true` |
 | Env | `INSTANCE_CONNECTION_NAME=animated-flare-421518:us-central1:oatmealailive` |
 | Env | `FRONTEND_URL` → staging frontend (password-reset links); default `https://oatmeal-frontend-staging-1087130530284.us-central1.run.app` or repo var `STAGING_FRONTEND_URL` |
+| Env | `GCS_IMAGES_BUCKET=oatmeal-farm-network-images-staging` (uploads only) |
+| Env | `GCS_LIVESTOCK_IMAGES_BUCKET=oatmeal-farm-network-images` (breed/species encyclopedia reads from prod Animals/) |
 | Min instances | `1` |
 
 CORS allows the staging frontend origins in `app/main.py` (`ALLOWED_ORIGINS`).

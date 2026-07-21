@@ -8,7 +8,14 @@ from app.routers.translation import translate_fields, translate_list
 
 router = APIRouter(prefix="/api/livestock", tags=["livestock"])
 
-GCS_IMAGES_URL = f"https://storage.googleapis.com/{os.getenv('GCS_IMAGES_BUCKET', 'oatmeal-farm-network-images')}/Animals"
+# Breed/species encyclopedia images live in the prod Animals/ library.
+# Keep this separate from GCS_IMAGES_BUCKET (staging uploads) so staging can
+# still write to oatmeal-farm-network-images-staging without breaking reads.
+GCS_LIVESTOCK_IMAGES_BUCKET = os.getenv(
+    "GCS_LIVESTOCK_IMAGES_BUCKET",
+    "oatmeal-farm-network-images",
+)
+GCS_IMAGES_URL = f"https://storage.googleapis.com/{GCS_LIVESTOCK_IMAGES_BUCKET}/Animals"
 
 OLD_DOMAINS = [
     'oatmealfarmnetwork.com', 'livestockofamerica.com',
