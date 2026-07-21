@@ -17,7 +17,7 @@ from sqlalchemy import text
 from app.database import get_db
 from app.core.auth import get_current_user
 
-_GCS_BUCKET  = "oatmeal-farm-network-images"
+_GCS_BUCKET  = os.getenv("GCS_IMAGES_BUCKET", "oatmeal-farm-network-images")
 _GCS_PREFIX  = f"https://storage.googleapis.com/{_GCS_BUCKET}/"
 _PHOTO_SLOTS   = ["Photo1","Photo2","Photo3","Photo4","Photo5","Photo6","Photo7","Photo8"]
 _CAPTION_SLOTS = ["PhotoCaption1","PhotoCaption2","PhotoCaption3","PhotoCaption4",

@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import uuid
 from app import models
@@ -1623,7 +1624,7 @@ def submit_contact_form(payload: ContactFormPayload):
 
 # ── Image upload ─────────────────────────────────────────────────
 
-GCS_BUCKET  = "oatmeal-farm-network-images"
+GCS_BUCKET  = os.getenv("GCS_IMAGES_BUCKET", "oatmeal-farm-network-images")
 GCS_PREFIX  = "website-images"
 
 @router.delete("/site/{website_id}")

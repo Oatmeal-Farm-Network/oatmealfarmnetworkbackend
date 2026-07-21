@@ -53,3 +53,31 @@ variable "runtime_sa_email" {
   type    = string
   default = "stg-to-prod-db-ro-dev-project@oatmeal-farm-staging.iam.gserviceaccount.com"
 }
+
+# Firestore named databases to (re)create in staging, cloned from prod.
+variable "firestore_databases" {
+  type    = list(string)
+  default = ["artemis", "charlie", "chat-history"]
+}
+
+# Staging image bucket the backend uploads to (cloned from prod).
+variable "images_bucket_staging" {
+  type    = string
+  default = "oatmeal-farm-network-images-staging"
+}
+
+# Empty Redis instance for staging (data is NOT cloned; caches warm naturally).
+variable "redis_name" {
+  type    = string
+  default = "farm-advisory-redis"
+}
+
+variable "redis_version" {
+  type    = string
+  default = "REDIS_7_0"
+}
+
+variable "redis_memory_gb" {
+  type    = number
+  default = 1
+}

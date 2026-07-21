@@ -5,6 +5,7 @@ from sqlalchemy import text
 from app.database import get_db
 from pydantic import BaseModel
 from typing import Optional
+import os
 import re
 import uuid
 from datetime import datetime
@@ -704,7 +705,7 @@ def delete_author(author_id: int, business_id: int, db: Session = Depends(get_db
     return {"deleted": author_id}
 
 
-GCS_BUCKET = "oatmeal-farm-network-images"
+GCS_BUCKET = os.getenv("GCS_IMAGES_BUCKET", "oatmeal-farm-network-images")
 
 @router.post("/upload-image")
 async def upload_blog_image(file: UploadFile = File(...)):

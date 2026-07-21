@@ -32,7 +32,10 @@ def _diag(msg: str) -> None:
         pass
 
 # ── GCP / Firestore config ────────────────────────────────────────
-GCP_PROJECT   = "animated-flare-421518"
+# Project is env-overridable so staging can point at its own GCP project;
+# defaults to prod for backward compatibility. The Firestore database name
+# (artemis) is identical across environments, so it stays fixed.
+GCP_PROJECT   = os.getenv("GOOGLE_CLOUD_PROJECT", "animated-flare-421518").strip()
 GCP_CREDS     = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
 FIRESTORE_DB  = "artemis"
 LAVENDIR_COLLECTION = "lavendir-docs"
@@ -1960,7 +1963,7 @@ def _pick_hero_image(images: list, *, min_w: int = 600, min_h: int = 200) -> str
     return ""
 
 
-_REHOST_BUCKET = "oatmeal-farm-network-images"
+_REHOST_BUCKET = os.getenv("GCS_IMAGES_BUCKET", "oatmeal-farm-network-images")
 _REHOST_PREFIX = "website-images"
 _REHOST_MAX_BYTES = 8 * 1024 * 1024  # 8 MB hard cap per image
 

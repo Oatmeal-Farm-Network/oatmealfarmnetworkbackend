@@ -1981,7 +1981,7 @@ import time as _time
 _livestock_cache: dict = {}
 _CACHE_TTL = 300  # 5 minutes
 
-GCP_ANIMALS = "https://storage.googleapis.com/oatmeal-farm-network-images/Animals"
+GCP_ANIMALS = f"https://storage.googleapis.com/{os.getenv('GCS_IMAGES_BUCKET', 'oatmeal-farm-network-images')}/Animals"
 
 SLUG_TO_SPECIES_ID = {
     'alpacas': 2, 'bison': 9, 'buffalo': 34, 'camels': 18, 'cattle': 8,
@@ -2013,7 +2013,7 @@ def _unescape(s) -> str:
     return str(s).replace("''", "'")
 
 
-_GCS_ANIMALS = "https://storage.googleapis.com/oatmeal-farm-network-images/Animals"
+_GCS_ANIMALS = f"https://storage.googleapis.com/{os.getenv('GCS_IMAGES_BUCKET', 'oatmeal-farm-network-images')}/Animals"
 _OLD_DOMAINS  = [
     'oatmealfarmnetwork.com', 'livestockofamerica.com',
     'livestockoftheworld.com', 'alpacainfinity.com',

@@ -2,6 +2,7 @@
 # Equipment Marketplace — buy, sell, swap, and borrow farm equipment
 # Mount: app.include_router(equipment_router, prefix="/api/equipment")
 
+import os
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.orm import Session
@@ -11,7 +12,7 @@ from app.core.auth import get_current_user
 from pydantic import BaseModel
 from typing import Optional
 
-GCS_BUCKET = "oatmeal-farm-network-images"
+GCS_BUCKET = os.getenv("GCS_IMAGES_BUCKET", "oatmeal-farm-network-images")
 
 _schema_ready = False
 

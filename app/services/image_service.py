@@ -10,9 +10,10 @@ import base64
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-GCS_BUCKET      = "oatmeal-farm-network-images"
+GCS_BUCKET      = os.getenv("GCS_IMAGES_BUCKET", "oatmeal-farm-network-images")
 GCS_PREFIX      = "ingredients"
-GCS_PROJECT     = "animated-flare-421518"
+# Vertex AI Imagen project (not GCS) — kept on prod unless explicitly overridden.
+GCS_PROJECT     = os.getenv("VERTEX_IMAGE_PROJECT", "animated-flare-421518")
 GCS_LOCATION    = "us-central1"
 
 # ── GCS client ────────────────────────────────────────────────────────────────
