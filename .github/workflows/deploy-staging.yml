@@ -69,7 +69,7 @@ jobs:
             --command=uvicorn \
             --args=app.main:app,--host,0.0.0.0,--port,8080 \
             --update-secrets=DB_SERVER=DB_SERVER:latest,DB_USER=DB_USER:latest,DB_PASSWORD=DB_PASSWORD:latest,DB_NAME=DB_NAME:latest,SECRET_KEY=SECRET_KEY:latest \
-            --update-env-vars=SKIP_SCHEMA_ENSURE=false,INSTANCE_CONNECTION_NAME=${{ env.CLOUD_SQL_INSTANCE }},FRONTEND_URL=${{ env.STAGING_FRONTEND_URL }} \
+            --update-env-vars=SKIP_SCHEMA_ENSURE=false,INSTANCE_CONNECTION_NAME=${{ env.CLOUD_SQL_INSTANCE }},FRONTEND_URL=${{ env.STAGING_FRONTEND_URL }},GOOGLE_CLOUD_PROJECT=${{ env.GCP_PROJECT_ID }},FIRESTORE_DATABASE=charlie,GCS_IMAGES_BUCKET=oatmeal-farm-network-images-staging,BIOMASS_GCS_BUCKET=oatmeal-farm-network-images-staging \
             --min-instances=1 \
             --quiet
 

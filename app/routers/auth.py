@@ -5,6 +5,9 @@ from app.database import get_db
 from app.core.auth import create_access_token, get_current_user, hash_password, verify_password, verify_password_reset_token, create_password_reset_token
 from app import models
 from sqlalchemy import select, text
+import os
+
+_GCS_IMAGES_BUCKET = os.getenv("GCS_IMAGES_BUCKET", "oatmeal-farm-network-images")
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -518,11 +521,11 @@ def _upload_animal_photo(file_bytes: bytes, original_filename: str) -> str:
     from google.cloud import storage as _gcs
     ext  = os.path.splitext(original_filename)[1].lower() or ".webp"
     fname = f"{uuid.uuid4().hex}{ext}"
-    bucket = _gcs.Client().bucket("oatmeal-farm-network-images")
+    bucket = _gcs.Client().bucket(_GCS_IMAGES_BUCKET)
     blob   = bucket.blob(f"Animals/{fname}")
     ct_map = {".webp": "image/webp", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
     blob.upload_from_string(file_bytes, content_type=ct_map.get(ext, "image/webp"))
-    return f"https://storage.googleapis.com/oatmeal-farm-network-images/Animals/{quote(fname, safe='')}"
+    return f"https://storage.googleapis.com/{_GCS_IMAGES_BUCKET}/Animals/{quote(fname, safe='')}"
 
 
 def _upload_animal_doc(file_bytes: bytes, original_filename: str) -> str:
@@ -532,12 +535,12 @@ def _upload_animal_doc(file_bytes: bytes, original_filename: str) -> str:
     from google.cloud import storage as _gcs
     ext  = os.path.splitext(original_filename)[1].lower() or ".pdf"
     fname = f"{uuid.uuid4().hex}{ext}"
-    bucket = _gcs.Client().bucket("oatmeal-farm-network-images")
+    bucket = _gcs.Client().bucket(_GCS_IMAGES_BUCKET)
     blob   = bucket.blob(f"AnimalDocs/{fname}")
     ct_map = {".pdf": "application/pdf", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
               ".png": "image/png", ".webp": "image/webp"}
     blob.upload_from_string(file_bytes, content_type=ct_map.get(ext, "application/octet-stream"))
-    return f"https://storage.googleapis.com/oatmeal-farm-network-images/AnimalDocs/{quote(fname, safe='')}"
+    return f"https://storage.googleapis.com/{_GCS_IMAGES_BUCKET}/AnimalDocs/{quote(fname, safe='')}"
 
 
 # ── People search (for testimonials etc.) ─────────────────────────────────────

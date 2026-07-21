@@ -4,6 +4,9 @@ from sqlalchemy import text
 from app.database import get_db, SessionLocal
 from app import models
 import datetime
+import os
+
+GCS_IMAGES_BUCKET = os.getenv("GCS_IMAGES_BUCKET", "oatmeal-farm-network-images")
 
 _schema_ready = False
 
@@ -635,10 +638,10 @@ async def upload_logo(business_id: int, file: UploadFile = File(...), db: Sessio
         ext      = file.filename.rsplit('.', 1)[-1].lower() if '.' in file.filename else 'jpg'
         filename = f"logos/{business_id}_{uuid.uuid4().hex[:8]}.{ext}"
         client   = gcs.Client()
-        bucket   = client.bucket("oatmeal-farm-network-images")
+        bucket   = client.bucket(GCS_IMAGES_BUCKET)
         blob     = bucket.blob(filename)
         blob.upload_from_string(content, content_type=file.content_type)
-        url = f"https://storage.googleapis.com/oatmeal-farm-network-images/{filename}"
+        url = f"https://storage.googleapis.com/{GCS_IMAGES_BUCKET}/{filename}"
         from sqlalchemy import text
         db.execute(text("UPDATE Business SET Logo = :url WHERE BusinessID = :bid"),
                    {"url": url, "bid": business_id})

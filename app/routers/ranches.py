@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.database import get_db
+import os
 import time, re
 
 router = APIRouter(prefix="/api/ranches", tags=["ranches"])
@@ -18,7 +19,7 @@ router = APIRouter(prefix="/api/ranches", tags=["ranches"])
 _cache: dict = {}
 CACHE_TTL = 300
 
-GCP_BUCKET_URL = "https://storage.googleapis.com/oatmeal-farm-network-images/Animals"
+GCP_BUCKET_URL = f"https://storage.googleapis.com/{os.getenv('GCS_IMAGES_BUCKET', 'oatmeal-farm-network-images')}/Animals"
 
 SLUG_TO_SPECIES_ID = {
     'alpacas': 2, 'bison': 9, 'buffalo': 34, 'camels': 18, 'cattle': 8,

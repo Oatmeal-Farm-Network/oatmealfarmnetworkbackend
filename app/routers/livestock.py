@@ -2,12 +2,13 @@ from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.database import get_db
+import os
 import time, re
 from app.routers.translation import translate_fields, translate_list
 
 router = APIRouter(prefix="/api/livestock", tags=["livestock"])
 
-GCS_IMAGES_URL = "https://storage.googleapis.com/oatmeal-farm-network-images/Animals"
+GCS_IMAGES_URL = f"https://storage.googleapis.com/{os.getenv('GCS_IMAGES_BUCKET', 'oatmeal-farm-network-images')}/Animals"
 
 OLD_DOMAINS = [
     'oatmealfarmnetwork.com', 'livestockofamerica.com',
