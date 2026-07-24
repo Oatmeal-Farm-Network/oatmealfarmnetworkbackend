@@ -1996,6 +1996,11 @@ def _unescape(s) -> str:
 
 
 _GCS_ANIMALS = "https://storage.googleapis.com/oatmeal-farm-network-images/Animals"
+# Any value already pointing at Google Cloud Storage is passed through as-is by
+# _photo_url(). (_GCS_PREFIX was referenced but never defined, which made
+# /api/marketplace/animal/{id} raise NameError -> 500 -> the public website
+# livestock detail view showed "Could not load animal details".)
+_GCS_PREFIX = "https://storage.googleapis.com/"
 _OLD_DOMAINS  = [
     'oatmealfarmnetwork.com', 'livestockofamerica.com',
     'livestockoftheworld.com', 'alpacainfinity.com',
