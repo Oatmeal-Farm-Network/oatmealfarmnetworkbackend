@@ -73,16 +73,14 @@ git reset --hard <sha-before-step>
 
 ## Commit 1 status
 
-- [x] Create package directories and `__init__.py`
-- [x] Add `core/paths.py`
-- [x] Add this migration plan
-- [x] Bridge `graph/__init__.py` and `chat/__init__.py` to legacy root modules (package shadow fix; no file moves)
-- [ ] Production files moved (deferred)
-- [ ] Imports changed (deferred)
+- [x] Package skeleton + `core/paths.py` + this plan
+- [x] `graph/` / `chat/` package bridges to legacy root modules
 
-### Commit 1 note — package shadowing
+## Commit 2 status
 
-Creating empty `graph/` and `chat/` packages shadows root `graph.py` / `chat.py`.
-Commit 1 `__init__.py` bridges load those legacy modules via `importlib` so
-`from graph import graph` and `from chat import run_chat` keep working until
-Commit 3 relocates the implementations.
+- [x] Move config / security / policies / tool_policies / logging into `core/`
+- [x] Move saige models + Data_Contract into `schemas/`
+- [x] Root compatibility shims for all previous import paths
+- [x] `core.paths` used for media dir + `.env` resolution
+- [x] Compat aliases: `settings`, `check_proposal`, `filter_tools`, `MessageContract`
+
