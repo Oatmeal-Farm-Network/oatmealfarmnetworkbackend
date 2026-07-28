@@ -80,7 +80,12 @@ git reset --hard <sha-before-step>
 
 - [x] Move config / security / policies / tool_policies / logging into `core/`
 - [x] Move saige models + Data_Contract into `schemas/`
-- [x] Root compatibility shims for all previous import paths
-- [x] `core.paths` used for media dir + `.env` resolution
-- [x] Compat aliases: `settings`, `check_proposal`, `filter_tools`, `MessageContract`
+- [x] Root compatibility shims + path safety aliases
+
+## Commit 3 status
+
+- [x] Move `graph.py` / `nodes.py` into `graph/` package
+- [x] Add `graph/routing.py` + `graph/state.py`
+- [x] Package `__init__.py` lazy-exports compiled graph
+- [x] Root `nodes.py` shim; root `graph.py` discoverability stub (package wins imports)
 
