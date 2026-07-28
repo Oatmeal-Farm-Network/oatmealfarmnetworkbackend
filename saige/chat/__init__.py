@@ -1,22 +1,33 @@
-﻿# Saige chat package (Commit 1 bridge).
+﻿# Compatibility surface for ``from chat import run_chat``.
 #
-# Root ``chat.py`` still owns turn handling until a later commit moves it to
-# ``chat/service.py``. This package would otherwise shadow that module and
-# break ``from chat import run_chat``. Load the legacy file explicitly.
+# Keep this module light: importing ``chat.history`` / ``chat.buffer`` must not
+# pull the LangGraph turn handlers. Public chat entrypoints load lazily.
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
+from typing import Any
 
-_legacy_path = Path(__file__).resolve().parent.parent / "chat.py"
-_spec = importlib.util.spec_from_file_location("saige_legacy_chat", _legacy_path)
-if _spec is None or _spec.loader is None:
-    raise ImportError(f"Cannot load legacy chat module from {_legacy_path}")
-_legacy = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_legacy)
+__all__ = [
+    "run_chat",
+    "resume_hitl",
+    "iter_chat_events",
+]
 
-run_chat = _legacy.run_chat
-resume_hitl = _legacy.resume_hitl
-iter_chat_events = _legacy.iter_chat_events
 
-__all__ = ["run_chat", "resume_hitl", "iter_chat_events"]
+def __getattr__(name: str) -> Any:
+    if name in {"run_chat", "resume_hitl"}:
+        from chat.service import resume_hitl as _resume_hitl
+        from chat.service import run_chat as _run_chat
+
+        globals()["run_chat"] = _run_chat
+        globals()["resume_hitl"] = _resume_hitl
+        return _run_chat if name == "run_chat" else _resume_hitl
+    if name == "iter_chat_events":
+        from chat.streaming import iter_chat_events as _iter_chat_events
+
+        globals()["iter_chat_events"] = _iter_chat_events
+        return _iter_chat_events
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted(list(globals().keys()) + __all__)
