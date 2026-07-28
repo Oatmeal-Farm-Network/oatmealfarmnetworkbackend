@@ -128,7 +128,7 @@ ftfy>=6.0
 # Security / Authentication
 # =========================================================
 
-python-jose>=3.5.0
+PyJWT>=2.8.0
 bcrypt>=4.0.0
 
 

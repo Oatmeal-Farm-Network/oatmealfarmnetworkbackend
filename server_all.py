@@ -36,12 +36,15 @@ REPO_ROOT   = BACKEND_DIR.parent                                # .../OatmealFar
 SAIGE_CODE_DIR = HERE / "saige"
 SAIGE_ENV_DIR  = BACKEND_DIR / "saige"                          # legacy env location
 # Prefer sibling of this backend (oatmeal/CropMonitoringBackend), then repo-root layout.
+# Also accept OatmealFarmNetworkCropMonitorBackend (local oatmeal folder naming).
 CROP_DIR = next(
     (
         p
         for p in (
             BACKEND_DIR / "CropMonitoringBackend",
+            BACKEND_DIR / "OatmealFarmNetworkCropMonitorBackend",
             REPO_ROOT / "CropMonitoringBackend",
+            REPO_ROOT / "OatmealFarmNetworkCropMonitorBackend",
         )
         if p.is_dir()
     ),
@@ -72,11 +75,19 @@ for env_path in [CROP_DIR / ".env", SAIGE_ENV_DIR / ".env", BACKEND_DIR / ".env"
 # ── Module-isolation helpers ────────────────────────────────────────────────
 
 def _evict_from_dir(dir_path: Path, rename_prefix: str, keep: set[str]) -> int:
-    """For every module in sys.modules whose file lives under dir_path (and
-    whose name is NOT in `keep`), move its sys.modules entry to a prefixed
-    name. The module object stays alive via existing references — only the
-    import-resolution slot is freed."""
+    """For every *project* module in sys.modules whose file lives under
+    dir_path (and whose name is NOT in `keep`), move its sys.modules entry
+    to a prefixed name. The module object stays alive via existing
+    references — only the import-resolution slot is freed.
+
+    Never touch site-packages / the local .venv. When the venv lives inside
+    dir_path (common for this repo), a naive path check would rename
+    cryptography/jose/etc. After a fresh re-import, python-jose keeps stale
+    HashAlgorithm instances and JWT signing fails with:
+      Expected instance of hashes.HashAlgorithm.
+    """
     target = str(dir_path.resolve())
+    skip_markers = (f"{os.sep}site-packages{os.sep}", f"{os.sep}.venv{os.sep}", f"{os.sep}venv{os.sep}")
     moved = 0
     for name in list(sys.modules.keys()):
         if name in keep:
@@ -90,6 +101,9 @@ def _evict_from_dir(dir_path: Path, rename_prefix: str, keep: set[str]) -> int:
         try:
             absf = os.path.abspath(f)
         except Exception:
+            continue
+        absf_norm = absf.replace("/", os.sep)
+        if any(marker in absf_norm for marker in skip_markers):
             continue
         try:
             common = os.path.commonpath([target, absf])

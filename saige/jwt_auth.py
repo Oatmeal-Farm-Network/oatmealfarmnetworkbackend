@@ -1,7 +1,8 @@
 # --- jwt_auth.py --- (JWT authentication dependency for FastAPI)
 import os
 from dotenv import load_dotenv
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import InvalidTokenError
 from fastapi import HTTPException, Security, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
@@ -38,7 +39,7 @@ def get_current_user(
         if people_id is None:
             raise HTTPException(status_code=401, detail="Token missing PeopleID.")
         return str(people_id)
-    except JWTError:
+    except InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid or expired token.")
 
 
@@ -59,5 +60,5 @@ def get_current_user_optional(
         )
         people_id = payload.get("sub")
         return str(people_id) if people_id else None
-    except JWTError:
+    except InvalidTokenError:
         return None

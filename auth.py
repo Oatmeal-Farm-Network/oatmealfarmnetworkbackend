@@ -1,7 +1,8 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import InvalidTokenError
 from datetime import datetime, timedelta, timezone
 import bcrypt as _bcrypt
 from database import get_db
@@ -53,7 +54,7 @@ def verify_password_reset_token(token: str) -> int:
         if payload.get("type") != "pwd_reset":
             raise ValueError("wrong token type")
         return int(payload["sub"])
-    except (JWTError, ValueError, KeyError):
+    except (InvalidTokenError, ValueError, KeyError):
         raise HTTPException(status_code=400, detail="Invalid or expired reset token.")
 
 
@@ -78,7 +79,7 @@ def get_current_user(
         if sub is None:
             raise credentials_exception
         people_id = int(sub)
-    except (JWTError, ValueError):
+    except (InvalidTokenError, ValueError):
         raise credentials_exception
 
     user = db.query(models.People).filter(
