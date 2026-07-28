@@ -1,2 +1,2 @@
-﻿# Saige data package — runtime JSON remains in this directory; Python modules land in subpackages.
-
+# Saige persistence package — SQL control plane, Redis client, media storage.
+# Runtime JSON fallbacks (saige_proposals.json, etc.) also live under this directory.
