@@ -1,6 +1,13 @@
 name: Deploy Saige Staging
 
+# Saige-only CD. Do NOT deploy the main backend from this workflow.
+# Triggers on pushes to GCP/saige-staging (paths under saige/ or this workflow).
 on:
+  push:
+    branches: [GCP/saige-staging]
+    paths:
+      - 'saige/**'
+      - '.github/workflows/deploy-saige.yml'
   workflow_dispatch:
 
 env:
@@ -15,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
+      id-token: write   # required for Workload Identity Federation
 
     steps:
       - name: Checkout code
@@ -25,10 +32,12 @@ jobs:
         shell: bash
         run: echo "COMMIT_SHA=${GITHUB_SHA::12}" >> "$GITHUB_ENV"
 
+      # AUTH: same WIF secrets as backend staging deploy
+      # GitHub secret name must match: STAGING_GCP_WORKLOAD_IDENTITY_PROVIDER
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.STAGING_GCP_WIF_PROVIDER }}
+          workload_identity_provider: ${{ secrets.STAGING_GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT }}
 
       - name: Set up Cloud SDK
