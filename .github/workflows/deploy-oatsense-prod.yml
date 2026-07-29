@@ -1,0 +1,82 @@
+name: Deploy Oatsense Production
+
+# Explicit promote only — do not auto-deploy from main on every commit.
+on:
+  push:
+    branches: [GCP/oatsense-prod]
+    tags: ['oatsense-v*']
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.PROD_GCP_PROJECT_ID }}
+  REGION: ${{ vars.PROD_REGION || 'us-central1' }}
+  GAR_REPOSITORY: ${{ vars.PROD_ARTIFACT_REGISTRY_REPOSITORY || 'oatmeal-farm-registry' }}
+  SERVICE_NAME: oatmeal-oatsense
+  IMAGE_NAME: oatsense
+  CLOUD_SQL_INSTANCE: ${{ vars.PROD_CLOUD_SQL_INSTANCE }}
+  RUNTIME_SERVICE_ACCOUNT: ${{ vars.PROD_OATSENSE_RUNTIME_SA }}
+  PROD_FRONTEND_URL: ${{ vars.PROD_OATSENSE_FRONTEND_URL }}
+  CROP_MONITOR_URL: ${{ vars.PROD_CROP_MONITOR_URL }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Derive commit SHA tag
+        shell: bash
+        run: echo "COMMIT_SHA=${GITHUB_SHA::12}" >> "$GITHUB_ENV"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.PROD_GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.PROD_GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Build Docker image
+        run: |
+          docker build -f oatsense/Dockerfile.backend \
+            -t "${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}:${COMMIT_SHA}" \
+            .
+
+      - name: Push Docker image
+        run: |
+          docker push "${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}:${COMMIT_SHA}"
+
+      - name: Deploy to Cloud Run (production)
+        run: |
+          gcloud run deploy "${SERVICE_NAME}" \
+            --image "${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}:${COMMIT_SHA}" \
+            --region "${REGION}" \
+            --project "${PROJECT_ID}" \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 8000 \
+            --memory 2Gi \
+            --cpu 2 \
+            --min-instances 1 \
+            --max-instances 10 \
+            --service-account "${RUNTIME_SERVICE_ACCOUNT}" \
+            --set-cloudsql-instances "${CLOUD_SQL_INSTANCE}" \
+            --update-secrets "DB_SERVER=DB_SERVER:latest,DB_USER=DB_USER:latest,DB_PASSWORD=DB_PASSWORD:latest,DB_NAME=DB_NAME:latest,SECRET_KEY=SECRET_KEY:latest" \
+            --update-env-vars "INSTANCE_CONNECTION_NAME=${CLOUD_SQL_INSTANCE},FRONTEND_URL=${PROD_FRONTEND_URL},OATSENSE_FRONTEND_URL=${PROD_FRONTEND_URL},CROP_MONITOR_URL=${CROP_MONITOR_URL},GOOGLE_CLOUD_PROJECT=${PROJECT_ID},SKIP_SCHEMA_ENSURE=true" \
+            --quiet
+
+      - name: Show deployed URL
+        run: |
+          gcloud run services describe "${SERVICE_NAME}" \
+            --region "${REGION}" \
+            --project "${PROJECT_ID}" \
+            --format='value(status.url)'
