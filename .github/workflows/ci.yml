@@ -20,8 +20,8 @@ jobs:
       - name: Install ruff
         run: pip install ruff
 
-      - name: Lint app/, saige/, livestock/, and oatsense/
-        run: ruff check app saige livestock oatsense
+      - name: Lint app/, saige/, livestock/, oatsense/, and otf/
+        run: ruff check app saige livestock oatsense otf
 
   boot-check:
     name: Boot check (server_all.py)
@@ -114,6 +114,39 @@ jobs:
             RESULT=0
           else
             echo "oatsense boot/health check FAILED"
+            RESULT=1
+          fi
+          kill "$SERVER_PID" 2>/dev/null || true
+          exit $RESULT
+
+  boot-check-otf:
+    name: Boot check (otf / Over the Fence service)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install --no-cache-dir -r otf/requirements.txt
+
+      - name: Boot otf service and probe /health
+        env:
+          PORT: "8000"
+        run: |
+          # Saige-style: run from package root so `uvicorn api:app` resolves
+          cd otf
+          uvicorn api:app --host 127.0.0.1 --port 8000 &
+          SERVER_PID=$!
+          sleep 8
+          if curl --fail --silent --show-error http://127.0.0.1:8000/health; then
+            echo "otf boot OK"
+            RESULT=0
+          else
+            echo "otf boot/health check FAILED"
             RESULT=1
           fi
           kill "$SERVER_PID" 2>/dev/null || true
