@@ -43,7 +43,7 @@ gcloud run deploy $ServiceName `
     --cpu 2 `
     --min-instances 1 `
     --max-instances 10 `
-    --set-env-vars "GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_LOCATION=$Region,FRONTEND_URL=$FrontendUrl,ALLOW_ALL_ORIGINS=false,GOOGLE_GENAI_USE_VERTEXAI=true,VERTEX_AI_MODEL=gemini-2.5-flash-lite,FIRESTORE_DATABASE=charlie,CHAT_HISTORY_DATABASE=chat-history,REDIS_ENABLED=false" `
+    --set-env-vars "GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_LOCATION=$Region,FRONTEND_URL=$FrontendUrl,ALLOW_ALL_ORIGINS=false,GOOGLE_GENAI_USE_VERTEXAI=true,VERTEX_AI_MODEL=gemini-2.5-flash-lite,GEMINI_MODEL=gemini-2.5-flash-lite,SAIGE_LLM_PROVIDER=gemini,FIRESTORE_DATABASE=charlie,CHAT_HISTORY_DATABASE=chat-history,REDIS_ENABLED=false" `
     --set-secrets "SECRET_KEY=SECRET_KEY:latest,CRON_SECRET=CRON_SECRET:latest"
 
 $Url = gcloud run services describe $ServiceName `

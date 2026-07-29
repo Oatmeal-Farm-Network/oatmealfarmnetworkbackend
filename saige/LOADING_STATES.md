@@ -55,8 +55,8 @@ The farm advisor now shows **animated, emoji-rich status messages** while proces
 
 ### Terminal 1 - Backend
 ```bash
-cd C:\Users\bring\Desktop\charlie_lgraph
-python api.py
+cd saige
+uvicorn api:app --reload --port 8000
 ```
 
 ### Terminal 2 - Frontend

@@ -22,6 +22,15 @@ Sankeerth owns only:
 - Saige-specific secret wiring
 - the Saige portion of the secret-to-service map
 
+### Image / entrypoint
+
+Saige images build from `saige/Dockerfile.backend` with context `./saige`.
+
+- Must copy the **full package** (`COPY . .`) — not root `*.py` only.
+- Process entry remains **`uvicorn api:app`** (root shim → `app.api:app`).
+- Workflow: `.github/workflows/deploy-saige.yml`; helper: `saige/deploy.ps1`.
+- Layout notes: [`saige/docs/MIGRATION_RESULTS.md`](../../saige/docs/MIGRATION_RESULTS.md).
+
 ---
 
 ## Current Staging Status

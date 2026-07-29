@@ -20,12 +20,16 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY *.py ./
+# Copy full Saige package (app/, graph/, shims, …). Do not COPY *.py only.
+COPY . .
 
 # Expose port (FastAPI default)
 EXPOSE 8000
 
-# Command to run the application
+# Health: Cloud Run / load balancer
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)" || exit 1
+
+# Entrypoint via root compatibility shim: api.py → app.api:app
 CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
 

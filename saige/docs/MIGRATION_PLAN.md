@@ -51,15 +51,20 @@
 | `saige_models`, `Data_Contract` | `schemas/models.py`, `schemas/contracts.py` |
 | embeddings / digest / proactive | `workers/` |
 
-## Commit sequence
+## Commit sequence (executed)
 
-1. **Commit 1 (this)** — Package skeleton + `__init__.py` + `core/paths.py` + this plan. **No production moves.**
-2. **Commit 2** — `core/` + `schemas/` (config, security, logging, policies, models) + shims
-3. **Commit 3** — `graph/` + `chat/` + package re-exports
-4. **Commit 4** — `tools/` + `agents/`
-5. **Commit 5** — `data/` + `integrations/` + `workers/`
-6. **Commit 6** — Docker / deploy / pytest / docs path updates
-7. **Commit 7** — Verification report (`MIGRATION_RESULTS.md`)
+1. Package skeleton + `core/paths.py` + this plan
+2. `core/` + `schemas/` + shims
+3. `graph/` package
+4. `chat/` package
+5. FastAPI → `app/`
+6. Domain tools → `tools/`
+7. Shared services → `services/`
+8. Persistence → `data/`
+9. Integrations (Gemini / RAG / embeddings)
+10. Sibling HTTP agents → `agents/sibling/`
+11. Workers (`farm_digest`, `proactive`)
+12. Docs / deploy path updates (this stabilization pass)
 
 Each step: move one subsystem → shims immediately → import/tests → commit.
 
@@ -88,4 +93,28 @@ git reset --hard <sha-before-step>
 - [x] Add `graph/routing.py` + `graph/state.py`
 - [x] Package `__init__.py` lazy-exports compiled graph
 - [x] Root `nodes.py` shim; root `graph.py` discoverability stub (package wins imports)
+
+## Commit 4 status
+
+- [x] Move chat turn handlers into `chat/service.py` + `chat/streaming.py`
+- [x] Move Firestore history → `chat/history.py`, Redis buffer → `chat/buffer.py`
+- [x] Root shims: `chat.py` (stub), `chat_history.py`, `message_buffer.py`
+- [x] Compat aliases: `get_history`, `get_recent_messages`
+
+## Commits 5–11 status
+
+- [x] FastAPI → `app/` (`api.py` shim → `uvicorn api:app`)
+- [x] Domain tools → `tools/`
+- [x] Shared services → `services/`
+- [x] Persistence → `data/`
+- [x] Integrations → `integrations/`
+- [x] Sibling agents → `agents/sibling/`
+- [x] Workers → `workers/`
+
+## Stabilization (docs / deploy)
+
+- [x] Dockerfiles copy full package (`COPY . .`), not `*.py` only
+- [x] Image CMD remains `uvicorn api:app`
+- [x] Docs updated to package paths (README, HANDOFF, migration results)
+- [x] Verification report: `docs/MIGRATION_RESULTS.md`
 

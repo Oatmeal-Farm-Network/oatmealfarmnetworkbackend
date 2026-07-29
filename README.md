@@ -57,7 +57,9 @@ Package code lives under **`app/`** (not a top-level `routers/` folder):
 │   ├── core/                # JWT / shared auth helpers
 │   └── routers/             # Domain API routers
 ├── saige/                   # AI advisory (own Dockerfile + CD)
-│   ├── api.py
+│   ├── api.py               # Shim → app/api.py (uvicorn api:app)
+│   ├── app/ graph/ chat/ core/ tools/ agents/ …
+│   ├── integrations/ workers/ data/ services/ schemas/
 │   ├── Dockerfile.backend
 │   └── README.md
 ├── test/                    # Unit / smoke tests
