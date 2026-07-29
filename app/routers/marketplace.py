@@ -2250,8 +2250,20 @@ def _livestock_listing(
     order_sql  = sort_map.get(sort_by, "a.LastUpdated")
     dir_sql    = "ASC" if order_by == "asc" else "DESC"
 
-    filters = [f"a.SpeciesID = :sid", publish_flag,
-               f"{price_col} >= :min_price", f"{price_col} <= :max_price"]
+    # NULL Price/StudFee means "Call for Price". Include those only when the
+    # caller is using the default open range; exclude them when filtering by fee.
+    if min_price <= 0 and max_price >= 100_000_000:
+        price_clause = (
+            f"({price_col} IS NULL OR "
+            f"({price_col} >= :min_price AND {price_col} <= :max_price))"
+        )
+    else:
+        price_clause = (
+            f"({price_col} IS NOT NULL AND "
+            f"{price_col} >= :min_price AND {price_col} <= :max_price)"
+        )
+
+    filters = [f"a.SpeciesID = :sid", publish_flag, price_clause]
     params: dict = {"sid": species_id, "min_price": min_price, "max_price": max_price}
 
     if breed_id and breed_id != 0:
@@ -2392,22 +2404,15 @@ SPECIES_ID_TO_SLUG = {v: k for k, v in SLUG_TO_SPECIES_ID.items()}
 def _photo_url(filename) -> str | None:
     """Return a GCS URL for the given filename value, or None.
 
-    If the value is already a GCS URL it is returned as-is.
-    Otherwise we construct one from the bare filename so the browser can
-    attempt to load it — onError handlers on the frontend hide any that 404.
+    Delegates to _fix_animal_url so detail pages use the same normalisation
+    as listing cards (and avoid the previous NameError on undefined _GCS_PREFIX).
     """
     if not filename:
         return None
     s = str(filename).strip()
     if not s or s == "0" or len(s) < 3:
         return None
-    if s.startswith(_GCS_PREFIX):
-        return s
-    from urllib.parse import quote
-    fname = s.split("/")[-1].strip()
-    if not fname or len(fname) < 3:
-        return None
-    return f"{GCP_ANIMALS}/{quote(fname, safe='')}"
+    return _fix_animal_url(s)
 
 
 @marketplace_router.get("/animal/{animal_id}/progeny")
