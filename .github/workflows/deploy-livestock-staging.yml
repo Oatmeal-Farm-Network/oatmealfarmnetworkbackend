@@ -6,6 +6,11 @@ on:
     paths:
       - 'livestock/**'
       - 'app/routers/livestock.py'
+      - 'app/routers/marketplace.py'
+      - 'app/routers/ranches.py'
+      - 'app/routers/animals.py'
+      - 'app/routers/herd_health.py'
+      - 'app/routers/auth.py'
       - 'app/models/livestock.py'
       - 'app/database.py'
       - 'app/routers/translation.py'
@@ -21,7 +26,9 @@ env:
   IMAGE_NAME: livestock
   CLOUD_SQL_INSTANCE: oatmeal-farm-staging:us-central1:oatmeal-staging-sqlserver
   RUNTIME_SERVICE_ACCOUNT: stg-to-prod-db-ro-dev-project@oatmeal-farm-staging.iam.gserviceaccount.com
-  STAGING_FRONTEND_URL: ${{ vars.STAGING_FRONTEND_URL || 'https://oatmeal-frontend-staging-1087130530284.us-central1.run.app' }}
+  # LOA frontend origin (CORS). Optional OFN staging frontend for migration dual-allow.
+  STAGING_LOA_FRONTEND_URL: ${{ vars.STAGING_LOA_FRONTEND_URL || 'https://livestock-frontend-staging-lrviw4iujq-uc.a.run.app' }}
+  STAGING_FRONTEND_URL: ${{ vars.STAGING_FRONTEND_URL || '' }}
 
 jobs:
   deploy:
@@ -37,6 +44,20 @@ jobs:
       - name: Derive commit SHA tag
         shell: bash
         run: echo "COMMIT_SHA=${GITHUB_SHA::12}" >> "$GITHUB_ENV"
+
+      - name: Build FRONTEND_URL (LOA required, OFN optional)
+        shell: bash
+        run: |
+          loa="${{ env.STAGING_LOA_FRONTEND_URL }}"
+          ofn="${{ env.STAGING_FRONTEND_URL }}"
+          loa="${loa%/}"
+          ofn="${ofn%/}"
+          if [ -n "$ofn" ] && [ "$ofn" != "$loa" ]; then
+            echo "FRONTEND_URL_VALUE=${loa},${ofn}" >> "$GITHUB_ENV"
+          else
+            echo "FRONTEND_URL_VALUE=${loa}" >> "$GITHUB_ENV"
+          fi
+          echo "CORS FRONTEND_URL will be: $(grep FRONTEND_URL_VALUE "$GITHUB_ENV" | cut -d= -f2-)"
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -76,7 +97,7 @@ jobs:
             --service-account "${RUNTIME_SERVICE_ACCOUNT}" \
             --set-cloudsql-instances "${CLOUD_SQL_INSTANCE}" \
             --update-secrets "DB_SERVER=DB_SERVER:latest,DB_USER=DB_USER:latest,DB_PASSWORD=DB_PASSWORD:latest,DB_NAME=DB_NAME:latest,SECRET_KEY=SECRET_KEY:latest" \
-            --update-env-vars "INSTANCE_CONNECTION_NAME=${CLOUD_SQL_INSTANCE},FRONTEND_URL=${STAGING_FRONTEND_URL},GCS_LIVESTOCK_IMAGES_BUCKET=oatmeal-farm-network-images,GOOGLE_CLOUD_PROJECT=${PROJECT_ID}" \
+            --update-env-vars "INSTANCE_CONNECTION_NAME=${CLOUD_SQL_INSTANCE},FRONTEND_URL=${FRONTEND_URL_VALUE},LOA_FRONTEND_URL=${STAGING_LOA_FRONTEND_URL},GCS_LIVESTOCK_IMAGES_BUCKET=oatmeal-farm-network-images,GCS_IMAGES_BUCKET=oatmeal-farm-network-images,GOOGLE_CLOUD_PROJECT=${PROJECT_ID}" \
             --quiet
 
       - name: Show deployed URL
