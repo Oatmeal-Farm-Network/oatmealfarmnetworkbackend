@@ -66,6 +66,13 @@ Package code lives under **`app/`** (not a top-level `routers/` folder):
 │   ├── api.py               # uvicorn oatsense.api:app
 │   ├── Dockerfile.backend
 │   └── cloudbuild.yaml
+├── otf/                     # Over the Fence Social (Saige-style isolated package + CD)
+│   ├── api.py               # Shim → app/api.py (uvicorn api:app)
+│   ├── app/                 # FastAPI app + mill router
+│   ├── database.py
+│   ├── requirements.txt
+│   ├── Dockerfile.backend   # Build context = ./otf
+│   └── cloudbuild.yaml
 ├── livestock/               # Livestock microservice (own Dockerfile + CD)
 ├── test/                    # Unit / smoke tests
 ├── docs/                    # Staging, IAM, Cloud Run runbooks
@@ -78,6 +85,7 @@ Package code lives under **`app/`** (not a top-level `routers/` folder):
     ├── deploy-saige.yml              # Saige → oatmeal-saige-staging
     ├── deploy-oatsense-staging.yml   # Oatsense → oatmeal-oatsense-staging
     ├── deploy-oatsense-prod.yml      # Oatsense → oatmeal-oatsense
+    ├── deploy-otf-staging.yml        # OTF → oatmeal-otf-staging
     ├── deploy-livestock-staging.yml
     └── ci.yml
 ```
@@ -180,8 +188,10 @@ GCP project: **`oatmeal-farm-staging`** · Region: **`us-central1`**
 | Saige | `GCP/saige-staging` | `.github/workflows/deploy-saige.yml` | `oatmeal-saige-staging` |
 | Oatsense | `GCP/backend-staging` (path-filtered) | `.github/workflows/deploy-oatsense-staging.yml` | `oatmeal-oatsense-staging` |
 | Oatsense prod | `GCP/oatsense-prod` / `oatsense-v*` / dispatch | `.github/workflows/deploy-oatsense-prod.yml` | `oatmeal-oatsense` |
+| OTF Social | `GCP/otf-staging` | `.github/workflows/deploy-otf-staging.yml` | `oatmeal-otf-staging` |
 
-→ Oatsense runbook: [`docs/oatsense-deploy.md`](docs/oatsense-deploy.md)
+→ Oatsense runbook: [`docs/oatsense-deploy.md`](docs/oatsense-deploy.md)  
+→ OTF runbook: [`docs/otf-deploy.md`](docs/otf-deploy.md)
 
 ### Backend staging (`GCP/backend-staging`)
 
@@ -218,9 +228,11 @@ GCP project: **`oatmeal-farm-staging`** · Region: **`us-central1`**
 | Saige (`saige/`, Saige workflow) | `GCP/saige-staging` |
 | Oatsense (`oatsense/`, precision-ag routers, Oatsense workflow) | `GCP/backend-staging` (path-filtered) or workflow_dispatch |
 | Oatsense production promote | `GCP/oatsense-prod`, tag `oatsense-v*`, or workflow_dispatch |
+| OTF Social (`otf/`, OTF workflow) | `GCP/otf-staging` |
 | Docs only (`docs/`) | Either; backend CD skips `docs/**` |
 
 Do **not** expect a Saige code change on `GCP/backend-staging` to update `oatmeal-saige-staging`.
+Do **not** expect an OTF code change on `GCP/backend-staging` to update `oatmeal-otf-staging` — use `GCP/otf-staging`.
 Oatsense staging **does** deploy from `GCP/backend-staging` when `oatsense/**` or its precision-ag path filters change.
 
 ---
@@ -249,6 +261,7 @@ Details: [`docs/staging/STAGING_CLOUD_SQL_SETUP.md`](docs/staging/STAGING_CLOUD_
 | [`docs/cloud-run-staging.md`](docs/cloud-run-staging.md) | Staging service URLs / status |
 | [`docs/iam-setup.md`](docs/iam-setup.md) | WIF, runtime SAs, roles |
 | [`docs/oatsense-deploy.md`](docs/oatsense-deploy.md) | Oatsense staging + production CD, cutover |
+| [`docs/otf-deploy.md`](docs/otf-deploy.md) | Over the Fence Social staging + production CD |
 | [`saige/README.md`](saige/README.md) | Saige product / API deep dive |
 
 ---
