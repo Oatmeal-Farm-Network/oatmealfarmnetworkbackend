@@ -3,7 +3,7 @@ steps:
     args:
       - 'build'
       - '-f'
-      - 'Dockerfile.backend'
+      - 'otf/Dockerfile.backend'
       - '-t'
       - 'us-central1-docker.pkg.dev/${PROJECT_ID}/oatmeal-farm-registry/otf:latest'
       - '.'

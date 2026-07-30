@@ -1,42 +1,19 @@
-# Over the Fence (OTF) Social deploy runbook
+# Over the Fence (OTF) Social — staging deploy (livestock-style)
 
-OTF is a **Saige-style isolated** FastAPI package in this repo (`otf/`).
-It owns Over the Fence social: communities, channels, DMs, group DMs,
-messages, and forums.
+OTF is a **separate Cloud Run service** like livestock (LSA): a thin FastAPI
+entrypoint that mounts [`app/routers/mill.py`](../app/routers/mill.py). Logic
+stays in `app/`; the service is only packaging + CD.
 
-Local (from `otf/`):
+Local:
 
 ```bash
-cd otf
-uvicorn api:app --reload --port 8004
+uvicorn otf.api:app --reload --port 8004
 ```
 
-Health: `GET /health` → `{"status":"ok","service":"otf"}`
+Health: `GET /health` → `{"status":"ok","service":"otf"}`  
+API: `/api/admin/mill/*`
 
-Mill API prefix: `/api/admin/mill/*`
-
----
-
-## Package layout (mirrors Saige)
-
-```text
-otf/
-├── api.py                 # Shim → app.api:app  (uvicorn api:app)
-├── app/
-│   ├── api.py             # FastAPI app + CORS + /health
-│   └── mill.py            # Communities / channels / DMs / forums
-├── database.py            # SQL Server + Cloud SQL Connector
-├── schema_ensure.py       # Lazy DDL gate (SKIP_SCHEMA_ENSURE)
-├── requirements.txt       # Package-local deps
-├── Dockerfile.backend     # Build context = ./otf
-└── cloudbuild.yaml
-```
-
-Docker build context is **`./otf` only** — zero dependency on the rest of
-the repo at image-build time (same rule as Saige).
-
-Main backend still mounts [`app/routers/mill.py`](../app/routers/mill.py)
-during dual-serve. After cutover, remove that include from `app/main.py`.
+Main backend still mounts `mill` (dual-serve) until frontend cutover.
 
 ---
 
@@ -45,64 +22,29 @@ during dual-serve. After cutover, remove that include from `app/main.py`.
 | Item | Value |
 |------|-------|
 | Workflow | `.github/workflows/deploy-otf-staging.yml` |
-| Triggers | push to `GCP/otf-staging` (path `otf/**`) + `workflow_dispatch` |
+| Triggers | push to `GCP/backend-staging` (path-filtered) + `workflow_dispatch` |
 | Cloud Run | `oatmeal-otf-staging` |
 | Image | `.../oatmeal-farm-registry/otf:<sha>` |
-| Build | `docker build -f otf/Dockerfile.backend ./otf` |
-| Runtime SA | `otf-sa@<project>.iam.gserviceaccount.com` |
+| Build | `docker build -f otf/Dockerfile.backend .` (repo root, like livestock) |
+| Runtime SA | Same staging DB SA as livestock |
 
-### Staging secrets / vars
+### Path filters
 
-Shared WIF (same as Saige):
+- `otf/**`
+- `app/routers/mill.py`
+- `app/database.py`, `app/schema_ensure.py`
+- `requirements.txt`
+- workflow file
 
-| Name | Type |
-|------|------|
-| `STAGING_GCP_PROJECT_ID` | secret |
-| `STAGING_GCP_SERVICE_ACCOUNT` | secret |
-| `STAGING_GCP_WIF_PROVIDER` | secret |
-| `STAGING_OTF_FRONTEND_URL` | var (CORS; falls back to `STAGING_FRONTEND_URL`) |
+### Secrets / vars
 
-Service mounts: `DB_*`, `SECRET_KEY`. Env: `INSTANCE_CONNECTION_NAME`,
-`SKIP_SCHEMA_ENSURE=true`, `OTF_FRONTEND_URL`.
+Same WIF as livestock. Optional: `STAGING_OTF_FRONTEND_URL` (falls back to
+`STAGING_FRONTEND_URL`). Service mounts `DB_*`, `SECRET_KEY`.
 
-### One-time: create `otf-sa` (staging)
+### Frontend
 
-Mirror Saige’s `saige-sa` setup — Cloud SQL client + Secret Manager accessor:
+`VITE_OTF_API_URL=<oatmeal-otf-staging URL>`
 
-```bash
-gcloud iam service-accounts create otf-sa \
-  --display-name="OTF Social runtime" \
-  --project=oatmeal-farm-staging
+### Production
 
-# Grant Cloud SQL client + secret accessor (adjust roles to match saige-sa)
-gcloud projects add-iam-policy-binding oatmeal-farm-staging \
-  --member="serviceAccount:otf-sa@oatmeal-farm-staging.iam.gserviceaccount.com" \
-  --role="roles/cloudsql.client"
-```
-
-Smoke-test after first deploy:
-
-```bash
-curl -sS "$(gcloud run services describe oatmeal-otf-staging \
-  --region us-central1 --project oatmeal-farm-staging \
-  --format='value(status.url)')/health"
-```
-
----
-
-## Production
-
-**Deferred.** Staging only for now — no `deploy-otf-prod.yml`. Add a production
-workflow later when ready (mirror Saige/Oatsense prod patterns).
-
----
-
-## Frontend cutover
-
-| Consumer | Config |
-|----------|--------|
-| OTF UI | `VITE_OTF_API_URL=<otf Cloud Run URL>` |
-| Main backend | Keep `mill` mounted until traffic moves; then drop from `app/main.py` |
-
-Do **not** expect an OTF change on `GCP/backend-staging` to update
-`oatmeal-otf-staging` — push to `GCP/otf-staging` (or dispatch) instead.
+**Deferred** — staging only for now.

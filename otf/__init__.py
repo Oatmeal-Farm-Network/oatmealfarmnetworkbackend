@@ -1,1 +1,1 @@
-"""Over the Fence Social — isolated microservice (Saige pattern)."""
+"""Over the Fence Social microservice (livestock-style)."""
