@@ -131,15 +131,13 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install --no-cache-dir -r otf/requirements.txt
+        run: pip install --no-cache-dir -r requirements.txt
 
       - name: Boot otf service and probe /health
         env:
           PORT: "8000"
         run: |
-          # Saige-style: run from package root so `uvicorn api:app` resolves
-          cd otf
-          uvicorn api:app --host 127.0.0.1 --port 8000 &
+          uvicorn otf.api:app --host 127.0.0.1 --port 8000 &
           SERVER_PID=$!
           sleep 8
           if curl --fail --silent --show-error http://127.0.0.1:8000/health; then
