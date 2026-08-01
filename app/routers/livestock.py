@@ -8,23 +8,14 @@ from app.routers.translation import translate_fields, translate_list
 
 router = APIRouter(prefix="/api/livestock", tags=["livestock"])
 
-# Breed/species encyclopedia images historically lived under /uploads on
-# livestockoftheworld.com. Rewriting to GCS Animals/ breaks most breed images
-# (audit: ~1,583 GCS 404s; same filenames return 200 on legacy uploads).
-# Default to the working legacy host; set USE_GCS_LIVESTOCK_IMAGES=true after migration.
+# Breed/species encyclopedia images live in the prod Animals/ library.
+# Keep this separate from GCS_IMAGES_BUCKET (staging uploads) so staging can
+# still write to oatmeal-farm-network-images-staging without breaking reads.
 GCS_LIVESTOCK_IMAGES_BUCKET = os.getenv(
     "GCS_LIVESTOCK_IMAGES_BUCKET",
     "oatmeal-farm-network-images",
 )
 GCS_IMAGES_URL = f"https://storage.googleapis.com/{GCS_LIVESTOCK_IMAGES_BUCKET}/Animals"
-LEGACY_UPLOADS_URL = os.getenv(
-    "LIVESTOCK_LEGACY_UPLOADS_URL",
-    "https://livestockoftheworld.com/uploads",
-).rstrip("/")
-USE_GCS_LIVESTOCK_IMAGES = os.getenv("USE_GCS_LIVESTOCK_IMAGES", "false").lower() in (
-    "1", "true", "yes",
-)
-ENCYCLOPEDIA_IMAGES_URL = GCS_IMAGES_URL if USE_GCS_LIVESTOCK_IMAGES else LEGACY_UPLOADS_URL
 
 OLD_DOMAINS = [
     'oatmealfarmnetwork.com', 'livestockofamerica.com',
@@ -32,26 +23,7 @@ OLD_DOMAINS = [
     'globallivestocksolutions.com',
 ]
 
-def _safe_text(value) -> str | None:
-    """Coerce DB text to a JSON-safe string (or None)."""
-    if value is None:
-        return None
-    if isinstance(value, bytes):
-        value = value.decode("utf-8", errors="replace")
-    else:
-        value = str(value)
-    value = value.replace("\x00", "")
-    return value.encode("utf-8", errors="surrogatepass").decode("utf-8", errors="replace")
-
-
-def _encyclopedia_image_url(filename: str) -> str:
-    return f"{ENCYCLOPEDIA_IMAGES_URL}/{filename}"
-
-
 def _fix_image_url(url: str | None) -> str | None:
-    if not url:
-        return None
-    url = _safe_text(url)
     if not url:
         return None
     url = url.strip()
@@ -59,51 +31,23 @@ def _fix_image_url(url: str | None) -> str | None:
         return None
     if url.lower().startswith('http'):
         url = re.sub(r'^http:', 'https:', url, flags=re.IGNORECASE)
-        if ENCYCLOPEDIA_IMAGES_URL in url:
-            return url
         for domain in OLD_DOMAINS:
             if domain in url.lower():
                 filename = url.split('/')[-1].strip()
                 if filename and len(filename) > 3:
-                    return _encyclopedia_image_url(filename)
-        if "/Animals/" in url and not USE_GCS_LIVESTOCK_IMAGES:
-            filename = url.split('/')[-1].strip()
-            if filename and len(filename) > 3:
-                return _encyclopedia_image_url(filename)
+                    return f"{GCS_IMAGES_URL}/{filename}"
         return url
     if url.lower().startswith('/uploads/'):
         filename = url[9:].strip()
         if filename and len(filename) > 3:
-            return _encyclopedia_image_url(filename)
+            return f"{GCS_IMAGES_URL}/{filename}"
         return None
     if '/' not in url and len(url) > 4:
-        return _encyclopedia_image_url(url)
+        return f"{GCS_IMAGES_URL}/{url}"
     filename = url.split('/')[-1].strip()
     if filename and len(filename) > 3:
-        return _encyclopedia_image_url(filename)
+        return f"{GCS_IMAGES_URL}/{filename}"
     return None
-
-
-def _breed_list_item(row) -> dict | None:
-    """Build a breed list card payload; skip rows that cannot be serialized."""
-    try:
-        breed_id = row.BreedLookupID
-        if breed_id is None:
-            return None
-        return {
-            "breed_id": int(breed_id),
-            "breed": (_safe_text(row.Breed) or "").strip(),
-            "description": _safe_text(row.Breeddescription),
-            "image": _fix_image_url(row.BreedImage),
-            "image_caption": _safe_text(row.BreedImageCaption),
-        }
-    except Exception:
-        import logging
-        logging.exception(
-            "Skipping corrupt breed row BreedLookupID=%s",
-            getattr(row, "BreedLookupID", None),
-        )
-        return None
 
 SLUG_TO_SPECIES_ID = {
     'alpacas': 2, 'bison': 9, 'buffalo': 34, 'camels': 18, 'cattle': 8,
@@ -183,9 +127,9 @@ def get_species_letters(slug: str, db: Session = Depends(get_db)):
         species_info = None
         if info_row:
             species_info = {
-                "singular": _safe_text(info_row.SingularTerm),
-                "plural": _safe_text(info_row.PluralTerm),
-                "description": _safe_text(info_row.SpeciesText1),
+                "singular": info_row.SingularTerm,
+                "plural": info_row.PluralTerm,
+                "description": info_row.SpeciesText1,
                 "main_image": _fix_image_url(info_row.SpeciesImage1),
             }
 
@@ -251,88 +195,43 @@ def get_species(slug: str, letter: str = None, lang: str = "en", db: Session = D
         species_info = None
         if info_row:
             species_info = {
-                "singular": _safe_text(info_row.SingularTerm),
-                "plural": _safe_text(info_row.PluralTerm),
-                "description": _safe_text(info_row.SpeciesText1),
+                "singular": info_row.SingularTerm,
+                "plural": info_row.PluralTerm,
+                "description": info_row.SpeciesText1,
                 "main_image": _fix_image_url(info_row.SpeciesImage1),
             }
 
-        # CONVERT avoids rare legacy TEXT/NTEXT driver decode failures that
-        # previously 500'd entire species pages (chicken 2940, horse 594, llama 1902).
         if letter:
             sql = text("""
-               SELECT BreedLookupID,
-                      Breed,
-                      CONVERT(NVARCHAR(MAX), Breeddescription) AS Breeddescription,
-                      CONVERT(NVARCHAR(MAX), BreedImage) AS BreedImage,
-                      CONVERT(NVARCHAR(MAX), BreedImageCaption) AS BreedImageCaption
+               SELECT BreedLookupID, Breed, Breeddescription, BreedImage, BreedImageCaption
                 FROM SpeciesBreedLookupTable
                 WHERE SpeciesID = :sid 
                 AND UPPER(LEFT(Breed, 1)) = :letter
                 AND LEFT(Breed, 1) LIKE '[A-Z]'
                 ORDER BY Breed
             """)
-            params = {"sid": species_id, "letter": letter.upper()}
+            rows = db.execute(sql, {"sid": species_id, "letter": letter.upper()}).fetchall()
         else:
             sql = text("""
-                SELECT BreedLookupID,
-                       Breed,
-                       CONVERT(NVARCHAR(MAX), Breeddescription) AS Breeddescription,
-                       CONVERT(NVARCHAR(MAX), BreedImage) AS BreedImage,
-                       CONVERT(NVARCHAR(MAX), BreedImageCaption) AS BreedImageCaption
+                SELECT BreedLookupID, Breed, Breeddescription, BreedImage, BreedImageCaption
                 FROM SpeciesBreedLookupTable
                 WHERE SpeciesID = :sid
                 ORDER BY Breed
             """)
-            params = {"sid": species_id}
-
-        try:
-            rows = db.execute(sql, params).fetchall()
-        except Exception:
-            import logging
-            logging.exception(
-                "Breed detail columns failed for species=%s letter=%s; returning names only",
-                slug,
-                letter,
-            )
-            if letter:
-                rows = db.execute(
-                    text("""
-                        SELECT BreedLookupID, Breed,
-                               CAST(NULL AS NVARCHAR(MAX)) AS Breeddescription,
-                               CAST(NULL AS NVARCHAR(MAX)) AS BreedImage,
-                               CAST(NULL AS NVARCHAR(MAX)) AS BreedImageCaption
-                        FROM SpeciesBreedLookupTable
-                        WHERE SpeciesID = :sid
-                        AND UPPER(LEFT(Breed, 1)) = :letter
-                        AND LEFT(Breed, 1) LIKE '[A-Z]'
-                        ORDER BY Breed
-                    """),
-                    params,
-                ).fetchall()
-            else:
-                rows = db.execute(
-                    text("""
-                        SELECT BreedLookupID, Breed,
-                               CAST(NULL AS NVARCHAR(MAX)) AS Breeddescription,
-                               CAST(NULL AS NVARCHAR(MAX)) AS BreedImage,
-                               CAST(NULL AS NVARCHAR(MAX)) AS BreedImageCaption
-                        FROM SpeciesBreedLookupTable
-                        WHERE SpeciesID = :sid
-                        ORDER BY Breed
-                    """),
-                    {"sid": species_id},
-                ).fetchall()
-
-        breeds = []
-        for r in rows:
-            item = _breed_list_item(r)
-            if item is not None:
-                breeds.append(item)
+            rows = db.execute(sql, {"sid": species_id}).fetchall()
 
         result = {
             "species_info": species_info,
-            "breeds": breeds,
+            "breeds": [
+                {
+                    "breed_id": r.BreedLookupID,
+                    "breed": r.Breed,
+                    "description": r.Breeddescription,
+                    "image": _fix_image_url(r.BreedImage),
+                    "image_caption": r.BreedImageCaption,
+                }
+                for r in rows
+            ]
         }
         cache_set(cache_key, result)
         result = dict(result)
@@ -354,11 +253,8 @@ def get_breed(breed_id: int, lang: str = "en", db: Session = Depends(get_db)):
         return translate_fields(cached, ["description"], lang, db)
     try:
         sql = text("""
-            SELECT BreedLookupID,
-                   Breed,
-                   CONVERT(NVARCHAR(MAX), Breeddescription) AS Breeddescription,
-                   CONVERT(NVARCHAR(MAX), BreedImage) AS BreedImage,
-                   CONVERT(NVARCHAR(MAX), BreedImageCaption) AS BreedImageCaption
+            SELECT BreedLookupID, Breed, Breeddescription, BreedImage,
+                   BreedImageCaption, BreedImageOrientation, Breedvideo
             FROM SpeciesBreedLookupTable
             WHERE BreedLookupID = :bid
         """)
@@ -367,33 +263,14 @@ def get_breed(breed_id: int, lang: str = "en", db: Session = Depends(get_db)):
             raise HTTPException(status_code=404, detail="Breed not found")
 
         result = {
-            "breed_id": int(row.BreedLookupID),
-            "breed": (_safe_text(row.Breed) or "").strip(),
-            "description": _safe_text(row.Breeddescription),
+            "breed_id": row.BreedLookupID,
+            "breed": row.Breed,
+            "description": row.Breeddescription,
             "image": _fix_image_url(row.BreedImage),
-            "image_caption": _safe_text(row.BreedImageCaption),
-            "image_orientation": None,
-            "video": None,
+            "image_caption": row.BreedImageCaption,
+            "image_orientation": row.BreedImageOrientation,
+            "video": row.Breedvideo,
         }
-        try:
-            extra = db.execute(
-                text("""
-                    SELECT CONVERT(NVARCHAR(MAX), BreedImageOrientation) AS BreedImageOrientation,
-                           CONVERT(NVARCHAR(MAX), Breedvideo) AS Breedvideo
-                    FROM SpeciesBreedLookupTable
-                    WHERE BreedLookupID = :bid
-                """),
-                {"bid": breed_id},
-            ).fetchone()
-            if extra:
-                result["image_orientation"] = _safe_text(extra.BreedImageOrientation)
-                result["video"] = _safe_text(extra.Breedvideo)
-        except Exception:
-            import logging
-            logging.exception(
-                "Optional breed media columns failed for BreedLookupID=%s", breed_id
-            )
-
         cache_set(f'breed_{breed_id}', result)
         return translate_fields(result, ["description"], lang, db)
     except HTTPException:
