@@ -2,12 +2,18 @@
 """
 Persists chat conversations to Firestore so users can retrieve past sessions.
 
+Product-scoped top-level collections (same Firestore DB, separate namespaces):
+  threads/       — Oatmeal Farm Network (OFN) chat history
+  loa_threads/   — Livestock of America (LOA) chat history
+
 Schema (nested subcollections):
 
-  threads/{thread_id}                          — thread metadata
+  {collection}/{thread_id}                     — thread metadata
     Fields:
       thread_id   : str
       user_id     : str
+      business_id : str | None  (scopes history per business)
+      product     : str ("ofn" | "loa")
       created_at  : str (ISO-8601)
       updated_at  : str (ISO-8601)
       status      : str ("active" | "complete")
@@ -16,7 +22,7 @@ Schema (nested subcollections):
       preview     : str  (first user message, truncated to 100 chars)
       farm_context : dict | None  (set on completion)
 
-  threads/{thread_id}/messages/{message_id}    — individual messages
+  {collection}/{thread_id}/messages/{message_id}  — individual messages
     Fields:
       role     : str ("user" | "assistant" | "system" | "tool")
       content  : str
@@ -34,7 +40,8 @@ from config import (
     CHAT_HISTORY_DATABASE,
     GCP_CREDENTIALS,
     GCP_PROJECT,
-    THREADS_COLLECTION,
+    normalize_chat_product,
+    threads_collection_for,
 )
 
 # ── Org-profile collection ────────────────────────────────────────────────────
@@ -127,20 +134,24 @@ class ChatHistory:
     # Collection helpers
     # ------------------------------------------------------------------
 
-    @property
-    def threads_col(self):
-        """Top-level threads collection reference."""
+    def threads_col_for(self, product: Optional[str] = "ofn"):
+        """Top-level threads collection for OFN (`threads`) or LOA (`loa_threads`)."""
         try:
             db = self.firestore_db
             if db:
-                return db.collection(THREADS_COLLECTION)
+                return db.collection(threads_collection_for(product))
         except Exception:
             pass
         return None
 
-    def _messages_col(self, thread_id: str):
-        """Messages subcollection for a given thread."""
-        col = self.threads_col
+    @property
+    def threads_col(self):
+        """OFN threads collection (backward-compatible default)."""
+        return self.threads_col_for("ofn")
+
+    def _messages_col(self, thread_id: str, product: Optional[str] = "ofn"):
+        """Messages subcollection for a given thread in the product collection."""
+        col = self.threads_col_for(product)
         if col is not None:
             return col.document(thread_id).collection("messages")
         return None
@@ -157,20 +168,24 @@ class ChatHistory:
         content: str,
         metadata: Optional[Dict[str, Any]] = None,
         business_id: Optional[str] = None,
+        product: Optional[str] = "ofn",
     ) -> bool:
         """Persist a single message and ensure the parent thread doc exists.
 
         Creates the thread document on the first message.
         business_id is stored on the thread so org-wide memory queries can
         aggregate across all team members' conversations for the same org.
+        product selects OFN vs LOA collection (auth is shared; history is not).
         """
-        if self.threads_col is None:
+        product = normalize_chat_product(product)
+        col = self.threads_col_for(product)
+        if col is None:
             return False
 
         t0 = time.monotonic()
         try:
             now = datetime.datetime.utcnow().isoformat()
-            thread_ref = self.threads_col.document(thread_id)
+            thread_ref = col.document(thread_id)
 
             # --- upsert thread doc ---
             thread_snap = thread_ref.get()
@@ -179,16 +194,19 @@ class ChatHistory:
                     "updated_at": now,
                     "message_count": firestore.Increment(1),
                 }
-                # Backfill business_id if missing from an older thread doc
+                # Backfill business_id / product if missing from an older thread doc
                 existing = thread_snap.to_dict() or {}
                 if business_id and not existing.get("business_id"):
                     update_doc["business_id"] = str(business_id)
+                if not existing.get("product"):
+                    update_doc["product"] = product
                 thread_ref.update(update_doc)
             else:
                 preview = content[:100] if role == "user" else ""
                 thread_doc: Dict[str, Any] = {
                     "thread_id": thread_id,
                     "user_id": user_id,
+                    "product": product,
                     "created_at": now,
                     "updated_at": now,
                     "status": "active",
@@ -211,7 +229,7 @@ class ChatHistory:
             if metadata:
                 msg_doc["metadata"] = metadata
 
-            self._messages_col(thread_id).document(message_id).set(msg_doc)
+            self._messages_col(thread_id, product).document(message_id).set(msg_doc)
 
             # Update preview if this is the first user message
             if role == "user" and not thread_snap.exists:
@@ -245,9 +263,11 @@ class ChatHistory:
         thread_id: str,
         advisory_type: Optional[str] = None,
         farm_context: Optional[Dict[str, Any]] = None,
+        product: Optional[str] = "ofn",
     ) -> bool:
         """Mark a conversation as complete with optional metadata."""
-        if self.threads_col is None:
+        col = self.threads_col_for(product)
+        if col is None:
             return False
         try:
             update: Dict[str, Any] = {
@@ -258,7 +278,7 @@ class ChatHistory:
                 update["advisory_type"] = advisory_type
             if farm_context:
                 update["farm_context"] = farm_context
-            self.threads_col.document(thread_id).update(update)
+            col.document(thread_id).update(update)
             logger.info("[ChatHistory] Thread %s marked complete", thread_id)
             return True
         except Exception as e:
@@ -274,31 +294,44 @@ class ChatHistory:
         user_id: str,
         limit: int = 20,
         cursor: Optional[str] = None,
+        business_id: Optional[str] = None,
+        product: Optional[str] = "ofn",
     ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-        """List threads for a user, ordered by ``updated_at`` DESC.
+        """List threads for a user (and optional business), ordered by ``updated_at`` DESC.
 
         Returns ``(threads_list, next_cursor)``.  ``next_cursor`` is the
         ``updated_at`` value of the last returned thread (use it as
         ``cursor`` for the next page) or ``None`` when there are no more.
+
+        When ``business_id`` is set, only threads for that business are returned
+        (filtered in Python to avoid requiring a composite Firestore index).
         """
-        if self.threads_col is None:
+        col = self.threads_col_for(product)
+        if col is None:
             return [], None
         try:
+            # Over-fetch when filtering by business so pagination still fills `limit`.
+            fetch_limit = max(limit * 5, limit) if business_id else limit
             query = (
-                self.threads_col.where("user_id", "==", user_id)
+                col.where("user_id", "==", user_id)
                 .order_by("updated_at", direction=firestore.Query.DESCENDING)
             )
             if cursor:
                 query = query.start_after({"updated_at": cursor})
-            query = query.limit(limit)
+            query = query.limit(fetch_limit)
 
             docs = list(query.stream())
+            biz = str(business_id) if business_id else None
             threads: List[Dict[str, Any]] = []
             for doc in docs:
-                data = doc.to_dict()
+                data = doc.to_dict() or {}
+                if biz is not None and str(data.get("business_id") or "") != biz:
+                    continue
                 threads.append(
                     {
                         "thread_id": data.get("thread_id"),
+                        "business_id": data.get("business_id"),
+                        "product": data.get("product") or normalize_chat_product(product),
                         "status": data.get("status"),
                         "message_count": data.get("message_count", 0),
                         "advisory_type": data.get("advisory_type"),
@@ -307,6 +340,8 @@ class ChatHistory:
                         "preview": data.get("preview", ""),
                     }
                 )
+                if len(threads) >= limit:
+                    break
 
             next_cursor = threads[-1]["updated_at"] if threads else None
             return threads, next_cursor
@@ -315,21 +350,29 @@ class ChatHistory:
             logger.error("[ChatHistory] Get threads error: %s", e)
             return [], None
 
-    def get_user_memory(self, user_id: str, max_threads: int = 10) -> Dict[str, Any]:
+    def get_user_memory(
+        self,
+        user_id: str,
+        max_threads: int = 10,
+        product: Optional[str] = "ofn",
+        business_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Aggregate farm_context from this user's recent completed threads.
 
         Returns a profile Saige injects into prompts so she remembers locations,
         crops/livestock, farm size, recurring concerns, and past recommendations
         across conversations. Safe to call on every turn — bounded query.
         """
-        if self.threads_col is None:
+        col = self.threads_col_for(product)
+        if col is None:
             return {}
         try:
+            fetch_limit = max_threads * 5 if business_id else max_threads
             query = (
-                self.threads_col.where("user_id", "==", user_id)
+                col.where("user_id", "==", user_id)
                 .where("status", "==", "complete")
                 .order_by("updated_at", direction=firestore.Query.DESCENDING)
-                .limit(max_threads)
+                .limit(fetch_limit)
             )
             locations: List[str] = []
             crops: List[str] = []
@@ -339,8 +382,16 @@ class ChatHistory:
             known_issues: List[str] = []       # recurring problems this farmer raises
             seen_loc, seen_crop, seen_size = set(), set(), set()
             seen_issues: set = set()
+            biz = str(business_id) if business_id else None
+            counted = 0
             for doc in query.stream():
-                ctx = (doc.to_dict() or {}).get("farm_context") or {}
+                data = doc.to_dict() or {}
+                if biz is not None and str(data.get("business_id") or "") != biz:
+                    continue
+                counted += 1
+                if counted > max_threads:
+                    break
+                ctx = data.get("farm_context") or {}
                 loc = ctx.get("location")
                 if loc and loc not in seen_loc:
                     locations.append(loc); seen_loc.add(loc)
@@ -379,6 +430,7 @@ class ChatHistory:
         business_id: str,
         exclude_user_id: Optional[str] = None,
         max_threads: int = 30,
+        product: Optional[str] = "ofn",
     ) -> Dict[str, Any]:
         """Aggregate farm_context from ALL team members' completed threads for this org.
 
@@ -396,7 +448,8 @@ class ChatHistory:
         # facts augment (rather than replace) the structured baseline.
         seeded_profile: Dict[str, Any] = self.get_org_profile(business_id)
 
-        if self.threads_col is None:
+        col = self.threads_col_for(product)
+        if col is None:
             # Return the seeded profile alone when Firestore threads are offline.
             return {
                 "locations": [],
@@ -417,7 +470,7 @@ class ChatHistory:
             # Single equality filter on business_id — no composite index needed.
             # Filter status and sort in Python to avoid Firestore index requirements.
             query = (
-                self.threads_col
+                col
                 .where("business_id", "==", str(business_id))
                 .limit(max_threads)
             )
@@ -546,22 +599,28 @@ class ChatHistory:
         thread_id: str,
         limit: int = 50,
         cursor: Optional[str] = None,
+        product: Optional[str] = "ofn",
+        business_id: Optional[str] = None,
     ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
         """Fetch messages for a thread ordered by ``ts``.
 
         Returns ``(messages_list, next_cursor)``.
         """
-        if self.threads_col is None:
+        col = self.threads_col_for(product)
+        if col is None:
             return [], None
         try:
-            # Verify ownership
-            thread_snap = self.threads_col.document(thread_id).get()
+            # Verify ownership (and optional business scope)
+            thread_snap = col.document(thread_id).get()
             if not thread_snap.exists:
                 return [], None
-            if (thread_snap.to_dict() or {}).get("user_id") != user_id:
+            data = thread_snap.to_dict() or {}
+            if data.get("user_id") != user_id:
+                return [], None
+            if business_id is not None and str(data.get("business_id") or "") != str(business_id):
                 return [], None
 
-            msg_col = self._messages_col(thread_id)
+            msg_col = self._messages_col(thread_id, product)
             query = msg_col.order_by("ts")
             if cursor:
                 query = query.start_after({"ts": cursor})
@@ -570,14 +629,14 @@ class ChatHistory:
             docs = list(query.stream())
             messages: List[Dict[str, Any]] = []
             for doc in docs:
-                data = doc.to_dict()
+                mdata = doc.to_dict()
                 messages.append(
                     {
                         "message_id": doc.id,
-                        "role": data.get("role"),
-                        "content": data.get("content"),
-                        "ts": data.get("ts"),
-                        "metadata": data.get("metadata"),
+                        "role": mdata.get("role"),
+                        "content": mdata.get("content"),
+                        "ts": mdata.get("ts"),
+                        "metadata": mdata.get("metadata"),
                     }
                 )
 
@@ -592,17 +651,34 @@ class ChatHistory:
     # Analytics
     # ------------------------------------------------------------------
 
-    def get_analytics(self, user_id: str, limit: int = 100) -> Dict[str, Any]:
-        """Aggregate analytics across all threads for a user."""
-        if self.threads_col is None:
+    def get_analytics(
+        self,
+        user_id: str,
+        limit: int = 100,
+        product: Optional[str] = "ofn",
+        business_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Aggregate analytics across all threads for a user (optionally one business)."""
+        col = self.threads_col_for(product)
+        if col is None:
             return {}
         try:
+            fetch_limit = limit * 5 if business_id else limit
             query = (
-                self.threads_col.where("user_id", "==", user_id)
+                col.where("user_id", "==", user_id)
                 .order_by("updated_at", direction=firestore.Query.DESCENDING)
-                .limit(limit)
+                .limit(fetch_limit)
             )
-            docs = list(query.stream())
+            raw_docs = list(query.stream())
+            biz = str(business_id) if business_id else None
+            docs = []
+            for doc in raw_docs:
+                data = doc.to_dict() or {}
+                if biz is not None and str(data.get("business_id") or "") != biz:
+                    continue
+                docs.append(doc)
+                if len(docs) >= limit:
+                    break
 
             total = len(docs)
             completed = 0
@@ -632,7 +708,7 @@ class ChatHistory:
                 # Latencies require reading the messages subcollection
                 try:
                     msg_docs = (
-                        self._messages_col(doc.id)
+                        self._messages_col(doc.id, product)
                         .where("metadata.latency_ms", ">", 0)
                         .stream()
                     )
@@ -657,6 +733,8 @@ class ChatHistory:
                 "completion_rate": round(completed / total, 2) if total else 0,
                 "advisory_type_distribution": type_counts,
                 "total_messages": total_messages,
+                "product": normalize_chat_product(product),
+                "business_id": business_id,
                 "avg_messages_per_thread": round(total_messages / total, 1) if total else 0,
                 "avg_response_time_ms": (
                     round(sum(latencies) / len(latencies)) if latencies else 0
@@ -671,20 +749,30 @@ class ChatHistory:
     # Delete
     # ------------------------------------------------------------------
 
-    def delete_thread(self, user_id: str, thread_id: str) -> bool:
-        """Delete a thread and all its messages."""
-        if self.threads_col is None:
+    def delete_thread(
+        self,
+        user_id: str,
+        thread_id: str,
+        product: Optional[str] = "ofn",
+        business_id: Optional[str] = None,
+    ) -> bool:
+        """Delete a thread and all its messages from the product collection."""
+        col = self.threads_col_for(product)
+        if col is None:
             return False
         try:
-            thread_ref = self.threads_col.document(thread_id)
+            thread_ref = col.document(thread_id)
             thread_snap = thread_ref.get()
             if not thread_snap.exists:
                 return False
-            if (thread_snap.to_dict() or {}).get("user_id") != user_id:
+            data = thread_snap.to_dict() or {}
+            if data.get("user_id") != user_id:
+                return False
+            if business_id is not None and str(data.get("business_id") or "") != str(business_id):
                 return False
 
             # Delete all messages in the subcollection first
-            msg_col = self._messages_col(thread_id)
+            msg_col = self._messages_col(thread_id, product)
             batch_size = 100
             while True:
                 docs = list(msg_col.limit(batch_size).stream())
@@ -697,7 +785,7 @@ class ChatHistory:
 
             # Delete the thread document itself
             thread_ref.delete()
-            logger.info("[ChatHistory] Deleted thread %s", thread_id)
+            logger.info("[ChatHistory] Deleted thread %s (product=%s)", thread_id, product)
             return True
         except Exception as e:
             logger.error("[ChatHistory] Delete error: %s", e)
@@ -733,6 +821,15 @@ def get_history(
     thread_id: str,
     limit: int = 50,
     cursor: Optional[str] = None,
+    product: Optional[str] = "ofn",
+    business_id: Optional[str] = None,
 ):
     """Compat alias for older callers / docs — wraps ChatHistory.get_messages."""
-    return chat_history.get_messages(user_id, thread_id, limit=limit, cursor=cursor)
+    return chat_history.get_messages(
+        user_id,
+        thread_id,
+        limit=limit,
+        cursor=cursor,
+        product=product,
+        business_id=business_id,
+    )

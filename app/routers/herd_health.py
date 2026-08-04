@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import text
+from sqlalchemy import text, or_
 from app.database import get_db
+from app.core.auth import get_current_user
+from app import models
 from typing import Optional
 from pydantic import BaseModel
 from datetime import date, datetime
@@ -23,28 +25,242 @@ def _row(r):
 def _rows(rs):
     return [dict(r._mapping) for r in rs]
 
-def _bid(business_id, db):
+
+def _require_business_access(db: Session, people_id: int, business_id: int):
     if not business_id:
         raise HTTPException(400, "business_id required")
+    access = (
+        db.query(models.BusinessAccess)
+        .filter(
+            models.BusinessAccess.BusinessID == business_id,
+            models.BusinessAccess.PeopleID == people_id,
+            or_(models.BusinessAccess.Active == 1, models.BusinessAccess.Active.is_(None)),
+        )
+        .first()
+    )
+    if not access:
+        raise HTTPException(status_code=403, detail="No access to this business.")
+    return access
+
+
+def _bid(business_id, db, current_user):
+    _require_business_access(db, int(current_user.PeopleID), business_id)
+
+
+def _assert_row_access(db: Session, current_user, table: str, id_col: str, row_id: int) -> int:
+    row = db.execute(
+        text(f"SELECT BusinessID FROM {table} WHERE {id_col}=:id"),
+        {"id": row_id},
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "Record not found")
+    business_id = int(row.BusinessID)
+    _require_business_access(db, int(current_user.PeopleID), business_id)
+    return business_id
 
 # ── DASHBOARD ─────────────────────────────────────────────────────────────────
 
 @router.get("/dashboard")
-def dashboard(business_id: int, db: Session = Depends(get_db)):
-    _bid(business_id, db)
-    def count(table, extra=""):
+def dashboard(business_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
+    today = date.today()
+    today_s = today.isoformat()
+
+    def count(table, extra="", extra_params=None):
+        p = {"b": business_id}
+        if extra_params:
+            p.update(extra_params)
         return db.execute(text(f"SELECT COUNT(*) FROM {table} WHERE BusinessID=:b {extra}"),
-                          {"b": business_id}).scalar() or 0
-    today = date.today().isoformat()
+                          p).scalar() or 0
+
+    def _to_ym(val):
+        if val is None:
+            return None
+        if isinstance(val, datetime):
+            return val.strftime("%Y-%m")
+        if isinstance(val, date):
+            return val.strftime("%Y-%m")
+        s = str(val).strip()
+        if len(s) >= 7 and s[4] == "-":
+            return s[:7]
+        try:
+            return datetime.fromisoformat(s.replace("Z", "")).strftime("%Y-%m")
+        except Exception:
+            return None
+
+    def _month_spine(months=6):
+        y, m = today.year, today.month
+        keys = []
+        for _ in range(months):
+            keys.append(f"{y:04d}-{m:02d}")
+            m -= 1
+            if m <= 0:
+                m = 12
+                y -= 1
+        keys.reverse()
+        return keys
+
+    def _bucket_activity(rows, primary_key, fallback_key=None):
+        counts = {}
+        for r in rows:
+            mapping = r._mapping if hasattr(r, "_mapping") else r
+            val = mapping.get(primary_key) if hasattr(mapping, "get") else mapping[primary_key]
+            if val is None and fallback_key:
+                val = mapping.get(fallback_key) if hasattr(mapping, "get") else mapping[fallback_key]
+            ym = _to_ym(val)
+            if not ym:
+                continue
+            counts[ym] = counts.get(ym, 0) + 1
+        return counts
+
+    open_events = count("HerdHealthEvent", "AND ResolvedDate IS NULL")
+    vaccinations_due = count(
+        "HerdHealthVaccination",
+        "AND NextDueDate IS NOT NULL AND NextDueDate <= :today",
+        {"today": today_s},
+    )
+    vaccinations_overdue = count(
+        "HerdHealthVaccination",
+        "AND NextDueDate IS NOT NULL AND NextDueDate < :today",
+        {"today": today_s},
+    )
+    active_quarantine = count("HerdHealthQuarantine", "AND Status='Active'")
+    active_treatments = count("HerdHealthTreatment", "AND Outcome IS NULL")
+    low_medications = count(
+        "HerdHealthMedication",
+        "AND QuantityOnHand IS NOT NULL AND ReorderPoint IS NOT NULL AND QuantityOnHand <= ReorderPoint",
+    )
+    vaccinations_total = count("HerdHealthVaccination")
+    events_total = count("HerdHealthEvent")
+    treatments_total = count("HerdHealthTreatment")
+
+    events_by_type = _rows(db.execute(text("""
+        SELECT COALESCE(NULLIF(LTRIM(RTRIM(EventType)), ''), 'Unspecified') AS label, COUNT(*) AS value
+        FROM HerdHealthEvent
+        WHERE BusinessID=:b AND (EventDate IS NULL OR EventDate >= DATEADD(day, -90, CAST(GETUTCDATE() AS DATE)))
+        GROUP BY COALESCE(NULLIF(LTRIM(RTRIM(EventType)), ''), 'Unspecified')
+        ORDER BY value DESC
+    """), {"b": business_id}).fetchall())
+
+    # Bucket activity in Python so new rows show reliably (no fragile SQL month joins).
+    event_dates = db.execute(text("""
+        SELECT EventDate, CreatedAt FROM HerdHealthEvent WHERE BusinessID=:b
+    """), {"b": business_id}).fetchall()
+    vax_dates = db.execute(text("""
+        SELECT AdministeredDate, CreatedAt FROM HerdHealthVaccination WHERE BusinessID=:b
+    """), {"b": business_id}).fetchall()
+    treatment_dates = db.execute(text("""
+        SELECT TreatmentDate, CreatedAt FROM HerdHealthTreatment WHERE BusinessID=:b
+    """), {"b": business_id}).fetchall()
+    mortality_dates = db.execute(text("""
+        SELECT DeathDate, CreatedAt FROM HerdHealthMortality WHERE BusinessID=:b
+    """), {"b": business_id}).fetchall()
+
+    spine = _month_spine(6)
+    e_map = _bucket_activity(event_dates, "EventDate", "CreatedAt")
+    v_map = _bucket_activity(vax_dates, "AdministeredDate", "CreatedAt")
+    t_map = _bucket_activity(treatment_dates, "TreatmentDate", "CreatedAt")
+    m_map = _bucket_activity(mortality_dates, "DeathDate", "CreatedAt")
+    activity_by_month = [
+        {
+            "label": ym,
+            "events": e_map.get(ym, 0),
+            "vaccinations": v_map.get(ym, 0),
+            "treatments": t_map.get(ym, 0),
+            "mortality": m_map.get(ym, 0),
+        }
+        for ym in spine
+    ]
+
+    cost_row = db.execute(text("""
+        SELECT
+            ISNULL((SELECT SUM(Cost) FROM HerdHealthTreatment WHERE BusinessID=:b), 0) AS treatment_cost,
+            ISNULL((SELECT SUM(Cost) FROM HerdHealthVetVisit WHERE BusinessID=:b), 0) AS vet_cost,
+            ISNULL((SELECT COUNT(*) FROM HerdHealthMortality WHERE BusinessID=:b), 0) AS mortality_total,
+            ISNULL((SELECT COUNT(*) FROM HerdHealthEvent
+                    WHERE BusinessID=:b AND Severity IN ('Critical','High')), 0) AS high_severity_total
+    """), {"b": business_id}).mappings().first() or {}
+
+    treatment_cost = float(cost_row.get("treatment_cost") or 0)
+    vet_cost = float(cost_row.get("vet_cost") or 0)
+    mortality_total = int(cost_row.get("mortality_total") or 0)
+    high_severity_total = int(cost_row.get("high_severity_total") or 0)
+    health_spend = treatment_cost + vet_cost
+
+    insights = []
+    if vaccinations_overdue:
+        insights.append({
+            "level": "warn",
+            "text": f"{vaccinations_overdue} vaccination{'s' if vaccinations_overdue != 1 else ''} past due.",
+            "to": "vaccinations",
+        })
+    if open_events:
+        insights.append({
+            "level": "warn" if open_events >= 3 else "info",
+            "text": f"{open_events} open health event{'s' if open_events != 1 else ''} still unresolved.",
+            "to": "events",
+        })
+    if active_quarantine:
+        insights.append({
+            "level": "warn",
+            "text": f"{active_quarantine} animal{'s' if active_quarantine != 1 else ''} currently in quarantine.",
+            "to": "quarantine",
+        })
+    if low_medications:
+        insights.append({
+            "level": "warn",
+            "text": f"{low_medications} medication{'s' if low_medications != 1 else ''} at or below reorder point.",
+            "to": "medications",
+        })
+    if high_severity_total:
+        insights.append({
+            "level": "info",
+            "text": f"{high_severity_total} high/critical event{'s' if high_severity_total != 1 else ''} on record.",
+            "to": "events",
+        })
+    if health_spend > 0:
+        insights.append({
+            "level": "info",
+            "text": f"${health_spend:,.2f} logged in treatment + vet costs.",
+            "to": "treatments",
+        })
+    if mortality_total:
+        insights.append({
+            "level": "warn",
+            "text": f"{mortality_total} mortality record{'s' if mortality_total != 1 else ''} on file.",
+            "to": "mortality",
+        })
+    if vaccinations_total and not insights:
+        insights.append({
+            "level": "ok",
+            "text": f"{vaccinations_total} vaccination{'s' if vaccinations_total != 1 else ''} logged for this herd.",
+            "to": "vaccinations",
+        })
+    if not insights:
+        insights.append({
+            "level": "ok",
+            "text": "No urgent herd-health flags right now. Keep logging events and vaccinations for better trends.",
+            "to": None,
+        })
+
     return {
-        "open_events":        count("HerdHealthEvent", "AND ResolvedDate IS NULL"),
-        "vaccinations_due":   count("HerdHealthVaccination", f"AND NextDueDate <= '{today}'"),
-        "active_quarantine":  count("HerdHealthQuarantine", "AND Status='Active'"),
-        "active_treatments":  count("HerdHealthTreatment", "AND Outcome IS NULL"),
-        "low_medications":    count("HerdHealthMedication", "AND QuantityOnHand IS NOT NULL AND ReorderPoint IS NOT NULL AND QuantityOnHand <= ReorderPoint"),
+        "open_events": open_events,
+        "vaccinations_due": vaccinations_due,
+        "vaccinations_overdue": vaccinations_overdue,
+        "vaccinations_total": vaccinations_total,
+        "events_total": events_total,
+        "treatments_total": treatments_total,
+        "active_quarantine": active_quarantine,
+        "active_treatments": active_treatments,
+        "low_medications": low_medications,
         "recent_events": _rows(db.execute(text("""
             SELECT TOP 5 EventID, EventDate, EventType, Severity, Title, AnimalTag
             FROM HerdHealthEvent WHERE BusinessID=:b ORDER BY CreatedAt DESC
+        """), {"b": business_id}).fetchall()),
+        "recent_vaccinations": _rows(db.execute(text("""
+            SELECT TOP 5 VaccinationID, AdministeredDate, NextDueDate, VaccineName, AnimalTag, GroupName, CreatedAt
+            FROM HerdHealthVaccination WHERE BusinessID=:b
+            ORDER BY COALESCE(AdministeredDate, CAST(CreatedAt AS date)) DESC, CreatedAt DESC
         """), {"b": business_id}).fetchall()),
         "upcoming_vaccinations": _rows(db.execute(text("""
             SELECT TOP 5 VaccinationID, NextDueDate, VaccineName, AnimalTag, GroupName
@@ -57,6 +273,18 @@ def dashboard(business_id: int, db: Session = Depends(get_db)):
             FROM HerdHealthQuarantine WHERE BusinessID=:b AND Status='Active'
             ORDER BY StartDate
         """), {"b": business_id}).fetchall()),
+        "analysis": {
+            "events_total": events_total,
+            "vaccinations_total": vaccinations_total,
+            "treatments_total": treatments_total,
+            "mortality_total": mortality_total,
+            "treatment_cost": treatment_cost,
+            "vet_cost": vet_cost,
+            "health_spend": health_spend,
+            "events_by_type": events_by_type,
+            "activity_by_month": activity_by_month,
+            "insights": insights,
+        },
     }
 
 # ── HEALTH EVENTS ─────────────────────────────────────────────────────────────
@@ -75,13 +303,15 @@ class EventIn(BaseModel):
     RecordedBy: Optional[str] = None
 
 @router.get("/events")
-def list_events(business_id: int, db: Session = Depends(get_db)):
+def list_events(business_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     return _rows(db.execute(text("""
         SELECT * FROM HerdHealthEvent WHERE BusinessID=:b ORDER BY EventDate DESC, CreatedAt DESC
     """), {"b": business_id}).fetchall())
 
 @router.post("/events")
-def create_event(business_id: int, body: EventIn, db: Session = Depends(get_db)):
+def create_event(business_id: int, body: EventIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     r = db.execute(text("""
         INSERT INTO HerdHealthEvent
             (BusinessID,AnimalID,AnimalTag,EventDate,EventType,Severity,Title,
@@ -96,7 +326,8 @@ def create_event(business_id: int, body: EventIn, db: Session = Depends(get_db))
     return {"event_id": r.scalar()}
 
 @router.put("/events/{event_id}")
-def update_event(event_id: int, body: EventIn, db: Session = Depends(get_db)):
+def update_event(event_id: int, body: EventIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthEvent', 'EventID', event_id)
     db.execute(text("""
         UPDATE HerdHealthEvent SET
             AnimalID=:aid,AnimalTag=:tag,EventDate=:dt,EventType=:type,Severity=:sev,
@@ -111,7 +342,8 @@ def update_event(event_id: int, body: EventIn, db: Session = Depends(get_db)):
     return {"ok": True}
 
 @router.delete("/events/{event_id}")
-def delete_event(event_id: int, db: Session = Depends(get_db)):
+def delete_event(event_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthEvent', 'EventID', event_id)
     db.execute(text("DELETE FROM HerdHealthEvent WHERE EventID=:id"), {"id": event_id})
     db.commit()
     return {"ok": True}
@@ -135,14 +367,16 @@ class VaccineIn(BaseModel):
     Notes: Optional[str] = None
 
 @router.get("/vaccinations")
-def list_vaccinations(business_id: int, db: Session = Depends(get_db)):
+def list_vaccinations(business_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     return _rows(db.execute(text("""
         SELECT * FROM HerdHealthVaccination WHERE BusinessID=:b
         ORDER BY AdministeredDate DESC, CreatedAt DESC
     """), {"b": business_id}).fetchall())
 
 @router.post("/vaccinations")
-def create_vaccination(business_id: int, body: VaccineIn, db: Session = Depends(get_db)):
+def create_vaccination(business_id: int, body: VaccineIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     r = db.execute(text("""
         INSERT INTO HerdHealthVaccination
             (BusinessID,AnimalID,AnimalTag,GroupName,VaccineName,VaccineManufacturer,
@@ -159,7 +393,8 @@ def create_vaccination(business_id: int, body: VaccineIn, db: Session = Depends(
     return {"vaccination_id": r.scalar()}
 
 @router.put("/vaccinations/{vid}")
-def update_vaccination(vid: int, body: VaccineIn, db: Session = Depends(get_db)):
+def update_vaccination(vid: int, body: VaccineIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthVaccination', 'VaccinationID', vid)
     db.execute(text("""
         UPDATE HerdHealthVaccination SET
             AnimalID=:aid,AnimalTag=:tag,GroupName=:grp,VaccineName=:vn,
@@ -176,7 +411,8 @@ def update_vaccination(vid: int, body: VaccineIn, db: Session = Depends(get_db))
     return {"ok": True}
 
 @router.delete("/vaccinations/{vid}")
-def delete_vaccination(vid: int, db: Session = Depends(get_db)):
+def delete_vaccination(vid: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthVaccination', 'VaccinationID', vid)
     db.execute(text("DELETE FROM HerdHealthVaccination WHERE VaccinationID=:id"), {"id": vid})
     db.commit()
     return {"ok": True}
@@ -203,14 +439,16 @@ class TreatmentIn(BaseModel):
     Notes: Optional[str] = None
 
 @router.get("/treatments")
-def list_treatments(business_id: int, db: Session = Depends(get_db)):
+def list_treatments(business_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     return _rows(db.execute(text("""
         SELECT * FROM HerdHealthTreatment WHERE BusinessID=:b
         ORDER BY TreatmentDate DESC, CreatedAt DESC
     """), {"b": business_id}).fetchall())
 
 @router.post("/treatments")
-def create_treatment(business_id: int, body: TreatmentIn, db: Session = Depends(get_db)):
+def create_treatment(business_id: int, body: TreatmentIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     r = db.execute(text("""
         INSERT INTO HerdHealthTreatment
             (BusinessID,AnimalID,AnimalTag,TreatmentDate,Diagnosis,Medication,
@@ -232,8 +470,8 @@ def create_treatment(business_id: int, body: TreatmentIn, db: Session = Depends(
     return {"treatment_id": treatment_id}
 
 @router.put("/treatments/{tid}")
-def update_treatment(tid: int, body: TreatmentIn, db: Session = Depends(get_db)):
-    biz = db.execute(text("SELECT BusinessID FROM HerdHealthTreatment WHERE TreatmentID=:id"), {"id": tid}).scalar()
+def update_treatment(tid: int, body: TreatmentIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    biz = _assert_row_access(db, current_user, 'HerdHealthTreatment', 'TreatmentID', tid)
     db.execute(text("""
         UPDATE HerdHealthTreatment SET
             AnimalID=:aid,AnimalTag=:tag,TreatmentDate=:dt,Diagnosis=:diag,
@@ -255,7 +493,8 @@ def update_treatment(tid: int, body: TreatmentIn, db: Session = Depends(get_db))
     return {"ok": True}
 
 @router.delete("/treatments/{tid}")
-def delete_treatment(tid: int, db: Session = Depends(get_db)):
+def delete_treatment(tid: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthTreatment', 'TreatmentID', tid)
     void_je(db, "herd_treatment", tid)
     db.execute(text("DELETE FROM HerdHealthTreatment WHERE TreatmentID=:id"), {"id": tid})
     db.commit()
@@ -280,14 +519,16 @@ class VetVisitIn(BaseModel):
     Notes: Optional[str] = None
 
 @router.get("/vet-visits")
-def list_vet_visits(business_id: int, db: Session = Depends(get_db)):
+def list_vet_visits(business_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     return _rows(db.execute(text("""
         SELECT * FROM HerdHealthVetVisit WHERE BusinessID=:b
         ORDER BY VisitDate DESC, CreatedAt DESC
     """), {"b": business_id}).fetchall())
 
 @router.post("/vet-visits")
-def create_vet_visit(business_id: int, body: VetVisitIn, db: Session = Depends(get_db)):
+def create_vet_visit(business_id: int, body: VetVisitIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     r = db.execute(text("""
         INSERT INTO HerdHealthVetVisit
             (BusinessID,VisitDate,VetName,ClinicName,VisitType,AffectedAnimals,
@@ -309,8 +550,8 @@ def create_vet_visit(business_id: int, body: VetVisitIn, db: Session = Depends(g
     return {"visit_id": visit_id}
 
 @router.put("/vet-visits/{vid}")
-def update_vet_visit(vid: int, body: VetVisitIn, db: Session = Depends(get_db)):
-    biz = db.execute(text("SELECT BusinessID FROM HerdHealthVetVisit WHERE VisitID=:id"), {"id": vid}).scalar()
+def update_vet_visit(vid: int, body: VetVisitIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    biz = _assert_row_access(db, current_user, 'HerdHealthVetVisit', 'VisitID', vid)
     db.execute(text("""
         UPDATE HerdHealthVetVisit SET
             VisitDate=:dt,VetName=:vet,ClinicName=:clinic,VisitType=:type,
@@ -332,7 +573,8 @@ def update_vet_visit(vid: int, body: VetVisitIn, db: Session = Depends(get_db)):
     return {"ok": True}
 
 @router.delete("/vet-visits/{vid}")
-def delete_vet_visit(vid: int, db: Session = Depends(get_db)):
+def delete_vet_visit(vid: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthVetVisit', 'VisitID', vid)
     void_je(db, "herd_vet_visit", vid)
     db.execute(text("DELETE FROM HerdHealthVetVisit WHERE VisitID=:id"), {"id": vid})
     db.commit()
@@ -359,14 +601,16 @@ class MedicationIn(BaseModel):
     Notes: Optional[str] = None
 
 @router.get("/medications")
-def list_medications(business_id: int, db: Session = Depends(get_db)):
+def list_medications(business_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     return _rows(db.execute(text("""
         SELECT * FROM HerdHealthMedication WHERE BusinessID=:b
         ORDER BY MedicationName
     """), {"b": business_id}).fetchall())
 
 @router.post("/medications")
-def create_medication(business_id: int, body: MedicationIn, db: Session = Depends(get_db)):
+def create_medication(business_id: int, body: MedicationIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     r = db.execute(text("""
         INSERT INTO HerdHealthMedication
             (BusinessID,MedicationName,ActiveIngredient,Category,Manufacturer,LotNumber,
@@ -384,7 +628,8 @@ def create_medication(business_id: int, body: MedicationIn, db: Session = Depend
     return {"medication_id": r.scalar()}
 
 @router.put("/medications/{mid}")
-def update_medication(mid: int, body: MedicationIn, db: Session = Depends(get_db)):
+def update_medication(mid: int, body: MedicationIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthMedication', 'MedicationID', mid)
     db.execute(text("""
         UPDATE HerdHealthMedication SET
             MedicationName=:name,ActiveIngredient=:ai,Category=:cat,Manufacturer=:mfr,
@@ -403,7 +648,8 @@ def update_medication(mid: int, body: MedicationIn, db: Session = Depends(get_db
     return {"ok": True}
 
 @router.delete("/medications/{mid}")
-def delete_medication(mid: int, db: Session = Depends(get_db)):
+def delete_medication(mid: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthMedication', 'MedicationID', mid)
     db.execute(text("DELETE FROM HerdHealthMedication WHERE MedicationID=:id"), {"id": mid})
     db.commit()
     return {"ok": True}
@@ -423,14 +669,16 @@ class WeightIn(BaseModel):
     Notes: Optional[str] = None
 
 @router.get("/weights")
-def list_weights(business_id: int, db: Session = Depends(get_db)):
+def list_weights(business_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     return _rows(db.execute(text("""
         SELECT * FROM HerdHealthWeight WHERE BusinessID=:b
         ORDER BY RecordDate DESC, CreatedAt DESC
     """), {"b": business_id}).fetchall())
 
 @router.post("/weights")
-def create_weight(business_id: int, body: WeightIn, db: Session = Depends(get_db)):
+def create_weight(business_id: int, body: WeightIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     r = db.execute(text("""
         INSERT INTO HerdHealthWeight
             (BusinessID,AnimalID,AnimalTag,RecordDate,WeightLbs,WeightKg,
@@ -444,7 +692,8 @@ def create_weight(business_id: int, body: WeightIn, db: Session = Depends(get_db
     return {"weight_id": r.scalar()}
 
 @router.put("/weights/{wid}")
-def update_weight(wid: int, body: WeightIn, db: Session = Depends(get_db)):
+def update_weight(wid: int, body: WeightIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthWeight', 'WeightID', wid)
     db.execute(text("""
         UPDATE HerdHealthWeight SET
             AnimalID=:aid,AnimalTag=:tag,RecordDate=:dt,WeightLbs=:lbs,WeightKg=:kg,
@@ -457,7 +706,8 @@ def update_weight(wid: int, body: WeightIn, db: Session = Depends(get_db)):
     return {"ok": True}
 
 @router.delete("/weights/{wid}")
-def delete_weight(wid: int, db: Session = Depends(get_db)):
+def delete_weight(wid: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthWeight', 'WeightID', wid)
     db.execute(text("DELETE FROM HerdHealthWeight WHERE WeightID=:id"), {"id": wid})
     db.commit()
     return {"ok": True}
@@ -480,14 +730,16 @@ class ParasiteIn(BaseModel):
     Notes: Optional[str] = None
 
 @router.get("/parasites")
-def list_parasites(business_id: int, db: Session = Depends(get_db)):
+def list_parasites(business_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     return _rows(db.execute(text("""
         SELECT * FROM HerdHealthParasite WHERE BusinessID=:b
         ORDER BY TestDate DESC, CreatedAt DESC
     """), {"b": business_id}).fetchall())
 
 @router.post("/parasites")
-def create_parasite(business_id: int, body: ParasiteIn, db: Session = Depends(get_db)):
+def create_parasite(business_id: int, body: ParasiteIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     r = db.execute(text("""
         INSERT INTO HerdHealthParasite
             (BusinessID,AnimalID,AnimalTag,TestDate,TestType,FAMACHAScore,EggCount,
@@ -502,7 +754,8 @@ def create_parasite(business_id: int, body: ParasiteIn, db: Session = Depends(ge
     return {"parasite_id": r.scalar()}
 
 @router.put("/parasites/{pid}")
-def update_parasite(pid: int, body: ParasiteIn, db: Session = Depends(get_db)):
+def update_parasite(pid: int, body: ParasiteIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthParasite', 'ParasiteID', pid)
     db.execute(text("""
         UPDATE HerdHealthParasite SET
             AnimalID=:aid,AnimalTag=:tag,TestDate=:dt,TestType=:type,
@@ -518,7 +771,8 @@ def update_parasite(pid: int, body: ParasiteIn, db: Session = Depends(get_db)):
     return {"ok": True}
 
 @router.delete("/parasites/{pid}")
-def delete_parasite(pid: int, db: Session = Depends(get_db)):
+def delete_parasite(pid: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthParasite', 'ParasiteID', pid)
     db.execute(text("DELETE FROM HerdHealthParasite WHERE ParasiteID=:id"), {"id": pid})
     db.commit()
     return {"ok": True}
@@ -541,14 +795,16 @@ class QuarantineIn(BaseModel):
     Notes: Optional[str] = None
 
 @router.get("/quarantine")
-def list_quarantine(business_id: int, db: Session = Depends(get_db)):
+def list_quarantine(business_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     return _rows(db.execute(text("""
         SELECT * FROM HerdHealthQuarantine WHERE BusinessID=:b
         ORDER BY StartDate DESC, CreatedAt DESC
     """), {"b": business_id}).fetchall())
 
 @router.post("/quarantine")
-def create_quarantine(business_id: int, body: QuarantineIn, db: Session = Depends(get_db)):
+def create_quarantine(business_id: int, body: QuarantineIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     r = db.execute(text("""
         INSERT INTO HerdHealthQuarantine
             (BusinessID,AnimalID,AnimalTag,StartDate,PlannedEndDate,ActualEndDate,
@@ -565,7 +821,8 @@ def create_quarantine(business_id: int, body: QuarantineIn, db: Session = Depend
     return {"quarantine_id": r.scalar()}
 
 @router.put("/quarantine/{qid}")
-def update_quarantine(qid: int, body: QuarantineIn, db: Session = Depends(get_db)):
+def update_quarantine(qid: int, body: QuarantineIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthQuarantine', 'QuarantineID', qid)
     db.execute(text("""
         UPDATE HerdHealthQuarantine SET
             AnimalID=:aid,AnimalTag=:tag,StartDate=:start,PlannedEndDate=:pend,
@@ -582,7 +839,8 @@ def update_quarantine(qid: int, body: QuarantineIn, db: Session = Depends(get_db
     return {"ok": True}
 
 @router.delete("/quarantine/{qid}")
-def delete_quarantine(qid: int, db: Session = Depends(get_db)):
+def delete_quarantine(qid: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthQuarantine', 'QuarantineID', qid)
     db.execute(text("DELETE FROM HerdHealthQuarantine WHERE QuarantineID=:id"), {"id": qid})
     db.commit()
     return {"ok": True}
@@ -610,14 +868,16 @@ class MortalityIn(BaseModel):
     Notes: Optional[str] = None
 
 @router.get("/mortality")
-def list_mortality(business_id: int, db: Session = Depends(get_db)):
+def list_mortality(business_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     return _rows(db.execute(text("""
         SELECT * FROM HerdHealthMortality WHERE BusinessID=:b
         ORDER BY DeathDate DESC, CreatedAt DESC
     """), {"b": business_id}).fetchall())
 
 @router.post("/mortality")
-def create_mortality(business_id: int, body: MortalityIn, db: Session = Depends(get_db)):
+def create_mortality(business_id: int, body: MortalityIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     r = db.execute(text("""
         INSERT INTO HerdHealthMortality
             (BusinessID,AnimalID,AnimalTag,AnimalSpecies,DeathDate,CauseOfDeath,
@@ -643,8 +903,8 @@ def create_mortality(business_id: int, body: MortalityIn, db: Session = Depends(
     return {"mortality_id": mortality_id}
 
 @router.put("/mortality/{mid}")
-def update_mortality(mid: int, body: MortalityIn, db: Session = Depends(get_db)):
-    biz = db.execute(text("SELECT BusinessID FROM HerdHealthMortality WHERE MortalityID=:id"), {"id": mid}).scalar()
+def update_mortality(mid: int, body: MortalityIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    biz = _assert_row_access(db, current_user, 'HerdHealthMortality', 'MortalityID', mid)
     db.execute(text("""
         UPDATE HerdHealthMortality SET
             AnimalID=:aid,AnimalTag=:tag,AnimalSpecies=:sp,DeathDate=:dt,
@@ -672,7 +932,8 @@ def update_mortality(mid: int, body: MortalityIn, db: Session = Depends(get_db))
     return {"ok": True}
 
 @router.delete("/mortality/{mid}")
-def delete_mortality(mid: int, db: Session = Depends(get_db)):
+def delete_mortality(mid: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthMortality', 'MortalityID', mid)
     void_je(db, "herd_mortality_ins", mid)
     db.execute(text("DELETE FROM HerdHealthMortality WHERE MortalityID=:id"), {"id": mid})
     db.commit()
@@ -698,14 +959,16 @@ class LabResultIn(BaseModel):
     Notes: Optional[str] = None
 
 @router.get("/lab-results")
-def list_lab_results(business_id: int, db: Session = Depends(get_db)):
+def list_lab_results(business_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     return _rows(db.execute(text("""
         SELECT * FROM HerdHealthLabResult WHERE BusinessID=:b
         ORDER BY SampleDate DESC, CreatedAt DESC
     """), {"b": business_id}).fetchall())
 
 @router.post("/lab-results")
-def create_lab_result(business_id: int, body: LabResultIn, db: Session = Depends(get_db)):
+def create_lab_result(business_id: int, body: LabResultIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     r = db.execute(text("""
         INSERT INTO HerdHealthLabResult
             (BusinessID,AnimalID,AnimalTag,GroupName,SampleDate,SampleType,
@@ -722,7 +985,8 @@ def create_lab_result(business_id: int, body: LabResultIn, db: Session = Depends
     return {"lab_result_id": r.scalar()}
 
 @router.put("/lab-results/{lid}")
-def update_lab_result(lid: int, body: LabResultIn, db: Session = Depends(get_db)):
+def update_lab_result(lid: int, body: LabResultIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthLabResult', 'LabResultID', lid)
     db.execute(text("""
         UPDATE HerdHealthLabResult SET
             AnimalID=:aid,AnimalTag=:tag,GroupName=:grp,SampleDate=:sdt,SampleType=:stype,
@@ -739,7 +1003,8 @@ def update_lab_result(lid: int, body: LabResultIn, db: Session = Depends(get_db)
     return {"ok": True}
 
 @router.delete("/lab-results/{lid}")
-def delete_lab_result(lid: int, db: Session = Depends(get_db)):
+def delete_lab_result(lid: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthLabResult', 'LabResultID', lid)
     db.execute(text("DELETE FROM HerdHealthLabResult WHERE LabResultID=:id"), {"id": lid})
     db.commit()
     return {"ok": True}
@@ -762,14 +1027,16 @@ class BiosecurityIn(BaseModel):
     Notes: Optional[str] = None
 
 @router.get("/biosecurity")
-def list_biosecurity(business_id: int, db: Session = Depends(get_db)):
+def list_biosecurity(business_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     return _rows(db.execute(text("""
         SELECT * FROM HerdHealthBiosecurity WHERE BusinessID=:b
         ORDER BY EventDate DESC, CreatedAt DESC
     """), {"b": business_id}).fetchall())
 
 @router.post("/biosecurity")
-def create_biosecurity(business_id: int, body: BiosecurityIn, db: Session = Depends(get_db)):
+def create_biosecurity(business_id: int, body: BiosecurityIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     r = db.execute(text("""
         INSERT INTO HerdHealthBiosecurity
             (BusinessID,EventDate,EventType,PersonOrCompany,ContactInfo,Purpose,
@@ -787,7 +1054,8 @@ def create_biosecurity(business_id: int, body: BiosecurityIn, db: Session = Depe
     return {"biosecurity_id": r.scalar()}
 
 @router.put("/biosecurity/{bid}")
-def update_biosecurity(bid: int, body: BiosecurityIn, db: Session = Depends(get_db)):
+def update_biosecurity(bid: int, body: BiosecurityIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthBiosecurity', 'BiosecurityID', bid)
     db.execute(text("""
         UPDATE HerdHealthBiosecurity SET
             EventDate=:dt,EventType=:type,PersonOrCompany=:person,ContactInfo=:contact,
@@ -805,7 +1073,8 @@ def update_biosecurity(bid: int, body: BiosecurityIn, db: Session = Depends(get_
     return {"ok": True}
 
 @router.delete("/biosecurity/{bid}")
-def delete_biosecurity(bid: int, db: Session = Depends(get_db)):
+def delete_biosecurity(bid: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthBiosecurity', 'BiosecurityID', bid)
     db.execute(text("DELETE FROM HerdHealthBiosecurity WHERE BiosecurityID=:id"), {"id": bid})
     db.commit()
     return {"ok": True}
@@ -828,14 +1097,16 @@ class VetContactIn(BaseModel):
     Notes: Optional[str] = None
 
 @router.get("/vet-contacts")
-def list_vet_contacts(business_id: int, db: Session = Depends(get_db)):
+def list_vet_contacts(business_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     return _rows(db.execute(text("""
         SELECT * FROM HerdHealthVetContact WHERE BusinessID=:b
         ORDER BY IsPreferred DESC, IsEmergency DESC, Name
     """), {"b": business_id}).fetchall())
 
 @router.post("/vet-contacts")
-def create_vet_contact(business_id: int, body: VetContactIn, db: Session = Depends(get_db)):
+def create_vet_contact(business_id: int, body: VetContactIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     r = db.execute(text("""
         INSERT INTO HerdHealthVetContact
             (BusinessID,Name,ClinicName,Role,LicenseNumber,Phone,EmergencyPhone,
@@ -851,7 +1122,8 @@ def create_vet_contact(business_id: int, body: VetContactIn, db: Session = Depen
     return {"vet_contact_id": r.scalar()}
 
 @router.put("/vet-contacts/{cid}")
-def update_vet_contact(cid: int, body: VetContactIn, db: Session = Depends(get_db)):
+def update_vet_contact(cid: int, body: VetContactIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthVetContact', 'VetContactID', cid)
     db.execute(text("""
         UPDATE HerdHealthVetContact SET
             Name=:name,ClinicName=:clinic,Role=:role,LicenseNumber=:lic,Phone=:phone,
@@ -868,7 +1140,8 @@ def update_vet_contact(cid: int, body: VetContactIn, db: Session = Depends(get_d
     return {"ok": True}
 
 @router.delete("/vet-contacts/{cid}")
-def delete_vet_contact(cid: int, db: Session = Depends(get_db)):
+def delete_vet_contact(cid: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthVetContact', 'VetContactID', cid)
     db.execute(text("DELETE FROM HerdHealthVetContact WHERE VetContactID=:id"), {"id": cid})
     db.commit()
     return {"ok": True}
@@ -901,14 +1174,16 @@ class ReproductionIn(BaseModel):
     Notes: Optional[str] = None
 
 @router.get("/reproduction")
-def list_reproduction(business_id: int, db: Session = Depends(get_db)):
+def list_reproduction(business_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     return _rows(db.execute(text("""
         SELECT * FROM HerdHealthReproduction WHERE BusinessID=:b
         ORDER BY EventDate DESC, CreatedAt DESC
     """), {"b": business_id}).fetchall())
 
 @router.post("/reproduction")
-def create_reproduction(business_id: int, body: ReproductionIn, db: Session = Depends(get_db)):
+def create_reproduction(business_id: int, body: ReproductionIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     r = db.execute(text("""
         INSERT INTO HerdHealthReproduction
             (BusinessID,AnimalTag,Species,EventType,EventDate,BreedingMethod,
@@ -933,7 +1208,8 @@ def create_reproduction(business_id: int, body: ReproductionIn, db: Session = De
     return {"reproduction_id": r.scalar()}
 
 @router.put("/reproduction/{rid}")
-def update_reproduction(rid: int, body: ReproductionIn, db: Session = Depends(get_db)):
+def update_reproduction(rid: int, body: ReproductionIn, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthReproduction', 'ReproductionID', rid)
     db.execute(text("""
         UPDATE HerdHealthReproduction SET
             AnimalTag=:tag,Species=:sp,EventType=:etype,EventDate=:edt,
@@ -958,7 +1234,8 @@ def update_reproduction(rid: int, body: ReproductionIn, db: Session = Depends(ge
     return {"ok": True}
 
 @router.delete("/reproduction/{rid}")
-def delete_reproduction(rid: int, db: Session = Depends(get_db)):
+def delete_reproduction(rid: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _assert_row_access(db, current_user, 'HerdHealthReproduction', 'ReproductionID', rid)
     db.execute(text("DELETE FROM HerdHealthReproduction WHERE ReproductionID=:id"), {"id": rid})
     db.commit()
     return {"ok": True}
@@ -966,16 +1243,16 @@ def delete_reproduction(rid: int, db: Session = Depends(get_db)):
 # ── ACCOUNTING SYNC ───────────────────────────────────────────────────────────
 
 @router.post("/accounting/sync")
-def sync_accounting(business_id: int, db: Session = Depends(get_db)):
+def sync_accounting(business_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
     """Bulk-post all unposted herd health financial records to accounting."""
-    _bid(business_id, db)
+    _bid(business_id, db, current_user)
     return sync_herd_health_to_accounting(db, business_id)
 
 # ── LIST BUSINESS ANIMALS (animal-picker dropdowns) ───────────────────────────
 
 @router.get("/animals")
-def list_business_animals(business_id: int, db: Session = Depends(get_db)):
-    _bid(business_id, db)
+def list_business_animals(business_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+    _bid(business_id, db, current_user)
     rows = db.execute(text("""
         SELECT a.AnimalID, a.FullName, a.SpeciesID,
                COALESCE(sa.SingularTerm, CAST(a.SpeciesID AS NVARCHAR)) AS SpeciesName,

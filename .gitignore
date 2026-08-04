@@ -125,6 +125,10 @@ htmlcov/
 coverage.xml
 *.cover
 
+# Local inventory snapshots (do not commit)
+docs/LIVESTOCK_INVENTORY.local.md
+*.local.md
+
 # Note: This .gitignore protects your secrets:
 # - .env files (API keys)
 # - credentials/ directory (service account JSON files)

@@ -28,6 +28,7 @@ def iter_chat_events(
     business_id: Optional[str] = None,
     image_data: Optional[str] = None,
     skip_history: bool = False,
+    product: Optional[str] = "ofn",
 ) -> Generator[Dict[str, Any], None, None]:
     """Yield SSE-ready events while the graph runs, then a final done payload."""
     turn_start = time.time()
@@ -38,6 +39,7 @@ def iter_chat_events(
         business_id=business_id,
         image_data=image_data,
         skip_history=skip_history,
+        product=product,
     )
     yield {"type": "status", "stage": "start", "message": "Saige thinking…", "trace_id": trace_id}
 
@@ -92,6 +94,7 @@ def iter_chat_events(
         skip_history=skip_history,
         turn_start=turn_start,
         trace_id=trace_id,
+        product=product,
     )
     # If no progressive tokens were emitted, send the full response once
     if not last_diag and result.get("response"):
