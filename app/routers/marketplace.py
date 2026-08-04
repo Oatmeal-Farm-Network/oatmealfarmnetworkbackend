@@ -81,6 +81,38 @@ def _ensure_schema() -> None:
                     )
                 END
             """))
+
+        # ── Auto-create LivestockSavedItems (buyer favorites → My Animals) ───────────
+        with engine.begin() as _conn:
+            _conn.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='LivestockSavedItems')
+                BEGIN
+                    CREATE TABLE LivestockSavedItems (
+                        SavedID     INT IDENTITY(1,1) PRIMARY KEY,
+                        PeopleID    INT NOT NULL,
+                        ItemType    VARCHAR(20) NOT NULL,
+                        AnimalID    INT NULL,
+                        BusinessID  INT NULL,
+                        CreatedAt   DATETIME NOT NULL DEFAULT GETDATE()
+                    )
+                END
+            """))
+        try:
+            with engine.begin() as _conn:
+                _conn.execute(text("""
+                    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_LivestockSaved_Animal')
+                    CREATE UNIQUE INDEX UQ_LivestockSaved_Animal
+                        ON LivestockSavedItems (PeopleID, ItemType, AnimalID)
+                        WHERE AnimalID IS NOT NULL
+                """))
+                _conn.execute(text("""
+                    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_LivestockSaved_Ranch')
+                    CREATE UNIQUE INDEX UQ_LivestockSaved_Ranch
+                        ON LivestockSavedItems (PeopleID, ItemType, BusinessID)
+                        WHERE BusinessID IS NOT NULL
+                """))
+        except Exception:
+            pass
         
         # ── Auto-create RestaurantStandingOrders table ───────────────────────────────
         # Recurring orders. ListingType + ListingSourceID identify a row in Produce/MeatInventory/ProcessedFood/SFProducts.
@@ -2008,9 +2040,14 @@ SLUG_TO_SINGULAR = {
 
 def _unescape(s) -> str:
     """Replace SQL-escaped double single-quotes ('' ) with a real apostrophe."""
-    if not s:
-        return s
-    return str(s).replace("''", "'")
+    if s is None:
+        return ""
+    if isinstance(s, memoryview):
+        s = s.tobytes()
+    if isinstance(s, bytes):
+        s = s.decode("utf-8", errors="replace")
+    text = str(s).replace("\x00", "").replace("''", "'")
+    return text.encode("utf-8", errors="surrogatepass").decode("utf-8", errors="replace")
 
 
 _GCS_ANIMALS = f"https://storage.googleapis.com/{os.getenv('GCS_IMAGES_BUCKET', 'oatmeal-farm-network-images')}/Animals"
@@ -2026,8 +2063,15 @@ def _fix_animal_url(url: str | None) -> str | None:
     """Normalise any photo URL to a GCS URL, mirroring livestock.py _fix_image_url."""
     if not url:
         return None
+    url = _unescape(url)
+    if not url:
+        return None
     url = url.strip()
     if len(url) < 4:
+        return None
+    # Skip the old stock "Missing Livestock Photo" asset — treat as no image.
+    low = url.lower()
+    if "missinglivestock" in low or "missing livestock" in low or "missing%20livestock" in low:
         return None
     if url.lower().startswith('http'):
         url = _re.sub(r'^http:', 'https:', url, flags=_re.IGNORECASE)
@@ -2046,8 +2090,38 @@ def _fix_animal_url(url: str | None) -> str | None:
         return f"{_GCS_ANIMALS}/{url}"
     filename = url.split('/')[-1].strip()
     if filename and len(filename) > 3:
+        # Also reject placeholder filenames after path extract
+        if "missinglivestock" in filename.lower():
+            return None
         return f"{_GCS_ANIMALS}/{filename}"
     return None
+
+
+def _safe_float(value):
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _jsonable_row(mapping: dict) -> dict:
+    """Convert DB row values to JSON-safe primitives (pytds may return bytes/datetime)."""
+    out = {}
+    for k, v in mapping.items():
+        if v is None:
+            out[k] = None
+        elif isinstance(v, (bytes, memoryview)):
+            out[k] = _unescape(v)
+        elif hasattr(v, "isoformat"):
+            try:
+                out[k] = v.isoformat()
+            except Exception:
+                out[k] = str(v)
+        else:
+            out[k] = v
+    return out
 
 
 def _animal_photo(row) -> str | None:
@@ -2107,8 +2181,15 @@ def livestock_homepage_listings(db: Session = Depends(get_db)):
             LEFT JOIN Photos ph     ON ph.AnimalID      = a.AnimalID
             LEFT JOIN SpeciesBreedLookupTable b1  ON b1.BreedLookupID = a.BreedID
             LEFT JOIN SpeciesBreedLookupTable b2  ON b2.BreedLookupID = a.BreedID2
-            LEFT JOIN BusinessAccess ba ON ba.PeopleID  = a.PeopleID AND ba.Active = 1
-            LEFT JOIN Business biz  ON biz.BusinessID  = ba.BusinessID
+            LEFT JOIN Business biz  ON biz.BusinessID  = COALESCE(
+                NULLIF(a.BusinessID, 0),
+                (
+                    SELECT TOP 1 ba.BusinessID
+                    FROM BusinessAccess ba
+                    WHERE ba.PeopleID = a.PeopleID AND ba.Active = 1
+                    ORDER BY ba.BusinessID
+                )
+            )
             LEFT JOIN Address addr  ON addr.AddressID   = biz.AddressID
             WHERE a.PublishForSale = 1
             ORDER BY
@@ -2126,6 +2207,20 @@ def livestock_homepage_listings(db: Session = Depends(get_db)):
                 a.LastUpdated DESC
         """)).fetchall()
         animals = [_animal_dict(r) for r in rows]
+
+        # BusinessAccess can multiply rows for one animal; keep first occurrence
+        # (SQL order already prefers photos + recency) and prefer a filled seller.
+        by_id: dict = {}
+        for a in animals:
+            aid = a.get("animal_id")
+            if aid is None:
+                continue
+            prev = by_id.get(aid)
+            if prev is None:
+                by_id[aid] = a
+            elif not prev.get("seller") and a.get("seller"):
+                by_id[aid] = a
+        animals = list(by_id.values())
 
         with_photo = [a for a in animals if a.get("photo")]
         no_photo   = [a for a in animals if not a.get("photo")]
@@ -2164,6 +2259,246 @@ def livestock_homepage_listings(db: Session = Depends(get_db)):
         return []
 
 
+# ─────────────────────────────────────────────
+# LIVESTOCK — SAVED ITEMS  (My Animals favorites)
+# ─────────────────────────────────────────────
+
+class LivestockSavedAdd(BaseModel):
+    item_type: str  # 'animal' | 'stud' | 'ranch'
+    animal_id: Optional[int] = None
+    business_id: Optional[int] = None
+
+
+def _ensure_livestock_saved_schema():
+    """Idempotent create for LivestockSavedItems (also runs via _ensure_schema)."""
+    try:
+        with engine.begin() as _conn:
+            _conn.execute(text("""
+                IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='LivestockSavedItems')
+                BEGIN
+                    CREATE TABLE LivestockSavedItems (
+                        SavedID     INT IDENTITY(1,1) PRIMARY KEY,
+                        PeopleID    INT NOT NULL,
+                        ItemType    VARCHAR(20) NOT NULL,
+                        AnimalID    INT NULL,
+                        BusinessID  INT NULL,
+                        CreatedAt   DATETIME NOT NULL DEFAULT GETDATE()
+                    )
+                END
+            """))
+    except Exception:
+        pass
+    try:
+        with engine.begin() as _conn:
+            _conn.execute(text("""
+                IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_LivestockSaved_Animal')
+                CREATE UNIQUE INDEX UQ_LivestockSaved_Animal
+                    ON LivestockSavedItems (PeopleID, ItemType, AnimalID)
+                    WHERE AnimalID IS NOT NULL
+            """))
+            _conn.execute(text("""
+                IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_LivestockSaved_Ranch')
+                CREATE UNIQUE INDEX UQ_LivestockSaved_Ranch
+                    ON LivestockSavedItems (PeopleID, ItemType, BusinessID)
+                    WHERE BusinessID IS NOT NULL
+            """))
+    except Exception:
+        pass
+
+
+def _hydrate_saved_animal(db: Session, animal_id: int, as_stud: bool = False) -> dict | None:
+    row = db.execute(text("""
+        SELECT TOP 1
+            a.AnimalID, a.FullName, a.SpeciesID,
+            ph.Photo1, ph.Photo2, ph.Photo3, ph.Photo4, ph.Photo5,
+            ph.Photo6, ph.Photo7, ph.Photo8, ph.ListPageImage,
+            p.Price, p.StudFee,
+            b1.Breed AS Breed1, b2.Breed AS Breed2,
+            biz.BusinessName,
+            addr.AddressState
+        FROM Animals a
+        LEFT JOIN Pricing p          ON p.AnimalID       = a.AnimalID
+        LEFT JOIN Photos ph          ON ph.AnimalID      = a.AnimalID
+        LEFT JOIN SpeciesBreedLookupTable b1  ON b1.BreedLookupID = a.BreedID
+        LEFT JOIN SpeciesBreedLookupTable b2  ON b2.BreedLookupID = a.BreedID2
+        LEFT JOIN BusinessAccess ba  ON ba.PeopleID  = a.PeopleID AND ba.Active = 1
+        LEFT JOIN Business biz       ON biz.BusinessID  = COALESCE(a.BusinessID, ba.BusinessID)
+        LEFT JOIN Address addr       ON addr.AddressID   = biz.AddressID
+        WHERE a.AnimalID = :aid
+    """), {"aid": animal_id}).fetchone()
+    if not row:
+        return None
+    # _animal_dict expects Price or StudFee on the row depending on studs flag
+    class _Row:
+        pass
+    proxy = _Row()
+    for k, v in dict(row._mapping).items():
+        setattr(proxy, k, v)
+    if as_stud:
+        setattr(proxy, "StudFee", getattr(row, "StudFee", None) or getattr(row, "Price", None))
+        setattr(proxy, "Price", getattr(row, "Price", None))
+    else:
+        setattr(proxy, "Price", getattr(row, "Price", None))
+        setattr(proxy, "StudFee", getattr(row, "StudFee", None))
+    return _animal_dict(proxy, studs=as_stud)
+
+
+def _hydrate_saved_ranch(db: Session, business_id: int) -> dict | None:
+    row = db.execute(text("""
+        SELECT TOP 1
+            biz.BusinessID, biz.BusinessName, biz.BusinessLogo,
+            addr.AddressCity, addr.AddressState, addr.AddressCountry
+        FROM Business biz
+        LEFT JOIN Address addr ON addr.AddressID = biz.AddressID
+        WHERE biz.BusinessID = :bid
+    """), {"bid": business_id}).fetchone()
+    if not row:
+        return None
+    logo = getattr(row, "BusinessLogo", None)
+    logo_url = None
+    if logo:
+        try:
+            from app.routers.ranches import _fix_logo
+            logo_url = _fix_logo(logo)
+        except Exception:
+            s = str(logo).strip()
+            logo_url = s if s.lower().startswith("http") else None
+    return {
+        "business_id": int(row.BusinessID),
+        "business_name": _unescape(getattr(row, "BusinessName", "") or ""),
+        "logo": logo_url,
+        "city": getattr(row, "AddressCity", "") or "",
+        "state": getattr(row, "AddressState", "") or "",
+        "country": getattr(row, "AddressCountry", "") or "",
+        "has_animals": False,
+        "has_studs": False,
+    }
+
+
+@marketplace_router.get("/saved")
+def list_livestock_saved(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Return the signed-in buyer's saved animals, studs, and ranches."""
+    _ensure_livestock_saved_schema()
+    pid = int(current_user.PeopleID)
+    rows = db.execute(text("""
+        SELECT SavedID, ItemType, AnimalID, BusinessID, CreatedAt
+        FROM LivestockSavedItems
+        WHERE PeopleID = :pid
+        ORDER BY CreatedAt DESC
+    """), {"pid": pid}).fetchall()
+
+    items = []
+    for r in rows:
+        item_type = (r.ItemType or "").lower()
+        entry = {
+            "saved_id": int(r.SavedID),
+            "item_type": item_type,
+            "animal_id": int(r.AnimalID) if r.AnimalID else None,
+            "business_id": int(r.BusinessID) if r.BusinessID else None,
+            "created_at": r.CreatedAt.isoformat() if r.CreatedAt else None,
+            "animal": None,
+            "ranch": None,
+        }
+        if item_type in ("animal", "stud") and r.AnimalID:
+            entry["animal"] = _hydrate_saved_animal(db, int(r.AnimalID), as_stud=(item_type == "stud"))
+        elif item_type == "ranch" and r.BusinessID:
+            entry["ranch"] = _hydrate_saved_ranch(db, int(r.BusinessID))
+        items.append(entry)
+    return {"items": items}
+
+
+@marketplace_router.get("/saved/ids")
+def list_livestock_saved_ids(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """Compact id lists for heart-button state on marketplace cards."""
+    _ensure_livestock_saved_schema()
+    pid = int(current_user.PeopleID)
+    rows = db.execute(text("""
+        SELECT ItemType, AnimalID, BusinessID
+        FROM LivestockSavedItems
+        WHERE PeopleID = :pid
+    """), {"pid": pid}).fetchall()
+    animals, studs, ranches = [], [], []
+    for r in rows:
+        t = (r.ItemType or "").lower()
+        if t == "animal" and r.AnimalID:
+            animals.append(int(r.AnimalID))
+        elif t == "stud" and r.AnimalID:
+            studs.append(int(r.AnimalID))
+        elif t == "ranch" and r.BusinessID:
+            ranches.append(int(r.BusinessID))
+    return {"animals": animals, "studs": studs, "ranches": ranches}
+
+
+@marketplace_router.post("/saved")
+def add_livestock_saved(
+    data: LivestockSavedAdd,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    _ensure_livestock_saved_schema()
+    item_type = (data.item_type or "").strip().lower()
+    if item_type not in ("animal", "stud", "ranch"):
+        raise HTTPException(400, "item_type must be animal, stud, or ranch")
+    if item_type in ("animal", "stud"):
+        if not data.animal_id:
+            raise HTTPException(400, "animal_id is required")
+        animal_id, business_id = int(data.animal_id), None
+    else:
+        if not data.business_id:
+            raise HTTPException(400, "business_id is required")
+        animal_id, business_id = None, int(data.business_id)
+
+    pid = int(current_user.PeopleID)
+    try:
+        db.execute(text("""
+            INSERT INTO LivestockSavedItems (PeopleID, ItemType, AnimalID, BusinessID)
+            VALUES (:pid, :t, :aid, :bid)
+        """), {"pid": pid, "t": item_type, "aid": animal_id, "bid": business_id})
+        db.commit()
+        return {"saved": True, "item_type": item_type, "animal_id": animal_id, "business_id": business_id}
+    except Exception:
+        db.rollback()
+        # Unique index → already saved
+        return {"saved": True, "item_type": item_type, "animal_id": animal_id, "business_id": business_id, "already": True}
+
+
+@marketplace_router.delete("/saved")
+def remove_livestock_saved(
+    item_type: str = Query(...),
+    animal_id: Optional[int] = None,
+    business_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    _ensure_livestock_saved_schema()
+    t = (item_type or "").strip().lower()
+    if t not in ("animal", "stud", "ranch"):
+        raise HTTPException(400, "item_type must be animal, stud, or ranch")
+    pid = int(current_user.PeopleID)
+    if t in ("animal", "stud"):
+        if not animal_id:
+            raise HTTPException(400, "animal_id is required")
+        db.execute(text("""
+            DELETE FROM LivestockSavedItems
+            WHERE PeopleID = :pid AND ItemType = :t AND AnimalID = :aid
+        """), {"pid": pid, "t": t, "aid": int(animal_id)})
+    else:
+        if not business_id:
+            raise HTTPException(400, "business_id is required")
+        db.execute(text("""
+            DELETE FROM LivestockSavedItems
+            WHERE PeopleID = :pid AND ItemType = :t AND BusinessID = :bid
+        """), {"pid": pid, "t": t, "bid": int(business_id)})
+    db.commit()
+    return {"saved": False}
+
+
 @marketplace_router.get("/species/{slug}")
 def livestock_species_info(slug: str):
     """Return singular term and label for a species slug."""
@@ -2176,7 +2511,11 @@ def livestock_species_info(slug: str):
 
 @marketplace_router.get("/filters/{slug}")
 def livestock_filters(slug: str, db: Session = Depends(get_db)):
-    """Return available breeds and states for the given species slug."""
+    """Return available breeds and states for the given species slug.
+
+    Blank AddressState values are omitted so the location dropdown never shows
+    empty options (seen on alpacas/cattle/donkeys in staging audits).
+    """
     species_id = SLUG_TO_SPECIES_ID.get(slug)
     if not species_id:
         return {"breeds": [], "states": [], "ranches": []}
@@ -2200,6 +2539,7 @@ def livestock_filters(slug: str, db: Session = Depends(get_db)):
             WHERE a.SpeciesID = :sid
               AND (a.PublishForSale = 1 OR a.PublishStud = 1)
               AND addr.AddressState IS NOT NULL
+              AND LTRIM(RTRIM(addr.AddressState)) <> ''
             ORDER BY addr.AddressState
         """), {"sid": species_id}).fetchall()
 
@@ -2215,9 +2555,20 @@ def livestock_filters(slug: str, db: Session = Depends(get_db)):
             ORDER BY biz.BusinessName
         """), {"sid": species_id}).fetchall()
 
+        states = []
+        for r in state_rows:
+            raw = r.state
+            if isinstance(raw, (bytes, memoryview)):
+                raw = _unescape(raw)
+            state = (str(raw).strip() if raw is not None else "")
+            # Drop blank / whitespace-only / zero-width labels that create empty <option>s
+            if not state or not any(ch.isalnum() for ch in state):
+                continue
+            states.append({"state": state, "state_index": r.state_index})
+
         return {
-            "breeds":  [{"id": r.id, "name": r.name} for r in breed_rows],
-            "states":  [{"state": r.state, "state_index": r.state_index} for r in state_rows],
+            "breeds":  [{"id": r.id, "name": (r.name if not isinstance(r.name, (bytes, memoryview)) else _unescape(r.name))} for r in breed_rows if r.name],
+            "states":  states,
             "ranches": [{"id": r.id, "name": r.name} for r in ranch_rows],
         }
     except Exception:
@@ -2280,18 +2631,28 @@ def _livestock_listing(
 
     where = " AND ".join(filters)
 
+    # Resolve seller via Animals.BusinessID first; fall back to a single
+    # BusinessAccess row. Joining all active BusinessAccess rows multiplied
+    # one animal into many and inflated COUNT(*) / page totals.
     join_block = """
         JOIN Pricing p          ON p.AnimalID      = a.AnimalID
         LEFT JOIN Photos ph     ON ph.AnimalID     = a.AnimalID
         LEFT JOIN SpeciesBreedLookupTable b1 ON b1.BreedLookupID = a.BreedID
         LEFT JOIN SpeciesBreedLookupTable b2 ON b2.BreedLookupID = a.BreedID2
-        LEFT JOIN BusinessAccess ba ON ba.PeopleID = a.PeopleID AND ba.Active = 1
-        LEFT JOIN Business biz  ON biz.BusinessID  = COALESCE(a.BusinessID, ba.BusinessID)
+        LEFT JOIN Business biz  ON biz.BusinessID  = COALESCE(
+            NULLIF(a.BusinessID, 0),
+            (
+                SELECT TOP 1 ba.BusinessID
+                FROM BusinessAccess ba
+                WHERE ba.PeopleID = a.PeopleID AND ba.Active = 1
+                ORDER BY ba.BusinessID
+            )
+        )
         LEFT JOIN Address addr  ON addr.AddressID  = biz.AddressID
     """
 
     total = db.execute(text(f"""
-        SELECT COUNT(*) FROM Animals a {join_block} WHERE {where}
+        SELECT COUNT(DISTINCT a.AnimalID) FROM Animals a {join_block} WHERE {where}
     """), params).scalar() or 0
 
     offset = (page - 1) * PER_PAGE
@@ -2306,6 +2667,18 @@ def _livestock_listing(
         ORDER BY {order_sql} {dir_sql}
         OFFSET :offset ROWS FETCH NEXT :per_page ROWS ONLY
     """), {**params, "offset": offset, "per_page": PER_PAGE}).fetchall()
+
+    # Safety: if Photos (or another join) still multiplies a row, keep one per animal.
+    seen_ids: set[int] = set()
+    deduped_rows = []
+    for r in rows:
+        aid = getattr(r, "AnimalID", None)
+        if aid in seen_ids:
+            continue
+        if aid is not None:
+            seen_ids.add(aid)
+        deduped_rows.append(r)
+    rows = deduped_rows
 
     # Batch-lookup upcoming events for the businesses on this page
     biz_ids = {r.BusinessID for r in rows if getattr(r, 'BusinessID', None)}
@@ -2479,6 +2852,17 @@ def get_animal_progeny(animal_id: int, db: Session = Depends(get_db)):
 @marketplace_router.get("/animal/{animal_id}")
 def get_animal_detail(animal_id: int, lang: str = "en", db: Session = Depends(get_db)):
     """Public endpoint — returns everything needed for the animal detail page."""
+    try:
+        return _get_animal_detail_impl(animal_id, lang, db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _get_animal_detail_impl(animal_id: int, lang: str, db: Session):
+    """Public endpoint — returns everything needed for the animal detail page."""
 
     # ── core animal fields (no fragile outer joins) ───────────────────────────
     row = db.execute(text("""
@@ -2588,10 +2972,10 @@ def get_animal_detail(animal_id: int, lang: str = "en", db: Session = Depends(ge
             WHERE ba.PeopleID = :pid AND ba.Active = 1
         """), {"pid": people_id}).fetchone()
     if biz_row:
-        owner_info["business_name"] = biz_row.BusinessName
+        owner_info["business_name"] = _unescape(biz_row.BusinessName) or None
         owner_info["business_id"]   = biz_row.BusinessID
-        owner_info["city"]          = biz_row.AddressCity
-        owner_info["state"]         = biz_row.AddressState
+        owner_info["city"]          = _unescape(biz_row.AddressCity) or None
+        owner_info["state"]         = _unescape(biz_row.AddressState) or None
         owner_info["logo"]          = _photo_url(biz_row.Logo)
 
     # ── species singular/plural terms ─────────────────────────────────────────
@@ -2609,6 +2993,8 @@ def get_animal_detail(animal_id: int, lang: str = "en", db: Session = Depends(ge
                 category_display = cat_row[0]
             elif raw_cat == "0":
                 category_display = None
+    if category_display is not None:
+        category_display = _unescape(category_display) or None
 
     # ── breed names ───────────────────────────────────────────────────────────
     breed_names = []
@@ -2627,7 +3013,7 @@ def get_animal_detail(animal_id: int, lang: str = "en", db: Session = Depends(ge
         WHERE AnimalID = :aid AND RegNumber IS NOT NULL AND RegNumber != ''
         ORDER BY RegType
     """), {"aid": animal_id}).fetchall()
-    registrations = [{"type": r.RegType, "number": r.RegNumber} for r in reg_rows]
+    registrations = [{"type": _unescape(r.RegType), "number": _unescape(r.RegNumber)} for r in reg_rows]
 
     # ── awards ────────────────────────────────────────────────────────────────
     award_rows = db.execute(text("""
@@ -2637,10 +3023,10 @@ def get_animal_detail(animal_id: int, lang: str = "en", db: Session = Depends(ge
     awards = [
         {
             "AwardYear":     r.AwardYear,
-            "ShowName":      r.ShowName,
-            "Placing":       r.Placing,
-            "AwardClass":    r.Type,
-            "AwardComments": r.Awardcomments,
+            "ShowName":      _unescape(r.ShowName),
+            "Placing":       _unescape(r.Placing) if r.Placing is not None else r.Placing,
+            "AwardClass":    _unescape(r.Type),
+            "AwardComments": _unescape(r.Awardcomments),
         }
         for r in award_rows
         if any([r.AwardYear and str(r.AwardYear) != "0",
@@ -2657,7 +3043,7 @@ def get_animal_detail(animal_id: int, lang: str = "en", db: Session = Depends(ge
         FROM Fiber WHERE AnimalID = :aid
         ORDER BY SampleDateYear DESC, Average DESC
     """), {"aid": animal_id}).fetchall()
-    fiber_stats = [dict(r._mapping) for r in fiber_rows]
+    fiber_stats = [_jsonable_row(dict(r._mapping)) for r in fiber_rows]
 
     # ── species slug ──────────────────────────────────────────────────────────
     species_slug     = SPECIES_ID_TO_SLUG.get(species_id)
@@ -2674,50 +3060,50 @@ def get_animal_detail(animal_id: int, lang: str = "en", db: Session = Depends(ge
         "dob": {"month": d.get("DOBMonth"), "day": d.get("DOBDay"), "year": d.get("DOBYear")},
         "category":     category_display,
         "breeds":       [_unescape(b) for b in breed_names],
-        "colors":       [x.strip() for x in [cr.get("Color1"), cr.get("Color2"), cr.get("Color3"), cr.get("Color4"), cr.get("Color5")] if x and str(x).strip()],
+        "colors":       [x for x in [_unescape(cr.get("Color1")), _unescape(cr.get("Color2")), _unescape(cr.get("Color3")), _unescape(cr.get("Color4")), _unescape(cr.get("Color5"))] if x and str(x).strip()],
         "weight":       d.get("Weight"),
         "height":       d.get("Height"),
         "horns":        d.get("Horns"),
         "gaited":       d.get("Gaited"),
         "warmblooded":  d.get("Warmblooded"),
-        "temperament":  d.get("Temperment"),
-        "vaccinations": d.get("Vaccinations"),
+        "temperament":  _unescape(d.get("Temperment")) or None,
+        "vaccinations": _unescape(d.get("Vaccinations")) or None,
         "pricing": {
-            "price":          float(pr["Price"])   if pr.get("Price")   else None,
-            "stud_fee":       float(pr["StudFee"]) if pr.get("StudFee") else None,
+            "price":          _safe_float(pr.get("Price")),
+            "stud_fee":       _safe_float(pr.get("StudFee")),
             "free":           bool(pr.get("Free")),
             "sold":           bool(pr.get("Sold")),
-            "price_comments": pr.get("PriceComments"),
+            "price_comments": _unescape(pr.get("PriceComments")) or None,
         },
         "sold":             bool(pr.get("Sold")),
         "sale_pending":     False,
         "publish_stud":     bool(d.get("PublishStud")),
         "publish_for_sale": bool(d.get("PublishForSale")),
-        "finance_terms":    pr.get("Financeterms"),
+        "finance_terms":    _unescape(pr.get("Financeterms")) or None,
         "last_updated":     str(d["LastUpdated"]) if d.get("LastUpdated") else None,
         "co_owners": [x for x in [
-            {"name": d.get("CoOwnerName1"), "business": d.get("CoOwnerBusiness1"), "link": d.get("CoOwnerLink1")} if d.get("CoOwnerName1") or d.get("CoOwnerBusiness1") else None,
-            {"name": d.get("CoOwnerName2"), "business": d.get("CoOwnerBusiness2"), "link": d.get("CoOwnerLink2")} if d.get("CoOwnerName2") or d.get("CoOwnerBusiness2") else None,
-            {"name": d.get("CoOwnerName3"), "business": d.get("CoOwnerBusiness3"), "link": d.get("CoOwnerLink3")} if d.get("CoOwnerName3") or d.get("CoOwnerBusiness3") else None,
+            {"name": _unescape(d.get("CoOwnerName1")), "business": _unescape(d.get("CoOwnerBusiness1")), "link": _unescape(d.get("CoOwnerLink1"))} if d.get("CoOwnerName1") or d.get("CoOwnerBusiness1") else None,
+            {"name": _unescape(d.get("CoOwnerName2")), "business": _unescape(d.get("CoOwnerBusiness2")), "link": _unescape(d.get("CoOwnerLink2"))} if d.get("CoOwnerName2") or d.get("CoOwnerBusiness2") else None,
+            {"name": _unescape(d.get("CoOwnerName3")), "business": _unescape(d.get("CoOwnerBusiness3")), "link": _unescape(d.get("CoOwnerLink3"))} if d.get("CoOwnerName3") or d.get("CoOwnerBusiness3") else None,
         ] if x],
         "owner": owner_info,
         "ancestry": {
             "sire_term": "Sire",
             "dam_term":  "Dam",
-            "sire":          {"name": _unescape(anc.get("Sire")),         "color": anc.get("SireColor"),         "link": anc.get("SireLink"),         "reg": anc.get("SireARI")},
-            "sire_sire":     {"name": _unescape(anc.get("SireSire")),     "color": anc.get("SireSireColor"),     "link": anc.get("SireSireLink"),     "reg": anc.get("SireSireARI")},
-            "sire_dam":      {"name": _unescape(anc.get("SireDam")),      "color": anc.get("SireDamColor"),      "link": anc.get("SireDamLink"),      "reg": anc.get("SireDamARI")},
-            "sire_sire_sire":{"name": _unescape(anc.get("SireSireSire")), "color": anc.get("SireSireSireColor"), "link": anc.get("SireSireSireLink"), "reg": anc.get("SireSireSireARI")},
-            "sire_sire_dam": {"name": _unescape(anc.get("SireSireDam")),  "color": anc.get("SireSireDamColor"),  "link": anc.get("SireSireDamLink"),  "reg": anc.get("SireSireDamARI")},
-            "sire_dam_sire": {"name": _unescape(anc.get("SireDamSire")),  "color": anc.get("SireDamSireColor"),  "link": anc.get("SireDamSireLink"),  "reg": anc.get("SireDamSireARI")},
-            "sire_dam_dam":  {"name": _unescape(anc.get("SireDamDam")),   "color": anc.get("SireDamDamColor"),   "link": anc.get("SireDamDamLink"),   "reg": anc.get("SireDamDamARI")},
-            "dam":           {"name": _unescape(anc.get("Dam")),          "color": anc.get("DamColor"),          "link": anc.get("DamLink"),          "reg": anc.get("DamARI") or anc.get("DamAri")},
-            "dam_sire":      {"name": _unescape(anc.get("DamSire")),      "color": anc.get("DamSireColor"),      "link": anc.get("DamSireLink"),      "reg": anc.get("DamSireARI")},
-            "dam_dam":       {"name": _unescape(anc.get("DamDam")),       "color": anc.get("DamDamColor"),       "link": anc.get("DamDamLink"),       "reg": anc.get("DamDamARI")},
-            "dam_sire_sire": {"name": _unescape(anc.get("DamSireSire")),  "color": anc.get("DamSireSireColor"),  "link": anc.get("DamSireSireLink"),  "reg": anc.get("DamSireSireARI")},
-            "dam_sire_dam":  {"name": _unescape(anc.get("DamSireDam")),   "color": anc.get("DamSireDamColor"),   "link": anc.get("DamSireDamLink"),   "reg": anc.get("DamSireDamARI")},
-            "dam_dam_sire":  {"name": _unescape(anc.get("DamDamSire")),   "color": anc.get("DamDamSireColor"),   "link": anc.get("DamDamSireLink"),   "reg": anc.get("DamDamSireARI")},
-            "dam_dam_dam":   {"name": _unescape(anc.get("DamDamDam")),    "color": anc.get("DamDamDamColor"),    "link": anc.get("DamDamDamLink"),    "reg": anc.get("DamDamDamARI")},
+            "sire":          {"name": _unescape(anc.get("Sire")),         "color": _unescape(anc.get("SireColor")),         "link": _unescape(anc.get("SireLink")),         "reg": _unescape(anc.get("SireARI"))},
+            "sire_sire":     {"name": _unescape(anc.get("SireSire")),     "color": _unescape(anc.get("SireSireColor")),     "link": _unescape(anc.get("SireSireLink")),     "reg": _unescape(anc.get("SireSireARI"))},
+            "sire_dam":      {"name": _unescape(anc.get("SireDam")),      "color": _unescape(anc.get("SireDamColor")),      "link": _unescape(anc.get("SireDamLink")),      "reg": _unescape(anc.get("SireDamARI"))},
+            "sire_sire_sire":{"name": _unescape(anc.get("SireSireSire")), "color": _unescape(anc.get("SireSireSireColor")), "link": _unescape(anc.get("SireSireSireLink")), "reg": _unescape(anc.get("SireSireSireARI"))},
+            "sire_sire_dam": {"name": _unescape(anc.get("SireSireDam")),  "color": _unescape(anc.get("SireSireDamColor")),  "link": _unescape(anc.get("SireSireDamLink")),  "reg": _unescape(anc.get("SireSireDamARI"))},
+            "sire_dam_sire": {"name": _unescape(anc.get("SireDamSire")),  "color": _unescape(anc.get("SireDamSireColor")),  "link": _unescape(anc.get("SireDamSireLink")),  "reg": _unescape(anc.get("SireDamSireARI"))},
+            "sire_dam_dam":  {"name": _unescape(anc.get("SireDamDam")),   "color": _unescape(anc.get("SireDamDamColor")),   "link": _unescape(anc.get("SireDamDamLink")),   "reg": _unescape(anc.get("SireDamDamARI"))},
+            "dam":           {"name": _unescape(anc.get("Dam")),          "color": _unescape(anc.get("DamColor")),          "link": _unescape(anc.get("DamLink")),          "reg": _unescape(anc.get("DamARI") or anc.get("DamAri"))},
+            "dam_sire":      {"name": _unescape(anc.get("DamSire")),      "color": _unescape(anc.get("DamSireColor")),      "link": _unescape(anc.get("DamSireLink")),      "reg": _unescape(anc.get("DamSireARI"))},
+            "dam_dam":       {"name": _unescape(anc.get("DamDam")),       "color": _unescape(anc.get("DamDamColor")),       "link": _unescape(anc.get("DamDamLink")),       "reg": _unescape(anc.get("DamDamARI"))},
+            "dam_sire_sire": {"name": _unescape(anc.get("DamSireSire")),  "color": _unescape(anc.get("DamSireSireColor")),  "link": _unescape(anc.get("DamSireSireLink")),  "reg": _unescape(anc.get("DamSireSireARI"))},
+            "dam_sire_dam":  {"name": _unescape(anc.get("DamSireDam")),   "color": _unescape(anc.get("DamSireDamColor")),   "link": _unescape(anc.get("DamSireDamLink")),   "reg": _unescape(anc.get("DamSireDamARI"))},
+            "dam_dam_sire":  {"name": _unescape(anc.get("DamDamSire")),   "color": _unescape(anc.get("DamDamSireColor")),   "link": _unescape(anc.get("DamDamSireLink")),   "reg": _unescape(anc.get("DamDamSireARI"))},
+            "dam_dam_dam":   {"name": _unescape(anc.get("DamDamDam")),    "color": _unescape(anc.get("DamDamDamColor")),    "link": _unescape(anc.get("DamDamDamLink")),    "reg": _unescape(anc.get("DamDamDamARI"))},
             "bloodline":     bloodline,
         },
         "photos":             photos,

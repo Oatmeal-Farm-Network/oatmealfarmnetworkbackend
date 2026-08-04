@@ -35,6 +35,7 @@ class UpdateLoginRequest(BaseModel):
     first_name: str = None
     last_name: str = None
     email: str = None
+    phone: str = None
     current_password: str = None
     new_password: str = None
 
@@ -234,7 +235,8 @@ def get_me(current_user=Depends(get_current_user)):
         "PeopleFirstName": current_user.PeopleFirstName,
         "PeopleLastName": current_user.PeopleLastName,
         "PeopleEmail": current_user.PeopleEmail,
-        "AccessLevel": current_user.accesslevel
+        "PeoplePhone": getattr(current_user, "PeoplePhone", None) or "",
+        "AccessLevel": current_user.accesslevel,
     }
 
 
@@ -265,6 +267,8 @@ def update_login(payload: UpdateLoginRequest, current_user=Depends(get_current_u
         user.PeopleFirstName = payload.first_name.strip()
     if payload.last_name is not None:
         user.PeopleLastName = payload.last_name.strip()
+    if payload.phone is not None:
+        user.PeoplePhone = payload.phone.strip() or None
 
     db.commit()
     return {
@@ -272,6 +276,7 @@ def update_login(payload: UpdateLoginRequest, current_user=Depends(get_current_u
         "PeopleFirstName": user.PeopleFirstName,
         "PeopleLastName": user.PeopleLastName,
         "PeopleEmail": user.PeopleEmail,
+        "PeoplePhone": user.PeoplePhone or "",
     }
 
 

@@ -12,13 +12,18 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from langgraph.types import Command
 
-from config import SHORT_TERM_N
+from config import SHORT_TERM_N, normalize_chat_product
 from graph import builder, graph
 from chat.buffer import get_last_n, push_message
 from chat.history import chat_history
 from observability import log_event, new_trace_id
 
 logger = logging.getLogger("farm_advisory.chat")
+
+
+def _scoped_thread_id(product: str, thread_id: str) -> str:
+    """Isolate Redis buffers / LangGraph checkpoints per product."""
+    return f"{normalize_chat_product(product)}:{thread_id}"
 
 _STAGE_LABELS = {
     "user_agent": "Understanding your account & request…",
@@ -92,11 +97,14 @@ def _prepare_turn(
     business_id: Optional[str],
     image_data: Optional[str],
     skip_history: bool,
+    product: Optional[str] = "ofn",
 ) -> Tuple[dict, Any, Optional[str]]:
     """Returns (langgraph_config, stream_input, trace_id)."""
+    product = normalize_chat_product(product)
+    scoped_id = _scoped_thread_id(product, thread_id)
     trace_id = new_trace_id()
-    config = {"configurable": {"thread_id": f"sup:{thread_id}"}}
-    last_n = get_last_n(thread_id, SHORT_TERM_N)
+    config = {"configurable": {"thread_id": f"sup:{scoped_id}"}}
+    last_n = get_last_n(scoped_id, SHORT_TERM_N)
     short_term_history = _buffer_to_history(last_n)
 
     if not skip_history:
@@ -107,10 +115,11 @@ def _prepare_turn(
                 role="user",
                 content=user_input,
                 business_id=str(business_id) if business_id else None,
+                product=product,
             )
         except Exception as e:
             logger.debug("[chat] save user message failed: %s", e)
-        push_message(thread_id=thread_id, message={"role": "user", "content": user_input})
+        push_message(thread_id=scoped_id, message={"role": "user", "content": user_input})
 
     state = _get_state(graph, config)
     if state.next:
@@ -135,9 +144,21 @@ def _prepare_turn(
     except Exception:
         pass
     try:
-        long_term_memory = chat_history.get_user_memory(people_id) if people_id else {}
+        long_term_memory = (
+            chat_history.get_user_memory(
+                people_id,
+                product=product,
+                business_id=str(business_id) if business_id else None,
+            )
+            if people_id
+            else {}
+        )
         if business_id:
-            org_memory = chat_history.get_org_memory(business_id, exclude_user_id=people_id)
+            org_memory = chat_history.get_org_memory(
+                business_id,
+                exclude_user_id=people_id,
+                product=product,
+            )
     except Exception:
         pass
 
@@ -148,6 +169,7 @@ def _prepare_turn(
         "people_id": people_id,
         "business_id": business_id,
         "thread_id": thread_id,
+        "product": product,
         "user_name": user_name,
         "long_term_memory": long_term_memory or {},
         "org_memory": org_memory or {},
@@ -157,7 +179,14 @@ def _prepare_turn(
         "diagnosis": None,
         "recommendations": [],
     }
-    log_event("turn_start", trace_id=trace_id, thread_id=thread_id, people_id=people_id, business_id=business_id)
+    log_event(
+        "turn_start",
+        trace_id=trace_id,
+        thread_id=thread_id,
+        people_id=people_id,
+        business_id=business_id,
+        product=product,
+    )
     return config, payload, trace_id
 
 
@@ -169,8 +198,11 @@ def _finalize_result(
     skip_history: bool,
     turn_start: float,
     trace_id: str,
+    product: Optional[str] = "ofn",
 ) -> Dict[str, Any]:
-    final_state = _get_state(graph, {"configurable": {"thread_id": f"sup:{thread_id}"}})
+    product = normalize_chat_product(product)
+    scoped_id = _scoped_thread_id(product, thread_id)
+    final_state = _get_state(graph, {"configurable": {"thread_id": f"sup:{scoped_id}"}})
     final_values = final_state.values if final_state.values else {}
 
     if final_state.next:
@@ -220,11 +252,12 @@ def _finalize_result(
                 role="assistant",
                 content=response_text,
                 business_id=str(business_id) if business_id else None,
+                product=product,
                 metadata={"type": "advisory", "advisory_type": final_values.get("advisory_type"), "trace_id": trace_id},
             )
         except Exception as e:
             logger.debug("[chat] save assistant message failed: %s", e)
-        push_message(thread_id=thread_id, message={"role": "assistant", "content": response_text})
+        push_message(thread_id=scoped_id, message={"role": "assistant", "content": response_text})
 
     result = {
         "status": "success",
@@ -260,8 +293,10 @@ def run_chat(
     business_id: Optional[str] = None,
     image_data: Optional[str] = None,
     skip_history: bool = False,
+    product: Optional[str] = "ofn",
 ) -> Dict[str, Any]:
     """Execute one Saige turn; returns a dict shaped for the /chat JSON body."""
+    product = normalize_chat_product(product)
     turn_start = time.time()
     config, stream_input, trace_id = _prepare_turn(
         user_input=user_input,
@@ -270,6 +305,7 @@ def run_chat(
         business_id=business_id,
         image_data=image_data,
         skip_history=skip_history,
+        product=product,
     )
     try:
         for _ in _safe_stream(graph, stream_input, config, stream_mode="values"):
@@ -288,6 +324,7 @@ def run_chat(
         skip_history=skip_history,
         turn_start=turn_start,
         trace_id=trace_id,
+        product=product,
     )
 
 
@@ -299,9 +336,13 @@ def resume_hitl(
     proposal_id: Optional[str] = None,
     edits: Optional[Dict[str, Any]] = None,
     decisions: Optional[List[Dict[str, Any]]] = None,
+    product: Optional[str] = "ofn",
+    business_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """POST /resume helper - Command(resume=...) into the interrupted farm graph."""
-    config = {"configurable": {"thread_id": f"sup:{thread_id}"}}
+    product = normalize_chat_product(product)
+    scoped_id = _scoped_thread_id(product, thread_id)
+    config = {"configurable": {"thread_id": f"sup:{scoped_id}"}}
     if decisions:
         payload: Dict[str, Any] = {"decisions": decisions}
     else:
@@ -310,7 +351,7 @@ def resume_hitl(
             "proposal_id": proposal_id,
             "edits": edits or {},
         }
-    print(f"[chat] HITL resume thread={thread_id} decision={decision}")
+    print(f"[chat] HITL resume thread={thread_id} product={product} decision={decision}")
     events_list = list(_safe_stream(graph, Command(resume=payload), config))
     final_state = _get_state(graph, config)
     final_values = final_state.values if final_state.values else {}
@@ -321,11 +362,13 @@ def resume_hitl(
             thread_id=thread_id,
             role="assistant",
             content=response_text,
+            business_id=str(business_id) if business_id else None,
+            product=product,
             metadata={"type": "hitl_result"},
         )
     except Exception:
         pass
-    push_message(thread_id=thread_id, message={"role": "assistant", "content": response_text})
+    push_message(thread_id=scoped_id, message={"role": "assistant", "content": response_text})
     return {
         "status": "success" if not final_state.next else "interrupted",
         "thread_id": thread_id,

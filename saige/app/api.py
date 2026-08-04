@@ -1,4 +1,4 @@
-﻿# --- app/api.py --- (Enhanced API for farm advisory system)
+# --- app/api.py --- (Enhanced API for farm advisory system)
 import os
 import json
 import logging
@@ -18,6 +18,7 @@ from langgraph.types import Command
 from config import (
     FRONTEND_URL, ALLOW_ALL_ORIGINS, IS_PRODUCTION, REDIS_ENABLED, SHORT_TERM_N,
     MAX_MESSAGE_CHARS, RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_SECONDS,
+    normalize_chat_product,
 )
 from graph import graph
 from chat import run_chat, resume_hitl, iter_chat_events
@@ -148,7 +149,10 @@ class ChatRequest(BaseModel):
     thread_id: str = Field(..., min_length=1, max_length=128)
     business_id: Optional[str] = None  # from URL query param (?BusinessID=...)
     image_data: Optional[str] = None   # base64-encoded image for multimodal queries
-    # NOTE: people_id is NOT here � extracted from Bearer JWT by get_current_user()
+    # Product namespace for chat history collections: "ofn" (default) | "loa"
+    # Auth is shared; Firestore collections stay separate.
+    product: Optional[str] = "ofn"
+    # NOTE: people_id is NOT here — extracted from Bearer JWT by get_current_user()
 
     @field_validator("user_input")
     @classmethod
@@ -157,6 +161,11 @@ class ChatRequest(BaseModel):
         if not v:
             raise ValueError("user_input must not be empty or whitespace-only")
         return v
+
+    @field_validator("product")
+    @classmethod
+    def normalize_product(cls, v: Optional[str]) -> str:
+        return normalize_chat_product(v)
 
 
 class TTSRequest(BaseModel):
@@ -503,6 +512,7 @@ async def chat(
 ):
     """Main chat endpoint for farm advisory system."""
     business_id = request.business_id
+    product = normalize_chat_product(request.product)
     if not business_id and people_id:
         try:
             from user_profile import get_primary_business_id as _get_biz_id
@@ -531,6 +541,7 @@ async def chat(
         people_id=people_id,
         business_id=business_id,
         image_data=getattr(request, "image_data", None),
+        product=product,
     )
     status_code = 200 if result.get("status") in {"success", "interrupted"} else 500
     return JSONResponse(status_code=status_code, content=result)
@@ -554,6 +565,7 @@ async def chat_stream(
         )
 
     business_id = request.business_id
+    product = normalize_chat_product(request.product)
     if not business_id and people_id:
         try:
             from user_profile import get_primary_business_id as _get_biz_id
@@ -568,6 +580,7 @@ async def chat_stream(
             people_id=people_id,
             business_id=business_id,
             image_data=getattr(request, "image_data", None),
+            product=product,
         ):
             yield f"data: {json.dumps(event, default=str)}\n\n"
 
@@ -587,10 +600,24 @@ async def list_threads(
     people_id: str = Depends(get_current_user),
     limit: int = Query(default=20, ge=1, le=100),
     cursor: Optional[str] = Query(default=None),
+    business_id: Optional[str] = Query(default=None),
+    product: str = Query(default="ofn"),
 ):
-    """List all chat threads for the authenticated user."""
-    threads, next_cursor = chat_history.get_threads(people_id, limit=limit, cursor=cursor)
-    return {"threads": threads, "next_cursor": next_cursor}
+    """List chat threads for the authenticated user (product + optional business scope)."""
+    product = normalize_chat_product(product)
+    threads, next_cursor = chat_history.get_threads(
+        people_id,
+        limit=limit,
+        cursor=cursor,
+        business_id=business_id,
+        product=product,
+    )
+    return {
+        "threads": threads,
+        "next_cursor": next_cursor,
+        "product": product,
+        "business_id": business_id,
+    }
 
 
 @app.get("/threads/{thread_id}/messages")
@@ -599,24 +626,48 @@ async def get_thread_messages(
     people_id: str = Depends(get_current_user),
     limit: int = Query(default=50, ge=1, le=200),
     cursor: Optional[str] = Query(default=None),
+    business_id: Optional[str] = Query(default=None),
+    product: str = Query(default="ofn"),
 ):
-    """Get messages for a specific thread."""
-    messages, next_cursor = chat_history.get_messages(people_id, thread_id, limit=limit, cursor=cursor)
+    """Get messages for a specific thread in the product collection."""
+    product = normalize_chat_product(product)
+    messages, next_cursor = chat_history.get_messages(
+        people_id,
+        thread_id,
+        limit=limit,
+        cursor=cursor,
+        product=product,
+        business_id=business_id,
+    )
     if not messages and cursor is None:
         return JSONResponse(status_code=404, content={"error": "Thread not found"})
-    return {"thread_id": thread_id, "messages": messages, "next_cursor": next_cursor}
+    return {
+        "thread_id": thread_id,
+        "messages": messages,
+        "next_cursor": next_cursor,
+        "product": product,
+        "business_id": business_id,
+    }
 
 
 @app.delete("/threads/{thread_id}")
 async def delete_thread(
     thread_id: str,
     people_id: str = Depends(get_current_user),
+    business_id: Optional[str] = Query(default=None),
+    product: str = Query(default="ofn"),
 ):
     """Delete a chat thread belonging to the authenticated user."""
-    success = chat_history.delete_thread(people_id, thread_id)
+    product = normalize_chat_product(product)
+    success = chat_history.delete_thread(
+        people_id,
+        thread_id,
+        product=product,
+        business_id=business_id,
+    )
     if not success:
         return JSONResponse(status_code=404, content={"error": "Thread not found"})
-    return {"status": "deleted", "thread_id": thread_id}
+    return {"status": "deleted", "thread_id": thread_id, "product": product}
 
 
 # ============================================================================
@@ -624,9 +675,18 @@ async def delete_thread(
 # ============================================================================
 
 @app.get("/analytics")
-async def get_analytics(people_id: str = Depends(get_current_user)):
+async def get_analytics(
+    people_id: str = Depends(get_current_user),
+    business_id: Optional[str] = Query(default=None),
+    product: str = Query(default="ofn"),
+):
     """Aggregate analytics for the authenticated user's chat sessions."""
-    data = chat_history.get_analytics(people_id)
+    product = normalize_chat_product(product)
+    data = chat_history.get_analytics(
+        people_id,
+        product=product,
+        business_id=business_id,
+    )
     if not data:
         return {"status": "no_data", "message": "No analytics data available."}
     return data
@@ -1533,6 +1593,8 @@ class ResumeRequest(BaseModel):
     proposal_id: Optional[str] = None
     edits: Optional[Dict[str, Any]] = None
     decisions: Optional[List[Dict[str, Any]]] = None
+    product: Optional[str] = "ofn"
+    business_id: Optional[str] = None
 
 
 @app.post("/resume")
@@ -1548,6 +1610,8 @@ async def saige_resume(
         proposal_id=request.proposal_id,
         edits=request.edits,
         decisions=request.decisions,
+        product=normalize_chat_product(request.product),
+        business_id=request.business_id,
     )
     return result
 
@@ -1588,6 +1652,8 @@ class ProposalDecidePayload(BaseModel):
     decision: str = Field(description="approve | edit | reject")
     thread_id: Optional[str] = None
     edits: Optional[Dict[str, Any]] = None
+    product: Optional[str] = "ofn"
+    business_id: Optional[str] = None
 
 
 @app.post("/proposals/{proposal_id}/decide")
@@ -1611,6 +1677,8 @@ async def saige_proposal_decide(
         decision=body.decision,
         proposal_id=proposal_id,
         edits=body.edits,
+        product=normalize_chat_product(body.product),
+        business_id=body.business_id or row.get("business_id"),
     )
 
 

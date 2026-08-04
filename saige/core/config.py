@@ -114,7 +114,27 @@ ALLOW_ALL_ORIGINS = os.getenv("ALLOW_ALL_ORIGINS", "false").lower() == "true"
 # CHAT HISTORY CONFIGURATION
 # ============================================================================
 
-THREADS_COLLECTION = "threads"
+# OFN (default / legacy) and LOA use separate top-level Firestore collections
+# so chat history never mixes across products. Auth (JWT) is shared.
+THREADS_COLLECTION = os.getenv("THREADS_COLLECTION", "threads").strip() or "threads"
+THREADS_COLLECTION_LOA = os.getenv("THREADS_COLLECTION_LOA", "loa_threads").strip() or "loa_threads"
+
+_VALID_PRODUCTS = frozenset({"ofn", "loa"})
+
+
+def normalize_chat_product(product: Optional[str]) -> str:
+    """Map request product/source to ofn|loa. Default ofn for backward compatibility."""
+    raw = (product or "ofn").strip().lower()
+    if raw in ("loa", "livestock", "livestock_of_america", "livestock-of-america"):
+        return "loa"
+    if raw in ("ofn", "oatmeal", "oatmeal_farm_network", "oatmeal-farm-network"):
+        return "ofn"
+    return "ofn" if raw not in _VALID_PRODUCTS else raw
+
+
+def threads_collection_for(product: Optional[str]) -> str:
+    """Firestore collection name for Saige chat threads by product."""
+    return THREADS_COLLECTION_LOA if normalize_chat_product(product) == "loa" else THREADS_COLLECTION
 
 # ============================================================================
 # REDIS CONFIGURATION (Environment-agnostic: works for local and GCP Memorystore)

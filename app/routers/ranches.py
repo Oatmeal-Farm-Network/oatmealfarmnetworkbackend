@@ -327,11 +327,15 @@ def get_ranch_animals(
         def best_photo(row):
             for f in ['ListPageImage', 'Photo1', 'Photo2']:
                 v = getattr(row, f, None)
-                if v:
-                    url = v.strip()
-                    filename = url.split('/')[-1]
-                    if filename and len(filename) > 4:
-                        return f"{GCP_BUCKET_URL}/{filename}"
+                if not v:
+                    continue
+                url = str(v).strip()
+                low = url.lower()
+                if "missinglivestock" in low or "missing livestock" in low:
+                    continue
+                filename = url.split('/')[-1]
+                if filename and len(filename) > 4 and "missinglivestock" not in filename.lower():
+                    return f"{GCP_BUCKET_URL}/{filename}"
             return None
 
         animals = []
