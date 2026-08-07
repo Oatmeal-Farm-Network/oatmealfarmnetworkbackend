@@ -2090,7 +2090,7 @@ def livestock_homepage_listings(db: Session = Depends(get_db)):
                 biz.BusinessName,
                 addr.AddressState
             FROM Animals a
-            JOIN Pricing p          ON p.AnimalID       = a.AnimalID
+            LEFT JOIN Pricing p     ON p.AnimalID       = a.AnimalID
             LEFT JOIN Photos ph     ON ph.AnimalID      = a.AnimalID
             LEFT JOIN SpeciesBreedLookupTable b1  ON b1.BreedLookupID = a.BreedID
             LEFT JOIN SpeciesBreedLookupTable b2  ON b2.BreedLookupID = a.BreedID2
@@ -2149,6 +2149,167 @@ def livestock_homepage_listings(db: Session = Depends(get_db)):
     except Exception as e:
         import traceback; traceback.print_exc()
         return []
+
+
+_TAG_RE = _re.compile(r'<[^>]+>')
+
+
+def _plain_text(raw, limit: int = 420) -> str:
+    """Flatten a stored HTML description into plain card copy."""
+    if not raw:
+        return ''
+    import html as _html
+    txt = _re.sub(r'<\s*br\s*/?\s*>', ' ', str(raw), flags=_re.IGNORECASE)
+    txt = _re.sub(r'</\s*(p|div|li)\s*>', ' ', txt, flags=_re.IGNORECASE)
+    txt = _TAG_RE.sub('', txt)
+    txt = _html.unescape(_unescape(txt))
+    txt = _re.sub(r'\s+', ' ', txt).strip()
+    if limit and len(txt) > limit:
+        txt = txt[:limit].rsplit(' ', 1)[0].rstrip(' ,;:.') + '…'
+    return txt
+
+
+def _usable_photo(row) -> str | None:
+    """Photo URL for a feature card, or None when it can't render.
+
+    Legacy rows store a bare '0' where a filename should be; _fix_animal_url
+    leaves those as a live-looking URL that 404s, which would put a broken
+    frame in a hero card. Reject anything whose filename is too short to be
+    real rather than trusting the URL shape.
+    """
+    url = _animal_photo(row)
+    if not url:
+        return None
+    filename = url.rstrip('/').split('/')[-1].split('?')[0]
+    return url if len(filename) > 4 and '.' in filename else None
+
+
+def _featured_dict(row, studs: bool) -> dict:
+    """Shape one Animals row for the homepage feature cards."""
+    breeds = [_unescape(b) for b in (
+        getattr(row, 'Breed1', None) or '',
+        getattr(row, 'Breed2', None) or '',
+    ) if b]
+
+    def money(value):
+        try:
+            v = float(value)
+            return v if v > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    species_id = getattr(row, 'SpeciesID', None)
+    # StudDescription is optional on the record; fall back to the general one.
+    description = _plain_text(
+        getattr(row, 'StudDescription', None) if studs else None
+    ) or _plain_text(getattr(row, 'Description', None))
+
+    return {
+        "animal_id":    row.AnimalID,
+        "full_name":    _unescape(getattr(row, 'FullName', '') or '').strip(),
+        "photo":        _usable_photo(row),
+        "description":  description,
+        "price":        None if studs else money(getattr(row, 'Price', None)),
+        "stud_fee":     money(getattr(row, 'StudFee', None)) if studs else None,
+        "breeds":       breeds,
+        "category":     (getattr(row, 'Category', '') or '').strip(),
+        "location":     getattr(row, 'AddressState', '') or '',
+        "seller":       _unescape(getattr(row, 'BusinessName', '') or ''),
+        "business_id":  getattr(row, 'BusinessID', None),
+        "species_id":   species_id,
+        "species_slug": SPECIES_ID_TO_SLUG.get(species_id),
+        "last_updated": row.LastUpdated.isoformat() if getattr(row, 'LastUpdated', None) else None,
+    }
+
+
+# OUTER APPLY (not LEFT JOIN) for photos and business: a PeopleID can hold
+# several active BusinessAccess rows, which would otherwise fan one animal out
+# into duplicate rows and shift the "most recent" pick.
+_FEATURED_SQL = """
+    SELECT TOP 24
+        a.AnimalID, a.FullName, a.SpeciesID, a.Category, a.LastUpdated,
+        a.Description, a.StudDescription,
+        ph.ListPageImage, ph.Photo1, ph.Photo2, ph.Photo3, ph.Photo4,
+        ph.Photo5, ph.Photo6, ph.Photo7, ph.Photo8,
+        p.Price, p.StudFee,
+        b1.Breed AS Breed1, b2.Breed AS Breed2,
+        biz.BusinessID, biz.BusinessName, addr.AddressState
+    FROM Animals a
+    OUTER APPLY (
+        SELECT TOP 1 * FROM Pricing x WHERE x.AnimalID = a.AnimalID
+    ) p
+    OUTER APPLY (
+        SELECT TOP 1 * FROM Photos x WHERE x.AnimalID = a.AnimalID
+    ) ph
+    LEFT JOIN SpeciesBreedLookupTable b1 ON b1.BreedLookupID = a.BreedID
+    LEFT JOIN SpeciesBreedLookupTable b2 ON b2.BreedLookupID = a.BreedID2
+    OUTER APPLY (
+        SELECT TOP 1 b.BusinessID, b.BusinessName, b.AddressID
+        FROM Business b
+        WHERE b.BusinessID = COALESCE(a.BusinessID, (
+            SELECT TOP 1 ba.BusinessID FROM BusinessAccess ba
+            WHERE ba.PeopleID = a.PeopleID AND ba.Active = 1
+            ORDER BY ba.BusinessID
+        ))
+    ) biz
+    LEFT JOIN Address addr ON addr.AddressID = biz.AddressID
+    WHERE {publish_flag}
+    ORDER BY a.LastUpdated DESC
+"""
+
+
+@marketplace_router.get("/homepage-featured")
+def livestock_homepage_featured(db: Session = Depends(get_db)):
+    """Homepage feature cards: newest for-sale animal, newest stud, plus a
+    small heritage row of the next-newest for-sale listings.
+
+    Candidates come back newest-first; we take the newest one that actually has
+    a photo so the feature card never renders as an empty frame, and fall back
+    to the newest overall when none of the recent records has one.
+    """
+    cached = _livestock_cache.get("homepage_featured")
+    if cached and _time.time() - cached["ts"] < _CACHE_TTL:
+        return cached["data"]
+
+    def candidates(studs: bool, flag: str) -> list:
+        try:
+            rows = db.execute(text(_FEATURED_SQL.format(publish_flag=flag))).fetchall()
+            return [_featured_dict(r, studs) for r in rows]
+        except Exception:
+            import traceback; traceback.print_exc()
+            return []
+
+    def lead_of(picks: list):
+        if not picks:
+            return None
+        return next((p for p in picks if p["photo"]), picks[0])
+
+    for_sale_picks = candidates(False, "a.PublishForSale = 1")
+    stud_picks     = candidates(True,  "a.PublishStud = 1")
+    for_sale = lead_of(for_sale_picks)
+    stud     = lead_of(stud_picks)
+
+    # Heritage row: next-newest for-sale listings behind the two lead cards.
+    # Spread across sellers first so one large ranch can't fill the whole row,
+    # then top up from whatever is left.
+    used_ids = {p["animal_id"] for p in (for_sale, stud) if p}
+    rest = [p for p in for_sale_picks if p["animal_id"] not in used_ids and p["photo"]]
+    heritage: list = []
+    seen_sellers = {p["seller"] for p in (for_sale, stud) if p and p["seller"]}
+    for unique_seller_pass in (True, False):
+        for p in rest:
+            if len(heritage) >= 3:
+                break
+            if p["animal_id"] in {h["animal_id"] for h in heritage}:
+                continue
+            if unique_seller_pass and p["seller"] in seen_sellers:
+                continue
+            seen_sellers.add(p["seller"])
+            heritage.append(p)
+
+    result = {"for_sale": for_sale, "stud": stud, "heritage": heritage}
+    _livestock_cache["homepage_featured"] = {"data": result, "ts": _time.time()}
+    return result
 
 
 @marketplace_router.get("/species/{slug}")
@@ -2212,6 +2373,10 @@ def livestock_filters(slug: str, db: Session = Depends(get_db)):
         return {"breeds": [], "states": [], "ranches": []}
 
 
+# Sentinel "no upper bound" used by the listing endpoints' query defaults.
+_PRICE_CEILING = 100_000_000
+
+
 def _livestock_listing(
     slug: str, studs: bool, page: int,
     breed_id: int, state_index: int,
@@ -2237,9 +2402,20 @@ def _livestock_listing(
     order_sql  = sort_map.get(sort_by, "a.LastUpdated")
     dir_sql    = "ASC" if order_by == "asc" else "DESC"
 
-    filters = [f"a.SpeciesID = :sid", publish_flag,
-               f"{price_col} >= :min_price", f"{price_col} <= :max_price"]
-    params: dict = {"sid": species_id, "min_price": min_price, "max_price": max_price}
+    filters = [f"a.SpeciesID = :sid", publish_flag]
+    params: dict = {"sid": species_id}
+
+    # Price/StudFee is NULL on most legacy rows (every published stud has a NULL
+    # StudFee). A bare `col >= :min AND col <= :max` drops all of them, because
+    # any comparison with NULL is never true — that hid 100% of stud listings.
+    # Only constrain rows that carry a value, and apply each bound solely when
+    # the caller actually asked for it.
+    if min_price is not None and min_price > 0:
+        filters.append(f"{price_col} >= :min_price")
+        params["min_price"] = min_price
+    if max_price is not None and max_price < _PRICE_CEILING:
+        filters.append(f"({price_col} IS NULL OR {price_col} <= :max_price)")
+        params["max_price"] = max_price
 
     if breed_id and breed_id != 0:
         filters.append("(a.BreedID = :breed_id OR a.BreedID2 = :breed_id)")
@@ -2250,18 +2426,42 @@ def _livestock_listing(
         params["state_index"] = state_index
 
     if business_id and business_id != 0:
-        filters.append("biz.BusinessID = :business_id")
+        # Matched via EXISTS, not the display join: an owner can hold several
+        # active BusinessAccess rows, and the join below resolves only one of
+        # them for display. EXISTS still finds the animal under any of them.
+        filters.append("""(
+            a.BusinessID = :business_id
+            OR EXISTS (
+                SELECT 1 FROM BusinessAccess ba2
+                WHERE ba2.PeopleID = a.PeopleID
+                  AND ba2.Active = 1
+                  AND ba2.BusinessID = :business_id
+            )
+        )""")
         params["business_id"] = business_id
 
     where = " AND ".join(filters)
 
+    # Every join here must yield at most one row per animal, or listings get
+    # duplicated and `total` inflates (21 owners hold multiple active
+    # BusinessAccess rows, which turned 92 alpaca studs into 116 result rows).
+    # Pricing is an OUTER APPLY rather than an inner join because an animal
+    # with no Pricing row is still a real listing — it just shows "call for
+    # price" instead of disappearing.
     join_block = """
-        JOIN Pricing p          ON p.AnimalID      = a.AnimalID
-        LEFT JOIN Photos ph     ON ph.AnimalID     = a.AnimalID
+        OUTER APPLY (SELECT TOP 1 * FROM Pricing x WHERE x.AnimalID = a.AnimalID) p
+        OUTER APPLY (SELECT TOP 1 * FROM Photos  x WHERE x.AnimalID = a.AnimalID) ph
         LEFT JOIN SpeciesBreedLookupTable b1 ON b1.BreedLookupID = a.BreedID
         LEFT JOIN SpeciesBreedLookupTable b2 ON b2.BreedLookupID = a.BreedID2
-        LEFT JOIN BusinessAccess ba ON ba.PeopleID = a.PeopleID AND ba.Active = 1
-        LEFT JOIN Business biz  ON biz.BusinessID  = COALESCE(a.BusinessID, ba.BusinessID)
+        OUTER APPLY (
+            SELECT TOP 1 b.BusinessID, b.BusinessName, b.AddressID
+            FROM Business b
+            WHERE b.BusinessID = COALESCE(a.BusinessID, (
+                SELECT TOP 1 ba.BusinessID FROM BusinessAccess ba
+                WHERE ba.PeopleID = a.PeopleID AND ba.Active = 1
+                ORDER BY ba.BusinessID
+            ))
+        ) biz
         LEFT JOIN Address addr  ON addr.AddressID  = biz.AddressID
     """
 
@@ -2334,7 +2534,7 @@ def livestock_for_sale(
     state_index: int   = Query(0),
     business_id: int   = Query(0),
     min_price:   float = Query(0),
-    max_price:   float = Query(100_000_000),
+    max_price:   float = Query(_PRICE_CEILING),
     ancestry:    str   = Query("Any"),
     sort_by:     str   = Query("lastupdated"),
     order_by:    str   = Query("desc"),
@@ -2357,7 +2557,7 @@ def livestock_studs(
     state_index: int   = Query(0),
     business_id: int   = Query(0),
     min_stud_fee:  float = Query(0),
-    max_stud_fee:  float = Query(100_000_000),
+    max_stud_fee:  float = Query(_PRICE_CEILING),
     ancestry:    str   = Query("Any"),
     sort_by:     str   = Query("lastupdated"),
     order_by:    str   = Query("desc"),
