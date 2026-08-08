@@ -92,44 +92,61 @@ def sync_table(table_name: str) -> Dict[str, int]:
             text = row_to_text(table_name, row)
             text_hash = content_hash(text)
             doc_id = make_doc_id(table_name, row)
-            doc_ref = collection.document(doc_id)
 
-            # Check if document exists with same content hash
-            existing = doc_ref.get()
-            if existing.exists:
-                existing_hash = (existing.to_dict() or {}).get("metadata", {}).get("content_hash")
-                if existing_hash == text_hash:
-                    skipped += 1
+            # Chunk long rows for better retrieval granularity
+            from rag import chunk_text
+            from config import CHUNK_TARGET_CHARS, CHUNK_OVERLAP_CHARS
+
+            pieces = chunk_text(text, target_chars=CHUNK_TARGET_CHARS, overlap_chars=CHUNK_OVERLAP_CHARS) or [text]
+            for chunk_index, piece in enumerate(pieces):
+                chunk_doc_id = doc_id if len(pieces) == 1 else f"{doc_id}__c{chunk_index}"
+                doc_ref = collection.document(chunk_doc_id)
+
+                # Check if document exists with same content hash
+                existing = doc_ref.get()
+                if existing.exists:
+                    existing_hash = (existing.to_dict() or {}).get("metadata", {}).get("content_hash")
+                    piece_hash = content_hash(piece)
+                    if existing_hash == piece_hash:
+                        skipped += 1
+                        continue
+                else:
+                    piece_hash = content_hash(piece)
+
+                # Generate embedding
+                embedding = rag._get_embedding(piece)
+                if not embedding:
+                    print(f"[Sync] Failed to generate embedding for {chunk_doc_id}")
+                    errors += 1
                     continue
 
-            # Generate embedding
-            embedding = rag._get_embedding(text)
-            if not embedding:
-                print(f"[Sync] Failed to generate embedding for {doc_id}")
-                errors += 1
-                continue
-
-            now = datetime.datetime.utcnow().isoformat()
-            batch.set(doc_ref, {
-                "embedding": Vector(embedding),
-                "content": text,
-                "metadata": {
-                    "table": table_name,
-                    "source": "sql_server",
-                    "content_hash": text_hash,
+                now = datetime.datetime.utcnow().isoformat()
+                batch.set(doc_ref, {
+                    "embedding": Vector(embedding),
+                    "content": piece,
+                    "metadata": {
+                        "table": table_name,
+                        "source": "sql_server",
+                        "content_hash": piece_hash,
+                        "synced_at": now,
+                        "doc_id": doc_id,
+                        "chunk_id": chunk_doc_id,
+                        "chunk_index": chunk_index,
+                        "title": f"{table_name}",
+                        "source_url": "",
+                        "updated_at": now,
+                    },
+                    "source_table": table_name,
                     "synced_at": now,
-                },
-                "source_table": table_name,
-                "synced_at": now,
-            })
-            synced += 1
-            batch_count += 1
+                })
+                synced += 1
+                batch_count += 1
 
-            # Firestore batch limit is 500 writes
-            if batch_count >= 500:
-                batch.commit()
-                batch = rag.firestore_db.batch()
-                batch_count = 0
+                # Firestore batch limit is 500 writes
+                if batch_count >= 500:
+                    batch.commit()
+                    batch = rag.firestore_db.batch()
+                    batch_count = 0
 
         except Exception as e:
             print(f"[Sync] Error processing row in {table_name}: {e}")

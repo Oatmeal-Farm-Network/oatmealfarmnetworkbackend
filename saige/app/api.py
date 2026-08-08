@@ -411,7 +411,27 @@ async def redis_health_check(request: Request):
 
 @app.get("/ready")
 async def readiness_check(request: Request):
-    checks = {"graph": True}
+    checks = {"graph": True, "jwt": False, "firestore": False}
+    # JWT canary — fail loudly if SECRET_KEY cannot round-trip a token
+    try:
+        from jose import jwt as _jwt
+        from config import JWT_SECRET, JWT_ALGORITHM
+        from datetime import datetime, timedelta, timezone
+
+        if not JWT_SECRET:
+            checks["jwt"] = False
+            checks["jwt_error"] = "SECRET_KEY missing"
+        else:
+            tok = _jwt.encode(
+                {"sub": "ready-canary", "exp": datetime.now(timezone.utc) + timedelta(minutes=2)},
+                JWT_SECRET,
+                algorithm=JWT_ALGORITHM,
+            )
+            payload = _jwt.decode(tok, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            checks["jwt"] = payload.get("sub") == "ready-canary"
+    except Exception as e:
+        checks["jwt"] = False
+        checks["jwt_error"] = type(e).__name__
     try:
         checks["firestore"] = bool(chat_history.firestore_db)
     except Exception:
@@ -419,9 +439,20 @@ async def readiness_check(request: Request):
     if REDIS_ENABLED:
         redis_manager = _resolve_redis_manager(request)
         checks["redis"] = _check_redis_health(redis_manager)[0]
-    critical_checks = {k: v for k, v in checks.items() if k in ["graph", "redis"]}
-    all_ready = all(critical_checks.values()) if critical_checks else True
-    return JSONResponse(status_code=200 if all_ready else 503, content={"status": "ready" if all_ready else "not_ready", "checks": checks})
+    critical = ["graph", "jwt"]
+    try:
+        from config import REDIS_ALLOW_MEMORY_FALLBACK
+        redis_required = REDIS_ENABLED and not REDIS_ALLOW_MEMORY_FALLBACK
+    except Exception:
+        redis_required = REDIS_ENABLED
+    if redis_required:
+        critical.append("redis")
+    critical_checks = {k: checks.get(k) for k in critical}
+    all_ready = all(bool(v) for v in critical_checks.values())
+    return JSONResponse(
+        status_code=200 if all_ready else 503,
+        content={"status": "ready" if all_ready else "not_ready", "checks": checks},
+    )
 
 
 @app.get("/health/firestore")

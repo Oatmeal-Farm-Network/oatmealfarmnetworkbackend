@@ -273,6 +273,13 @@ def _finalize_result(
         "route": final_values.get("route") or [],
         "handoff": final_values.get("handoff") or "none",
         "processing_time_ms": int((time.time() - turn_start) * 1000),
+        "latency": {
+            "total_ms": int((time.time() - turn_start) * 1000),
+            "specialist_ms": final_values.get("specialist_ms"),
+            "synth_ms": final_values.get("synth_ms"),
+            "route_ms": final_values.get("route_ms"),
+        },
+        "confidence": final_values.get("confidence"),
         "trace_id": trace_id,
     }
     log_event(
@@ -281,6 +288,7 @@ def _finalize_result(
         ms=result["processing_time_ms"],
         route=result.get("route"),
         advisory_type=result.get("advisory_type"),
+        citation_count=len(result.get("citations") or []),
     )
     return result
 

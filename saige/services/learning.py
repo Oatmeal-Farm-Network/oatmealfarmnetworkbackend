@@ -32,7 +32,9 @@ from config import (
 logger = logging.getLogger("farm_advisory.learning")
 
 SAIGE_LEARNINGS_COLLECTION = "saige_learnings"
-MIN_QUALITY_SCORE = -3.0  # learnings downvoted below this are suppressed
+MIN_QUALITY_SCORE = 0.0  # curated KB should outrank weak learnings; suppress ≤0
+MAX_LEARNING_AGE_DAYS = int(__import__("os").getenv("MAX_LEARNING_AGE_DAYS", "365"))
+LEARNING_SCORE_MARGIN = 0.05  # learnings must beat this relative score to surface
 
 _EXTRACT_PROMPT = """You are a farm knowledge extraction system for Oatmeal Farm Network.
 Given the conversation below, extract a concise agricultural insight that could help OTHER farmers facing similar challenges.
@@ -161,9 +163,23 @@ class LearningStore:
                 .get()
             )
             out = []
+            now = datetime.datetime.utcnow()
             for doc in results:
                 data = doc.to_dict()
                 if float(data.get("quality_score", 1.0)) < MIN_QUALITY_SCORE:
+                    continue
+                # Staleness filter
+                try:
+                    ts = data.get("ts") or ""
+                    if ts:
+                        created = datetime.datetime.fromisoformat(str(ts).replace("Z", ""))
+                        age_days = (now - created).days
+                        if age_days > MAX_LEARNING_AGE_DAYS:
+                            continue
+                except Exception:
+                    pass
+                # Never let learnings outrank curated KB without score margin
+                if float(data.get("quality_score", 1.0)) < LEARNING_SCORE_MARGIN:
                     continue
                 out.append(data)
                 if len(out) >= n:
