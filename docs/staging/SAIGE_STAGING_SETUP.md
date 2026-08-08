@@ -133,7 +133,7 @@ The Saige service is currently configured with these plain env vars:
 | `VERTEX_AI_MODEL` | `gemini-2.5-flash-lite` |
 | `FIRESTORE_DATABASE` | `charlie` |
 | `CHAT_HISTORY_DATABASE` | `chat-history` |
-| `REDIS_ENABLED` | `false` |
+| `REDIS_ENABLED` | `true` |
 | `FRONTEND_URL` | `https://oatmeal-frontend-staging-lrviw4iujq-uc.a.run.app` |
 | `ALLOW_ALL_ORIGINS` | `false` |
 

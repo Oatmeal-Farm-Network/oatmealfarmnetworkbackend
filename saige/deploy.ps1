@@ -43,8 +43,8 @@ gcloud run deploy $ServiceName `
     --cpu 2 `
     --min-instances 1 `
     --max-instances 10 `
-    --set-env-vars "GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_LOCATION=$Region,FRONTEND_URL=$FrontendUrl,ALLOW_ALL_ORIGINS=false,GOOGLE_GENAI_USE_VERTEXAI=true,VERTEX_AI_MODEL=gemini-2.5-flash-lite,GEMINI_MODEL=gemini-2.5-flash-lite,SAIGE_LLM_PROVIDER=gemini,FIRESTORE_DATABASE=charlie,CHAT_HISTORY_DATABASE=chat-history,REDIS_ENABLED=false" `
-    --set-secrets "SECRET_KEY=SECRET_KEY:latest,CRON_SECRET=CRON_SECRET:latest"
+    --set-env-vars "GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_LOCATION=$Region,FRONTEND_URL=$FrontendUrl,ALLOW_ALL_ORIGINS=false,GOOGLE_GENAI_USE_VERTEXAI=true,VERTEX_AI_MODEL=gemini-2.5-flash-lite,GEMINI_MODEL=gemini-2.5-flash-lite,SAIGE_LLM_PROVIDER=gemini,FIRESTORE_DATABASE=charlie,CHAT_HISTORY_DATABASE=chat-history,REDIS_ENABLED=true,REDIS_ALLOW_MEMORY_FALLBACK=false,OFN_BACKEND_URL=https://oatmeal-backend-staging-lrviw4iujq-uc.a.run.app,RAG_HYBRID_ENABLED=true,RAG_RERANK_ENABLED=true,RAG_CACHE_ENABLED=true" `
+    --set-secrets "SECRET_KEY=SECRET_KEY:latest,CRON_SECRET=CRON_SECRET:latest,REDIS_URL=REDIS_URL:latest"
 
 $Url = gcloud run services describe $ServiceName `
     --project $ProjectId `

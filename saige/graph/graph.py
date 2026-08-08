@@ -2,7 +2,13 @@
 from langgraph.graph import END, START, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
 
-from config import REDIS_AVAILABLE, REDIS_ENABLED, get_redis_url, redis_connection_mode
+from config import (
+    REDIS_ALLOW_MEMORY_FALLBACK,
+    REDIS_AVAILABLE,
+    REDIS_ENABLED,
+    get_redis_url,
+    redis_connection_mode,
+)
 from graph.nodes import (
     execute_node,
     finalize_skip_hitl_node,
@@ -64,8 +70,20 @@ if REDIS_ENABLED and REDIS_AVAILABLE:
         print(f"[Graph] [INFO] Redis mode: {redis_connection_mode()}")
         print("[Graph] [OK] Using Redis checkpointing")
     except Exception as e:
-        print(f"[Graph] [WARN] Redis checkpointing failed: {e}, using MemorySaver")
+        if REDIS_ALLOW_MEMORY_FALLBACK:
+            print(f"[Graph] [WARN] Redis checkpointing failed: {e}, using MemorySaver")
+            checkpointer = MemorySaver()
+        else:
+            raise RuntimeError(
+                f"Redis checkpointing required but failed ({e}). "
+                "Start Redis (docker compose up -d redis) or set REDIS_ALLOW_MEMORY_FALLBACK=true."
+            ) from e
+elif REDIS_ENABLED and not REDIS_AVAILABLE:
+    if REDIS_ALLOW_MEMORY_FALLBACK:
         checkpointer = MemorySaver()
+        print("[Graph] [WARN] redis package missing — MemorySaver fallback")
+    else:
+        raise RuntimeError("REDIS_ENABLED=true but redis package is not installed")
 else:
     checkpointer = MemorySaver()
     print("[Graph] Using MemorySaver (Redis disabled)")

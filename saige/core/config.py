@@ -23,17 +23,23 @@ except ImportError:
     print("[Warning] google-cloud-firestore not installed. Chat history will be disabled.")
     FIRESTORE_AVAILABLE = False
 
-# Full RAG stack (needs firestore + pymssql + vector types + vertexai)
+# Chat-time vector RAG needs Firestore + vector types + embeddings.
+# pymssql is only required for SQL→Firestore sync jobs — do not gate RAG on it.
 RAG_AVAILABLE = False
+SQL_SYNC_AVAILABLE = False
 if FIRESTORE_AVAILABLE:
     try:
-        import pymssql
-        from google.cloud.firestore_v1.vector import Vector
-        from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
-        from langchain_google_genai import GoogleGenerativeAIEmbeddings
+        from google.cloud.firestore_v1.vector import Vector  # noqa: F401
+        from google.cloud.firestore_v1.base_vector_query import DistanceMeasure  # noqa: F401
+        from langchain_google_genai import GoogleGenerativeAIEmbeddings  # noqa: F401
         RAG_AVAILABLE = True
     except ImportError:
-        print("[Warning] RAG dependencies not installed. Livestock RAG will be disabled.")
+        print("[Warning] RAG dependencies not installed (vector/embeddings). Vector RAG disabled.")
+    try:
+        import pymssql  # noqa: F401
+        SQL_SYNC_AVAILABLE = True
+    except ImportError:
+        print("[Warning] pymssql not installed. SQL→Firestore sync disabled (chat RAG still ok).")
 else:
     print("[Warning] RAG disabled (requires Firestore).")
 
@@ -83,7 +89,19 @@ GCP_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
 # ============================================================================
 
 EMBEDDING_MODEL = "text-embedding-004"
-TOP_K_RESULTS = 10
+TOP_K_RESULTS = int(os.getenv("TOP_K_RESULTS", "10"))
+RAG_DENSE_CANDIDATES = int(os.getenv("RAG_DENSE_CANDIDATES", "20"))
+RAG_LEXICAL_CANDIDATES = int(os.getenv("RAG_LEXICAL_CANDIDATES", "20"))
+RAG_RERANK_TOP_N = int(os.getenv("RAG_RERANK_TOP_N", "10"))
+RAG_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.15"))
+RAG_CACHE_TTL_SECONDS = int(os.getenv("RAG_CACHE_TTL_SECONDS", "900"))
+RAG_CACHE_ENABLED = os.getenv("RAG_CACHE_ENABLED", "true").lower() == "true"
+RAG_HYBRID_ENABLED = os.getenv("RAG_HYBRID_ENABLED", "true").lower() == "true"
+RAG_RERANK_ENABLED = os.getenv("RAG_RERANK_ENABLED", "true").lower() == "true"
+RAG_REWRITE_ENABLED = os.getenv("RAG_REWRITE_ENABLED", "true").lower() == "true"
+RAG_LEXICAL_SCAN_LIMIT = int(os.getenv("RAG_LEXICAL_SCAN_LIMIT", "200"))
+CHUNK_TARGET_CHARS = int(os.getenv("CHUNK_TARGET_CHARS", "2800"))  # ~700 tokens
+CHUNK_OVERLAP_CHARS = int(os.getenv("CHUNK_OVERLAP_CHARS", "280"))
 FIRESTORE_DATABASE = os.getenv("FIRESTORE_DATABASE", "charlie").strip()
 CHAT_HISTORY_DATABASE = os.getenv("CHAT_HISTORY_DATABASE", "chat-history").strip()
 LIVESTOCK_KNOWLEDGE_COLLECTION = "livestock_knowledge"
@@ -96,6 +114,10 @@ SAIGE_LEARNINGS_COLLECTION = "saige_learnings"
 FIRESTORE_COLLECTION = LIVESTOCK_KNOWLEDGE_COLLECTION
 
 SYNC_INTERVAL_HOURS = int(os.getenv("SYNC_INTERVAL_HOURS", "24"))
+OFN_BACKEND_URL = os.getenv("OFN_BACKEND_URL", "http://localhost:8000").rstrip("/")
+SPECIALIST_TIMEOUT_SECONDS = float(os.getenv("SPECIALIST_TIMEOUT_SECONDS", "40"))
+# When Redis is enabled, refuse MemorySaver fallback unless explicitly allowed
+REDIS_ALLOW_MEMORY_FALLBACK = os.getenv("REDIS_ALLOW_MEMORY_FALLBACK", "false").lower() == "true"
 
 # ============================================================================
 # ASSESSMENT CONFIGURATION
@@ -263,8 +285,12 @@ LOG_FORMAT = "json" if IS_PRODUCTION else "text"
 print(f"[Config] GCP Project: {GCP_PROJECT or 'Not set'}")
 print(f"[Config] Firestore Available: {FIRESTORE_AVAILABLE}")
 print(f"[Config] RAG Available: {RAG_AVAILABLE}")
+print(f"[Config] SQL Sync Available: {SQL_SYNC_AVAILABLE}")
 print(f"[Config] Redis Available: {REDIS_AVAILABLE}")
 print(f"[Config] Redis Enabled: {REDIS_ENABLED}")
+print(f"[Config] Redis Memory Fallback Allowed: {REDIS_ALLOW_MEMORY_FALLBACK}")
+print(f"[Config] OFN Backend URL: {OFN_BACKEND_URL}")
+print(f"[Config] RAG hybrid={RAG_HYBRID_ENABLED} rerank={RAG_RERANK_ENABLED} cache={RAG_CACHE_ENABLED}")
 if REDIS_ENABLED:
     print(f"[Config] Redis Mode: {redis_connection_mode()}")
     print(f"[Config] Redis Target: {get_redis_display_target()}")

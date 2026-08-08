@@ -83,11 +83,39 @@ async def app_lifespan(app: FastAPI):
                 f"[API] Shared Redis manager ready (mode={info.get('mode')}, target={info.get('target', 'n/a')}, latency_ms={latency_ms:.2f})"
             )
         else:
-            logger.error(
-                f"[API] Shared Redis manager unhealthy at startup (mode={info.get('mode')}, target={info.get('target', 'n/a')}): {info.get('last_error', 'unknown error')}"
+            from config import REDIS_ALLOW_MEMORY_FALLBACK
+
+            msg = (
+                f"[API] Shared Redis manager unhealthy at startup "
+                f"(mode={info.get('mode')}, target={info.get('target', 'n/a')}): "
+                f"{info.get('last_error', 'unknown error')}"
             )
+            if REDIS_ALLOW_MEMORY_FALLBACK:
+                logger.error(msg)
+            else:
+                logger.error(msg + " — set REDIS_ALLOW_MEMORY_FALLBACK=true to continue without Redis")
+                raise RuntimeError("Redis required at startup but unreachable")
     else:
         logger.info("[API] Redis is disabled by configuration")
+
+    # JWT startup canary
+    try:
+        from jose import jwt as _jwt
+        from config import JWT_SECRET, JWT_ALGORITHM
+        from datetime import datetime, timedelta, timezone
+
+        if not JWT_SECRET:
+            logger.error("[API] SECRET_KEY / JWT_SECRET is empty — auth will fail")
+        else:
+            tok = _jwt.encode(
+                {"sub": "startup-canary", "exp": datetime.now(timezone.utc) + timedelta(minutes=2)},
+                JWT_SECRET,
+                algorithm=JWT_ALGORITHM,
+            )
+            _jwt.decode(tok, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            logger.info("[API] JWT SECRET_KEY canary OK")
+    except Exception as e:
+        logger.error("[API] JWT canary failed: %s", e)
 
     try:
         yield

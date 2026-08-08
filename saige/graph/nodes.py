@@ -3,6 +3,7 @@ import re
 import logging
 import queue as _queue_mod
 import threading
+import time
 from typing import Dict, Any, List, Optional
 from langgraph.types import interrupt
 
@@ -765,18 +766,45 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
             soil_lines.append(f"- raw_report: {str(soil_info['raw_text'])[:600]}")
     soil_section = "Soil test data:\n" + "\n".join(soil_lines) if soil_lines else "Soil test data: Not provided"
 
-    # 2. RAG Retrieval (Centralized)
+    # 2. RAG Retrieval (Centralized hybrid)
     rag_context = ""
+    rag_citations: List[Dict[str, Any]] = []
+    rag_timings: Dict[str, float] = {}
     if rag_systems and RAG_AVAILABLE:
         query_text = f"{', '.join(crops)} {', '.join(issues)} {assessment} {latest_user_message}"
         context_parts = []
         for rag_sys in rag_systems:
             try:
                 rag_sys.initialize()
-                ctx = rag_sys.get_context_for_query(query_text)
-                if ctx:
-                    context_parts.append(ctx)
-                    print(f"[Advisory Agent] RAG context retrieved from {rag_sys._label}")
+                hits = rag_sys.search(query_text)
+                if hasattr(rag_sys, "last_timings"):
+                    for k, v in (rag_sys.last_timings or {}).items():
+                        rag_timings[f"{rag_sys._label}:{k}"] = v
+                if hits:
+                    for h in hits:
+                        rag_citations.append({
+                            "doc_id": h.get("doc_id"),
+                            "chunk_id": h.get("chunk_id"),
+                            "title": h.get("title"),
+                            "url": h.get("url"),
+                            "score": h.get("score"),
+                            "quote": h.get("quote") or (h.get("content") or "")[:180],
+                            "source": h.get("collection") or rag_sys._label,
+                            "snippet": (h.get("content") or "")[:180],
+                        })
+                    ctx = rag_sys.get_context_for_query(query_text) if not hits else None
+                    # Prefer formatting from hits to avoid double retrieve when cache cold
+                    if hits:
+                        lines = [f"Relevant {rag_sys._label} information from database:\n"]
+                        for i, h in enumerate(hits, 1):
+                            lines.append(
+                                f"{i}. [{h.get('chunk_id') or h.get('doc_id') or i}] "
+                                f"({h.get('title') or rag_sys._label}) {h.get('content', '')}"
+                            )
+                        context_parts.append("\n".join(lines))
+                    elif ctx:
+                        context_parts.append(ctx)
+                    print(f"[Advisory Agent] RAG context retrieved from {rag_sys._label} hits={len(hits)}")
             except Exception as e:
                 print(f"[Advisory Agent] RAG error ({rag_sys._label}): {e}")
         rag_context = "\n\n".join(context_parts)
@@ -830,15 +858,26 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
         print(f"[Advisory Agent] Business pre-fetch skipped (query not business-data-related)")
 
     # 3. Construct Full Prompt
-    rag_section = f"RELEVANT KNOWLEDGE BASE:\n{rag_context}" if rag_context else ""
+    rag_section = f"RELEVANT KNOWLEDGE BASE:\n{rag_context}" if rag_context else (
+        "RELEVANT KNOWLEDGE BASE:\n(No retrieved documents. Do not invent sources or citations; "
+        "say when you lack KB evidence and rely on general agronomy caution.)"
+    )
+    if rag_context:
+        rag_section += (
+            "\n\nGROUNDING: When you use knowledge-base facts, reference chunk ids in brackets "
+            "when helpful. Do not fabricate document titles or URLs."
+        )
 
-    # Community learnings from data flywheel (cross-user anonymized insights)
+    # Community learnings from data flywheel (skip for tool-only intents)
     _community_section = ""
-    try:
-        from learning import get_community_context as _get_community_ctx
-        _community_section = _get_community_ctx(latest_user_message, n=3)
-    except Exception as _lrn_err:
-        pass  # flywheel unavailable — degrade silently
+    if not (_INTENT_MAP or _INTENT_PRECISION_AG or _INTENT_ACCOUNTING or _INTENT_BUSINESS):
+        try:
+            from learning import get_community_context as _get_community_ctx
+            _community_section = _get_community_ctx(latest_user_message, n=3)
+        except Exception as _lrn_err:
+            pass  # flywheel unavailable — degrade silently
+    else:
+        print("[Advisory Agent] Community learnings skipped (tool-only intent)")
 
     _people_id_ctx = state.get("people_id") or ""
     _business_id_ctx = state.get("business_id") or ""
@@ -2236,11 +2275,25 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
 
     result = {
         "diagnosis": final_response,
-        "recommendations": recommendations[:5] if recommendations else ["Consider consulting a local expert"]
+        "recommendations": recommendations[:5] if recommendations else ["Consider consulting a local expert"],
+        "citations": rag_citations[:12],
+        "timings": rag_timings,
     }
 
     if weather_data:
         result["weather_conditions"] = weather_data
+
+    # Stream final tokens if a queue is registered
+    try:
+        _tid = state.get("thread_id") or ""
+        _q = _get_stream_queue(_tid) if _tid else None
+        if _q is not None and final_response:
+            # Chunk into ~40-char pieces for progressive UI
+            step = 48
+            for i in range(0, len(final_response), step):
+                _q.put({"type": "token", "content": final_response[i : i + step]})
+    except Exception:
+        pass
 
     return result
 
@@ -2714,9 +2767,11 @@ def _packet_from_advisory(result: Dict[str, Any], source: str) -> Dict[str, Any]
         "source": source,
         "text": (result or {}).get("diagnosis") or "",
         "recommendations": list((result or {}).get("recommendations") or []),
+        "citations": list((result or {}).get("citations") or []),
+        "latency_ms": (result or {}).get("latency_ms"),
         "meta": {
             k: (result or {}).get(k)
-            for k in ("weather_conditions", "advisory_type", "soil_info")
+            for k in ("weather_conditions", "advisory_type", "soil_info", "timings")
             if (result or {}).get(k) is not None
         },
     }
@@ -2924,6 +2979,7 @@ def user_agent_node(state: SaigeState) -> Dict[str, Any]:
 def supervisor_node(state: SaigeState) -> Dict[str, Any]:
     """Classify intent -> route 1..N specialists (incl. bakasura/news/joke)."""
     print("[Supervisor] start")
+    t0 = time.perf_counter()
     text = _latest_user_text(state)
     routes = _keyword_routes(text)
     reasoning = "keyword-heuristic"
@@ -2941,9 +2997,9 @@ def supervisor_node(state: SaigeState) -> Dict[str, Any]:
         router = llm.with_structured_output(SupervisorRouteDecision)
         decision = router.invoke(
             "You are Saige Supervisor for an agricultural assistant.\n"
-            f'User: "{text[:600]}"\n'
-            "Return routes from: crop, livestock, weather, plan, monitoring, bakasura, news, joke, user.\n"
-            "Use MULTIPLE routes when the question spans domains (e.g. frost + calves + yellow leaves).\n"
+            f'User: "{text[:400]}"\n'
+            "Return at most 2 routes from: crop, livestock, weather, plan, monitoring, bakasura, news, joke, user.\n"
+            "Prefer the single best route when possible.\n"
             "Use bakasura for OFN/Saige product/docs questions.\n"
             "Use news for market/ag news.\n"
             "Use joke only for joke requests.\n"
@@ -2958,7 +3014,7 @@ def supervisor_node(state: SaigeState) -> Dict[str, Any]:
             if r in VALID_ROUTES and r not in cleaned:
                 cleaned.append(r)
         if cleaned:
-            routes = cleaned
+            routes = cleaned[:2]
             reasoning = decision.reasoning or reasoning
             handoff = (decision.handoff or "none").lower()
     except Exception as e:
@@ -2968,12 +3024,14 @@ def supervisor_node(state: SaigeState) -> Dict[str, Any]:
     if (state.get("user_packet") or state.get("proposals")) and "user" not in routes:
         routes = ["user"] + routes
 
-    print(f"[Supervisor] routes={routes} handoff={handoff}")
+    route_ms = (time.perf_counter() - t0) * 1000
+    print(f"[Supervisor] routes={routes} handoff={handoff} route_ms={route_ms:.0f}")
     return {
         "route": routes,
         "supervisor_reasoning": reasoning,
         "handoff": handoff,
         "advisory_type": ",".join(routes),
+        "route_ms": route_ms,
     }
 
 
@@ -2992,14 +3050,20 @@ def joke_route_node(state: SaigeState) -> Dict[str, Any]:
     }
 
 
-# ── Specialist dispatch (fan-out inside one node for Phase 2 reliability) ────
+# ── Specialist dispatch (parallel fan-out with hard wall-clock deadline) ─────
 
 def specialist_dispatch_node(state: SaigeState) -> Dict[str, Any]:
-    """Run selected specialists; accumulate packets. Does not write to farm DB."""
-    print("[Specialists] start")
+    """Run selected specialists concurrently; accumulate packets. Does not write to farm DB."""
+    import concurrent.futures
+    from config import SPECIALIST_TIMEOUT_SECONDS
+
+    print("[Specialists] start (parallel)")
     routes = [r for r in (state.get("route") or []) if r != "joke"]
+    knowledge = [r for r in routes if r in ("weather", "livestock", "crop", "bakasura", "news")]
     farm = _as_farm_state(state)
     updates: Dict[str, Any] = {}
+    t0 = time.perf_counter()
+    deadline = SPECIALIST_TIMEOUT_SECONDS
 
     def _safe(name: str, fn):
         try:
@@ -3007,27 +3071,65 @@ def specialist_dispatch_node(state: SaigeState) -> Dict[str, Any]:
             return fn(farm)
         except Exception as e:
             logger.exception("[Specialists] %s failed", name)
-            return {"diagnosis": f"({name} unavailable: {e})", "recommendations": []}
+            return {"diagnosis": f"({name} unavailable: {e})", "recommendations": [], "citations": []}
 
-    if "weather" in routes:
-        updates["weather_packet"] = _packet_from_advisory(_safe("weather", weather_advisory_node), "weather")
-    if "livestock" in routes:
-        updates["livestock_packet"] = _packet_from_advisory(_safe("livestock", livestock_advisory_node), "livestock")
-    if "crop" in routes:
-        updates["crop_packet"] = _packet_from_advisory(_safe("crop", crop_advisory_node), "crop")
-    if "bakasura" in routes:
-        updates["bakasura_packet"] = _packet_from_advisory(_safe("bakasura", bakasura_advisory_node), "bakasura")
-    if "news" in routes:
-        updates["news_packet"] = _packet_from_advisory(_safe("news", news_advisory_node), "news")
+    jobs = []
+    if "weather" in knowledge:
+        jobs.append(("weather_packet", "weather", lambda: _packet_from_advisory(_safe("weather", weather_advisory_node), "weather")))
+    if "livestock" in knowledge:
+        jobs.append(("livestock_packet", "livestock", lambda: _packet_from_advisory(_safe("livestock", livestock_advisory_node), "livestock")))
+    if "crop" in knowledge:
+        jobs.append(("crop_packet", "crop", lambda: _packet_from_advisory(_safe("crop", crop_advisory_node), "crop")))
+    if "bakasura" in knowledge:
+        jobs.append(("bakasura_packet", "bakasura", lambda: _packet_from_advisory(_safe("bakasura", bakasura_advisory_node), "bakasura")))
+    if "news" in knowledge:
+        jobs.append(("news_packet", "news", lambda: _packet_from_advisory(_safe("news", news_advisory_node), "news")))
+
+    if jobs:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(jobs))) as pool:
+            future_map = {pool.submit(fn): (key, name) for key, name, fn in jobs}
+            done, not_done = concurrent.futures.wait(
+                future_map.keys(),
+                timeout=deadline,
+                return_when=concurrent.futures.ALL_COMPLETED,
+            )
+            for fut in done:
+                key, name = future_map[fut]
+                try:
+                    updates[key] = fut.result(timeout=0)
+                except Exception as e:
+                    logger.exception("[Specialists] %s failed", name)
+                    updates[key] = {
+                        "source": name,
+                        "text": f"({name} unavailable: {e})",
+                        "recommendations": [],
+                        "citations": [],
+                    }
+            for fut in not_done:
+                key, name = future_map[fut]
+                fut.cancel()
+                updates[key] = {
+                    "source": name,
+                    "text": (
+                        f"I started looking into {name}, but need a moment more for a full answer. "
+                        f"Ask again focused on {name} only, or give me a narrower question."
+                    ),
+                    "recommendations": [f"Retry with a focused {name} question"],
+                    "citations": [],
+                }
+
     if "user" in routes and state.get("user_packet"):
         updates["user_packet"] = state.get("user_packet")
 
+    # Monitoring / plan — lightweight only when requested
     if "monitoring" in routes:
         updates["monitoring_packet"] = _run_monitoring_agent(state)
     if "plan" in routes:
         updates["plan_packet"] = _run_plan_advisory(state, updates)
 
-    print(f"[Specialists] packets={[k for k in updates if k.endswith('_packet')]}")
+    elapsed = (time.perf_counter() - t0) * 1000
+    print(f"[Specialists] packets={[k for k in updates if k.endswith('_packet')]} specialist_ms={elapsed:.0f}")
+    updates["specialist_ms"] = elapsed
     return updates
 
 
@@ -3117,6 +3219,7 @@ def _run_plan_advisory(state: SaigeState, packets: Dict[str, Any]) -> Dict[str, 
 def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
     """Merge specialist packets into one farmer-facing answer + citations + plan proposals."""
     print("[Synthesizer] start")
+    t0 = time.perf_counter()
     packets = []
     citations = []
     for key in (
@@ -3132,7 +3235,12 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
         pkt = state.get(key)
         if pkt and pkt.get("text"):
             packets.append(pkt)
-            citations.append({"source": pkt.get("source") or key, "snippet": str(pkt.get("text"))[:180]})
+            # Prefer document-level RAG citations from specialists
+            for c in (pkt.get("citations") or []):
+                if isinstance(c, dict) and (c.get("doc_id") or c.get("chunk_id") or c.get("quote")):
+                    citations.append(c)
+            if not pkt.get("citations"):
+                citations.append({"source": pkt.get("source") or key, "snippet": str(pkt.get("text"))[:180]})
 
     if state.get("joke_text") and not packets:
         return {
@@ -3140,6 +3248,7 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
             "recommendations": [],
             "citations": [],
             "assessment_summary": _latest_user_text(state),
+            "synth_ms": (time.perf_counter() - t0) * 1000,
         }
 
     if not packets:
@@ -3160,7 +3269,9 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
             prompt = (
                 "You are Saige, an agricultural advisor. Merge the specialist notes below into ONE "
                 "coherent, practical answer for the farmer. Keep concrete actions. Cite domains inline "
-                f"(e.g. Weather:, Crop:). User asked: {_latest_user_text(state)!r}\n\n{blob}"
+                "(e.g. Weather:, Crop:). When farm facts come from knowledge base citations, keep claims "
+                "grounded — if retrieval was empty, say so rather than inventing sources. "
+                f"User asked: {_latest_user_text(state)!r}\n\n{blob}"
             )
             resp = llm.invoke(prompt)
             diagnosis = getattr(resp, "content", None) or str(resp)
@@ -3177,6 +3288,16 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
         if r and r not in seen:
             seen.add(r)
             uniq_recs.append(r)
+
+    # Dedupe citations by chunk_id/doc_id
+    uniq_cites = []
+    seen_c = set()
+    for c in citations:
+        cid = str(c.get("chunk_id") or c.get("doc_id") or c.get("snippet") or "")
+        if cid in seen_c:
+            continue
+        seen_c.add(cid)
+        uniq_cites.append(c)
 
     history = list(state.get("history") or [])
     history.append(f"AI: {diagnosis}")
@@ -3200,7 +3321,18 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
             }
         )
 
-    print(f"[Synthesizer] packets={len(packets)} chars={len(diagnosis)} proposals={len(proposals)}")
+    synth_ms = (time.perf_counter() - t0) * 1000
+    print(f"[Synthesizer] packets={len(packets)} chars={len(diagnosis)} proposals={len(proposals)} synth_ms={synth_ms:.0f}")
+    # Progressive token stream for SSE clients
+    try:
+        _tid = str(state.get("thread_id") or "")
+        _q = _get_stream_queue(_tid) if _tid else None
+        if _q is not None and diagnosis:
+            step = 48
+            for i in range(0, len(diagnosis), step):
+                _q.put({"type": "token", "content": diagnosis[i : i + step]})
+    except Exception:
+        pass
     handoff = (state.get("handoff") or "none").strip().lower()
     if handoff and handoff != "none":
         sibling_paths = {
@@ -3222,12 +3354,14 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
     return {
         "diagnosis": diagnosis,
         "recommendations": uniq_recs[:12],
-        "citations": citations,
+        "citations": uniq_cites[:20],
         "assessment_summary": _latest_user_text(state),
         "history": history[-40:],
         "confidence": "medium" if len(packets) > 1 else "high",
         "proposals": proposals,
         "handoff": handoff,
+        "synth_ms": synth_ms,
+        "specialist_ms": state.get("specialist_ms"),
     }
 
 

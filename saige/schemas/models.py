@@ -156,6 +156,9 @@ class SaigeState(TypedDict, total=False):
     policy_violations: Optional[List[Dict[str, Any]]]
     hitl_decision: Optional[Dict[str, Any]]
     confidence: Optional[str]
+    specialist_ms: Optional[float]
+    synth_ms: Optional[float]
+    route_ms: Optional[float]
 
     # API compatibility with existing /chat response shaping
     diagnosis: Optional[str]
