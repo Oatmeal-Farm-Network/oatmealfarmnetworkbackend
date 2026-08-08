@@ -178,19 +178,19 @@ No backend/Saige secrets are documented as mounted on `oatmeal-frontend-staging`
 
 ## Saige Runtime IAM Notes
 
-`saige-sa@oatmeal-farm-staging.iam.gserviceaccount.com` currently has:
+`saige-sa@oatmeal-farm-staging.iam.gserviceaccount.com` requires:
 
 - `roles/cloudsql.client`
 - `roles/secretmanager.secretAccessor`
+- `roles/aiplatform.user` (Vertex AI / Gemini predict)
+- `roles/datastore.user` (Firestore chat history + RAG)
 
-That is enough for the currently mounted secrets, but a real Saige runtime that uses Vertex AI and Firestore will also require corresponding runtime access in staging.
+Applied in staging on Aug 8, 2026. Without `aiplatform.user`, chat returns empty/failed replies with `PERMISSION_DENIED` on `aiplatform.endpoints.predict`. Without `datastore.user`, chat history save/load fails with Firestore `403`.
 
-This is an inference from the code and enabled APIs:
+Also ensure Cloud Run env includes:
 
-- Vertex AI access likely needs a role such as `roles/aiplatform.user`
-- Firestore access likely needs a Firestore/Datastore role
-
-Those IAM grants were not applied from this task because the current user does not have project IAM admin rights.
+- `FRONTEND_URL=https://oatmeal-frontend-staging-1087130530284.us-central1.run.app`
+- `OFN_BACKEND_URL=https://oatmeal-backend-staging-lrviw4iujq-uc.a.run.app`
 
 ---
 
