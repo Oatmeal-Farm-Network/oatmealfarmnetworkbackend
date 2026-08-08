@@ -162,6 +162,11 @@ ALLOWED_ORIGINS = [
     "https://oatmealfarmnewtorkbackend-802455386518.us-central1.run.app",
     "https://crop-detection-dcecevhvh5ard2ah.eastus-01.azurewebsites.net",
     "https://www.oatmealfarmnetwork.com", "https://oatmealfarmnetwork.com",
+    # Livestock of America frontend (Cloud Run gives each service two URLs) and
+    # its custom domain, for when it is repointed off the OFN service.
+    "https://livestock-frontend-prod-802455386518.us-central1.run.app",
+    "https://livestock-frontend-prod-mt7mh6zhoa-uc.a.run.app",
+    "https://www.livestockofamerica.com", "https://livestockofamerica.com",
     "https://lkm-802455386518.us-central1.run.app",
     "https://lkm-mt7mh6zhoa-uc.a.run.app",
     "https://lkm-frontend-802455386518.us-central1.run.app",
