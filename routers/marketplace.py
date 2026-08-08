@@ -2658,6 +2658,30 @@ def get_animal_progeny(animal_id: int, db: Session = Depends(get_db)):
     }
 
 
+_FIBER_FIELDS = (
+    "SampleDateMonth", "SampleDateDay", "SampleDateYear",
+    "Average", "StandardDev", "COV", "GreaterThan30",
+    "BlanketWeight", "ShearWeight", "CF", "Length", "Curve", "CrimpPerInch",
+)
+
+
+def _fiber_row_has_value(row: dict) -> bool:
+    """True when a Fiber row has anything the detail table would actually show.
+
+    '0' counts as empty here to match how the page renders: every cell falls
+    back to an em-dash for a falsy value, so a row whose only content is 0
+    still displays as a full line of dashes.
+    """
+    for field in _FIBER_FIELDS:
+        value = row.get(field)
+        if value is None:
+            continue
+        text_value = str(value).strip()
+        if text_value and text_value not in ("0", "0.0", "0.00"):
+            return True
+    return False
+
+
 @marketplace_router.get("/animal/{animal_id}")
 def get_animal_detail(animal_id: int, lang: str = "en", db: Session = Depends(get_db)):
     """Public endpoint — returns everything needed for the animal detail page."""
@@ -2839,7 +2863,11 @@ def get_animal_detail(animal_id: int, lang: str = "en", db: Session = Depends(ge
         FROM Fiber WHERE AnimalID = :aid
         ORDER BY SampleDateYear DESC, Average DESC
     """), {"aid": animal_id}).fetchall()
-    fiber_stats = [dict(r._mapping) for r in fiber_rows]
+    # 96% of Fiber rows (35,671 of 37,051) are blank legacy placeholders with
+    # nothing in any column. They rendered as a row of em-dashes on the detail
+    # page, so drop them here and keep only rows that carry a real value.
+    fiber_stats = [d for d in (dict(r._mapping) for r in fiber_rows)
+                   if _fiber_row_has_value(d)]
 
     # ── species slug ──────────────────────────────────────────────────────────
     species_slug     = SPECIES_ID_TO_SLUG.get(species_id)

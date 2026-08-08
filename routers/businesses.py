@@ -252,6 +252,76 @@ def get_subcategories(BusinessTypeID: int = None, db: Session = Depends(get_db))
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/search")
+def search_businesses(q: str = "", limit: int = 1000, db: Session = Depends(get_db)):
+    """Substring search on business name, across every category.
+
+    Powers the directory landing-page search, which previously only filtered
+    the category tiles and so could never surface an actual business.
+    """
+    term = (q or "").strip()
+    if len(term) < 2:
+        return {"query": term, "total": 0, "limit": limit, "businesses": []}
+
+    # Escape LIKE metacharacters so a stray % or _ can't widen the match.
+    escaped = (term.replace("\\", "\\\\")
+                   .replace("%", "\\%")
+                   .replace("_", "\\_")
+                   .replace("[", "\\["))
+
+    # Typing "alpacas" should also find "A Goode View Alpaca Farm": drop a
+    # trailing plural 's' and match the stem, which still matches the plural.
+    # Guarded on length so short words ("gas") aren't mangled into noise.
+    if len(escaped) > 4 and escaped[-1] in ("s", "S"):
+        escaped = escaped[:-1]
+
+    params = {"pattern": f"%{escaped}%", "limit": max(1, min(int(limit or 1000), 2000))}
+    named = ("b.BusinessName IS NOT NULL AND LTRIM(RTRIM(b.BusinessName)) <> ''")
+    where = f"b.BusinessName LIKE :pattern ESCAPE '\\' AND {named}"
+
+    try:
+        total = db.execute(text(
+            f"SELECT COUNT(*) FROM Business b WHERE {where}"), params).scalar() or 0
+
+        # OUTER APPLY for the state lookup: the legacy join matches either a
+        # numeric StateIndex or a name, which can hit more than one row and
+        # duplicate the business.
+        rows = db.execute(text(f"""
+            SELECT TOP (:limit)
+                b.BusinessID, b.BusinessName, b.BusinessTypeID, b.Logo,
+                bt.BusinessType, a.AddressCity, st.name AS StateName
+            FROM Business b
+            LEFT JOIN businesstypelookup bt ON bt.BusinessTypeID = b.BusinessTypeID
+            LEFT JOIN Address a ON a.AddressID = b.AddressID
+            OUTER APPLY (
+                SELECT TOP 1 sp.name FROM state_province sp
+                WHERE a.AddressState = CAST(sp.StateIndex AS CHAR)
+                   OR a.AddressState = sp.name
+            ) st
+            WHERE {where}
+            ORDER BY b.BusinessName
+        """), params).fetchall()
+
+        return {
+            "query": term,
+            "total": total,
+            "limit": params["limit"],
+            "businesses": [{
+                "BusinessID":     r.BusinessID,
+                "BusinessName":   clean(r.BusinessName),
+                "BusinessTypeID": r.BusinessTypeID,
+                "BusinessType":   r.BusinessType,
+                "AddressCity":    clean(r.AddressCity),
+                "AddressState":   clean(r.StateName),
+                "ProfileImage":   build_logo_url(r.Logo),
+            } for r in rows],
+        }
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return {"query": term, "total": 0, "limit": limit, "businesses": []}
+
+
 @router.get("/")
 def get_businesses(
     country: str = None,
