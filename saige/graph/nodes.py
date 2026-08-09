@@ -571,25 +571,33 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
 
     # Handle general questions directly without RAG or farming prompts
     _assessment = state.get("assessment_summary", "")
+    _history = state.get("history") or []
+    _msg = ""
+    for _h in reversed(_history):
+        if _h.startswith("User:"):
+            _msg = _h.replace("User:", "", 1).strip()
+            break
+    if not _msg:
+        _msg = str(state.get("user_message") or "")
     _identity_kw = ("what is my name", "what's my name", "whats my name", "my name",
                     "what is your name", "what's your name", "who are you", "your name",
                     "tell me about yourself", "introduce yourself", "what can you do",
                     "business account", "signed in with", "which account", "what account",
                     "businessid", "business_id", "business id", "my business",
-                    "peopleid", "people_id", "people id", "user id", "userid")
-    _is_general_path = _assessment.startswith("General question:") or (
-        _assessment.startswith("Farmer seeks assistance with:") and
-        any(k in _assessment.lower() for k in _identity_kw) and
-        not any(k in _assessment.lower() for k in ("field", "ndvi", "crop", "livestock", "weather", "soil"))
+                    "peopleid", "people_id", "people id", "user id", "userid",
+                    "my email", "what is my email", "my phone", "what is my phone",
+                    "my account", "my profile", "who am i")
+    _is_general_path = (
+        _is_account_identity_query(_msg)
+        or _assessment.startswith("General question:")
+        or (
+            _assessment.startswith("Farmer seeks assistance with:") and
+            any(k in _assessment.lower() for k in _identity_kw) and
+            not any(k in _assessment.lower() for k in ("field", "ndvi", "crop", "livestock", "weather", "soil"))
+        )
     )
     if _is_general_path:
         print(f"[Advisory Agent] General/identity question - answering directly")
-        _history = state.get("history") or []
-        _msg = ""
-        for _h in reversed(_history):
-            if _h.startswith("User:"):
-                _msg = _h.replace("User:", "", 1).strip()
-                break
         _pid = state.get("people_id")
         _ml = _msg.lower()
 
@@ -604,7 +612,8 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
                               "your name", "who are you", "what are you",
                               "tell me about yourself", "introduce yourself",
                               "what can you do", "what can you help", "how do you work")
-        if any(k in _ml for k in _saige_identity_kw):
+        # Don't treat "what is my name" as Saige self-intro
+        if any(k in _ml for k in _saige_identity_kw) and "my name" not in _ml and "my email" not in _ml:
             _uname = (state.get("user_name") or "").split()[0] if state.get("user_name") else ""
             _greeting = f"Hey {_uname}! " if _uname else ""
             return {
@@ -618,54 +627,43 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
                 "recommendations": [],
             }
 
-        _wants_pid  = any(k in _ml for k in ["peopleid", "people_id", "people id", "user id", "userid", "my id"])
-        _wants_name = any(k in _ml for k in ["my name", "what is my name", "what's my name"])
-        _wants_biz  = any(k in _ml for k in ["businessid", "business_id", "business id",
-                                              "my business", "business account", "signed in with",
-                                              "which account", "what account"])
-
-        if _wants_pid or _wants_name or _wants_biz:
-            _parts = []
-            if _wants_name:
-                _uname = (state.get("user_name") or "").strip()
-                _parts.append(f"Your name is {_uname}." if _uname else "I don't have your name on file.")
-            if _wants_pid:
-                _parts.append(f"Your PeopleID is {_pid}." if _pid else "Your PeopleID is not available.")
-            if _wants_biz:
-                _bid = (state.get("business_id") or "").strip()
-                if _bid:
-                    _bname = None
-                    try:
-                        from user_profile import get_business_name as _get_bname
-                        _bname = _get_bname(_bid)
-                    except Exception:
-                        pass
-                    if _bname:
-                        _parts.append(f"You're signed in with \"{_bname}\" (BusinessID {_bid}).")
-                    else:
-                        _parts.append(f"You're signed in with BusinessID {_bid}.")
-                else:
-                    _parts.append("No business account is linked to this session.")
-            _answer = " ".join(_parts)
-        else:
+        if _is_account_identity_query(_msg) or any(
+            k in _ml for k in ("my name", "my email", "my phone", "people id", "user id", "business id", "my account", "my profile")
+        ):
+            _profile = {}
             try:
-                _name_hint = state.get("user_name") or ""
-                _name_ctx = (
-                    f"You are talking with {_name_hint}. "
-                    if _name_hint else ""
-                )
-                _resp = llm.invoke(
-                    f"{_SAIGE_PERSONA}\n\n"
-                    f"{_name_ctx}"
-                    "The user is mid-conversation. Answer the question directly and concisely. "
-                    "Do NOT introduce yourself, do NOT greet the user, and do NOT open with phrases like "
-                    "'Hello there', 'Hi', 'I'm Saige', or 'your friendly assistant'. "
-                    "Skip the preamble — start with the answer.\n\n"
-                    f"Question: {_msg}"
-                )
-                _answer = _resp.content if hasattr(_resp, "content") else str(_resp)
-            except Exception as _e:
-                _answer = "I am here to help! Could you rephrase your question?"
+                from user_profile import get_account_profile
+                _profile = get_account_profile(str(_pid or ""), state.get("business_id")) or {}
+            except Exception:
+                pass
+            _answer = _format_account_answer(
+                _msg,
+                people_id=str(_pid or ""),
+                business_id=state.get("business_id"),
+                user_name=str(state.get("user_name") or ""),
+                profile=_profile,
+            )
+            return {"diagnosis": _answer, "recommendations": []}
+
+        try:
+            _name_hint = state.get("user_name") or ""
+            _name_ctx = (
+                f"You are talking with {_name_hint}. "
+                if _name_hint else ""
+            )
+            _resp = llm.invoke(
+                f"{_SAIGE_PERSONA}\n\n"
+                f"{_name_ctx}"
+                "The user is mid-conversation. Answer the question directly and concisely. "
+                "Do NOT invent the user's email, phone, name, or IDs. "
+                "Do NOT introduce yourself, do NOT greet the user, and do NOT open with phrases like "
+                "'Hello there', 'Hi', 'I'm Saige', or 'your friendly assistant'. "
+                "Skip the preamble — start with the answer.\n\n"
+                f"Question: {_msg}"
+            )
+            _answer = _resp.content if hasattr(_resp, "content") else str(_resp)
+        except Exception as _e:
+            _answer = "I am here to help! Could you rephrase your question?"
         return {"diagnosis": _answer, "recommendations": []}
 
     # 1. Gather Context from State
@@ -2777,9 +2775,103 @@ def _packet_from_advisory(result: Dict[str, Any], source: str) -> Dict[str, Any]
     }
 
 
+def _is_account_identity_query(text: str) -> bool:
+    """True for short account/profile identity asks (email, name, ids) — not farm ops."""
+    t = (text or "").lower().strip()
+    if not t:
+        return False
+    phrases = (
+        "my email", "what is my email", "what's my email", "whats my email",
+        "my name", "what is my name", "what's my name", "whats my name",
+        "my phone", "what is my phone", "what's my phone",
+        "people id", "peopleid", "people_id", "user id", "userid", "my id", "what is my id",
+        "business id", "businessid", "business_id", "my business id", "what is my business",
+        "my account", "my profile", "show my account", "business profile",
+        "who am i", "what account", "which account", "signed in with",
+    )
+    if not any(p in t for p in phrases):
+        return False
+    # Long farm questions that casually mention "my name" stay on farm routes
+    farmish = ("weather", "frost", "forecast", "crop", "field", "cattle", "ndvi", "soil", "irrigat", "spray", "pest")
+    if len(t.split()) > 12 and any(f in t for f in farmish):
+        return False
+    return True
+
+
+def _format_account_answer(
+    text: str,
+    *,
+    people_id: str = "",
+    business_id: Any = None,
+    user_name: str = "",
+    profile: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Build a grounded account answer from profile/state — never invent contact info."""
+    profile = dict(profile or {})
+    lower = (text or "").lower()
+    name = (user_name or "").strip() or (
+        f"{profile.get('first_name', '')} {profile.get('last_name', '')}".strip()
+    )
+    email = (profile.get("email") or "").strip()
+    phone = (profile.get("phone") or "").strip()
+    bid = str(business_id or profile.get("business_id") or "").strip()
+    bname = (profile.get("business_name") or "").strip()
+    pid = str(people_id or profile.get("people_id") or "").strip()
+
+    parts: List[str] = []
+    wants_email = "email" in lower
+    wants_phone = "phone" in lower
+    wants_name = ("name" in lower or "who am i" in lower) and "business" not in lower
+    wants_people = any(k in lower for k in ("people id", "peopleid", "people_id", "user id", "userid", "my id"))
+    wants_biz = any(k in lower for k in ("business id", "businessid", "business_id", "my business", "which account", "what account", "signed in"))
+
+    if wants_email:
+        parts.append(f"Your email is {email}." if email else "I don't have an email on file for your account.")
+    if wants_phone:
+        parts.append(f"Your phone number is {phone}." if phone else "I don't have a phone number on file for your account.")
+    if wants_name:
+        parts.append(f"Your name is {name}." if name else "I don't have your name on file.")
+    if wants_people:
+        parts.append(f"Your PeopleID is {pid}." if pid else "Your PeopleID is not available in this session.")
+    if wants_biz:
+        if bid and bname:
+            parts.append(f"You're signed in with \"{bname}\" (BusinessID {bid}).")
+        elif bid:
+            parts.append(f"You're signed in with BusinessID {bid}.")
+        else:
+            parts.append(
+                "No business account is linked to this session. "
+                "Select a business in Accounts (or open Saige from a business page) and ask again."
+            )
+
+    if parts:
+        return " ".join(parts)
+
+    # Generic "my account / my profile"
+    lines = []
+    if name:
+        lines.append(f"name: {name}")
+    if email:
+        lines.append(f"email: {email}")
+    if phone:
+        lines.append(f"phone: {phone}")
+    if pid:
+        lines.append(f"people_id: {pid}")
+    if bid:
+        lines.append(f"business_id: {bid}" + (f" ({bname})" if bname else ""))
+    if lines:
+        return "Here is your account information (password is never shown):\n" + "\n".join(lines)
+    return (
+        "I couldn't load your account profile right now. "
+        "Make sure you're logged in, then try asking for your name, email, PeopleID, or business ID."
+    )
+
+
 def _keyword_routes(text: str) -> List[str]:
     t = (text or "").lower()
     routes: List[str] = []
+    if _is_account_identity_query(t):
+        return ["user"]
     if any(k in t for k in ("joke", "funny", "make me laugh")):
         routes.append("joke")
     if any(k in t for k in ("bakasura", "how does saige", "oatmeal farm network", "ofn docs", "documentation")):
@@ -2796,7 +2888,10 @@ def _keyword_routes(text: str) -> List[str]:
         routes.append("plan")
     if any(k in t for k in ("ndvi", "monitor", "satellite", "zone", "precision", "field health", "got worse")):
         routes.append("monitoring")
-    if any(k in t for k in ("my account", "my profile", "my email", "my phone", "business profile", "password", "change my name")):
+    if any(k in t for k in (
+        "my account", "my profile", "my email", "my phone", "my name", "business profile",
+        "password", "change my name", "people id", "user id", "business id",
+    )):
         routes.append("user")
     if any(k in t for k in (
         "create a field", "create field", "add a field", "add field",
@@ -2860,7 +2955,11 @@ def user_agent_node(state: SaigeState) -> Dict[str, Any]:
     lower = text.lower()
     if any(k in lower for k in ("password", "reset password", "change password", "forgot password")):
         intent.wants_password_change = True
-    if any(k in lower for k in ("my account", "my profile", "what is my email", "my phone", "business profile", "show my account")):
+    if _is_account_identity_query(text) or any(k in lower for k in (
+        "my account", "my profile", "what is my email", "my email", "my phone",
+        "business profile", "show my account", "what is my name", "my name",
+        "business id", "people id", "user id",
+    )):
         intent.wants_account_read = True
     if any(k in lower for k in ("update my", "change my", "edit my", "set my phone", "set my email", "change business")):
         intent.wants_account_update = True
@@ -2870,8 +2969,10 @@ def user_agent_node(state: SaigeState) -> Dict[str, Any]:
     )):
         intent.wants_field_manage = True
 
-    # Optional LLM refinement when text is ambiguous
-    if text and (intent.wants_account_update or intent.wants_field_manage or "account" in lower):
+    # Optional LLM refinement when text is ambiguous (skip for clear identity reads)
+    if text and not _is_account_identity_query(text) and (
+        intent.wants_account_update or intent.wants_field_manage or "account" in lower
+    ):
         try:
             llm = get_llm_farm()
             extractor = llm.with_structured_output(AccountIntent)
@@ -2893,16 +2994,25 @@ def user_agent_node(state: SaigeState) -> Dict[str, Any]:
         }
         print("[UserAgent] password change refused")
 
-    if intent.wants_account_read and account_profile and not intent.wants_password_change:
-        # Safe fields only
-        safe = {k: v for k, v in account_profile.items() if "password" not in k.lower() and "hash" not in k.lower()}
-        lines = [f"{k}: {v}" for k, v in safe.items() if v not in (None, "")]
+    if intent.wants_account_read and not intent.wants_password_change:
+        answer = _format_account_answer(
+            text,
+            people_id=people_id,
+            business_id=business_id or updates.get("business_id") or state.get("business_id"),
+            user_name=str(updates.get("user_name") or state.get("user_name") or ""),
+            profile=account_profile,
+        )
+        safe = {
+            k: v for k, v in (account_profile or {}).items()
+            if "password" not in k.lower() and "hash" not in k.lower()
+        }
         updates["user_packet"] = {
             "source": "user",
-            "text": "Here is your account information (password is never shown):\n" + "\n".join(lines),
+            "text": answer,
             "recommendations": [],
             "account": safe,
         }
+        print(f"[UserAgent] account_read answer_len={len(answer)}")
 
     if intent.wants_account_update and not intent.wants_password_change:
         raw_fields = dict(intent.update_fields or {})
@@ -3018,6 +3128,23 @@ def supervisor_node(state: SaigeState) -> Dict[str, Any]:
     reasoning = "keyword-heuristic"
     handoff = "none"
 
+    # Pure account/identity asks — never let the router LLM send these to weather/crop
+    if _is_account_identity_query(text) or (
+        state.get("user_packet")
+        and not any(k in text.lower() for k in ("weather", "crop", "cattle", "field", "news", "joke", "frost", "soil", "ndvi"))
+    ):
+        routes = ["user"]
+        reasoning = "account-identity"
+        route_ms = (time.perf_counter() - t0) * 1000
+        print(f"[Supervisor] routes={routes} handoff=none route_ms={route_ms:.0f} (identity)")
+        return {
+            "route": routes,
+            "supervisor_reasoning": reasoning,
+            "handoff": "none",
+            "advisory_type": "user",
+            "route_ms": route_ms,
+        }
+
     # If user packet already answered password/account fully and no farm ask, keep user route
     if state.get("user_packet") and not any(
         k in text.lower() for k in ("weather", "crop", "cattle", "field", "news", "joke", "frost", "soil")
@@ -3033,6 +3160,8 @@ def supervisor_node(state: SaigeState) -> Dict[str, Any]:
             f'User: "{text[:400]}"\n'
             "Return at most 2 routes from: crop, livestock, weather, plan, monitoring, bakasura, news, joke, user.\n"
             "Prefer the single best route when possible.\n"
+            "Prefer route=user ONLY for account/profile/identity questions "
+            "(my name, my email, PeopleID, BusinessID, my account). Never route those to weather.\n"
             "Use bakasura for OFN/Saige product/docs questions.\n"
             "Use news for market/ag news.\n"
             "Use joke only for joke requests.\n"
@@ -3253,6 +3382,27 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
     """Merge specialist packets into one farmer-facing answer + citations + plan proposals."""
     print("[Synthesizer] start")
     t0 = time.perf_counter()
+    user_q = _latest_user_text(state)
+    user_pkt = state.get("user_packet") or {}
+
+    # Account/identity answers must not be overwritten by weather/crop packets
+    if user_pkt.get("text") and _is_account_identity_query(user_q):
+        diagnosis = str(user_pkt.get("text") or "").strip()
+        history = list(state.get("history") or [])
+        history.append(f"AI: {diagnosis}")
+        synth_ms = (time.perf_counter() - t0) * 1000
+        print(f"[Synthesizer] identity short-circuit chars={len(diagnosis)} synth_ms={synth_ms:.0f}")
+        return {
+            "diagnosis": diagnosis,
+            "recommendations": list(user_pkt.get("recommendations") or []),
+            "citations": [],
+            "history": history,
+            "proposals": list(state.get("proposals") or []),
+            "assessment_summary": user_q,
+            "synth_ms": synth_ms,
+            "advisory_type": state.get("advisory_type") or "user",
+        }
+
     packets = []
     citations = []
     for key in (
