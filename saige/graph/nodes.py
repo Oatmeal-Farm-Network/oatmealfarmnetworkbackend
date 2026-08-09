@@ -2798,7 +2798,10 @@ def _keyword_routes(text: str) -> List[str]:
         routes.append("monitoring")
     if any(k in t for k in ("my account", "my profile", "my email", "my phone", "business profile", "password", "change my name")):
         routes.append("user")
-    if any(k in t for k in ("create a field", "add a field", "edit field", "rename field", "manage field", "enable monitoring")):
+    if any(k in t for k in (
+        "create a field", "create field", "add a field", "add field",
+        "new field", "edit field", "rename field", "manage field", "enable monitoring",
+    )):
         routes.append("monitoring")
         routes.append("crop")
     # de-dupe preserve order
@@ -2861,7 +2864,10 @@ def user_agent_node(state: SaigeState) -> Dict[str, Any]:
         intent.wants_account_read = True
     if any(k in lower for k in ("update my", "change my", "edit my", "set my phone", "set my email", "change business")):
         intent.wants_account_update = True
-    if any(k in lower for k in ("create a field", "add a field", "new field", "edit field", "rename field", "update field", "enable monitoring", "disable monitoring")):
+    if any(k in lower for k in (
+        "create a field", "create field", "add a field", "add field", "new field",
+        "edit field", "rename field", "update field", "enable monitoring", "disable monitoring",
+    )):
         intent.wants_field_manage = True
 
     # Optional LLM refinement when text is ambiguous
@@ -2946,28 +2952,55 @@ def user_agent_node(state: SaigeState) -> Dict[str, Any]:
         action = (intent.field_action or "").strip().lower()
         payload = dict(intent.field_payload or {})
         if not action or action in {"none", "update_field"}:
-            if any(k in text.lower() for k in ("create", "add a field", "new field")):
+            if any(k in text.lower() for k in ("create", "add a field", "add field", "new field")):
                 action = "create_field"
             elif any(k in text.lower() for k in ("enable monitoring", "disable monitoring", "toggle monitoring")):
                 action = "toggle_monitoring"
             else:
                 action = "update_field"
-        if not payload:
-            payload = {"raw_request": text}
-        from field_ops import parse_field_create_args
 
-        if action == "create_field":
-            parsed = parse_field_create_args({**payload, "business_id": business_id, "people_id": people_id, "raw_request": text})
-            payload = parsed
-        proposals.append(
-            {
-                "tool": action if action in {"create_field", "update_field", "toggle_monitoring"} else "create_field",
-                "args": {"business_id": business_id, "people_id": people_id, **payload},
-                "risk": "low_write",
-                "domain": "precision_ag",
-                "summary": f"Precision-ag field action ({action}): {text[:120]}",
+        try:
+            bid_int = int(business_id) if business_id not in (None, "", 0, "0") else 0
+        except Exception:
+            bid_int = 0
+
+        if bid_int <= 0:
+            updates["user_packet"] = {
+                "source": "user",
+                "text": (
+                    "I can create precision-ag fields once a business is linked to this session. "
+                    "Select a business in your account (or open Saige from a business page), "
+                    "then ask me again — for example: “Create a field named North 40, 10 acres of corn.”"
+                ),
+                "recommendations": [
+                    "Open Accounts and select a business",
+                    "Or open Precision Ag / Saige with a BusinessID",
+                ],
             }
-        )
+            print("[UserAgent] field manage blocked — no business_id")
+        else:
+            if not payload:
+                payload = {"raw_request": text}
+            from field_ops import parse_field_create_args
+
+            if action == "create_field":
+                parsed = parse_field_create_args({
+                    **payload,
+                    "business_id": bid_int,
+                    "people_id": people_id,
+                    "raw_request": text,
+                    "monitoring_enabled": payload.get("monitoring_enabled", True),
+                })
+                payload = parsed
+            proposals.append(
+                {
+                    "tool": action if action in {"create_field", "update_field", "toggle_monitoring"} else "create_field",
+                    "args": {"business_id": bid_int, "people_id": people_id, **payload},
+                    "risk": "low_write",
+                    "domain": "precision_ag",
+                    "summary": f"Precision-ag field action ({action}): {text[:120]}",
+                }
+            )
 
     updates["proposals"] = proposals
     print(f"[UserAgent] proposals={len(proposals)} password_refuse={intent.wants_password_change}")
