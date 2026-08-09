@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from config import DB_CONFIG
+from config import DB_CONFIG, OFN_BACKEND_URL
 
 logger = logging.getLogger("farm_advisory.field_ops")
 
@@ -14,6 +14,13 @@ try:
     _OK = True
 except ImportError:
     _OK = False
+
+try:
+    import requests as _requests
+except ImportError:
+    _requests = None
+
+_HTTP_TIMEOUT = 20
 
 
 def _connect():
@@ -42,37 +49,100 @@ def _business_owns_field(conn, field_id: int, business_id: int) -> bool:
     return bool(cur.fetchone())
 
 
-def create_field(
+def _size_hectares(
+    size_hectares: Optional[float],
+    size_acres: Optional[float],
+) -> Optional[float]:
+    if size_hectares is not None:
+        try:
+            return float(size_hectares)
+        except Exception:
+            pass
+    if size_acres is not None:
+        try:
+            return float(size_acres) * 0.404686
+        except Exception:
+            pass
+    return None
+
+
+def _create_field_via_api(
+    *,
+    business_id: int,
+    name: str,
+    crop_type: str = "",
+    size_hectares: Optional[float] = None,
+    planting_date: str = "",
+    latitude: Optional[float] = None,
+    longitude: Optional[float] = None,
+    address: str = "",
+) -> Optional[str]:
+    """Prefer dashboard create path: POST /api/fields (monitoring enabled by default)."""
+    if not _requests or not OFN_BACKEND_URL:
+        return None
+    payload: Dict[str, Any] = {
+        "business_id": int(business_id),
+        "name": name,
+        "monitoring_interval_days": 5,
+        "alert_threshold_health": 50,
+    }
+    if crop_type:
+        payload["crop_type"] = str(crop_type)[:100]
+    if size_hectares is not None:
+        payload["field_size_hectares"] = float(size_hectares)
+    if planting_date:
+        payload["planting_date"] = str(planting_date)[:32]
+    if latitude is not None:
+        payload["latitude"] = float(latitude)
+    if longitude is not None:
+        payload["longitude"] = float(longitude)
+    if address:
+        payload["address"] = str(address)[:500]
+    try:
+        r = _requests.post(
+            f"{OFN_BACKEND_URL}/api/fields",
+            json=payload,
+            timeout=_HTTP_TIMEOUT,
+        )
+        if r.status_code >= 400:
+            logger.warning(
+                "[field_ops] POST /api/fields failed status=%s body=%s",
+                r.status_code,
+                (r.text or "")[:300],
+            )
+            return None
+        data = r.json() if r.content else {}
+        fid = data.get("id") or data.get("FieldID") or data.get("fieldid")
+        created_name = data.get("name") or name
+        if fid:
+            return (
+                f"Created field '{created_name}' (FieldID={fid}) for business #{business_id} "
+                "with monitoring enabled."
+            )
+        return f"Created field '{created_name}' for business #{business_id} with monitoring enabled."
+    except Exception as e:
+        logger.warning("[field_ops] POST /api/fields error: %s", e)
+        return None
+
+
+def _create_field_via_sql(
     *,
     business_id: int,
     people_id: Optional[str] = None,
     name: str = "",
     crop_type: str = "",
     size_hectares: Optional[float] = None,
-    size_acres: Optional[float] = None,
     planting_date: str = "",
-    monitoring_enabled: bool = False,
+    monitoring_enabled: bool = True,
     description: str = "",
     latitude: Optional[float] = None,
     longitude: Optional[float] = None,
 ) -> str:
-    if not business_id or int(business_id) <= 0:
-        return "No business context â€” cannot create field."
-    name = (name or "New Field").strip()[:200]
-    if not name:
-        return "Field name is required."
-    ha = size_hectares
-    if ha is None and size_acres is not None:
-        try:
-            ha = float(size_acres) * 0.404686
-        except Exception:
-            ha = None
     conn = _connect()
     if not conn:
-        return "Database unavailable â€” could not create field."
+        return "Database unavailable — could not create field."
     try:
         cur = conn.cursor()
-        # Avoid duplicates by name within business
         cur.execute(
             "SELECT TOP 1 FieldID FROM Field WHERE BusinessID=%s AND Name=%s",
             (int(business_id), name),
@@ -88,7 +158,7 @@ def create_field(
              MonitoringEnabled, MonitoringIntervalDays, AlertThresholdHealth,
              CreatedByPeopleID, CreatedAt)
             OUTPUT INSERTED.FieldID
-            VALUES (%s, %s, '', %s, %s, %s, %s, %s, %s, %s, 7, 0.5, %s, GETUTCDATE())
+            VALUES (%s, %s, '', %s, %s, %s, %s, %s, %s, %s, 5, 50, %s, GETUTCDATE())
             """,
             (
                 int(business_id),
@@ -96,7 +166,7 @@ def create_field(
                 (crop_type or None) and str(crop_type)[:100],
                 latitude,
                 longitude,
-                ha,
+                size_hectares,
                 (planting_date or None) and str(planting_date)[:32],
                 (description or None) and str(description)[:2000],
                 1 if monitoring_enabled else 0,
@@ -108,7 +178,7 @@ def create_field(
         fid = row[0] if row else None
         return f"Created field '{name}' (FieldID={fid}) for business #{business_id}."
     except Exception as e:
-        logger.exception("[field_ops] create_field")
+        logger.exception("[field_ops] create_field SQL")
         try:
             conn.rollback()
         except Exception:
@@ -119,6 +189,63 @@ def create_field(
             conn.close()
         except Exception:
             pass
+
+
+def create_field(
+    *,
+    business_id: int,
+    people_id: Optional[str] = None,
+    name: str = "",
+    crop_type: str = "",
+    size_hectares: Optional[float] = None,
+    size_acres: Optional[float] = None,
+    planting_date: str = "",
+    monitoring_enabled: bool = True,
+    description: str = "",
+    latitude: Optional[float] = None,
+    longitude: Optional[float] = None,
+    address: str = "",
+) -> str:
+    try:
+        bid = int(business_id or 0)
+    except Exception:
+        bid = 0
+    if bid <= 0:
+        return (
+            "No business is linked to this session — select a business in your account "
+            "before creating a precision-ag field."
+        )
+    name = (name or "New Field").strip()[:200]
+    if not name:
+        return "Field name is required."
+    ha = _size_hectares(size_hectares, size_acres)
+
+    via_api = _create_field_via_api(
+        business_id=bid,
+        name=name,
+        crop_type=crop_type or "",
+        size_hectares=ha,
+        planting_date=planting_date or "",
+        latitude=latitude,
+        longitude=longitude,
+        address=address or "",
+    )
+    if via_api:
+        return via_api
+
+    logger.info("[field_ops] falling back to SQL create_field for business #%s", bid)
+    return _create_field_via_sql(
+        business_id=bid,
+        people_id=people_id,
+        name=name,
+        crop_type=crop_type or "",
+        size_hectares=ha,
+        planting_date=planting_date or "",
+        monitoring_enabled=True if monitoring_enabled is None else bool(monitoring_enabled),
+        description=description or "",
+        latitude=latitude,
+        longitude=longitude,
+    )
 
 
 def update_field(
@@ -142,12 +269,7 @@ def update_field(
     try:
         if not _business_owns_field(conn, field_id, business_id):
             return f"Field #{field_id} not found for business #{business_id}."
-        ha = size_hectares
-        if ha is None and size_acres is not None:
-            try:
-                ha = float(size_acres) * 0.404686
-            except Exception:
-                ha = None
+        ha = _size_hectares(size_hectares, size_acres)
         sets = []
         params = []
         if name:
@@ -255,14 +377,21 @@ def parse_field_create_args(args: Dict[str, Any]) -> Dict[str, Any]:
             if c in raw.lower() and not crop:
                 crop = c
                 break
+    # Default monitoring on for new fields unless explicitly disabled
+    mon_raw = args.get("monitoring_enabled", args.get("enable_monitoring", True))
+    if isinstance(mon_raw, str):
+        monitoring_enabled = mon_raw.strip().lower() not in {"0", "false", "no", "off"}
+    else:
+        monitoring_enabled = bool(mon_raw) if mon_raw is not None else True
     out: Dict[str, Any] = {
         "business_id": int(args.get("business_id") or 0),
         "people_id": str(args.get("people_id") or "") or None,
         "name": name or "New Field",
         "crop_type": crop or "",
-        "monitoring_enabled": bool(args.get("monitoring_enabled") or args.get("enable_monitoring")),
+        "monitoring_enabled": monitoring_enabled,
         "description": args.get("description") or "",
         "planting_date": args.get("planting_date") or "",
+        "address": args.get("address") or "",
     }
     if size_acres is not None:
         try:
@@ -272,6 +401,16 @@ def parse_field_create_args(args: Dict[str, Any]) -> Dict[str, Any]:
     if size_ha is not None:
         try:
             out["size_hectares"] = float(size_ha)
+        except Exception:
+            pass
+    if args.get("latitude") is not None:
+        try:
+            out["latitude"] = float(args.get("latitude"))
+        except Exception:
+            pass
+    if args.get("longitude") is not None:
+        try:
+            out["longitude"] = float(args.get("longitude"))
         except Exception:
             pass
     return out
