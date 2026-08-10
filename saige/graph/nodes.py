@@ -3557,14 +3557,15 @@ def _run_plan_advisory(state: SaigeState, packets: Dict[str, Any]) -> Dict[str, 
         "text": text,
         "items": items,
         "recommendations": [i["task"] for i in items][:8],
-        "propose_save": True,
+        # Weekly plans are shown in chat only — do not create HITL save_plan proposals.
+        "propose_save": False,
     }
 
 
 # ── Synthesizer ──────────────────────────────────────────────────────────────
 
 def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
-    """Merge specialist packets into one farmer-facing answer + citations + plan proposals."""
+    """Merge specialist packets into one farmer-facing answer + citations."""
     print("[Synthesizer] start")
     t0 = time.perf_counter()
     user_q = _latest_user_text(state)
@@ -3670,24 +3671,11 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
     history = list(state.get("history") or [])
     history.append(f"AI: {diagnosis}")
 
-    proposals = list(state.get("proposals") or [])
-    plan_pkt = state.get("plan_packet") or {}
-    if plan_pkt.get("propose_save") and plan_pkt.get("items"):
-        proposals.append(
-            {
-                "tool": "save_plan",
-                "args": {
-                    "business_id": state.get("business_id"),
-                    "people_id": state.get("people_id"),
-                    "title": f"Weekly plan {plan_pkt.get('items', [{}])[0].get('date', '')}",
-                    "items": plan_pkt.get("items"),
-                    "status": "approved",
-                },
-                "risk": "low_write",
-                "domain": "plan",
-                "summary": f"Save weekly plan ({len(plan_pkt.get('items') or [])} items)",
-            }
-        )
+    # Keep account/field write proposals; never emit weekly-plan save_plan HITL cards.
+    proposals = [
+        p for p in (state.get("proposals") or [])
+        if (p.get("tool") or "").lower() != "save_plan"
+    ]
 
     synth_ms = (time.perf_counter() - t0) * 1000
     print(f"[Synthesizer] packets={len(packets)} chars={len(diagnosis)} proposals={len(proposals)} synth_ms={synth_ms:.0f}")
