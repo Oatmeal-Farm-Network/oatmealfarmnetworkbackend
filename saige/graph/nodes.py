@@ -2918,10 +2918,44 @@ def _format_account_answer(
     )
 
 
+def _normalize_field_typos(text: str) -> str:
+    """Normalize common field typos (feild/filed) for routing + intent matching."""
+    t = text or ""
+    # Whole-word only so we don't touch unrelated tokens.
+    t = re.sub(r"\bfeilds\b", "fields", t, flags=re.I)
+    t = re.sub(r"\bfeild\b", "field", t, flags=re.I)
+    t = re.sub(r"\bfileds\b", "fields", t, flags=re.I)
+    t = re.sub(r"\bfiled\b", "field", t, flags=re.I)
+    return t
+
+
+def _is_field_manage_request(text: str) -> bool:
+    t = _normalize_field_typos(text or "").lower()
+    return any(
+        k in t
+        for k in (
+            "create a field",
+            "create field",
+            "add a field",
+            "add field",
+            "new field",
+            "edit field",
+            "rename field",
+            "update field",
+            "manage field",
+            "enable monitoring",
+            "disable monitoring",
+        )
+    )
+
+
 def _keyword_routes(text: str) -> List[str]:
-    t = (text or "").lower()
+    t = _normalize_field_typos(text or "").lower()
     routes: List[str] = []
     if _is_account_identity_query(t):
+        return ["user"]
+    # Field create/edit is HITL via User Agent — never weekly-plan.
+    if _is_field_manage_request(t):
         return ["user"]
     if any(k in t for k in ("joke", "funny", "make me laugh")):
         routes.append("joke")
@@ -2942,11 +2976,6 @@ def _keyword_routes(text: str) -> List[str]:
     if any(k in t for k in ("crop", "plant", "soil", "tomato", "corn", "wheat", "pest", "disease", "irrigat", "spray")):
         routes.append("crop")
     if any(k in t for k in (
-        "plan my week", "weekly plan", "seasonal plan", "what should i do this week",
-        "schedule", "weekly farm", "planning checklist", "spring checklist", "farm planning",
-    )):
-        routes.append("plan")
-    if any(k in t for k in (
         "ndvi", "monitor", "satellite", "zone", "precision", "field health", "got worse",
         "how is my", "how's my", "how is field", "field doing", "my field", "test field",
     )):
@@ -2956,12 +2985,6 @@ def _keyword_routes(text: str) -> List[str]:
         "password", "change my name", "people id", "user id", "business id",
     )):
         routes.append("user")
-    if any(k in t for k in (
-        "create a field", "create field", "add a field", "add field",
-        "new field", "edit field", "rename field", "manage field", "enable monitoring",
-    )):
-        routes.append("monitoring")
-        routes.append("crop")
     # de-dupe preserve order
     seen = set()
     out = []
@@ -3015,7 +3038,7 @@ def user_agent_node(state: SaigeState) -> Dict[str, Any]:
 
     # Intent: password / account update / field manage
     intent = AccountIntent()
-    lower = text.lower()
+    lower = _normalize_field_typos(text).lower()
     if any(k in lower for k in ("password", "reset password", "change password", "forgot password")):
         intent.wants_password_change = True
     if _is_account_identity_query(text) or any(k in lower for k in (
@@ -3026,10 +3049,7 @@ def user_agent_node(state: SaigeState) -> Dict[str, Any]:
         intent.wants_account_read = True
     if any(k in lower for k in ("update my", "change my", "edit my", "set my phone", "set my email", "change business")):
         intent.wants_account_update = True
-    if any(k in lower for k in (
-        "create a field", "create field", "add a field", "add field", "new field",
-        "edit field", "rename field", "update field", "enable monitoring", "disable monitoring",
-    )):
+    if _is_field_manage_request(text):
         intent.wants_field_manage = True
 
     # Optional LLM refinement when text is ambiguous (skip for clear identity reads)
@@ -3040,10 +3060,14 @@ def user_agent_node(state: SaigeState) -> Dict[str, Any]:
             llm = get_llm_farm()
             extractor = llm.with_structured_output(AccountIntent)
             intent = extractor.invoke(
-                f'User message: "{text[:500]}"\n'
+                f'User message: "{_normalize_field_typos(text)[:500]}"\n'
                 "Detect account read/update, password change, or field manage intents. "
+                "Treat typos like 'feild' as 'field'. "
                 "Never put password values in update_fields."
             )
+            # Keyword detection wins for create/add field — LLM must not drop it.
+            if _is_field_manage_request(text):
+                intent.wants_field_manage = True
         except Exception as e:
             logger.debug("[UserAgent] intent LLM failed: %s", e)
 
@@ -3124,10 +3148,11 @@ def user_agent_node(state: SaigeState) -> Dict[str, Any]:
     if intent.wants_field_manage:
         action = (intent.field_action or "").strip().lower()
         payload = dict(intent.field_payload or {})
+        norm_text = _normalize_field_typos(text)
         if not action or action in {"none", "update_field"}:
-            if any(k in text.lower() for k in ("create", "add a field", "add field", "new field")):
+            if any(k in norm_text.lower() for k in ("create", "add a field", "add field", "new field")):
                 action = "create_field"
-            elif any(k in text.lower() for k in ("enable monitoring", "disable monitoring", "toggle monitoring")):
+            elif any(k in norm_text.lower() for k in ("enable monitoring", "disable monitoring", "toggle monitoring")):
                 action = "toggle_monitoring"
             else:
                 action = "update_field"
@@ -3153,7 +3178,7 @@ def user_agent_node(state: SaigeState) -> Dict[str, Any]:
             print("[UserAgent] field manage blocked — no business_id")
         else:
             if not payload:
-                payload = {"raw_request": text}
+                payload = {"raw_request": norm_text}
             from field_ops import parse_field_create_args
 
             if action == "create_field":
@@ -3161,7 +3186,7 @@ def user_agent_node(state: SaigeState) -> Dict[str, Any]:
                     **payload,
                     "business_id": bid_int,
                     "people_id": people_id,
-                    "raw_request": text,
+                    "raw_request": norm_text,
                     "monitoring_enabled": payload.get("monitoring_enabled", True),
                 })
                 payload = parsed
@@ -3171,9 +3196,26 @@ def user_agent_node(state: SaigeState) -> Dict[str, Any]:
                     "args": {"business_id": bid_int, "people_id": people_id, **payload},
                     "risk": "low_write",
                     "domain": "precision_ag",
-                    "summary": f"Precision-ag field action ({action}): {text[:120]}",
+                    "summary": f"Precision-ag field action ({action}): {norm_text[:120]}",
                 }
             )
+            field_name = (
+                payload.get("name")
+                or payload.get("field_name")
+                or "your new field"
+            )
+            updates["user_packet"] = {
+                "source": "user",
+                "text": (
+                    f"I can set up {field_name} as a precision-ag field for this business. "
+                    "Reply yes to create it or no to cancel. "
+                    "If you want a specific name, size, or crop, tell me first (e.g. North 40, 10 acres corn)."
+                ),
+                "recommendations": [
+                    "Reply yes to approve",
+                    "Or give name, acres, and crop before approving",
+                ],
+            }
 
     updates["proposals"] = proposals
     print(f"[UserAgent] proposals={len(proposals)} password_refuse={intent.wants_password_change}")
@@ -3191,10 +3233,27 @@ def supervisor_node(state: SaigeState) -> Dict[str, Any]:
     reasoning = "keyword-heuristic"
     handoff = "none"
 
+    # Field create/edit — HITL via User Agent only; never weekly-plan / crop advisory.
+    if _is_field_manage_request(text) or any(
+        (p.get("tool") or "").lower() in {"create_field", "update_field", "toggle_monitoring"}
+        for p in (state.get("proposals") or [])
+    ):
+        routes = ["user"]
+        reasoning = "field-manage"
+        route_ms = (time.perf_counter() - t0) * 1000
+        print(f"[Supervisor] routes={routes} handoff=none route_ms={route_ms:.0f} (field-manage)")
+        return {
+            "route": routes,
+            "supervisor_reasoning": reasoning,
+            "handoff": "none",
+            "advisory_type": "user",
+            "route_ms": route_ms,
+        }
+
     # Pure account/identity asks — never let the router LLM send these to weather/crop
     if _is_account_identity_query(text) or (
         state.get("user_packet")
-        and not any(k in text.lower() for k in ("weather", "crop", "cattle", "field", "news", "joke", "frost", "soil", "ndvi"))
+        and not any(k in _normalize_field_typos(text).lower() for k in ("weather", "crop", "cattle", "field", "news", "joke", "frost", "soil", "ndvi"))
     ):
         routes = ["user"]
         reasoning = "account-identity"
@@ -3210,7 +3269,7 @@ def supervisor_node(state: SaigeState) -> Dict[str, Any]:
 
     # If user packet already answered password/account fully and no farm ask, keep user route
     if state.get("user_packet") and not any(
-        k in text.lower() for k in ("weather", "crop", "cattle", "field", "news", "joke", "frost", "soil")
+        k in _normalize_field_typos(text).lower() for k in ("weather", "crop", "cattle", "field", "news", "joke", "frost", "soil")
     ):
         if "user" not in routes:
             routes = ["user"] + routes
@@ -3220,11 +3279,14 @@ def supervisor_node(state: SaigeState) -> Dict[str, Any]:
         router = llm.with_structured_output(SupervisorRouteDecision)
         decision = router.invoke(
             "You are Saige Supervisor for an agricultural assistant.\n"
-            f'User: "{text[:400]}"\n'
-            "Return at most 2 routes from: crop, livestock, weather, plan, monitoring, bakasura, news, joke, user.\n"
+            f'User: "{_normalize_field_typos(text)[:400]}"\n'
+            "Return at most 2 routes from: crop, livestock, weather, monitoring, bakasura, news, joke, user.\n"
             "Prefer the single best route when possible.\n"
             "Prefer route=user ONLY for account/profile/identity questions "
             "(my name, my email, PeopleID, BusinessID, my account). Never route those to weather.\n"
+            "Treat typos like 'feild' as 'field'. Create/add/rename field requests MUST use route=user "
+            "(never crop or monitoring).\n"
+            "Do NOT use a weekly/seasonal farm-plan route — that feature was removed.\n"
             "Use bakasura for OFN/Saige product/docs questions.\n"
             "Use news for market/ag news.\n"
             "Use joke only for joke requests.\n"
@@ -3236,6 +3298,9 @@ def supervisor_node(state: SaigeState) -> Dict[str, Any]:
             r = (r or "").strip().lower()
             if r == "account":
                 r = "user"
+            if r == "plan":
+                # Weekly-plan specialist removed — fall back to crop advisory.
+                r = "crop"
             if r in VALID_ROUTES and r not in cleaned:
                 cleaned.append(r)
         if cleaned:
@@ -3248,6 +3313,14 @@ def supervisor_node(state: SaigeState) -> Dict[str, Any]:
     # Always include user route if we already have user_packet / proposals from User Agent
     if (state.get("user_packet") or state.get("proposals")) and "user" not in routes:
         routes = ["user"] + routes
+
+    # Never let weekly-plan override an active field-manage HITL proposal
+    if any(
+        (p.get("tool") or "").lower() in {"create_field", "update_field", "toggle_monitoring"}
+        for p in (state.get("proposals") or [])
+    ):
+        routes = ["user"]
+        reasoning = "field-manage-proposal"
 
     route_ms = (time.perf_counter() - t0) * 1000
     print(f"[Supervisor] routes={routes} handoff={handoff} route_ms={route_ms:.0f}")
@@ -3346,11 +3419,9 @@ def specialist_dispatch_node(state: SaigeState) -> Dict[str, Any]:
     if "user" in routes and state.get("user_packet"):
         updates["user_packet"] = state.get("user_packet")
 
-    # Monitoring / plan — lightweight only when requested
+    # Monitoring — lightweight only when requested
     if "monitoring" in routes:
         updates["monitoring_packet"] = _run_monitoring_agent(state)
-    if "plan" in routes:
-        updates["plan_packet"] = _run_plan_advisory(state, updates)
 
     # Always inject concrete weather-mitigation playbook when asked (don't rely on LLM tool call)
     text_lower = (_latest_user_text(state) or "").lower()
@@ -3380,8 +3451,6 @@ def specialist_dispatch_node(state: SaigeState) -> Dict[str, Any]:
                 f"Follow {hazard} {phase} mitigation steps",
             ]
             updates["weather_packet"] = wp
-            if "plan" not in routes and "plan_packet" not in updates:
-                updates["plan_packet"] = _run_plan_advisory(state, updates)
         except Exception as e:
             logger.debug("[Specialists] mitigation inject failed: %s", e)
 
@@ -3474,94 +3543,6 @@ def _run_monitoring_agent(state: SaigeState) -> Dict[str, Any]:
     }
 
 
-def _run_plan_advisory(state: SaigeState, packets: Dict[str, Any]) -> Dict[str, Any]:
-    """Build dated checklist from specialist packets + optional weather mitigation."""
-    from datetime import date, timedelta
-
-    today = date.today()
-    items = []
-    text_q = (_latest_user_text(state) or "").lower()
-    weather_pkt = packets.get("weather_packet") or state.get("weather_packet") or {}
-    crop_pkt = packets.get("crop_packet") or state.get("crop_packet") or {}
-    livestock_pkt = packets.get("livestock_packet") or state.get("livestock_packet") or {}
-    monitoring_pkt = packets.get("monitoring_packet") or state.get("monitoring_packet") or {}
-
-    # Prefer concrete mitigation steps when the ask is a weather playbook
-    mitigation_text = ""
-    if any(k in text_q for k in ("mitigation", "playbook", "frost", "drought", "heat", "flood", "hail")):
-        try:
-            from weather_mitigation import format_for_llm, resolve_hazard
-            hazard = resolve_hazard(text_q) or (
-                "frost" if "frost" in text_q or "cold" in text_q else
-                "drought" if "drought" in text_q else
-                "heat" if "heat" in text_q else
-                "flood" if "flood" in text_q else
-                "hail" if "hail" in text_q else
-                "frost"
-            )
-            phase = "imminent"
-            if any(k in text_q for k in ("planning", "prepare", "before season", "spring")):
-                phase = "planning"
-            elif any(k in text_q for k in ("recovery", "after", "aftermath")):
-                phase = "recovery"
-            elif any(k in text_q for k in ("during", "active", "happening")):
-                phase = "active"
-            mitigation_text = format_for_llm(hazard, phase)
-            for i, line in enumerate(mitigation_text.splitlines()):
-                step = line.strip()
-                if step[:1].isdigit() or step.startswith("•") or step.startswith("-"):
-                    items.append({
-                        "date": str(today + timedelta(days=min(i, 3))),
-                        "task": step.lstrip("0123456789.-)• ").strip()[:200],
-                        "domain": "weather",
-                        "status": "open",
-                    })
-        except Exception as e:
-            logger.debug("[Plan] mitigation inject failed: %s", e)
-
-    if weather_pkt and not mitigation_text:
-        items.append({"date": str(today), "task": "Check frost/heat risk and protect vulnerable crops/livestock", "domain": "weather", "status": "open"})
-    if crop_pkt:
-        items.append({"date": str(today + timedelta(days=1)), "task": "Scout problem fields and note symptoms", "domain": "crop", "status": "open"})
-    if livestock_pkt:
-        items.append({"date": str(today + timedelta(days=1)), "task": "Walk herd/flock health check; confirm water and bedding", "domain": "livestock", "status": "open"})
-    if monitoring_pkt:
-        items.append({"date": str(today + timedelta(days=2)), "task": "Review monitoring alerts / NDVI changes", "domain": "monitoring", "status": "open"})
-
-    # Season-aware defaults when packets are thin
-    if not items:
-        month = today.month
-        if month in (3, 4, 5) or "spring" in text_q:
-            items = [
-                {"date": str(today), "task": "Confirm soil temps and last-frost date before transplanting", "domain": "crop", "status": "open"},
-                {"date": str(today + timedelta(days=1)), "task": "Service irrigation and check field moisture", "domain": "crop", "status": "open"},
-                {"date": str(today + timedelta(days=2)), "task": "Walk livestock facilities; restock feed and bedding", "domain": "livestock", "status": "open"},
-                {"date": str(today + timedelta(days=3)), "task": "Review Precision Ag alerts and mark fields needing scouting", "domain": "monitoring", "status": "open"},
-                {"date": str(today + timedelta(days=4)), "task": "Update marketplace listings / inventory for spring demand", "domain": "business", "status": "open"},
-            ]
-        else:
-            items = [
-                {"date": str(today), "task": "Walk the farm and note top 3 priorities", "domain": "plan", "status": "open"},
-                {"date": str(today + timedelta(days=2)), "task": "Check irrigation / water status", "domain": "crop", "status": "open"},
-                {"date": str(today + timedelta(days=4)), "task": "Review marketplace / inventory listings", "domain": "business", "status": "open"},
-            ]
-
-    # Deduplicate empty tasks
-    items = [i for i in items if (i.get("task") or "").strip()]
-    header = "Weather mitigation + weekly plan:" if mitigation_text else "Weekly plan draft:"
-    text = header + "\n" + "\n".join(f"- {i['date']}: {i['task']}" for i in items)
-    if mitigation_text and "Mitigation plan" in mitigation_text:
-        text = mitigation_text + "\n\n" + text
-    return {
-        "source": "plan",
-        "text": text,
-        "items": items,
-        "recommendations": [i["task"] for i in items][:8],
-        # Weekly plans are shown in chat only — do not create HITL save_plan proposals.
-        "propose_save": False,
-    }
-
-
 # ── Synthesizer ──────────────────────────────────────────────────────────────
 
 def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
@@ -3589,6 +3570,32 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
             "advisory_type": state.get("advisory_type") or "user",
         }
 
+    # Field create/edit HITL — prefer User Agent copy; never let weekly-plan steal the turn.
+    field_tools = {"create_field", "update_field", "toggle_monitoring"}
+    has_field_proposal = any(
+        (p.get("tool") or "").lower() in field_tools for p in (state.get("proposals") or [])
+    )
+    if user_pkt.get("text") and (has_field_proposal or _is_field_manage_request(user_q)):
+        diagnosis = str(user_pkt.get("text") or "").strip()
+        history = list(state.get("history") or [])
+        history.append(f"AI: {diagnosis}")
+        proposals = [
+            p for p in (state.get("proposals") or [])
+            if (p.get("tool") or "").lower() != "save_plan"
+        ]
+        synth_ms = (time.perf_counter() - t0) * 1000
+        print(f"[Synthesizer] field-manage short-circuit chars={len(diagnosis)} synth_ms={synth_ms:.0f}")
+        return {
+            "diagnosis": diagnosis,
+            "recommendations": list(user_pkt.get("recommendations") or []),
+            "citations": [],
+            "history": history,
+            "proposals": proposals,
+            "assessment_summary": user_q,
+            "synth_ms": synth_ms,
+            "advisory_type": state.get("advisory_type") or "user",
+        }
+
     packets = []
     citations = []
     for key in (
@@ -3597,7 +3604,6 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
         "crop_packet",
         "livestock_packet",
         "monitoring_packet",
-        "plan_packet",
         "bakasura_packet",
         "news_packet",
     ):
@@ -3623,7 +3629,7 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
     if not packets:
         diagnosis = (
             "I'm Saige. Tell me about your fields, animals, weather concerns, "
-            "or ask for a weekly plan - I can also look up OFN docs, news, or tell a farm joke."
+            "or crop questions — I can also look up OFN docs, news, or tell a farm joke."
         )
         recs: List[str] = []
     elif len(packets) == 1:

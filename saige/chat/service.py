@@ -246,7 +246,7 @@ def _finalize_result(
     if final_state.next:
         interrupt_payload = _extract_interrupt_payload(final_state)
         diagnosis = (final_values.get("diagnosis") or "") + (
-            "\n\nI've prepared change proposal(s) for your approval."
+            "\n\nReply yes to approve or no to cancel."
             if (final_values.get("proposals") or (isinstance(interrupt_payload, dict) and interrupt_payload.get("proposals")))
             else ""
         )
