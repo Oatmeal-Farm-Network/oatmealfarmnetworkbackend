@@ -736,6 +736,17 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
         "log field", "add soil sample",
     ))
 
+    # Pure agronomy / plant-knowledge questions (no "my field") — keep KB + agronomy tools only
+    _INTENT_CROP_KNOWLEDGE = (not _INTENT_PRECISION_AG) and any(k in _rl for k in (
+        "soil ph", "pH prefer", "ph prefer", "prefer", "water need", "water requirement",
+        "hardiness", "companion plant", "when should i plant", "how to grow",
+        "what soil does", "ideal soil", "nutrient need", "plant detail",
+        "what ph", "ph does", "soil does", "growing condition",
+    )) and any(k in _rl for k in (
+        "tomato", "corn", "wheat", "crop", "plant", "soil", "vegetable", "herb",
+        "garlic", "kale", "lettuce", "soy", "bean", "potato", "onion",
+    ))
+
     _INTENT_ACCOUNTING = any(k in _rl for k in (
         "invoice", "overdue", "payment", "accounts receivable",
         "accounts payable", "accounting snapshot", "my books",
@@ -1330,6 +1341,22 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
         _precag_tool_names = {t.name for t in precision_ag_tools if PRECISION_AG_AVAILABLE}
         bound_tools = [t for t in bound_tools if t.name in _precag_tool_names]
         print(f"[Intent Router] Tool list pruned to precision-ag tools ({len(bound_tools)} tools)")
+    elif _INTENT_CROP_KNOWLEDGE:
+        _crop_names = set()
+        if KNOWLEDGE_BASE_AVAILABLE:
+            _crop_names |= {t.name for t in knowledge_base_tools}
+        if AGRONOMY_AVAILABLE:
+            _crop_names |= {t.name for t in agronomy_tools}
+        if COMPANION_AVAILABLE:
+            _crop_names |= {t.name for t in companion_tools}
+        if CROP_NAMES_AVAILABLE:
+            _crop_names |= {t.name for t in crop_name_tools}
+        if SOIL_CHALLENGE_AVAILABLE:
+            _crop_names |= {t.name for t in soil_challenge_tools}
+        if WEATHER_AVAILABLE or True:
+            _crop_names.add("get_weather_tool")
+        bound_tools = [t for t in bound_tools if t.name in _crop_names]
+        print(f"[Intent Router] Tool list pruned to crop-knowledge tools ({len(bound_tools)} tools)")
     elif _INTENT_ACCOUNTING:
         _acct_tool_names = {t.name for t in business_ops_tools if BUSINESS_OPS_AVAILABLE}
         bound_tools = [t for t in bound_tools if t.name in _acct_tool_names]
@@ -1370,7 +1397,7 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
     weather_alerts_context = ""
     history_context = ""
     grants_context = ""
-    max_iterations = 3
+    max_iterations = 6 if _INTENT_CROP_KNOWLEDGE else 3
     final_response = ""
     _map_cmd_collected = ""  # [MAP_CMD: ...] extracted from geocode tool result
     people_id_for_tools = state.get("people_id") or ""
@@ -1379,6 +1406,22 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
         business_id_for_tools = int(state.get("business_id") or 0)
     except (TypeError, ValueError):
         business_id_for_tools = 0
+    try:
+        from precision_ag import set_session_business_id
+        set_session_business_id(str(business_id_for_tools) if business_id_for_tools else None)
+    except Exception:
+        pass
+
+    def _safe_int(val, default: int = 0) -> int:
+        try:
+            if val is None or val == "":
+                return default
+            return int(float(val))
+        except (TypeError, ValueError):
+            return default
+
+    # Must exist before write-tool short-circuit (avoids NameError → soft fail)
+    messages: List[Any] = []
 
     try:
         for iteration in range(max_iterations):
@@ -1484,768 +1527,780 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
             if hasattr(response, 'tool_calls') and response.tool_calls and iteration < max_iterations - 1:
                 print(f"[Advisory Agent] Tool call detected: {len(response.tool_calls)}")
                 for tool_call in response.tool_calls:
-                    tc_name = tool_call.get('name')
-                    tc_args = tool_call.get('args', {}) or {}
-                    if is_write_tool(str(tc_name or "")):
-                        tool_result = write_tool_refusal(str(tc_name))
-                        print(f"[Advisory Agent] BLOCKED write tool: {tc_name}")
-                        messages.append(response)
-                        try:
-                            from langchain_core.messages import ToolMessage
-                            messages.append(ToolMessage(content=tool_result, tool_call_id=tool_call.get("id") or str(tc_name)))
-                        except Exception:
-                            messages.append({"role": "tool", "content": tool_result})
-                        continue
-                    if tc_name == 'get_weather_tool':
-                        loc = tc_args.get('location', location)
-                        print(f"[Advisory Agent] Executing Weather Tool for: {loc}")
+                    try:
+                        tc_name = tool_call.get('name')
+                        tc_args = tool_call.get('args', {}) or {}
+                        if is_write_tool(str(tc_name or "")):
+                            tool_result = write_tool_refusal(str(tc_name))
+                            print(f"[Advisory Agent] BLOCKED write tool: {tc_name}")
+                            messages.append(response)
+                            try:
+                                from langchain_core.messages import ToolMessage
+                                messages.append(ToolMessage(content=tool_result, tool_call_id=tool_call.get("id") or str(tc_name)))
+                            except Exception:
+                                messages.append({"role": "tool", "content": tool_result})
+                            continue
+                        if tc_name == 'get_weather_tool':
+                            loc = tc_args.get('location', location)
+                            print(f"[Advisory Agent] Executing Weather Tool for: {loc}")
 
-                        tool_result = get_weather_tool.invoke({"location": loc})
-                        weather_context = f"Weather Information:\n{tool_result}"
+                            tool_result = get_weather_tool.invoke({"location": loc})
+                            weather_context = f"Weather Information:\n{tool_result}"
 
-                        try:
-                            weather_data = weather_service.get_weather(loc)
-                        except:
-                            pass
-                    elif tc_name == 'companion_planting_tool' and COMPANION_AVAILABLE:
-                        crop = tc_args.get('crop', '')
-                        print(f"[Advisory Agent] Executing Companion Planting Tool for: {crop}")
-                        tool_result = companion_planting_tool.invoke({"crop": crop})
-                        companion_context = (companion_context + "\n\n" if companion_context else "") + tool_result
-                    elif tc_name == 'check_companion_pair_tool' and COMPANION_AVAILABLE:
-                        a = tc_args.get('crop_a', '')
-                        b = tc_args.get('crop_b', '')
-                        print(f"[Advisory Agent] Executing Companion Pair Check: {a} + {b}")
-                        tool_result = check_companion_pair_tool.invoke({"crop_a": a, "crop_b": b})
-                        companion_context = (companion_context + "\n\n" if companion_context else "") + tool_result
-                    elif tc_name == 'crop_name_tool' and CROP_NAMES_AVAILABLE:
-                        name = tc_args.get('name', '')
-                        print(f"[Advisory Agent] Executing Crop Name Tool for: {name}")
-                        tool_result = crop_name_tool.invoke({"name": name})
-                        crop_name_context = (crop_name_context + "\n\n" if crop_name_context else "") + tool_result
-                    elif tc_name == 'weather_mitigation_tool' and WEATHER_MITIGATION_AVAILABLE:
-                        hazard = tc_args.get('hazard', '')
-                        phase = tc_args.get('phase', 'imminent')
-                        print(f"[Advisory Agent] Executing Weather Mitigation Tool: {hazard}/{phase}")
-                        tool_result = weather_mitigation_tool.invoke({"hazard": hazard, "phase": phase})
-                        mitigation_context = (mitigation_context + "\n\n" if mitigation_context else "") + tool_result
-                    elif tc_name == 'region_crops_tool' and REGION_CROPS_AVAILABLE:
-                        args = {
-                            "climate": tc_args.get('climate', ''),
-                            "zone": tc_args.get('zone', ''),
-                            "lat": float(tc_args.get('lat', 0) or 0),
-                            "lon": float(tc_args.get('lon', 0) or 0),
-                        }
-                        print(f"[Advisory Agent] Executing Region Crops Tool: {args}")
-                        tool_result = region_crops_tool.invoke(args)
-                        region_context = (region_context + "\n\n" if region_context else "") + tool_result
-                    elif tc_name == 'soil_challenge_tool' and SOIL_CHALLENGE_AVAILABLE:
-                        soil_args = {k: tc_args.get(k, -1.0) for k in [
-                            "ph", "organic_matter_pct", "nitrogen_ppm", "phosphorus_ppm",
-                            "potassium_ppm", "cec_meq", "salinity_dsm", "moisture_pct",
-                            "bulk_density_gcc", "sodium_pct_cec"
-                        ]}
-                        soil_args["crop"] = tc_args.get("crop", "")
-                        print(f"[Advisory Agent] Executing Soil Challenge Tool: {soil_args}")
-                        tool_result = soil_challenge_tool.invoke(soil_args)
-                        soil_context = (soil_context + "\n\n" if soil_context else "") + tool_result
-                    elif tc_name == 'price_forecast_tool' and PRICE_FORECAST_AVAILABLE:
-                        commodity = tc_args.get('commodity', '')
-                        months_ahead = int(tc_args.get('months_ahead', 6) or 6)
-                        print(f"[Advisory Agent] Executing Price Forecast Tool: {commodity}/{months_ahead}mo")
-                        tool_result = price_forecast_tool.invoke({"commodity": commodity, "months_ahead": months_ahead})
-                        price_context = (price_context + "\n\n" if price_context else "") + tool_result
-                    elif tc_name == 'subsidies_tool' and SUBSIDIES_AVAILABLE:
-                        args = {
-                            "category": tc_args.get('category', ''),
-                            "keyword": tc_args.get('keyword', ''),
-                        }
-                        print(f"[Advisory Agent] Executing Subsidies Tool: {args}")
-                        tool_result = subsidies_tool.invoke(args)
-                        subsidies_context = (subsidies_context + "\n\n" if subsidies_context else "") + tool_result
-                    elif tc_name == 'insurance_tool' and INSURANCE_AVAILABLE:
-                        crop = tc_args.get('crop', '')
-                        print(f"[Advisory Agent] Executing Insurance Tool: {crop}")
-                        tool_result = insurance_tool.invoke({"crop": crop})
-                        insurance_context = (insurance_context + "\n\n" if insurance_context else "") + tool_result
-                    elif tc_name == 'list_upcoming_events_tool' and EVENTS_AVAILABLE:
-                        args = {
-                            "business_id": int(tc_args.get('business_id', 0) or 0),
-                            "limit": int(tc_args.get('limit', 10) or 10),
-                        }
-                        print(f"[Advisory Agent] Executing List Upcoming Events Tool: {args}")
-                        tool_result = list_upcoming_events_tool.invoke(args)
-                        events_context = (events_context + "\n\n" if events_context else "") + tool_result
-                    elif tc_name == 'get_event_details_tool' and EVENTS_AVAILABLE:
-                        eid = int(tc_args.get('event_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Get Event Details Tool: {eid}")
-                        tool_result = get_event_details_tool.invoke({"event_id": eid})
-                        events_context = (events_context + "\n\n" if events_context else "") + tool_result
-                    elif tc_name == 'event_attendee_count_tool' and EVENTS_AVAILABLE:
-                        eid = int(tc_args.get('event_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Event Attendee Count Tool: {eid}")
-                        tool_result = event_attendee_count_tool.invoke({"event_id": eid})
-                        events_context = (events_context + "\n\n" if events_context else "") + tool_result
-                    elif tc_name == 'list_my_fields_tool' and PRECISION_AG_AVAILABLE:
-                        print(f"[Advisory Agent] Executing List My Fields Tool (people_id from state)")
-                        tool_result = list_my_fields_tool.invoke({"people_id": people_id_for_tools})
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'resolve_field_by_name_tool' and PRECISION_AG_AVAILABLE:
-                        fname = str(tc_args.get('name') or tc_args.get('field_name') or latest_user_message or "")
-                        print(f"[Advisory Agent] Executing Resolve Field By Name: {fname!r}")
-                        tool_result = resolve_field_by_name_tool.invoke({
-                            "name": fname,
-                            "people_id": people_id_for_tools,
-                        })
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'get_field_analysis_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Get Field Analysis Tool: field_id={fid}")
-                        tool_result = get_field_analysis_tool.invoke({
-                            "field_id": fid,
-                            "people_id": people_id_for_tools,
-                        })
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'get_field_history_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        months = int(tc_args.get('months', 6) or 6)
-                        print(f"[Advisory Agent] Executing Get Field History Tool: field_id={fid}, months={months}")
-                        tool_result = get_field_history_tool.invoke({
-                            "field_id": fid,
-                            "months": months,
-                            "people_id": people_id_for_tools,
-                        })
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'get_field_alerts_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Get Field Alerts Tool: field_id={fid}")
-                        tool_result = get_field_alerts_tool.invoke({
-                            "field_id": fid,
-                            "people_id": people_id_for_tools,
-                        })
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'get_field_soil_samples_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Get Soil Samples: field_id={fid}")
-                        tool_result = get_field_soil_samples_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'get_field_scouting_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Get Scouting: field_id={fid}")
-                        tool_result = get_field_scouting_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'add_scout_observation_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Add Scout Observation: field_id={fid}")
-                        tool_result = add_scout_observation_tool.invoke({
-                            "field_id":  fid,
-                            "category":  tc_args.get('category', 'General'),
-                            "severity":  tc_args.get('severity', 'Low'),
-                            "notes":     tc_args.get('notes', ''),
-                            "people_id": people_id_for_tools,
-                        })
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'get_field_activity_log_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Get Activity Log: field_id={fid}")
-                        tool_result = get_field_activity_log_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'log_field_activity_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Log Field Activity: field_id={fid}")
-                        tool_result = log_field_activity_tool.invoke({
-                            "field_id":       fid,
-                            "activity_type":  tc_args.get('activity_type', 'Other'),
-                            "activity_date":  tc_args.get('activity_date', ''),
-                            "product":        tc_args.get('product', ''),
-                            "rate":           float(tc_args.get('rate', 0) or 0) or None,
-                            "rate_unit":      tc_args.get('rate_unit', ''),
-                            "operator_name":  tc_args.get('operator_name', ''),
-                            "notes":          tc_args.get('notes', ''),
-                            "people_id":      people_id_for_tools,
-                        })
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'add_soil_sample_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Add Soil Sample: field_id={fid}")
-                        tool_result = add_soil_sample_tool.invoke({
-                            "field_id":       fid,
-                            "sample_label":   tc_args.get('sample_label', 'Sample'),
-                            "ph":             float(tc_args.get('ph', 0) or 0) or None,
-                            "organic_matter": float(tc_args.get('organic_matter', 0) or 0) or None,
-                            "nitrogen":       float(tc_args.get('nitrogen', 0) or 0) or None,
-                            "phosphorus":     float(tc_args.get('phosphorus', 0) or 0) or None,
-                            "potassium":      float(tc_args.get('potassium', 0) or 0) or None,
-                            "sample_date":    tc_args.get('sample_date', ''),
-                            "depth_cm":       int(tc_args.get('depth_cm', 30) or 30),
-                            "notes":          tc_args.get('notes', ''),
-                            "people_id":      people_id_for_tools,
-                        })
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'get_field_gdd_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        days = int(tc_args.get('days', 180) or 180)
-                        print(f"[Advisory Agent] Executing Get GDD: field_id={fid}, days={days}")
-                        tool_result = get_field_gdd_tool.invoke({"field_id": fid, "days": days, "people_id": people_id_for_tools})
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'get_field_irrigation_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        days = int(tc_args.get('days', 30) or 30)
-                        print(f"[Advisory Agent] Executing Get Irrigation: field_id={fid}, days={days}")
-                        tool_result = get_field_irrigation_tool.invoke({"field_id": fid, "days": days, "people_id": people_id_for_tools})
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'get_field_yield_forecast_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Get Yield Forecast: field_id={fid}")
-                        tool_result = get_field_yield_forecast_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'get_field_carbon_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Get Carbon: field_id={fid}")
-                        tool_result = get_field_carbon_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'get_farm_benchmark_tool' and PRECISION_AG_AVAILABLE:
-                        print(f"[Advisory Agent] Executing Farm Benchmark")
-                        tool_result = get_farm_benchmark_tool.invoke({"people_id": people_id_for_tools})
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'get_field_weather_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        days = int(tc_args.get('days', 14) or 14)
-                        print(f"[Advisory Agent] Executing Get Field Weather: field_id={fid}, days={days}")
-                        tool_result = get_field_weather_tool.invoke({"field_id": fid, "days": days, "people_id": people_id_for_tools})
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'get_field_biomass_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Get Field Biomass: field_id={fid}")
-                        tool_result = get_field_biomass_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'improve_field_biomass_confidence_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Improve Biomass Confidence: field_id={fid}")
-                        tool_result = improve_field_biomass_confidence_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'get_field_maturity_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Get Field Maturity: field_id={fid}")
-                        tool_result = get_field_maturity_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'log_maturity_sample_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Log Maturity Sample: field_id={fid}")
-                        tool_result = log_maturity_sample_tool.invoke({
-                            "field_id":         fid,
-                            "sample_date":      str(tc_args.get('sample_date', '') or ''),
-                            "brix":             tc_args.get('brix'),
-                            "anthocyanin_mg_g": tc_args.get('anthocyanin_mg_g'),
-                            "firmness_kgf":     tc_args.get('firmness_kgf'),
-                            "notes":            str(tc_args.get('notes', '') or ''),
-                            "people_id":        people_id_for_tools,
-                        })
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'get_field_climate_forecast_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        hrs = int(tc_args.get('hours', 72) or 72)
-                        print(f"[Advisory Agent] Executing Get Climate Forecast: field_id={fid}, hours={hrs}")
-                        tool_result = get_field_climate_forecast_tool.invoke({
-                            "field_id":  fid,
-                            "hours":     hrs,
-                            "people_id": people_id_for_tools,
-                        })
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'get_field_water_use_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Get Water Use: field_id={fid}")
-                        tool_result = get_field_water_use_tool.invoke({
-                            "field_id":  fid,
-                            "people_id": people_id_for_tools,
-                        })
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'get_field_agronomy_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Get Agronomy Snapshot: field_id={fid}")
-                        tool_result = get_field_agronomy_tool.invoke({
-                            "field_id":  fid,
-                            "people_id": people_id_for_tools,
-                        })
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'get_field_assessment_history_tool' and PRECISION_AG_AVAILABLE:
-                        fid = int(tc_args.get('field_id', 0) or 0)
-                        lim = int(tc_args.get('limit', 3) or 3)
-                        print(f"[Advisory Agent] Executing Get Assessment History: field_id={fid}, limit={lim}")
-                        tool_result = get_field_assessment_history_tool.invoke({
-                            "field_id":  fid,
-                            "limit":     lim,
-                            "people_id": people_id_for_tools,
-                        })
-                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
-                    elif tc_name == 'list_my_animals_tool' and FARM_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        studs_only = bool(tc_args.get('studs_only', False))
-                        page = int(tc_args.get('page', 1) or 1)
-                        print(f"[Advisory Agent] Executing List My Animals Tool: business_id={bid}, studs_only={studs_only}")
-                        tool_result = list_my_animals_tool.invoke({
-                            "business_id": bid,
-                            "studs_only": studs_only,
-                            "page": page,
-                        })
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'list_my_listings_tool' and FARM_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing List My Listings Tool: business_id={bid}")
-                        tool_result = list_my_listings_tool.invoke({"business_id": bid})
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'count_my_animals_tool' and FARM_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Count My Animals Tool: business_id={bid}")
-                        tool_result = count_my_animals_tool.invoke({"business_id": bid})
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'list_cold_chain_vehicles_tool' and FARM_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing List Cold Chain Vehicles Tool: business_id={bid}")
-                        tool_result = list_cold_chain_vehicles_tool.invoke({"business_id": bid})
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'geocode_location_tool' and FARM_DATA_AVAILABLE:
-                        query = tc_args.get('query', '')
-                        print(f"[Advisory Agent] Executing Geocode Location: query={query!r}")
-                        tool_result = geocode_location_tool.invoke({"query": query})
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                        # Capture [MAP_CMD] so we can append it to final_response later
-                        _mc = re.search(r'\[MAP_CMD:[^\]]+\]', tool_result)
-                        if _mc:
-                            _map_cmd_collected = _mc.group(0)
-                    # ── business_data tools ───────────────────────────────────
-                    elif tc_name == 'get_business_profile_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Get Business Profile: business_id={bid}")
-                        tool_result = get_business_profile_tool.invoke({"business_id": bid})
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'update_business_profile_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Update Business Profile: business_id={bid}")
-                        tool_result = update_business_profile_tool.invoke({
-                            "business_id":   bid,
-                            "business_name": tc_args.get('business_name', ''),
-                            "description":   tc_args.get('description', ''),
-                            "slogan":        tc_args.get('slogan', ''),
-                            "phone":         tc_args.get('phone', ''),
-                            "email":         tc_args.get('email', ''),
-                            "website":       tc_args.get('website', ''),
-                        })
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'list_my_animals_detail_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing List Animals Detail: business_id={bid}")
-                        tool_result = list_my_animals_detail_tool.invoke({"business_id": bid})
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'update_animal_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Update Animal: animal_id={tc_args.get('animal_id')}")
-                        tool_result = update_animal_tool.invoke({
-                            "animal_id":       int(tc_args.get('animal_id', 0) or 0),
-                            "business_id":     bid,
-                            "price":           float(tc_args.get('price', -1) if tc_args.get('price') is not None else -1),
-                            "stud_price":      float(tc_args.get('stud_price', -1) if tc_args.get('stud_price') is not None else -1),
-                            "for_sale":        int(tc_args.get('for_sale', -1) if tc_args.get('for_sale') is not None else -1),
-                            "for_stud":        int(tc_args.get('for_stud', -1) if tc_args.get('for_stud') is not None else -1),
-                            "description":     tc_args.get('description', ''),
-                            "show_on_website": int(tc_args.get('show_on_website', -1) if tc_args.get('show_on_website') is not None else -1),
-                        })
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'list_produce_inventory_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing List Produce Inventory: business_id={bid}")
-                        tool_result = list_produce_inventory_tool.invoke({"business_id": bid})
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'update_produce_listing_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Update Produce Listing: produce_id={tc_args.get('produce_id')}")
-                        tool_result = update_produce_listing_tool.invoke({
-                            "produce_id":       int(tc_args.get('produce_id', 0) or 0),
-                            "business_id":      bid,
-                            "quantity":         float(tc_args.get('quantity', -1) if tc_args.get('quantity') is not None else -1),
-                            "retail_price":     float(tc_args.get('retail_price', -1) if tc_args.get('retail_price') is not None else -1),
-                            "wholesale_price":  float(tc_args.get('wholesale_price', -1) if tc_args.get('wholesale_price') is not None else -1),
-                            "show_produce":     int(tc_args.get('show_produce', -1) if tc_args.get('show_produce') is not None else -1),
-                            "available_date":   tc_args.get('available_date', ''),
-                        })
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'list_meat_inventory_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing List Meat Inventory: business_id={bid}")
-                        tool_result = list_meat_inventory_tool.invoke({"business_id": bid})
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'update_meat_listing_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Update Meat Listing: meat_id={tc_args.get('meat_id')}")
-                        tool_result = update_meat_listing_tool.invoke({
-                            "meat_id":          int(tc_args.get('meat_id', 0) or 0),
-                            "business_id":      bid,
-                            "quantity":         float(tc_args.get('quantity', -1) if tc_args.get('quantity') is not None else -1),
-                            "retail_price":     float(tc_args.get('retail_price', -1) if tc_args.get('retail_price') is not None else -1),
-                            "wholesale_price":  float(tc_args.get('wholesale_price', -1) if tc_args.get('wholesale_price') is not None else -1),
-                            "show_meat":        int(tc_args.get('show_meat', -1) if tc_args.get('show_meat') is not None else -1),
-                            "available_date":   tc_args.get('available_date', ''),
-                            "notes":            tc_args.get('notes', ''),
-                        })
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'list_processed_food_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing List Processed Food: business_id={bid}")
-                        tool_result = list_processed_food_tool.invoke({"business_id": bid})
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'update_processed_food_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Update Processed Food: food_id={tc_args.get('food_id')}")
-                        tool_result = update_processed_food_tool.invoke({
-                            "food_id":          int(tc_args.get('food_id', 0) or 0),
-                            "business_id":      bid,
-                            "quantity":         float(tc_args.get('quantity', -1) if tc_args.get('quantity') is not None else -1),
-                            "retail_price":     float(tc_args.get('retail_price', -1) if tc_args.get('retail_price') is not None else -1),
-                            "wholesale_price":  float(tc_args.get('wholesale_price', -1) if tc_args.get('wholesale_price') is not None else -1),
-                            "show_product":     int(tc_args.get('show_product', -1) if tc_args.get('show_product') is not None else -1),
-                            "notes":            tc_args.get('notes', ''),
-                        })
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'list_my_blog_posts_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing List Blog Posts: business_id={bid}")
-                        tool_result = list_my_blog_posts_tool.invoke({"business_id": bid})
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'create_blog_post_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Create Blog Post: business_id={bid}")
-                        tool_result = create_blog_post_tool.invoke({
-                            "business_id": bid,
-                            "title":       tc_args.get('title', ''),
-                            "content":     tc_args.get('content', ''),
-                            "category":    tc_args.get('category', ''),
-                            "publish":     int(tc_args.get('publish', 0) or 0),
-                        })
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'list_my_services_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing List Services: business_id={bid}")
-                        tool_result = list_my_services_tool.invoke({"business_id": bid})
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'add_service_listing_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Add Service: business_id={bid}")
-                        tool_result = add_service_listing_tool.invoke({
-                            "business_id":       bid,
-                            "title":             tc_args.get('title', ''),
-                            "description":       tc_args.get('description', ''),
-                            "price":             float(tc_args.get('price', -1) if tc_args.get('price') is not None else -1),
-                            "contact_for_price": int(tc_args.get('contact_for_price', 0) or 0),
-                            "available":         int(tc_args.get('available', 1) if tc_args.get('available') is not None else 1),
-                            "phone":             tc_args.get('phone', ''),
-                            "website":           tc_args.get('website', ''),
-                        })
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'list_seller_orders_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing List Seller Orders: business_id={bid}")
-                        tool_result = list_seller_orders_tool.invoke({
-                            "business_id": bid,
-                            "status":      tc_args.get('status', ''),
-                        })
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'confirm_seller_order_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Confirm Order: order_item_id={tc_args.get('order_item_id')}")
-                        tool_result = confirm_seller_order_tool.invoke({
-                            "order_item_id":           int(tc_args.get('order_item_id', 0) or 0),
-                            "business_id":             bid,
-                            "estimated_delivery_date": tc_args.get('estimated_delivery_date', ''),
-                        })
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'reject_seller_order_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Reject Order: order_item_id={tc_args.get('order_item_id')}")
-                        tool_result = reject_seller_order_tool.invoke({
-                            "order_item_id": int(tc_args.get('order_item_id', 0) or 0),
-                            "business_id":   bid,
-                            "reason":        tc_args.get('reason', ''),
-                        })
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'ship_seller_order_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Ship Order: order_item_id={tc_args.get('order_item_id')}")
-                        tool_result = ship_seller_order_tool.invoke({
-                            "order_item_id":           int(tc_args.get('order_item_id', 0) or 0),
-                            "business_id":             bid,
-                            "tracking_number":         tc_args.get('tracking_number', ''),
-                            "estimated_delivery_date": tc_args.get('estimated_delivery_date', ''),
-                        })
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'list_cold_chain_readings_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing List Cold Chain Readings: business_id={bid}")
-                        tool_result = list_cold_chain_readings_tool.invoke({
-                            "business_id": bid,
-                            "vehicle_id":  int(tc_args.get('vehicle_id', 0) or 0),
-                            "limit":       int(tc_args.get('limit', 20) or 20),
-                        })
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'log_cold_chain_reading_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Log Cold Chain Reading: vehicle_id={tc_args.get('vehicle_id')}")
-                        tool_result = log_cold_chain_reading_tool.invoke({
-                            "vehicle_id":  int(tc_args.get('vehicle_id', 0) or 0),
-                            "business_id": bid,
-                            "temp_c":      float(tc_args.get('temp_c', 0) or 0),
-                            "notes":       tc_args.get('notes', ''),
-                        })
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'list_cold_chain_shipments_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing List Cold Chain Shipments: business_id={bid}")
-                        tool_result = list_cold_chain_shipments_tool.invoke({
-                            "business_id": bid,
-                            "status":      tc_args.get('status', ''),
-                        })
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'list_my_certifications_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing List Certifications: business_id={bid}")
-                        tool_result = list_my_certifications_tool.invoke({"business_id": bid})
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'add_certification_tool' and BUSINESS_DATA_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Add Certification: business_id={bid}")
-                        tool_result = add_certification_tool.invoke({
-                            "business_id":          bid,
-                            "certification_type":   tc_args.get('certification_type', ''),
-                            "issuing_body":         tc_args.get('issuing_body', ''),
-                            "certification_number": tc_args.get('certification_number', ''),
-                            "issue_date":           tc_args.get('issue_date', ''),
-                            "expiry_date":          tc_args.get('expiry_date', ''),
-                            "notes":                tc_args.get('notes', ''),
-                        })
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'search_plants_tool' and KNOWLEDGE_BASE_AVAILABLE:
-                        query = tc_args.get('query', '')
-                        ptype = tc_args.get('plant_type', '')
-                        print(f"[Advisory Agent] Executing Search Plants: query='{query}', type='{ptype}'")
-                        tool_result = search_plants_tool.invoke({"query": query, "plant_type": ptype})
-                        knowledge_base_context = (knowledge_base_context + "\n\n" if knowledge_base_context else "") + tool_result
-                    elif tc_name == 'get_plant_detail_tool' and KNOWLEDGE_BASE_AVAILABLE:
-                        pid = int(tc_args.get('plant_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Get Plant Detail: plant_id={pid}")
-                        tool_result = get_plant_detail_tool.invoke({"plant_id": pid})
-                        knowledge_base_context = (knowledge_base_context + "\n\n" if knowledge_base_context else "") + tool_result
-                    elif tc_name == 'search_ingredients_tool' and KNOWLEDGE_BASE_AVAILABLE:
-                        query = tc_args.get('query', '')
-                        cat = tc_args.get('category', '')
-                        print(f"[Advisory Agent] Executing Search Ingredients: query='{query}', category='{cat}'")
-                        tool_result = search_ingredients_tool.invoke({"query": query, "category": cat})
-                        knowledge_base_context = (knowledge_base_context + "\n\n" if knowledge_base_context else "") + tool_result
-                    elif tc_name == 'get_ingredient_detail_tool' and KNOWLEDGE_BASE_AVAILABLE:
-                        iid = int(tc_args.get('ingredient_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Get Ingredient Detail: ingredient_id={iid}")
-                        tool_result = get_ingredient_detail_tool.invoke({"ingredient_id": iid})
-                        knowledge_base_context = (knowledge_base_context + "\n\n" if knowledge_base_context else "") + tool_result
-                    elif tc_name == 'get_animal_detail_tool' and KNOWLEDGE_BASE_AVAILABLE:
-                        aid = int(tc_args.get('animal_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Get Animal Detail: animal_id={aid}")
-                        tool_result = get_animal_detail_tool.invoke({
-                            "animal_id": aid,
-                            "people_id": people_id_for_tools,
-                        })
-                        farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
-                    elif tc_name == 'draft_produce_listing_tool' and ACTIONS_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Draft Produce Listing: business_id={bid}")
-                        tool_result = draft_produce_listing_tool.invoke({
-                            "ingredient_name":  tc_args.get('ingredient_name', ''),
-                            "quantity":         float(tc_args.get('quantity', 0) or 0),
-                            "measurement":      tc_args.get('measurement', ''),
-                            "retail_price":     float(tc_args.get('retail_price', 0) or 0),
-                            "wholesale_price":  float(tc_args.get('wholesale_price', 0) or 0),
-                            "available_date":   tc_args.get('available_date', ''),
-                            "people_id":        people_id_for_tools,
-                            "business_id":      bid,
-                        })
-                        actions_context = (actions_context + "\n\n" if actions_context else "") + tool_result
-                    elif tc_name == 'draft_event_tool' and ACTIONS_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Draft Event: business_id={bid}")
-                        tool_result = draft_event_tool.invoke({
-                            "event_name":             tc_args.get('event_name', ''),
-                            "description":            tc_args.get('description', ''),
-                            "start_date":             tc_args.get('start_date', ''),
-                            "end_date":               tc_args.get('end_date', ''),
-                            "location_name":          tc_args.get('location_name', ''),
-                            "city":                   tc_args.get('city', ''),
-                            "state":                  tc_args.get('state', ''),
-                            "is_free":                bool(tc_args.get('is_free', True)),
-                            "registration_required":  bool(tc_args.get('registration_required', False)),
-                            "people_id":              people_id_for_tools,
-                            "business_id":            bid,
-                        })
-                        actions_context = (actions_context + "\n\n" if actions_context else "") + tool_result
-                    elif tc_name == 'draft_blog_post_tool' and ACTIONS_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Draft Blog Post: business_id={bid}")
-                        tool_result = draft_blog_post_tool.invoke({
-                            "title":       tc_args.get('title', ''),
-                            "content":     tc_args.get('content', ''),
-                            "category":    tc_args.get('category', ''),
-                            "people_id":   people_id_for_tools,
-                            "business_id": bid,
-                        })
-                        actions_context = (actions_context + "\n\n" if actions_context else "") + tool_result
-                    elif tc_name == 'planting_calendar_tool' and AGRONOMY_AVAILABLE:
-                        print(f"[Advisory Agent] Executing Planting Calendar: {tc_args.get('crop', '')}")
-                        tool_result = planting_calendar_tool.invoke({
-                            "crop": tc_args.get('crop', ''),
-                            "zone": int(tc_args.get('zone', 0) or 0),
-                            "lat":  float(tc_args.get('lat', 0) or 0),
-                            "lon":  float(tc_args.get('lon', 0) or 0),
-                        })
-                        agronomy_context = (agronomy_context + "\n\n" if agronomy_context else "") + tool_result
-                    elif tc_name == 'irrigation_schedule_tool' and AGRONOMY_AVAILABLE:
-                        print(f"[Advisory Agent] Executing Irrigation Schedule: {tc_args.get('crop', '')}")
-                        tool_result = irrigation_schedule_tool.invoke({
-                            "crop":            tc_args.get('crop', ''),
-                            "stage":           tc_args.get('stage', 'mid'),
-                            "soil_type":       tc_args.get('soil_type', 'loam'),
-                            "climate":         tc_args.get('climate', 'temperate'),
-                            "days_since_rain": int(tc_args.get('days_since_rain', 0) or 0),
-                        })
-                        agronomy_context = (agronomy_context + "\n\n" if agronomy_context else "") + tool_result
-                    elif tc_name == 'manure_pairing_tool' and AGRONOMY_AVAILABLE:
-                        print(f"[Advisory Agent] Executing Manure Pairing: {tc_args.get('crop', '')}")
-                        tool_result = manure_pairing_tool.invoke({
-                            "crop":              tc_args.get('crop', ''),
-                            "available_manures": tc_args.get('available_manures', ''),
-                        })
-                        agronomy_context = (agronomy_context + "\n\n" if agronomy_context else "") + tool_result
-                    elif tc_name == 'save_recipe_tool' and CHEF_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Save Recipe: business_id={bid}")
-                        tool_result = save_recipe_tool.invoke({
-                            "name":          tc_args.get('name', ''),
-                            "items_json":    tc_args.get('items_json', ''),
-                            "portion_yield": int(tc_args.get('portion_yield', 1) or 1),
-                            "menu_price":    float(tc_args.get('menu_price', 0) or 0),
-                            "business_id":   bid,
-                        })
-                        chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
-                    elif tc_name == 'cost_recipe_tool' and CHEF_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Cost Recipe: business_id={bid}")
-                        tool_result = cost_recipe_tool.invoke({
-                            "recipe_name": tc_args.get('recipe_name', ''),
-                            "business_id": bid,
-                        })
-                        chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
-                    elif tc_name == 'seasonal_menu_tool' and CHEF_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Seasonal Menu: business_id={bid}")
-                        tool_result = seasonal_menu_tool.invoke({
-                            "state":       tc_args.get('state', ''),
-                            "category":    tc_args.get('category', ''),
-                            "business_id": bid,
-                            "limit":       int(tc_args.get('limit', 20) or 20),
-                        })
-                        chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
-                    elif tc_name == 'set_par_tool' and CHEF_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Set Par: business_id={bid}")
-                        tool_result = set_par_tool.invoke({
-                            "ingredient_name":       tc_args.get('ingredient_name', ''),
-                            "unit":                  tc_args.get('unit', ''),
-                            "on_hand":               float(tc_args.get('on_hand', 0) or 0),
-                            "par_level":             float(tc_args.get('par_level', 0) or 0),
-                            "reorder_at":            float(tc_args.get('reorder_at', 0) or 0),
-                            "preferred_business_id": int(tc_args.get('preferred_business_id', 0) or 0),
-                            "business_id":           bid,
-                        })
-                        chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
-                    elif tc_name == 'check_par_levels_tool' and CHEF_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Check Par Levels: business_id={bid}")
-                        tool_result = check_par_levels_tool.invoke({
-                            "business_id": bid,
-                        })
-                        chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
-                    elif tc_name == 'draft_restock_order_tool' and CHEF_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Draft Restock Order: business_id={bid}")
-                        tool_result = draft_restock_order_tool.invoke({
-                            "business_id": bid,
-                        })
-                        chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
-                    elif tc_name == 'provenance_cards_tool' and CHEF_AVAILABLE:
-                        print(f"[Advisory Agent] Executing Provenance Cards: {tc_args.get('ingredient_names', '')}")
-                        tool_result = provenance_cards_tool.invoke({
-                            "ingredient_names": tc_args.get('ingredient_names', ''),
-                        })
-                        chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
-                    elif tc_name == 'get_recent_pest_detections_tool' and PEST_DETECTION_AVAILABLE:
-                        limit = int(tc_args.get('limit', 3) or 3)
-                        print(f"[Advisory Agent] Executing Recent Pest Detections: limit={limit}")
-                        tool_result = get_recent_pest_detections_tool.invoke({
-                            "limit": limit,
-                            "people_id": str(people_id_for_tools or ""),
-                        })
-                        pest_history_context = (pest_history_context + "\n\n" if pest_history_context else "") + tool_result
-                    elif tc_name == 'send_push_notification_tool' and PUSH_NOTIFICATIONS_AVAILABLE:
-                        print(f"[Advisory Agent] Executing Send Push: title={tc_args.get('title', '')[:40]}")
-                        tool_result = send_push_notification_tool.invoke({
-                            "title":     tc_args.get('title', ''),
-                            "body":      tc_args.get('body', ''),
-                            "url":       tc_args.get('url', '/'),
-                            "people_id": str(people_id_for_tools or ""),
-                        })
-                        push_context = (push_context + "\n\n" if push_context else "") + tool_result
-                    elif tc_name == 'check_my_weather_alerts_tool' and WEATHER_ALERTS_AVAILABLE:
-                        days = int(tc_args.get('days_ahead', 2) or 2)
-                        print(f"[Advisory Agent] Executing Check Weather Alerts: days={days}")
-                        tool_result = check_my_weather_alerts_tool.invoke({
-                            "days_ahead": days,
-                            "people_id":  str(people_id_for_tools or ""),
-                        })
-                        weather_alerts_context = (weather_alerts_context + "\n\n" if weather_alerts_context else "") + tool_result
-                    elif tc_name == 'get_my_recent_history_tool' and HISTORY_STORE_AVAILABLE:
-                        et = tc_args.get('entry_type', '') or ''
-                        limit = int(tc_args.get('limit', 5) or 5)
-                        print(f"[Advisory Agent] Executing Recent History: type={et} limit={limit}")
-                        tool_result = get_my_recent_history_tool.invoke({
-                            "entry_type": et,
-                            "limit":      limit,
-                            "people_id":  str(people_id_for_tools or ""),
-                        })
-                        history_context = (history_context + "\n\n" if history_context else "") + tool_result
-                    elif tc_name == 'get_tracked_grants_tool' and BUSINESS_OPS_AVAILABLE:
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Get Tracked Grants: business_id={bid}")
-                        tool_result = get_tracked_grants_tool.invoke({
-                            "business_id": bid,
-                            "people_id": str(people_id_for_tools or ""),
-                        })
-                        grants_context = (grants_context + "\n\n" if grants_context else "") + tool_result
-                    elif tc_name == 'calculate_shelf_life_tool' and BUSINESS_OPS_AVAILABLE:
-                        vid = int(tc_args.get('vehicle_id', 0) or 0)
-                        bid = business_id_for_tools or int(tc_args.get('business_id', 0) or 0)
-                        print(f"[Advisory Agent] Executing Shelf Life Calc: vehicle_id={vid} product={tc_args.get('product_type')}")
-                        tool_result = calculate_shelf_life_tool.invoke({
-                            "vehicle_id":              vid,
-                            "product_type":            tc_args.get('product_type', 'general'),
-                            "original_shelf_life_days": int(tc_args.get('original_shelf_life_days', 7) or 7),
-                            "lookback_hours":          int(tc_args.get('lookback_hours', 48) or 48),
-                            "business_id":             bid,
-                            "people_id":               str(people_id_for_tools or ""),
-                        })
-                        grants_context = (grants_context + "\n\n" if grants_context else "") + tool_result
-                    elif tc_name == 'tell_joke_tool' and JOKES_AVAILABLE:
-                        print(f"[Advisory Agent] Executing Tell Joke Tool for people_id={people_id_for_tools}")
-                        tool_result = tell_joke_tool.invoke({
-                            "people_id": str(people_id_for_tools or ""),
-                        })
-                        # Joke is the final response — short-circuit the loop
-                        final_response = tool_result
-                        break
+                            try:
+                                weather_data = weather_service.get_weather(loc)
+                            except Exception:
+                                pass
+                        elif tc_name == 'companion_planting_tool' and COMPANION_AVAILABLE:
+                            crop = tc_args.get('crop', '')
+                            print(f"[Advisory Agent] Executing Companion Planting Tool for: {crop}")
+                            tool_result = companion_planting_tool.invoke({"crop": crop})
+                            companion_context = (companion_context + "\n\n" if companion_context else "") + tool_result
+                        elif tc_name == 'check_companion_pair_tool' and COMPANION_AVAILABLE:
+                            a = tc_args.get('crop_a', '')
+                            b = tc_args.get('crop_b', '')
+                            print(f"[Advisory Agent] Executing Companion Pair Check: {a} + {b}")
+                            tool_result = check_companion_pair_tool.invoke({"crop_a": a, "crop_b": b})
+                            companion_context = (companion_context + "\n\n" if companion_context else "") + tool_result
+                        elif tc_name == 'crop_name_tool' and CROP_NAMES_AVAILABLE:
+                            name = tc_args.get('name', '')
+                            print(f"[Advisory Agent] Executing Crop Name Tool for: {name}")
+                            tool_result = crop_name_tool.invoke({"name": name})
+                            crop_name_context = (crop_name_context + "\n\n" if crop_name_context else "") + tool_result
+                        elif tc_name == 'weather_mitigation_tool' and WEATHER_MITIGATION_AVAILABLE:
+                            hazard = tc_args.get('hazard', '')
+                            phase = tc_args.get('phase', 'imminent')
+                            print(f"[Advisory Agent] Executing Weather Mitigation Tool: {hazard}/{phase}")
+                            tool_result = weather_mitigation_tool.invoke({"hazard": hazard, "phase": phase})
+                            mitigation_context = (mitigation_context + "\n\n" if mitigation_context else "") + tool_result
+                        elif tc_name == 'region_crops_tool' and REGION_CROPS_AVAILABLE:
+                            args = {
+                                "climate": tc_args.get('climate', ''),
+                                "zone": tc_args.get('zone', ''),
+                                "lat": float(tc_args.get('lat', 0) or 0),
+                                "lon": float(tc_args.get('lon', 0) or 0),
+                            }
+                            print(f"[Advisory Agent] Executing Region Crops Tool: {args}")
+                            tool_result = region_crops_tool.invoke(args)
+                            region_context = (region_context + "\n\n" if region_context else "") + tool_result
+                        elif tc_name == 'soil_challenge_tool' and SOIL_CHALLENGE_AVAILABLE:
+                            soil_args = {k: tc_args.get(k, -1.0) for k in [
+                                "ph", "organic_matter_pct", "nitrogen_ppm", "phosphorus_ppm",
+                                "potassium_ppm", "cec_meq", "salinity_dsm", "moisture_pct",
+                                "bulk_density_gcc", "sodium_pct_cec"
+                            ]}
+                            soil_args["crop"] = tc_args.get("crop", "")
+                            print(f"[Advisory Agent] Executing Soil Challenge Tool: {soil_args}")
+                            tool_result = soil_challenge_tool.invoke(soil_args)
+                            soil_context = (soil_context + "\n\n" if soil_context else "") + tool_result
+                        elif tc_name == 'price_forecast_tool' and PRICE_FORECAST_AVAILABLE:
+                            commodity = tc_args.get('commodity', '')
+                            months_ahead = _safe_int(tc_args.get('months_ahead', 6) or 6)
+                            print(f"[Advisory Agent] Executing Price Forecast Tool: {commodity}/{months_ahead}mo")
+                            tool_result = price_forecast_tool.invoke({"commodity": commodity, "months_ahead": months_ahead})
+                            price_context = (price_context + "\n\n" if price_context else "") + tool_result
+                        elif tc_name == 'subsidies_tool' and SUBSIDIES_AVAILABLE:
+                            args = {
+                                "category": tc_args.get('category', ''),
+                                "keyword": tc_args.get('keyword', ''),
+                            }
+                            print(f"[Advisory Agent] Executing Subsidies Tool: {args}")
+                            tool_result = subsidies_tool.invoke(args)
+                            subsidies_context = (subsidies_context + "\n\n" if subsidies_context else "") + tool_result
+                        elif tc_name == 'insurance_tool' and INSURANCE_AVAILABLE:
+                            crop = tc_args.get('crop', '')
+                            print(f"[Advisory Agent] Executing Insurance Tool: {crop}")
+                            tool_result = insurance_tool.invoke({"crop": crop})
+                            insurance_context = (insurance_context + "\n\n" if insurance_context else "") + tool_result
+                        elif tc_name == 'list_upcoming_events_tool' and EVENTS_AVAILABLE:
+                            args = {
+                                "business_id": _safe_int(tc_args.get('business_id', 0) or 0),
+                                "limit": _safe_int(tc_args.get('limit', 10) or 10),
+                            }
+                            print(f"[Advisory Agent] Executing List Upcoming Events Tool: {args}")
+                            tool_result = list_upcoming_events_tool.invoke(args)
+                            events_context = (events_context + "\n\n" if events_context else "") + tool_result
+                        elif tc_name == 'get_event_details_tool' and EVENTS_AVAILABLE:
+                            eid = _safe_int(tc_args.get('event_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Get Event Details Tool: {eid}")
+                            tool_result = get_event_details_tool.invoke({"event_id": eid})
+                            events_context = (events_context + "\n\n" if events_context else "") + tool_result
+                        elif tc_name == 'event_attendee_count_tool' and EVENTS_AVAILABLE:
+                            eid = _safe_int(tc_args.get('event_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Event Attendee Count Tool: {eid}")
+                            tool_result = event_attendee_count_tool.invoke({"event_id": eid})
+                            events_context = (events_context + "\n\n" if events_context else "") + tool_result
+                        elif tc_name == 'list_my_fields_tool' and PRECISION_AG_AVAILABLE:
+                            print(f"[Advisory Agent] Executing List My Fields Tool (people_id from state)")
+                            tool_result = list_my_fields_tool.invoke({
+                                "people_id": people_id_for_tools,
+                                "business_id": str(business_id_for_tools or ""),
+                            })
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'resolve_field_by_name_tool' and PRECISION_AG_AVAILABLE:
+                            fname = str(tc_args.get('name') or tc_args.get('field_name') or latest_user_message or "")
+                            print(f"[Advisory Agent] Executing Resolve Field By Name: {fname!r}")
+                            tool_result = resolve_field_by_name_tool.invoke({
+                                "name": fname,
+                                "people_id": people_id_for_tools,
+                                "business_id": str(business_id_for_tools or ""),
+                            })
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_field_analysis_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Get Field Analysis Tool: field_id={fid}")
+                            tool_result = get_field_analysis_tool.invoke({
+                                "field_id": fid,
+                                "people_id": people_id_for_tools,
+                                "business_id": str(business_id_for_tools or ""),
+                            })
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_field_history_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            months = _safe_int(tc_args.get('months', 6) or 6)
+                            print(f"[Advisory Agent] Executing Get Field History Tool: field_id={fid}, months={months}")
+                            tool_result = get_field_history_tool.invoke({
+                                "field_id": fid,
+                                "months": months,
+                                "people_id": people_id_for_tools,
+                            })
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_field_alerts_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Get Field Alerts Tool: field_id={fid}")
+                            tool_result = get_field_alerts_tool.invoke({
+                                "field_id": fid,
+                                "people_id": people_id_for_tools,
+                            })
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_field_soil_samples_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Get Soil Samples: field_id={fid}")
+                            tool_result = get_field_soil_samples_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_field_scouting_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Get Scouting: field_id={fid}")
+                            tool_result = get_field_scouting_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'add_scout_observation_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Add Scout Observation: field_id={fid}")
+                            tool_result = add_scout_observation_tool.invoke({
+                                "field_id":  fid,
+                                "category":  tc_args.get('category', 'General'),
+                                "severity":  tc_args.get('severity', 'Low'),
+                                "notes":     tc_args.get('notes', ''),
+                                "people_id": people_id_for_tools,
+                            })
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_field_activity_log_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Get Activity Log: field_id={fid}")
+                            tool_result = get_field_activity_log_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'log_field_activity_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Log Field Activity: field_id={fid}")
+                            tool_result = log_field_activity_tool.invoke({
+                                "field_id":       fid,
+                                "activity_type":  tc_args.get('activity_type', 'Other'),
+                                "activity_date":  tc_args.get('activity_date', ''),
+                                "product":        tc_args.get('product', ''),
+                                "rate":           float(tc_args.get('rate', 0) or 0) or None,
+                                "rate_unit":      tc_args.get('rate_unit', ''),
+                                "operator_name":  tc_args.get('operator_name', ''),
+                                "notes":          tc_args.get('notes', ''),
+                                "people_id":      people_id_for_tools,
+                            })
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'add_soil_sample_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Add Soil Sample: field_id={fid}")
+                            tool_result = add_soil_sample_tool.invoke({
+                                "field_id":       fid,
+                                "sample_label":   tc_args.get('sample_label', 'Sample'),
+                                "ph":             float(tc_args.get('ph', 0) or 0) or None,
+                                "organic_matter": float(tc_args.get('organic_matter', 0) or 0) or None,
+                                "nitrogen":       float(tc_args.get('nitrogen', 0) or 0) or None,
+                                "phosphorus":     float(tc_args.get('phosphorus', 0) or 0) or None,
+                                "potassium":      float(tc_args.get('potassium', 0) or 0) or None,
+                                "sample_date":    tc_args.get('sample_date', ''),
+                                "depth_cm":       _safe_int(tc_args.get('depth_cm', 30) or 30),
+                                "notes":          tc_args.get('notes', ''),
+                                "people_id":      people_id_for_tools,
+                            })
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_field_gdd_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            days = _safe_int(tc_args.get('days', 180) or 180)
+                            print(f"[Advisory Agent] Executing Get GDD: field_id={fid}, days={days}")
+                            tool_result = get_field_gdd_tool.invoke({"field_id": fid, "days": days, "people_id": people_id_for_tools})
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_field_irrigation_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            days = _safe_int(tc_args.get('days', 30) or 30)
+                            print(f"[Advisory Agent] Executing Get Irrigation: field_id={fid}, days={days}")
+                            tool_result = get_field_irrigation_tool.invoke({"field_id": fid, "days": days, "people_id": people_id_for_tools})
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_field_yield_forecast_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Get Yield Forecast: field_id={fid}")
+                            tool_result = get_field_yield_forecast_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_field_carbon_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Get Carbon: field_id={fid}")
+                            tool_result = get_field_carbon_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_farm_benchmark_tool' and PRECISION_AG_AVAILABLE:
+                            print(f"[Advisory Agent] Executing Farm Benchmark")
+                            tool_result = get_farm_benchmark_tool.invoke({"people_id": people_id_for_tools})
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_field_weather_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            days = _safe_int(tc_args.get('days', 14) or 14)
+                            print(f"[Advisory Agent] Executing Get Field Weather: field_id={fid}, days={days}")
+                            tool_result = get_field_weather_tool.invoke({"field_id": fid, "days": days, "people_id": people_id_for_tools})
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_field_biomass_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Get Field Biomass: field_id={fid}")
+                            tool_result = get_field_biomass_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'improve_field_biomass_confidence_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Improve Biomass Confidence: field_id={fid}")
+                            tool_result = improve_field_biomass_confidence_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_field_maturity_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Get Field Maturity: field_id={fid}")
+                            tool_result = get_field_maturity_tool.invoke({"field_id": fid, "people_id": people_id_for_tools})
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'log_maturity_sample_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Log Maturity Sample: field_id={fid}")
+                            tool_result = log_maturity_sample_tool.invoke({
+                                "field_id":         fid,
+                                "sample_date":      str(tc_args.get('sample_date', '') or ''),
+                                "brix":             tc_args.get('brix'),
+                                "anthocyanin_mg_g": tc_args.get('anthocyanin_mg_g'),
+                                "firmness_kgf":     tc_args.get('firmness_kgf'),
+                                "notes":            str(tc_args.get('notes', '') or ''),
+                                "people_id":        people_id_for_tools,
+                            })
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_field_climate_forecast_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            hrs = _safe_int(tc_args.get('hours', 72) or 72)
+                            print(f"[Advisory Agent] Executing Get Climate Forecast: field_id={fid}, hours={hrs}")
+                            tool_result = get_field_climate_forecast_tool.invoke({
+                                "field_id":  fid,
+                                "hours":     hrs,
+                                "people_id": people_id_for_tools,
+                            })
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_field_water_use_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Get Water Use: field_id={fid}")
+                            tool_result = get_field_water_use_tool.invoke({
+                                "field_id":  fid,
+                                "people_id": people_id_for_tools,
+                            })
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_field_agronomy_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Get Agronomy Snapshot: field_id={fid}")
+                            tool_result = get_field_agronomy_tool.invoke({
+                                "field_id":  fid,
+                                "people_id": people_id_for_tools,
+                            })
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_field_assessment_history_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            lim = _safe_int(tc_args.get('limit', 3) or 3)
+                            print(f"[Advisory Agent] Executing Get Assessment History: field_id={fid}, limit={lim}")
+                            tool_result = get_field_assessment_history_tool.invoke({
+                                "field_id":  fid,
+                                "limit":     lim,
+                                "people_id": people_id_for_tools,
+                            })
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'list_my_animals_tool' and FARM_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            studs_only = bool(tc_args.get('studs_only', False))
+                            page = _safe_int(tc_args.get('page', 1) or 1)
+                            print(f"[Advisory Agent] Executing List My Animals Tool: business_id={bid}, studs_only={studs_only}")
+                            tool_result = list_my_animals_tool.invoke({
+                                "business_id": bid,
+                                "studs_only": studs_only,
+                                "page": page,
+                            })
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'list_my_listings_tool' and FARM_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing List My Listings Tool: business_id={bid}")
+                            tool_result = list_my_listings_tool.invoke({"business_id": bid})
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'count_my_animals_tool' and FARM_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Count My Animals Tool: business_id={bid}")
+                            tool_result = count_my_animals_tool.invoke({"business_id": bid})
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'list_cold_chain_vehicles_tool' and FARM_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing List Cold Chain Vehicles Tool: business_id={bid}")
+                            tool_result = list_cold_chain_vehicles_tool.invoke({"business_id": bid})
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'geocode_location_tool' and FARM_DATA_AVAILABLE:
+                            query = tc_args.get('query', '')
+                            print(f"[Advisory Agent] Executing Geocode Location: query={query!r}")
+                            tool_result = geocode_location_tool.invoke({"query": query})
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                            # Capture [MAP_CMD] so we can append it to final_response later
+                            _mc = re.search(r'\[MAP_CMD:[^\]]+\]', tool_result)
+                            if _mc:
+                                _map_cmd_collected = _mc.group(0)
+                        # ── business_data tools ───────────────────────────────────
+                        elif tc_name == 'get_business_profile_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Get Business Profile: business_id={bid}")
+                            tool_result = get_business_profile_tool.invoke({"business_id": bid})
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'update_business_profile_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Update Business Profile: business_id={bid}")
+                            tool_result = update_business_profile_tool.invoke({
+                                "business_id":   bid,
+                                "business_name": tc_args.get('business_name', ''),
+                                "description":   tc_args.get('description', ''),
+                                "slogan":        tc_args.get('slogan', ''),
+                                "phone":         tc_args.get('phone', ''),
+                                "email":         tc_args.get('email', ''),
+                                "website":       tc_args.get('website', ''),
+                            })
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'list_my_animals_detail_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing List Animals Detail: business_id={bid}")
+                            tool_result = list_my_animals_detail_tool.invoke({"business_id": bid})
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'update_animal_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Update Animal: animal_id={tc_args.get('animal_id')}")
+                            tool_result = update_animal_tool.invoke({
+                                "animal_id":       _safe_int(tc_args.get('animal_id', 0) or 0),
+                                "business_id":     bid,
+                                "price":           float(tc_args.get('price', -1) if tc_args.get('price') is not None else -1),
+                                "stud_price":      float(tc_args.get('stud_price', -1) if tc_args.get('stud_price') is not None else -1),
+                                "for_sale":        _safe_int(tc_args.get('for_sale', -1) if tc_args.get('for_sale') is not None else -1),
+                                "for_stud":        _safe_int(tc_args.get('for_stud', -1) if tc_args.get('for_stud') is not None else -1),
+                                "description":     tc_args.get('description', ''),
+                                "show_on_website": _safe_int(tc_args.get('show_on_website', -1) if tc_args.get('show_on_website') is not None else -1),
+                            })
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'list_produce_inventory_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing List Produce Inventory: business_id={bid}")
+                            tool_result = list_produce_inventory_tool.invoke({"business_id": bid})
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'update_produce_listing_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Update Produce Listing: produce_id={tc_args.get('produce_id')}")
+                            tool_result = update_produce_listing_tool.invoke({
+                                "produce_id":       _safe_int(tc_args.get('produce_id', 0) or 0),
+                                "business_id":      bid,
+                                "quantity":         float(tc_args.get('quantity', -1) if tc_args.get('quantity') is not None else -1),
+                                "retail_price":     float(tc_args.get('retail_price', -1) if tc_args.get('retail_price') is not None else -1),
+                                "wholesale_price":  float(tc_args.get('wholesale_price', -1) if tc_args.get('wholesale_price') is not None else -1),
+                                "show_produce":     _safe_int(tc_args.get('show_produce', -1) if tc_args.get('show_produce') is not None else -1),
+                                "available_date":   tc_args.get('available_date', ''),
+                            })
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'list_meat_inventory_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing List Meat Inventory: business_id={bid}")
+                            tool_result = list_meat_inventory_tool.invoke({"business_id": bid})
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'update_meat_listing_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Update Meat Listing: meat_id={tc_args.get('meat_id')}")
+                            tool_result = update_meat_listing_tool.invoke({
+                                "meat_id":          _safe_int(tc_args.get('meat_id', 0) or 0),
+                                "business_id":      bid,
+                                "quantity":         float(tc_args.get('quantity', -1) if tc_args.get('quantity') is not None else -1),
+                                "retail_price":     float(tc_args.get('retail_price', -1) if tc_args.get('retail_price') is not None else -1),
+                                "wholesale_price":  float(tc_args.get('wholesale_price', -1) if tc_args.get('wholesale_price') is not None else -1),
+                                "show_meat":        _safe_int(tc_args.get('show_meat', -1) if tc_args.get('show_meat') is not None else -1),
+                                "available_date":   tc_args.get('available_date', ''),
+                                "notes":            tc_args.get('notes', ''),
+                            })
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'list_processed_food_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing List Processed Food: business_id={bid}")
+                            tool_result = list_processed_food_tool.invoke({"business_id": bid})
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'update_processed_food_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Update Processed Food: food_id={tc_args.get('food_id')}")
+                            tool_result = update_processed_food_tool.invoke({
+                                "food_id":          _safe_int(tc_args.get('food_id', 0) or 0),
+                                "business_id":      bid,
+                                "quantity":         float(tc_args.get('quantity', -1) if tc_args.get('quantity') is not None else -1),
+                                "retail_price":     float(tc_args.get('retail_price', -1) if tc_args.get('retail_price') is not None else -1),
+                                "wholesale_price":  float(tc_args.get('wholesale_price', -1) if tc_args.get('wholesale_price') is not None else -1),
+                                "show_product":     _safe_int(tc_args.get('show_product', -1) if tc_args.get('show_product') is not None else -1),
+                                "notes":            tc_args.get('notes', ''),
+                            })
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'list_my_blog_posts_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing List Blog Posts: business_id={bid}")
+                            tool_result = list_my_blog_posts_tool.invoke({"business_id": bid})
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'create_blog_post_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Create Blog Post: business_id={bid}")
+                            tool_result = create_blog_post_tool.invoke({
+                                "business_id": bid,
+                                "title":       tc_args.get('title', ''),
+                                "content":     tc_args.get('content', ''),
+                                "category":    tc_args.get('category', ''),
+                                "publish":     _safe_int(tc_args.get('publish', 0) or 0),
+                            })
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'list_my_services_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing List Services: business_id={bid}")
+                            tool_result = list_my_services_tool.invoke({"business_id": bid})
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'add_service_listing_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Add Service: business_id={bid}")
+                            tool_result = add_service_listing_tool.invoke({
+                                "business_id":       bid,
+                                "title":             tc_args.get('title', ''),
+                                "description":       tc_args.get('description', ''),
+                                "price":             float(tc_args.get('price', -1) if tc_args.get('price') is not None else -1),
+                                "contact_for_price": _safe_int(tc_args.get('contact_for_price', 0) or 0),
+                                "available":         _safe_int(tc_args.get('available', 1) if tc_args.get('available') is not None else 1),
+                                "phone":             tc_args.get('phone', ''),
+                                "website":           tc_args.get('website', ''),
+                            })
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'list_seller_orders_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing List Seller Orders: business_id={bid}")
+                            tool_result = list_seller_orders_tool.invoke({
+                                "business_id": bid,
+                                "status":      tc_args.get('status', ''),
+                            })
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'confirm_seller_order_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Confirm Order: order_item_id={tc_args.get('order_item_id')}")
+                            tool_result = confirm_seller_order_tool.invoke({
+                                "order_item_id":           _safe_int(tc_args.get('order_item_id', 0) or 0),
+                                "business_id":             bid,
+                                "estimated_delivery_date": tc_args.get('estimated_delivery_date', ''),
+                            })
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'reject_seller_order_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Reject Order: order_item_id={tc_args.get('order_item_id')}")
+                            tool_result = reject_seller_order_tool.invoke({
+                                "order_item_id": _safe_int(tc_args.get('order_item_id', 0) or 0),
+                                "business_id":   bid,
+                                "reason":        tc_args.get('reason', ''),
+                            })
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'ship_seller_order_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Ship Order: order_item_id={tc_args.get('order_item_id')}")
+                            tool_result = ship_seller_order_tool.invoke({
+                                "order_item_id":           _safe_int(tc_args.get('order_item_id', 0) or 0),
+                                "business_id":             bid,
+                                "tracking_number":         tc_args.get('tracking_number', ''),
+                                "estimated_delivery_date": tc_args.get('estimated_delivery_date', ''),
+                            })
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'list_cold_chain_readings_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing List Cold Chain Readings: business_id={bid}")
+                            tool_result = list_cold_chain_readings_tool.invoke({
+                                "business_id": bid,
+                                "vehicle_id":  _safe_int(tc_args.get('vehicle_id', 0) or 0),
+                                "limit":       _safe_int(tc_args.get('limit', 20) or 20),
+                            })
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'log_cold_chain_reading_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Log Cold Chain Reading: vehicle_id={tc_args.get('vehicle_id')}")
+                            tool_result = log_cold_chain_reading_tool.invoke({
+                                "vehicle_id":  _safe_int(tc_args.get('vehicle_id', 0) or 0),
+                                "business_id": bid,
+                                "temp_c":      float(tc_args.get('temp_c', 0) or 0),
+                                "notes":       tc_args.get('notes', ''),
+                            })
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'list_cold_chain_shipments_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing List Cold Chain Shipments: business_id={bid}")
+                            tool_result = list_cold_chain_shipments_tool.invoke({
+                                "business_id": bid,
+                                "status":      tc_args.get('status', ''),
+                            })
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'list_my_certifications_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing List Certifications: business_id={bid}")
+                            tool_result = list_my_certifications_tool.invoke({"business_id": bid})
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'add_certification_tool' and BUSINESS_DATA_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Add Certification: business_id={bid}")
+                            tool_result = add_certification_tool.invoke({
+                                "business_id":          bid,
+                                "certification_type":   tc_args.get('certification_type', ''),
+                                "issuing_body":         tc_args.get('issuing_body', ''),
+                                "certification_number": tc_args.get('certification_number', ''),
+                                "issue_date":           tc_args.get('issue_date', ''),
+                                "expiry_date":          tc_args.get('expiry_date', ''),
+                                "notes":                tc_args.get('notes', ''),
+                            })
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'search_plants_tool' and KNOWLEDGE_BASE_AVAILABLE:
+                            query = tc_args.get('query', '')
+                            ptype = tc_args.get('plant_type', '')
+                            print(f"[Advisory Agent] Executing Search Plants: query='{query}', type='{ptype}'")
+                            tool_result = search_plants_tool.invoke({"query": query, "plant_type": ptype})
+                            knowledge_base_context = (knowledge_base_context + "\n\n" if knowledge_base_context else "") + tool_result
+                        elif tc_name == 'get_plant_detail_tool' and KNOWLEDGE_BASE_AVAILABLE:
+                            pid = _safe_int(tc_args.get('plant_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Get Plant Detail: plant_id={pid}")
+                            tool_result = get_plant_detail_tool.invoke({"plant_id": pid})
+                            knowledge_base_context = (knowledge_base_context + "\n\n" if knowledge_base_context else "") + tool_result
+                        elif tc_name == 'search_ingredients_tool' and KNOWLEDGE_BASE_AVAILABLE:
+                            query = tc_args.get('query', '')
+                            cat = tc_args.get('category', '')
+                            print(f"[Advisory Agent] Executing Search Ingredients: query='{query}', category='{cat}'")
+                            tool_result = search_ingredients_tool.invoke({"query": query, "category": cat})
+                            knowledge_base_context = (knowledge_base_context + "\n\n" if knowledge_base_context else "") + tool_result
+                        elif tc_name == 'get_ingredient_detail_tool' and KNOWLEDGE_BASE_AVAILABLE:
+                            iid = _safe_int(tc_args.get('ingredient_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Get Ingredient Detail: ingredient_id={iid}")
+                            tool_result = get_ingredient_detail_tool.invoke({"ingredient_id": iid})
+                            knowledge_base_context = (knowledge_base_context + "\n\n" if knowledge_base_context else "") + tool_result
+                        elif tc_name == 'get_animal_detail_tool' and KNOWLEDGE_BASE_AVAILABLE:
+                            aid = _safe_int(tc_args.get('animal_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Get Animal Detail: animal_id={aid}")
+                            tool_result = get_animal_detail_tool.invoke({
+                                "animal_id": aid,
+                                "people_id": people_id_for_tools,
+                            })
+                            farm_data_context = (farm_data_context + "\n\n" if farm_data_context else "") + tool_result
+                        elif tc_name == 'draft_produce_listing_tool' and ACTIONS_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Draft Produce Listing: business_id={bid}")
+                            tool_result = draft_produce_listing_tool.invoke({
+                                "ingredient_name":  tc_args.get('ingredient_name', ''),
+                                "quantity":         float(tc_args.get('quantity', 0) or 0),
+                                "measurement":      tc_args.get('measurement', ''),
+                                "retail_price":     float(tc_args.get('retail_price', 0) or 0),
+                                "wholesale_price":  float(tc_args.get('wholesale_price', 0) or 0),
+                                "available_date":   tc_args.get('available_date', ''),
+                                "people_id":        people_id_for_tools,
+                                "business_id":      bid,
+                            })
+                            actions_context = (actions_context + "\n\n" if actions_context else "") + tool_result
+                        elif tc_name == 'draft_event_tool' and ACTIONS_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Draft Event: business_id={bid}")
+                            tool_result = draft_event_tool.invoke({
+                                "event_name":             tc_args.get('event_name', ''),
+                                "description":            tc_args.get('description', ''),
+                                "start_date":             tc_args.get('start_date', ''),
+                                "end_date":               tc_args.get('end_date', ''),
+                                "location_name":          tc_args.get('location_name', ''),
+                                "city":                   tc_args.get('city', ''),
+                                "state":                  tc_args.get('state', ''),
+                                "is_free":                bool(tc_args.get('is_free', True)),
+                                "registration_required":  bool(tc_args.get('registration_required', False)),
+                                "people_id":              people_id_for_tools,
+                                "business_id":            bid,
+                            })
+                            actions_context = (actions_context + "\n\n" if actions_context else "") + tool_result
+                        elif tc_name == 'draft_blog_post_tool' and ACTIONS_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Draft Blog Post: business_id={bid}")
+                            tool_result = draft_blog_post_tool.invoke({
+                                "title":       tc_args.get('title', ''),
+                                "content":     tc_args.get('content', ''),
+                                "category":    tc_args.get('category', ''),
+                                "people_id":   people_id_for_tools,
+                                "business_id": bid,
+                            })
+                            actions_context = (actions_context + "\n\n" if actions_context else "") + tool_result
+                        elif tc_name == 'planting_calendar_tool' and AGRONOMY_AVAILABLE:
+                            print(f"[Advisory Agent] Executing Planting Calendar: {tc_args.get('crop', '')}")
+                            tool_result = planting_calendar_tool.invoke({
+                                "crop": tc_args.get('crop', ''),
+                                "zone": _safe_int(tc_args.get('zone', 0) or 0),
+                                "lat":  float(tc_args.get('lat', 0) or 0),
+                                "lon":  float(tc_args.get('lon', 0) or 0),
+                            })
+                            agronomy_context = (agronomy_context + "\n\n" if agronomy_context else "") + tool_result
+                        elif tc_name == 'irrigation_schedule_tool' and AGRONOMY_AVAILABLE:
+                            print(f"[Advisory Agent] Executing Irrigation Schedule: {tc_args.get('crop', '')}")
+                            tool_result = irrigation_schedule_tool.invoke({
+                                "crop":            tc_args.get('crop', ''),
+                                "stage":           tc_args.get('stage', 'mid'),
+                                "soil_type":       tc_args.get('soil_type', 'loam'),
+                                "climate":         tc_args.get('climate', 'temperate'),
+                                "days_since_rain": _safe_int(tc_args.get('days_since_rain', 0) or 0),
+                            })
+                            agronomy_context = (agronomy_context + "\n\n" if agronomy_context else "") + tool_result
+                        elif tc_name == 'manure_pairing_tool' and AGRONOMY_AVAILABLE:
+                            print(f"[Advisory Agent] Executing Manure Pairing: {tc_args.get('crop', '')}")
+                            tool_result = manure_pairing_tool.invoke({
+                                "crop":              tc_args.get('crop', ''),
+                                "available_manures": tc_args.get('available_manures', ''),
+                            })
+                            agronomy_context = (agronomy_context + "\n\n" if agronomy_context else "") + tool_result
+                        elif tc_name == 'save_recipe_tool' and CHEF_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Save Recipe: business_id={bid}")
+                            tool_result = save_recipe_tool.invoke({
+                                "name":          tc_args.get('name', ''),
+                                "items_json":    tc_args.get('items_json', ''),
+                                "portion_yield": _safe_int(tc_args.get('portion_yield', 1) or 1),
+                                "menu_price":    float(tc_args.get('menu_price', 0) or 0),
+                                "business_id":   bid,
+                            })
+                            chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
+                        elif tc_name == 'cost_recipe_tool' and CHEF_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Cost Recipe: business_id={bid}")
+                            tool_result = cost_recipe_tool.invoke({
+                                "recipe_name": tc_args.get('recipe_name', ''),
+                                "business_id": bid,
+                            })
+                            chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
+                        elif tc_name == 'seasonal_menu_tool' and CHEF_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Seasonal Menu: business_id={bid}")
+                            tool_result = seasonal_menu_tool.invoke({
+                                "state":       tc_args.get('state', ''),
+                                "category":    tc_args.get('category', ''),
+                                "business_id": bid,
+                                "limit":       _safe_int(tc_args.get('limit', 20) or 20),
+                            })
+                            chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
+                        elif tc_name == 'set_par_tool' and CHEF_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Set Par: business_id={bid}")
+                            tool_result = set_par_tool.invoke({
+                                "ingredient_name":       tc_args.get('ingredient_name', ''),
+                                "unit":                  tc_args.get('unit', ''),
+                                "on_hand":               float(tc_args.get('on_hand', 0) or 0),
+                                "par_level":             float(tc_args.get('par_level', 0) or 0),
+                                "reorder_at":            float(tc_args.get('reorder_at', 0) or 0),
+                                "preferred_business_id": _safe_int(tc_args.get('preferred_business_id', 0) or 0),
+                                "business_id":           bid,
+                            })
+                            chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
+                        elif tc_name == 'check_par_levels_tool' and CHEF_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Check Par Levels: business_id={bid}")
+                            tool_result = check_par_levels_tool.invoke({
+                                "business_id": bid,
+                            })
+                            chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
+                        elif tc_name == 'draft_restock_order_tool' and CHEF_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Draft Restock Order: business_id={bid}")
+                            tool_result = draft_restock_order_tool.invoke({
+                                "business_id": bid,
+                            })
+                            chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
+                        elif tc_name == 'provenance_cards_tool' and CHEF_AVAILABLE:
+                            print(f"[Advisory Agent] Executing Provenance Cards: {tc_args.get('ingredient_names', '')}")
+                            tool_result = provenance_cards_tool.invoke({
+                                "ingredient_names": tc_args.get('ingredient_names', ''),
+                            })
+                            chef_context = (chef_context + "\n\n" if chef_context else "") + tool_result
+                        elif tc_name == 'get_recent_pest_detections_tool' and PEST_DETECTION_AVAILABLE:
+                            limit = _safe_int(tc_args.get('limit', 3) or 3)
+                            print(f"[Advisory Agent] Executing Recent Pest Detections: limit={limit}")
+                            tool_result = get_recent_pest_detections_tool.invoke({
+                                "limit": limit,
+                                "people_id": str(people_id_for_tools or ""),
+                            })
+                            pest_history_context = (pest_history_context + "\n\n" if pest_history_context else "") + tool_result
+                        elif tc_name == 'send_push_notification_tool' and PUSH_NOTIFICATIONS_AVAILABLE:
+                            print(f"[Advisory Agent] Executing Send Push: title={tc_args.get('title', '')[:40]}")
+                            tool_result = send_push_notification_tool.invoke({
+                                "title":     tc_args.get('title', ''),
+                                "body":      tc_args.get('body', ''),
+                                "url":       tc_args.get('url', '/'),
+                                "people_id": str(people_id_for_tools or ""),
+                            })
+                            push_context = (push_context + "\n\n" if push_context else "") + tool_result
+                        elif tc_name == 'check_my_weather_alerts_tool' and WEATHER_ALERTS_AVAILABLE:
+                            days = _safe_int(tc_args.get('days_ahead', 2) or 2)
+                            print(f"[Advisory Agent] Executing Check Weather Alerts: days={days}")
+                            tool_result = check_my_weather_alerts_tool.invoke({
+                                "days_ahead": days,
+                                "people_id":  str(people_id_for_tools or ""),
+                            })
+                            weather_alerts_context = (weather_alerts_context + "\n\n" if weather_alerts_context else "") + tool_result
+                        elif tc_name == 'get_my_recent_history_tool' and HISTORY_STORE_AVAILABLE:
+                            et = tc_args.get('entry_type', '') or ''
+                            limit = _safe_int(tc_args.get('limit', 5) or 5)
+                            print(f"[Advisory Agent] Executing Recent History: type={et} limit={limit}")
+                            tool_result = get_my_recent_history_tool.invoke({
+                                "entry_type": et,
+                                "limit":      limit,
+                                "people_id":  str(people_id_for_tools or ""),
+                            })
+                            history_context = (history_context + "\n\n" if history_context else "") + tool_result
+                        elif tc_name == 'get_tracked_grants_tool' and BUSINESS_OPS_AVAILABLE:
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Get Tracked Grants: business_id={bid}")
+                            tool_result = get_tracked_grants_tool.invoke({
+                                "business_id": bid,
+                                "people_id": str(people_id_for_tools or ""),
+                            })
+                            grants_context = (grants_context + "\n\n" if grants_context else "") + tool_result
+                        elif tc_name == 'calculate_shelf_life_tool' and BUSINESS_OPS_AVAILABLE:
+                            vid = _safe_int(tc_args.get('vehicle_id', 0) or 0)
+                            bid = business_id_for_tools or _safe_int(tc_args.get('business_id', 0) or 0)
+                            print(f"[Advisory Agent] Executing Shelf Life Calc: vehicle_id={vid} product={tc_args.get('product_type')}")
+                            tool_result = calculate_shelf_life_tool.invoke({
+                                "vehicle_id":              vid,
+                                "product_type":            tc_args.get('product_type', 'general'),
+                                "original_shelf_life_days": _safe_int(tc_args.get('original_shelf_life_days', 7) or 7),
+                                "lookback_hours":          _safe_int(tc_args.get('lookback_hours', 48) or 48),
+                                "business_id":             bid,
+                                "people_id":               str(people_id_for_tools or ""),
+                            })
+                            grants_context = (grants_context + "\n\n" if grants_context else "") + tool_result
+                        elif tc_name == 'tell_joke_tool' and JOKES_AVAILABLE:
+                            print(f"[Advisory Agent] Executing Tell Joke Tool for people_id={people_id_for_tools}")
+                            tool_result = tell_joke_tool.invoke({
+                                "people_id": str(people_id_for_tools or ""),
+                            })
+                            # Joke is the final response — short-circuit the loop
+                            final_response = tool_result
+                            break
+                    except Exception as _tool_err:
+                        print(f"[Advisory Agent] Tool '{tc_name}' failed: {_tool_err}")
+                        knowledge_base_context = (
+                            (knowledge_base_context + "\n\n" if knowledge_base_context else "")
+                            + f"Tool {tc_name} failed: {_tool_err}. Continue with other tools or answer from what you have."
+                        )
                 continue  # Loop back to LLM with new context
 
             # No tool calls - we have our answer
@@ -2334,7 +2389,7 @@ def crop_advisory_node(state: FarmState):
 
 
 def bakasura_advisory_node(state: FarmState):
-    """Bakasura docs advisory with RAG (bakasura-docs). Refuse mythology when KB empty."""
+    """Bakasura docs advisory with RAG (bakasura-docs). Product docs — never mythology."""
     query = (
         _latest_user_text(state)
         or " ".join(state.get("current_issues") or [])
@@ -2350,12 +2405,50 @@ def bakasura_advisory_node(state: FarmState):
         print(f"[Bakasura] RAG probe failed: {e}")
         hits = []
 
+    qlow = (query or "").lower()
+    is_product_identity = any(
+        k in qlow
+        for k in (
+            "what is saige",
+            "how does saige",
+            "what is ofn",
+            "how does ofn",
+            "oatmeal farm network",
+            "bakasura",
+            "saige help",
+            "ofn help",
+        )
+    )
+
+    if not hits and is_product_identity:
+        # Useful product answer when vector docs are empty/thin — never invent mythology.
+        return {
+            "diagnosis": (
+                "Saige is Oatmeal Farm Network's AI agricultural assistant. "
+                "On OFN it helps with crop and livestock advice, weather and frost risk, "
+                "precision-ag field monitoring (NDVI), marketplace and account questions, "
+                "and farm planning — grounded in OFN data and agronomy knowledge where available.\n\n"
+                "Oatmeal Farm Network (OFN) connects farmers, buyers, and food businesses: "
+                "directory and marketplace listings, events, crop monitoring, and AI advisors "
+                "like Saige so producers can manage fields, sell products, and get practical guidance.\n\n"
+                "Bakasura is OFN's product-documentation knowledge base for how Saige and the "
+                "platform work (features and how-tos) — not mythology. "
+                "Ask about a specific feature (precision ag, marketplace, accounts, create a field) "
+                "and I'll go deeper."
+            ),
+            "recommendations": [
+                "Ask how to create a monitored field",
+                "Ask about marketplace listings or account profile",
+                "Ask a crop, livestock, or weather question",
+            ],
+            "citations": [],
+        }
+
     if not hits:
         return {
             "diagnosis": (
-                "I don't have matching Oatmeal Farm Network documentation for that right now. "
-                "In OFN, Bakasura is our product knowledge base for how Saige and the platform work "
-                "(features, workflows, and how-tos) — not a mythological reference. "
+                "I don't have matching Oatmeal Farm Network documentation for that specific ask right now. "
+                "Bakasura is OFN's product knowledge base for Saige and platform how-tos — not mythology. "
                 "Try asking about Saige capabilities, precision ag, marketplace, accounts, or a specific OFN page."
             ),
             "recommendations": [
@@ -2657,6 +2750,8 @@ Examples:
                 print(f"[Weather Advisory] LLM extraction error: {e}")
 
     # Resolve location via geocoding before fetching weather to avoid bad parses.
+    resolved_lat = None
+    resolved_lon = None
     if location and location != "Unknown":
         try:
             resolution = weather_service.resolve_location(location, user_query)
@@ -2669,6 +2764,8 @@ Examples:
                         f"(confidence={confidence})"
                     )
                     location = canonical_location
+                resolved_lat = resolution.get("lat")
+                resolved_lon = resolution.get("lon")
             elif resolution and resolution.get("status") == "ambiguous":
                 candidates = resolution.get("candidates", [])[:3]
                 options = [c.get("display_name") for c in candidates if c.get("display_name")]
@@ -2693,18 +2790,33 @@ Examples:
                         "Avoid abbreviations in location names",
                     ],
                 }
+            elif resolution and resolution.get("status") == "unavailable":
+                return {
+                    "diagnosis": (
+                        "Weather lookup is temporarily unavailable (missing weather API configuration). "
+                        "Please try again later, or ask a general frost/heat risk question without a city."
+                    ),
+                    "recommendations": ["Try again in a few minutes"],
+                }
         except Exception as e:
             print(f"[Weather Advisory] Location resolution error (continuing with raw location): {e}")
+
+    # "tonight" / frost near-term asks should not force a 7-day forecast path
+    ql = (user_query or "").lower()
+    if any(k in ql for k in ("tonight", "overnight", "this evening", "frost tonight", "tomorrow morning")):
+        forecast_days = min(forecast_days or 2, 2)
 
     # Fetch weather data
     if location and location != "Unknown":
         try:
-            print(f"[Weather Advisory] Attempting to fetch weather for: {location}")
+            print(f"[Weather Advisory] Attempting to fetch weather for: {location} lat={resolved_lat} lon={resolved_lon}")
             weather_data = None
             
             if forecast_days and forecast_days > 1:
                 print(f"[Weather Advisory] Fetching {forecast_days}-day forecast for {location}")
-                weather_data = weather_service.get_forecast(location, forecast_days)
+                weather_data = weather_service.get_forecast(
+                    location, forecast_days, lat=resolved_lat, lon=resolved_lon
+                )
 
                 if weather_data:
                     formatted_weather = weather_service.format_forecast_for_llm(weather_data)
@@ -2718,10 +2830,14 @@ Examples:
                     }
                 else:
                     print(f"[Weather Advisory] Forecast failed, falling back to current weather")
-                    weather_data = weather_service.get_weather(location)
+                    weather_data = weather_service.get_weather(
+                        location, lat=resolved_lat, lon=resolved_lon
+                    )
             else:
                 print(f"[Weather Advisory] Fetching current weather for {location}")
-                weather_data = weather_service.get_weather(location)
+                weather_data = weather_service.get_weather(
+                    location, lat=resolved_lat, lon=resolved_lon
+                )
 
             if weather_data:
                 formatted_weather = weather_service.format_for_llm(weather_data)
@@ -3474,9 +3590,14 @@ def _run_monitoring_agent(state: SaigeState) -> Dict[str, Any]:
             get_field_alerts_tool,
             get_field_analysis_tool,
             resolve_field_by_name,
+            set_session_business_id,
         )
+        set_session_business_id(business_id or None)
 
-        fields_txt = list_my_fields_tool.invoke({"people_id": people_id}) if people_id else "No people_id"
+        fields_txt = list_my_fields_tool.invoke({
+            "people_id": people_id,
+            "business_id": business_id,
+        }) if people_id else "No people_id"
         lines.append(str(fields_txt)[:2000])
         alerts_txt = get_field_alerts_tool.invoke({"field_id": 0, "people_id": people_id}) if people_id else ""
         if alerts_txt:
@@ -3484,7 +3605,7 @@ def _run_monitoring_agent(state: SaigeState) -> Dict[str, Any]:
             findings.append({"rank": 1, "text": str(alerts_txt)[:500], "field_id": None})
 
         # Resolve named field from the user question and pull latest analysis
-        resolved = resolve_field_by_name(text_q, people_id) if people_id else None
+        resolved = resolve_field_by_name(text_q, people_id, business_id or None) if people_id else None
         if resolved:
             fid = int(resolved.get("fieldid") or resolved.get("FieldID") or 0)
             fname = resolved.get("name") or resolved.get("Name") or f"#{fid}"
@@ -3492,6 +3613,7 @@ def _run_monitoring_agent(state: SaigeState) -> Dict[str, Any]:
                 analysis = get_field_analysis_tool.invoke({
                     "field_id": fid,
                     "people_id": people_id,
+                    "business_id": business_id,
                 })
                 lines.append(f"Resolved field '{fname}' → analysis:\n{analysis}")
                 findings.append({"rank": 0, "text": str(analysis)[:800], "field_id": fid})
@@ -3612,10 +3734,9 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
             packets.append(pkt)
             # Prefer document-level RAG citations from specialists
             for c in (pkt.get("citations") or []):
-                if isinstance(c, dict) and (c.get("doc_id") or c.get("chunk_id") or c.get("quote")):
+                if isinstance(c, dict) and (c.get("doc_id") or c.get("chunk_id") or c.get("quote") or c.get("url")):
                     citations.append(c)
-            if not pkt.get("citations"):
-                citations.append({"source": pkt.get("source") or key, "snippet": str(pkt.get("text"))[:180]})
+            # Do not invent citations from packet text — only real retrieval hits.
 
     if state.get("joke_text") and not packets:
         return {

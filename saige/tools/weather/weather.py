@@ -7,8 +7,12 @@ from typing import Optional, Dict, Any, List
 from langchain_core.tools import tool
 from config import WEATHER_AVAILABLE
 
-if WEATHER_AVAILABLE:
+try:
     import requests
+    _REQUESTS_OK = True
+except ImportError:
+    requests = None  # type: ignore
+    _REQUESTS_OK = False
 
 
 class WeatherService:
@@ -19,7 +23,9 @@ class WeatherService:
         self._provider = os.getenv("WEATHER_API_PROVIDER", "openweathermap").strip().lower()
         self._cache = {}
         self._cache_ttl = 300  # 5 minutes
-        self._available = WEATHER_AVAILABLE and bool(self._api_key)
+        # Primary providers need a key; Open-Meteo fallback works without one.
+        self._available = bool(WEATHER_AVAILABLE and _REQUESTS_OK and self._api_key)
+        self._http_ok = bool(_REQUESTS_OK)
 
     def _is_cache_valid(self, location: str) -> bool:
         """Check if cached data is still valid."""
@@ -56,7 +62,7 @@ class WeatherService:
     def _generate_location_queries(self, location_query: str, max_queries: int = 5) -> List[str]:
         """
         Generate normalized location query variants without word-block lists.
-        Example: "sanjose now" -> ["sanjose now", "sanjose", "now"]
+        Skips tiny fragments (e.g. "des") that pollute geocoding.
         """
         normalized = self._normalize_location_text(location_query)
         tokens = [tok for tok in re.split(r"[\s,]+", normalized) if tok]
@@ -66,21 +72,33 @@ class WeatherService:
         queries: List[str] = []
 
         def _push(q: str):
-            q = q.strip()
-            if q and q not in queries:
-                queries.append(q)
+            q = q.strip(" ,")
+            if not q or q in queries:
+                return
+            # Avoid single short tokens that geocode poorly ("des", "ia")
+            parts = [p for p in re.split(r"[\s,]+", q) if p]
+            if len(parts) == 1 and len(parts[0]) < 4:
+                return
+            queries.append(q)
 
         _push(" ".join(tokens))
+        # Prefer city + state form with commas for APIs ("Des Moines, Iowa")
+        if len(tokens) >= 3:
+            _push(f"{' '.join(tokens[:-1])}, {tokens[-1]}")
+        elif len(tokens) == 2:
+            _push(f"{tokens[0]}, {tokens[1]}")
         if len(tokens) > 1:
             for end in range(len(tokens) - 1, 0, -1):
                 _push(" ".join(tokens[:end]))
             for start in range(1, len(tokens)):
-                _push(" ".join(tokens[start:]))
+                chunk = " ".join(tokens[start:])
+                if len(chunk) >= 4:
+                    _push(chunk)
 
-        return queries[:max_queries]
+        return queries[:max_queries] or [location_query.strip()]
 
     def _fetch_openweathermap_geocode(self, location_query: str, limit: int = 5) -> List[Dict[str, Any]]:
-        if not self._api_key:
+        if not self._api_key or not _REQUESTS_OK:
             return []
         try:
             geo_url = "http://api.openweathermap.org/geo/1.0/direct"
@@ -109,6 +127,38 @@ class WeatherService:
             return results
         except Exception as e:
             print(f"[Weather] OpenWeatherMap geocode error: {e}")
+            return []
+
+    def _fetch_open_meteo_geocode(self, location_query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Key-free geocoding via Open-Meteo."""
+        if not _REQUESTS_OK:
+            return []
+        try:
+            url = "https://geocoding-api.open-meteo.com/v1/search"
+            params = {"name": location_query, "count": limit, "language": "en", "format": "json"}
+            response = requests.get(url, params=params, timeout=8)
+            if response.status_code != 200:
+                print(f"[Weather] Open-Meteo geocode error: {response.status_code}")
+                return []
+            results_raw = (response.json() or {}).get("results") or []
+            results: List[Dict[str, Any]] = []
+            for entry in results_raw:
+                city = entry.get("name", "")
+                state = entry.get("admin1", "") or ""
+                country = entry.get("country_code", "") or entry.get("country", "") or ""
+                results.append(
+                    {
+                        "city": city,
+                        "state": state,
+                        "country": country,
+                        "display_name": self._build_display_name(city, state, country),
+                        "lat": entry.get("latitude"),
+                        "lon": entry.get("longitude"),
+                    }
+                )
+            return results
+        except Exception as e:
+            print(f"[Weather] Open-Meteo geocode error: {e}")
             return []
 
     def _fetch_weatherapi_geocode(self, location_query: str, limit: int = 5) -> List[Dict[str, Any]]:
@@ -179,9 +229,14 @@ class WeatherService:
         if city and city in original_compact:
             score += 0.16
         if state and state in original_compact:
-            score += 0.06
+            score += 0.22
         if country and country in original_compact:
             score += 0.04
+
+        # Strong boost when query includes the candidate's state/region name
+        state_raw = (result.get("state") or "").strip().lower()
+        if state_raw and state_raw in original_norm:
+            score += 0.28
 
         candidate_tokens = set(re.findall(r"[a-z0-9]+", candidate_norm))
         display_tokens = set(re.findall(r"[a-z0-9]+", display))
@@ -194,14 +249,15 @@ class WeatherService:
             score -= 0.12 * (1.0 - overlap)
 
         score += max(0.0, 0.04 - (0.01 * variant_rank))
-        return max(0.0, min(1.0, score))
+        # Allow scores > 1 so state/country matches can outrank same-name cities
+        return max(0.0, score)
 
     def resolve_location(self, location_query: str, original_query: str = "", limit: int = 5) -> Dict[str, Any]:
         """
         Resolve location text to a canonical, geocoded location.
         Returns one of: resolved, ambiguous, not_found, unavailable.
         """
-        if not self._available:
+        if not self._available and not self._http_ok:
             return {"status": "unavailable"}
 
         normalized_query = (location_query or "").strip()
@@ -212,10 +268,13 @@ class WeatherService:
         scored_candidates: List[Dict[str, Any]] = []
 
         for variant_rank, query_variant in enumerate(query_variants):
-            if self._provider == "weatherapi":
+            raw_candidates: List[Dict[str, Any]] = []
+            if self._available and self._provider == "weatherapi":
                 raw_candidates = self._fetch_weatherapi_geocode(query_variant, limit=limit)
-            else:
+            elif self._available:
                 raw_candidates = self._fetch_openweathermap_geocode(query_variant, limit=limit)
+            if not raw_candidates and self._http_ok:
+                raw_candidates = self._fetch_open_meteo_geocode(query_variant, limit=limit)
 
             for candidate in raw_candidates:
                 score = self._score_location_candidate(
@@ -245,6 +304,25 @@ class WeatherService:
         ranked = sorted(deduped.values(), key=lambda x: x["confidence"], reverse=True)
         best = ranked[0]
         second = ranked[1] if len(ranked) > 1 else None
+
+        # Prefer unique state/region match from the original query text
+        orig_norm = self._normalize_location_text(original_query or normalized_query)
+        state_hits = []
+        for c in ranked:
+            st = (c.get("state") or "").strip().lower()
+            if st and st in orig_norm:
+                state_hits.append(c)
+        if len(state_hits) == 1:
+            best = state_hits[0]
+            return {
+                "status": "resolved",
+                "query": location_query,
+                "canonical_location": best["display_name"],
+                "confidence": best["confidence"],
+                "lat": best.get("lat"),
+                "lon": best.get("lon"),
+                "candidates": ranked[:3],
+            }
 
         confidence_gap = best["confidence"] - (second["confidence"] if second else 0.0)
         is_ambiguous = second is not None and (best["confidence"] < 0.78 or confidence_gap < 0.10)
@@ -393,22 +471,185 @@ class WeatherService:
             print(f"[Weather] WeatherAPI forecast error: {e}")
             return None
 
-    def get_forecast(self, location: str, days: int = 5) -> Optional[Dict[str, Any]]:
-        """Fetch weather forecast for location."""
-        if not self._available or not location or location == "Unknown":
-            return None
+    def get_forecast(
+        self,
+        location: str,
+        days: int = 5,
+        lat: Optional[float] = None,
+        lon: Optional[float] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch weather forecast for location (optionally using resolved coords)."""
+        if not location or location == "Unknown":
+            if lat is None or lon is None:
+                return None
 
-        if self._provider != "weatherapi":
-            print(f"[Weather] Forecast only available with WeatherAPI.com provider")
-            return None
+        days = max(1, min(int(days or 5), 7))
+        print(f"[Weather] Fetching {days}-day forecast for {location} (lat={lat}, lon={lon})...")
 
-        print(f"[Weather] Fetching {days}-day forecast for {location}...")
-        data = self._fetch_weatherapi_forecast(location, days)
+        data = None
+        if self._available and self._provider == "weatherapi":
+            q = f"{lat},{lon}" if lat is not None and lon is not None else location
+            data = self._fetch_weatherapi_forecast(q, days)
+        elif self._available and self._provider != "weatherapi" and lat is not None and lon is not None:
+            data = self._fetch_openweathermap_forecast(lat, lon, days, location)
+        elif self._available and self._provider != "weatherapi":
+            # Resolve once then forecast by coords
+            resolved = self.resolve_location(location)
+            if resolved.get("status") == "resolved" and resolved.get("lat") is not None:
+                data = self._fetch_openweathermap_forecast(
+                    float(resolved["lat"]), float(resolved["lon"]), days, resolved.get("canonical_location") or location
+                )
+
+        if not data and lat is not None and lon is not None:
+            data = self._fetch_open_meteo_forecast(float(lat), float(lon), days, location)
+        if not data:
+            resolved = self.resolve_location(location) if location and location != "Unknown" else None
+            if resolved and resolved.get("status") == "resolved" and resolved.get("lat") is not None:
+                data = self._fetch_open_meteo_forecast(
+                    float(resolved["lat"]),
+                    float(resolved["lon"]),
+                    days,
+                    resolved.get("canonical_location") or location,
+                )
 
         if data:
-            print(f"[Weather] Forecast data retrieved ({data['forecast_days']} days)")
-
+            print(f"[Weather] Forecast data retrieved ({data.get('forecast_days')} days)")
         return data
+
+    def _fetch_openweathermap_forecast(
+        self, lat: float, lon: float, days: int, location_label: str
+    ) -> Optional[Dict[str, Any]]:
+        """OWM free 5-day / 3-hour forecast, aggregated to daily min/max."""
+        if not self._api_key:
+            return None
+        try:
+            url = "https://api.openweathermap.org/data/2.5/forecast"
+            params = {"lat": lat, "lon": lon, "appid": self._api_key, "units": "metric"}
+            response = requests.get(url, params=params, timeout=8)
+            if response.status_code != 200:
+                print(f"[Weather] OWM forecast error: {response.status_code}")
+                return None
+            payload = response.json() or {}
+            entries = payload.get("list") or []
+            if not entries:
+                return None
+            by_day: Dict[str, Dict[str, Any]] = {}
+            for entry in entries:
+                dt_txt = str(entry.get("dt_txt") or "")
+                day = dt_txt.split(" ")[0] if dt_txt else ""
+                if not day:
+                    continue
+                main = entry.get("main") or {}
+                weather = (entry.get("weather") or [{}])[0]
+                wind = entry.get("wind") or {}
+                pop = float(entry.get("pop") or 0) * 100
+                slot = by_day.setdefault(
+                    day,
+                    {
+                        "date": day,
+                        "min_temp": main.get("temp_min"),
+                        "max_temp": main.get("temp_max"),
+                        "condition": weather.get("description", "").title(),
+                        "rain_chance": pop,
+                        "max_wind": round(float(wind.get("speed") or 0) * 3.6, 1),
+                    },
+                )
+                tmin = main.get("temp_min")
+                tmax = main.get("temp_max")
+                if tmin is not None:
+                    slot["min_temp"] = min(slot["min_temp"], tmin) if slot["min_temp"] is not None else tmin
+                if tmax is not None:
+                    slot["max_temp"] = max(slot["max_temp"], tmax) if slot["max_temp"] is not None else tmax
+                slot["rain_chance"] = max(slot.get("rain_chance") or 0, pop)
+            forecast_days = []
+            for day in sorted(by_day.keys())[:days]:
+                slot = by_day[day]
+                forecast_days.append(
+                    {
+                        "date": day,
+                        "min_temp": round(slot["min_temp"]) if slot.get("min_temp") is not None else None,
+                        "max_temp": round(slot["max_temp"]) if slot.get("max_temp") is not None else None,
+                        "condition": slot.get("condition") or "",
+                        "rain_chance": int(slot.get("rain_chance") or 0),
+                        "max_wind": slot.get("max_wind") or 0,
+                    }
+                )
+            city = (payload.get("city") or {}).get("name") or location_label
+            country = (payload.get("city") or {}).get("country") or ""
+            label = f"{city}, {country}".strip(", ")
+            current = entries[0]
+            return {
+                "location": label or location_label,
+                "current": {
+                    "temperature": round((current.get("main") or {}).get("temp") or 0),
+                    "condition": ((current.get("weather") or [{}])[0].get("description") or "").title(),
+                },
+                "forecast": forecast_days,
+                "forecast_days": len(forecast_days),
+            }
+        except Exception as e:
+            print(f"[Weather] OWM forecast error: {e}")
+            return None
+
+    def _fetch_open_meteo_forecast(
+        self, lat: float, lon: float, days: int, location_label: str
+    ) -> Optional[Dict[str, Any]]:
+        """Key-free Open-Meteo daily forecast fallback."""
+        if not _REQUESTS_OK:
+            return None
+        try:
+            url = "https://api.open-meteo.com/v1/forecast"
+            params = {
+                "latitude": lat,
+                "longitude": lon,
+                "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode",
+                "current_weather": "true",
+                "forecast_days": days,
+                "timezone": "auto",
+            }
+            response = requests.get(url, params=params, timeout=8)
+            if response.status_code != 200:
+                print(f"[Weather] Open-Meteo error: {response.status_code}")
+                return None
+            data = response.json() or {}
+            daily = data.get("daily") or {}
+            dates = daily.get("time") or []
+            tmax = daily.get("temperature_2m_max") or []
+            tmin = daily.get("temperature_2m_min") or []
+            rain = daily.get("precipitation_probability_max") or []
+            codes = daily.get("weathercode") or []
+            code_map = {
+                0: "Clear", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+                45: "Fog", 48: "Depositing rime fog",
+                51: "Light drizzle", 61: "Light rain", 63: "Rain", 65: "Heavy rain",
+                71: "Light snow", 73: "Snow", 75: "Heavy snow",
+                80: "Rain showers", 95: "Thunderstorm",
+            }
+            forecast_days = []
+            for i, day in enumerate(dates[:days]):
+                forecast_days.append(
+                    {
+                        "date": day,
+                        "min_temp": round(tmin[i]) if i < len(tmin) and tmin[i] is not None else None,
+                        "max_temp": round(tmax[i]) if i < len(tmax) and tmax[i] is not None else None,
+                        "condition": code_map.get(int(codes[i]) if i < len(codes) and codes[i] is not None else -1, "Varying conditions"),
+                        "rain_chance": int(rain[i]) if i < len(rain) and rain[i] is not None else 0,
+                        "max_wind": 0,
+                    }
+                )
+            current = data.get("current_weather") or {}
+            return {
+                "location": location_label,
+                "current": {
+                    "temperature": round(current.get("temperature") or 0),
+                    "condition": code_map.get(int(current.get("weathercode") or -1), "Current conditions"),
+                },
+                "forecast": forecast_days,
+                "forecast_days": len(forecast_days),
+            }
+        except Exception as e:
+            print(f"[Weather] Open-Meteo forecast error: {e}")
+            return None
 
     def format_forecast_for_llm(self, forecast_data: Optional[Dict[str, Any]]) -> str:
         """Format forecast data as context string for LLM."""
@@ -427,27 +668,84 @@ class WeatherService:
 
         return "\n".join(parts)
 
-    def get_weather(self, location: str) -> Optional[Dict[str, Any]]:
-        """Fetch current weather for location."""
-        if not self._available or not location or location == "Unknown":
+    def get_weather(
+        self,
+        location: str,
+        lat: Optional[float] = None,
+        lon: Optional[float] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch current weather for location (optionally using resolved coords)."""
+        if (not location or location == "Unknown") and (lat is None or lon is None):
             return None
 
-        cached = self._get_from_cache(location)
+        cache_key = location if location and location != "Unknown" else f"{lat},{lon}"
+        cached = self._get_from_cache(cache_key)
         if cached:
-            print(f"[Weather] Using cached data for {location}")
+            print(f"[Weather] Using cached data for {cache_key}")
             return cached
 
-        print(f"[Weather] Fetching weather for {location}...")
-        if self._provider == "weatherapi":
-            data = self._fetch_weatherapi(location)
-        else:
-            data = self._fetch_openweathermap(location)
+        print(f"[Weather] Fetching weather for {cache_key}...")
+        data = None
+        if self._available:
+            if lat is not None and lon is not None and self._provider != "weatherapi":
+                data = self._fetch_openweathermap_by_coords(float(lat), float(lon), location or cache_key)
+            elif self._provider == "weatherapi":
+                q = f"{lat},{lon}" if lat is not None and lon is not None else location
+                data = self._fetch_weatherapi(q)
+            else:
+                data = self._fetch_openweathermap(location)
+
+        if not data and lat is not None and lon is not None:
+            forecast = self._fetch_open_meteo_forecast(float(lat), float(lon), 1, location or cache_key)
+            if forecast and forecast.get("current"):
+                data = {
+                    "location": forecast.get("location") or location or cache_key,
+                    "temperature": forecast["current"]["temperature"],
+                    "feels_like": forecast["current"]["temperature"],
+                    "condition": forecast["current"]["condition"],
+                    "humidity": 0,
+                    "wind_speed": 0,
+                    "pressure": 0,
+                    "clouds": 0,
+                    "visibility": None,
+                }
 
         if data:
-            self._save_to_cache(location, data)
+            self._save_to_cache(cache_key, data)
             print(f"[Weather] Weather data retrieved")
 
         return data
+
+    def _fetch_openweathermap_by_coords(
+        self, lat: float, lon: float, location_label: str
+    ) -> Optional[Dict[str, Any]]:
+        if not self._api_key:
+            return None
+        try:
+            weather_url = "https://api.openweathermap.org/data/2.5/weather"
+            weather_params = {
+                "lat": lat, "lon": lon,
+                "appid": self._api_key, "units": "metric"
+            }
+            weather_response = requests.get(weather_url, params=weather_params, timeout=5)
+            if weather_response.status_code != 200:
+                print(f"[Weather] Weather API error: {weather_response.status_code}")
+                return None
+            data = weather_response.json()
+            return {
+                "location": location_label or f"{lat},{lon}",
+                "temperature": round(data["main"]["temp"]),
+                "feels_like": round(data["main"]["feels_like"]),
+                "condition": data["weather"][0]["description"].title(),
+                "humidity": data["main"]["humidity"],
+                "wind_speed": round(data["wind"].get("speed", 0) * 3.6, 1),
+                "pressure": data["main"]["pressure"],
+                "clouds": data["clouds"]["all"],
+                "visibility": data.get("visibility", 0) / 1000 if data.get("visibility") else None,
+            }
+        except Exception as e:
+            print(f"[Weather] OpenWeatherMap coords error: {e}")
+            return None
 
     def format_for_llm(self, weather_data: Optional[Dict[str, Any]]) -> str:
         """Format weather data as context string for LLM."""
