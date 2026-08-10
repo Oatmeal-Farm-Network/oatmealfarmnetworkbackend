@@ -24,6 +24,20 @@ except ImportError:
 logger = logging.getLogger("farm_advisory.user_profile")
 
 
+def _row_get(row: Optional[Dict], *keys: str, default: Any = None) -> Any:
+    """Read a SQL row value with case-insensitive key matching (FreeTDS may lowercase)."""
+    if not row:
+        return default
+    lower_map = {str(k).lower(): v for k, v in row.items()}
+    for key in keys:
+        if key in row and row[key] is not None:
+            return row[key]
+        val = lower_map.get(str(key).lower())
+        if val is not None:
+            return val
+    return default
+
+
 def _connect():
     if not _PYMSSQL_OK or not all([
         DB_CONFIG.get("host"), DB_CONFIG.get("user"), DB_CONFIG.get("database")
@@ -71,8 +85,8 @@ def get_user_name(people_id: str) -> Optional[str]:
     )
     if not rows:
         return None
-    first = (rows[0].get("PeopleFirstName") or "").strip()
-    last = (rows[0].get("PeopleLastName") or "").strip()
+    first = str(_row_get(rows[0], "PeopleFirstName", "peoplefirstname") or "").strip()
+    last = str(_row_get(rows[0], "PeopleLastName", "peoplelastname") or "").strip()
     full = f"{first} {last}".strip()
     return full or None
 
@@ -85,7 +99,12 @@ def get_org_member_ids(business_id: str) -> List[str]:
         "SELECT PeopleID FROM BusinessAccess WHERE BusinessID = %s AND Active = 1",
         (int(business_id),),
     )
-    return [str(r["PeopleID"]) for r in rows if r.get("PeopleID")]
+    out = []
+    for r in rows:
+        pid = _row_get(r, "PeopleID", "peopleid")
+        if pid is not None:
+            out.append(str(pid))
+    return out
 
 
 def get_business_name(business_id: str) -> Optional[str]:
@@ -98,7 +117,7 @@ def get_business_name(business_id: str) -> Optional[str]:
     )
     if not rows:
         return None
-    name = rows[0].get("BusinessName") or rows[0].get("businessname")
+    name = _row_get(rows[0], "BusinessName", "businessname")
     return str(name).strip() if name else None
 
 
@@ -112,7 +131,7 @@ def get_primary_business_id(people_id: str) -> Optional[str]:
     )
     if not rows:
         return None
-    bid = rows[0].get("BusinessID") or rows[0].get("businessid")
+    bid = _row_get(rows[0], "BusinessID", "businessid")
     return str(bid) if bid else None
 
 
@@ -131,9 +150,9 @@ def get_org_member_names(business_id: str) -> Dict[str, str]:
     )
     result: Dict[str, str] = {}
     for r in rows:
-        pid = str(r.get("PeopleID") or "")
-        first = (r.get("PeopleFirstName") or "").strip()
-        last = (r.get("PeopleLastName") or "").strip()
+        pid = str(_row_get(r, "PeopleID", "peopleid") or "")
+        first = str(_row_get(r, "PeopleFirstName", "peoplefirstname") or "").strip()
+        last = str(_row_get(r, "PeopleLastName", "peoplelastname") or "").strip()
         name = f"{first} {last}".strip()
         if pid and name:
             result[pid] = name
@@ -170,14 +189,16 @@ def get_account_profile(people_id: str, business_id: Optional[str] = None) -> Di
     if rows:
         r = rows[0]
         profile = {
-            "people_id": str(r.get("PeopleID") or people_id),
-            "first_name": (r.get("PeopleFirstName") or "").strip(),
-            "last_name": (r.get("PeopleLastName") or "").strip(),
+            "people_id": str(_row_get(r, "PeopleID", "peopleid") or people_id),
+            "first_name": str(_row_get(r, "PeopleFirstName", "peoplefirstname") or "").strip(),
+            "last_name": str(_row_get(r, "PeopleLastName", "peoplelastname") or "").strip(),
         }
-        if r.get("PeopleEmail"):
-            profile["email"] = str(r.get("PeopleEmail")).strip()
-        if r.get("PeoplePhone"):
-            profile["phone"] = str(r.get("PeoplePhone")).strip()
+        email = _row_get(r, "PeopleEmail", "peopleemail")
+        if email:
+            profile["email"] = str(email).strip()
+        phone = _row_get(r, "PeoplePhone", "peoplephone")
+        if phone:
+            profile["phone"] = str(phone).strip()
 
     profile = {k: v for k, v in profile.items() if "password" not in k.lower() and "hash" not in k.lower()}
 
@@ -187,4 +208,15 @@ def get_account_profile(people_id: str, business_id: Optional[str] = None) -> Di
         bname = get_business_name(bid)
         if bname:
             profile["business_name"] = bname
+        # Fall back to business contact email when personal email is missing
+        if not profile.get("email"):
+            brows = _query(
+                "SELECT BusinessEmail FROM Business WHERE BusinessID = %s",
+                (int(bid),),
+            )
+            if brows:
+                bem = _row_get(brows[0], "BusinessEmail", "businessemail")
+                if bem:
+                    profile["email"] = str(bem).strip()
+                    profile["email_source"] = "business"
     return profile

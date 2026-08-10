@@ -137,6 +137,8 @@ try:
     from precision_ag import (
         precision_ag_tools,
         list_my_fields_tool,
+        resolve_field_by_name_tool,
+        resolve_field_by_name,
         get_field_analysis_tool,
         get_field_history_tool,
         get_field_alerts_tool,
@@ -168,6 +170,8 @@ except Exception as _e:
     precision_ag_tools = []
     get_field_zones_tool = None
     list_my_fields_tool = None
+    resolve_field_by_name_tool = None
+    resolve_field_by_name = None
     get_field_analysis_tool = None
     get_field_history_tool = None
     get_field_alerts_tool = None
@@ -1107,8 +1111,10 @@ Additional tools available:
 - price_forecast_tool(commodity, months_ahead): short-horizon US commodity price forecast (corn/soy/wheat/cotton/rice/cattle/hog/milk/egg/hay/etc.). Use for marketing, selling-timing, or revenue planning questions.
 - subsidies_tool(category, keyword): US federal farm subsidy / cost-share / grant / loan programs (EQIP, CSP, CRP, ARC/PLC, WFRP, BFRDP, VAPG, REAP, SARE). Use when user asks about government funding or assistance.
 - insurance_tool(crop): US federal crop-insurance products (RP/YP/APH/WFRP/MP/PRF/LRP/LGM/DRP/NAP) for a specific crop or livestock class. Use when user asks about insurance or risk management.
-PRECISION AG — Field Data (always start with list_my_fields_tool if field_id is unknown):
-- list_my_fields_tool(): list satellite-monitored fields (field ID, name, crop, size, planting date). ALWAYS call this first when the user mentions "my fields", "my farm", or any field question without a specific ID.
+PRECISION AG — Field Data (resolve names before asking for IDs):
+- list_my_fields_tool(): list satellite-monitored fields (field ID, name, crop, size, planting date).
+- resolve_field_by_name_tool(name): map a field name like "test field 4" to FieldID. ALWAYS call this when the user names a field instead of giving a numeric ID. NEVER ask the user for a field ID if a name is present — resolve it.
+- get_field_analysis_tool(field_id): latest NDVI/EVI analysis. Call after resolving the name to an ID.
 - get_field_analysis_tool(field_id): latest NDVI/EVI/SAVI vegetation indices + trend. Use for "how is field X doing", "is my crop healthy", NDVI questions.
 - get_field_history_tool(field_id, months): NDVI time series over last N months. Use for trend, improvement/decline questions.
 - get_field_alerts_tool(field_id): precision-ag alerts across fields (field_id=0 = all fields). Use for "any issues", "what needs attention", "are there problems".
@@ -1582,6 +1588,14 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
                     elif tc_name == 'list_my_fields_tool' and PRECISION_AG_AVAILABLE:
                         print(f"[Advisory Agent] Executing List My Fields Tool (people_id from state)")
                         tool_result = list_my_fields_tool.invoke({"people_id": people_id_for_tools})
+                        precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                    elif tc_name == 'resolve_field_by_name_tool' and PRECISION_AG_AVAILABLE:
+                        fname = str(tc_args.get('name') or tc_args.get('field_name') or latest_user_message or "")
+                        print(f"[Advisory Agent] Executing Resolve Field By Name: {fname!r}")
+                        tool_result = resolve_field_by_name_tool.invoke({
+                            "name": fname,
+                            "people_id": people_id_for_tools,
+                        })
                         precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
                     elif tc_name == 'get_field_analysis_tool' and PRECISION_AG_AVAILABLE:
                         fid = int(tc_args.get('field_id', 0) or 0)
@@ -2319,11 +2333,46 @@ def crop_advisory_node(state: FarmState):
 
 
 def bakasura_advisory_node(state: FarmState):
-    """Bakasura docs advisory with RAG (bakasura-docs) and weather tool."""
+    """Bakasura docs advisory with RAG (bakasura-docs). Refuse mythology when KB empty."""
+    query = (
+        _latest_user_text(state)
+        or " ".join(state.get("current_issues") or [])
+        or state.get("assessment_summary")
+        or ""
+    )
+    hits = []
+    try:
+        if rag_bakasura:
+            rag_bakasura.initialize()
+            hits = rag_bakasura.search(query) or []
+    except Exception as e:
+        print(f"[Bakasura] RAG probe failed: {e}")
+        hits = []
+
+    if not hits:
+        return {
+            "diagnosis": (
+                "I don't have matching Oatmeal Farm Network documentation for that right now. "
+                "In OFN, Bakasura is our product knowledge base for how Saige and the platform work "
+                "(features, workflows, and how-tos) — not a mythological reference. "
+                "Try asking about Saige capabilities, precision ag, marketplace, accounts, or a specific OFN page."
+            ),
+            "recommendations": [
+                "Ask how Saige helps on OFN",
+                "Ask about precision ag, marketplace, or account features",
+            ],
+            "citations": [],
+        }
+
     return run_advisory_agent(
         state,
-        role_prompt="You are Saige — a knowledgeable farm advisor with access to the Oatmeal Farm Network knowledge base. Give accurate, practical guidance grounded in the available documentation. Be direct and warm — farmers are busy people.",
-        rag_systems=[rag_bakasura]
+        role_prompt=(
+            "You are Saige — OFN's farm AI advisor answering from the Bakasura product documentation. "
+            "Bakasura = Oatmeal Farm Network / Saige platform docs (features, how-tos, product behavior). "
+            "NEVER interpret Bakasura as Hindu mythology, demons, or folklore. "
+            "Only use retrieved documentation; if docs are thin, say what is missing instead of inventing."
+        ),
+        rag_systems=[rag_bakasura],
     )
 
 
@@ -2782,6 +2831,7 @@ def _is_account_identity_query(text: str) -> bool:
         return False
     phrases = (
         "my email", "what is my email", "what's my email", "whats my email",
+        "email address", "email on this account", "email on my account",
         "my name", "what is my name", "what's my name", "whats my name",
         "my phone", "what is my phone", "what's my phone",
         "people id", "peopleid", "people_id", "user id", "userid", "my id", "what is my id",
@@ -2874,19 +2924,31 @@ def _keyword_routes(text: str) -> List[str]:
         return ["user"]
     if any(k in t for k in ("joke", "funny", "make me laugh")):
         routes.append("joke")
-    if any(k in t for k in ("bakasura", "how does saige", "oatmeal farm network", "ofn docs", "documentation")):
+    if any(k in t for k in (
+        "bakasura", "how does saige", "what is saige", "oatmeal farm network",
+        "ofn docs", "documentation", "how does ofn", "what is ofn",
+    )):
         routes.append("bakasura")
-    if any(k in t for k in ("news", "market price", "commodity", "headline")):
+    if any(k in t for k in ("news", "market price", "commodity", "headline", "market takeaway")):
         routes.append("news")
-    if any(k in t for k in ("weather", "forecast", "frost", "rain", "temperature", "climate")):
+    if any(k in t for k in (
+        "weather", "forecast", "frost", "rain", "temperature", "climate",
+        "mitigation", "playbook", "protect cattle", "protect livestock",
+    )):
         routes.append("weather")
     if any(k in t for k in ("cattle", "cow", "sheep", "goat", "pig", "chicken", "livestock", "herd", "breed", "animal")):
         routes.append("livestock")
     if any(k in t for k in ("crop", "plant", "soil", "tomato", "corn", "wheat", "pest", "disease", "irrigat", "spray")):
         routes.append("crop")
-    if any(k in t for k in ("plan my week", "weekly plan", "seasonal plan", "what should i do this week", "schedule")):
+    if any(k in t for k in (
+        "plan my week", "weekly plan", "seasonal plan", "what should i do this week",
+        "schedule", "weekly farm", "planning checklist", "spring checklist", "farm planning",
+    )):
         routes.append("plan")
-    if any(k in t for k in ("ndvi", "monitor", "satellite", "zone", "precision", "field health", "got worse")):
+    if any(k in t for k in (
+        "ndvi", "monitor", "satellite", "zone", "precision", "field health", "got worse",
+        "how is my", "how's my", "how is field", "field doing", "my field", "test field",
+    )):
         routes.append("monitoring")
     if any(k in t for k in (
         "my account", "my profile", "my email", "my phone", "my name", "business profile",
@@ -3289,6 +3351,39 @@ def specialist_dispatch_node(state: SaigeState) -> Dict[str, Any]:
     if "plan" in routes:
         updates["plan_packet"] = _run_plan_advisory(state, updates)
 
+    # Always inject concrete weather-mitigation playbook when asked (don't rely on LLM tool call)
+    text_lower = (_latest_user_text(state) or "").lower()
+    if any(k in text_lower for k in ("mitigation", "playbook", "protect cattle", "protect livestock")) or (
+        "frost" in text_lower and any(k in text_lower for k in ("protect", "plan", "livestock", "cattle"))
+    ):
+        try:
+            from weather_mitigation import format_for_llm, resolve_hazard
+            hazard = resolve_hazard(text_lower) or "frost"
+            phase = "imminent"
+            if any(k in text_lower for k in ("planning", "prepare", "before")):
+                phase = "planning"
+            elif any(k in text_lower for k in ("recovery", "after")):
+                phase = "recovery"
+            elif any(k in text_lower for k in ("during", "active", "tonight")):
+                phase = "imminent"
+            playbook = format_for_llm(hazard, phase)
+            wp = updates.get("weather_packet") or {
+                "source": "weather",
+                "text": "",
+                "recommendations": [],
+                "citations": [],
+            }
+            existing = (wp.get("text") or "").strip()
+            wp["text"] = (playbook + ("\n\n" + existing if existing else "")).strip()
+            wp["recommendations"] = list(wp.get("recommendations") or []) + [
+                f"Follow {hazard} {phase} mitigation steps",
+            ]
+            updates["weather_packet"] = wp
+            if "plan" not in routes and "plan_packet" not in updates:
+                updates["plan_packet"] = _run_plan_advisory(state, updates)
+        except Exception as e:
+            logger.debug("[Specialists] mitigation inject failed: %s", e)
+
     elapsed = (time.perf_counter() - t0) * 1000
     print(f"[Specialists] packets={[k for k in updates if k.endswith('_packet')]} specialist_ms={elapsed:.0f}")
     updates["specialist_ms"] = elapsed
@@ -3301,9 +3396,15 @@ def _run_monitoring_agent(state: SaigeState) -> Dict[str, Any]:
     business_id = str(state.get("business_id") or "")
     findings: List[Dict[str, Any]] = []
     lines = ["Crop Monitoring Agent investigation:"]
+    text_q = _latest_user_text(state)
 
     try:
-        from precision_ag import list_my_fields_tool, get_field_alerts_tool
+        from precision_ag import (
+            list_my_fields_tool,
+            get_field_alerts_tool,
+            get_field_analysis_tool,
+            resolve_field_by_name,
+        )
 
         fields_txt = list_my_fields_tool.invoke({"people_id": people_id}) if people_id else "No people_id"
         lines.append(str(fields_txt)[:2000])
@@ -3311,12 +3412,31 @@ def _run_monitoring_agent(state: SaigeState) -> Dict[str, Any]:
         if alerts_txt:
             lines.append("Alerts:\n" + str(alerts_txt)[:1500])
             findings.append({"rank": 1, "text": str(alerts_txt)[:500], "field_id": None})
+
+        # Resolve named field from the user question and pull latest analysis
+        resolved = resolve_field_by_name(text_q, people_id) if people_id else None
+        if resolved:
+            fid = int(resolved.get("fieldid") or resolved.get("FieldID") or 0)
+            fname = resolved.get("name") or resolved.get("Name") or f"#{fid}"
+            if fid:
+                analysis = get_field_analysis_tool.invoke({
+                    "field_id": fid,
+                    "people_id": people_id,
+                })
+                lines.append(f"Resolved field '{fname}' → analysis:\n{analysis}")
+                findings.append({"rank": 0, "text": str(analysis)[:800], "field_id": fid})
+            else:
+                lines.append(f"Matched field name '{fname}' but could not read FieldID.")
+        elif any(k in text_q.lower() for k in ("how is", "how's", "doing", "status", "health")):
+            lines.append(
+                "No field name matched the question. Use a name from the field list above "
+                "(never ask the farmer for a raw FieldID if a name is available)."
+            )
     except Exception as e:
         lines.append(f"Field list failed: {e}")
 
     # Ranked investigation hint
-    text_q = _latest_user_text(state).lower()
-    if "worse" in text_q or "ndvi" in text_q or "monitor" in text_q:
+    if "worse" in text_q.lower() or "ndvi" in text_q.lower() or "monitor" in text_q.lower():
         findings.append({
             "rank": 2,
             "text": "Compare recent NDVI / zone maps in Precision Ag for fields with declining health.",
@@ -3338,40 +3458,104 @@ def _run_monitoring_agent(state: SaigeState) -> Dict[str, Any]:
     except Exception as e:
         logger.debug("[Monitoring] persist failed: %s", e)
 
+    recs = []
+    if findings and findings[0].get("field_id"):
+        recs.append("Open Precision Ag for this field's full NDVI history")
+    else:
+        recs.append("Open Precision Ag for flagged fields")
+    recs.append("Enable monitoring on critical fields")
+
     return {
         "source": "monitoring",
         "text": summary,
-        "recommendations": ["Open Precision Ag for flagged fields", "Enable monitoring on critical fields"],
+        "recommendations": recs,
         "findings": findings,
     }
 
 
 def _run_plan_advisory(state: SaigeState, packets: Dict[str, Any]) -> Dict[str, Any]:
-    """Build dated checklist from specialist packets; offer save_plan proposal."""
+    """Build dated checklist from specialist packets + optional weather mitigation."""
     from datetime import date, timedelta
 
     today = date.today()
     items = []
-    if packets.get("weather_packet") or state.get("weather_packet"):
+    text_q = (_latest_user_text(state) or "").lower()
+    weather_pkt = packets.get("weather_packet") or state.get("weather_packet") or {}
+    crop_pkt = packets.get("crop_packet") or state.get("crop_packet") or {}
+    livestock_pkt = packets.get("livestock_packet") or state.get("livestock_packet") or {}
+    monitoring_pkt = packets.get("monitoring_packet") or state.get("monitoring_packet") or {}
+
+    # Prefer concrete mitigation steps when the ask is a weather playbook
+    mitigation_text = ""
+    if any(k in text_q for k in ("mitigation", "playbook", "frost", "drought", "heat", "flood", "hail")):
+        try:
+            from weather_mitigation import format_for_llm, resolve_hazard
+            hazard = resolve_hazard(text_q) or (
+                "frost" if "frost" in text_q or "cold" in text_q else
+                "drought" if "drought" in text_q else
+                "heat" if "heat" in text_q else
+                "flood" if "flood" in text_q else
+                "hail" if "hail" in text_q else
+                "frost"
+            )
+            phase = "imminent"
+            if any(k in text_q for k in ("planning", "prepare", "before season", "spring")):
+                phase = "planning"
+            elif any(k in text_q for k in ("recovery", "after", "aftermath")):
+                phase = "recovery"
+            elif any(k in text_q for k in ("during", "active", "happening")):
+                phase = "active"
+            mitigation_text = format_for_llm(hazard, phase)
+            for i, line in enumerate(mitigation_text.splitlines()):
+                step = line.strip()
+                if step[:1].isdigit() or step.startswith("•") or step.startswith("-"):
+                    items.append({
+                        "date": str(today + timedelta(days=min(i, 3))),
+                        "task": step.lstrip("0123456789.-)• ").strip()[:200],
+                        "domain": "weather",
+                        "status": "open",
+                    })
+        except Exception as e:
+            logger.debug("[Plan] mitigation inject failed: %s", e)
+
+    if weather_pkt and not mitigation_text:
         items.append({"date": str(today), "task": "Check frost/heat risk and protect vulnerable crops/livestock", "domain": "weather", "status": "open"})
-    if packets.get("crop_packet") or state.get("crop_packet"):
+    if crop_pkt:
         items.append({"date": str(today + timedelta(days=1)), "task": "Scout problem fields and note symptoms", "domain": "crop", "status": "open"})
-    if packets.get("livestock_packet") or state.get("livestock_packet"):
-        items.append({"date": str(today + timedelta(days=1)), "task": "Walk herd/flock health check", "domain": "livestock", "status": "open"})
-    if packets.get("monitoring_packet") or state.get("monitoring_packet"):
+    if livestock_pkt:
+        items.append({"date": str(today + timedelta(days=1)), "task": "Walk herd/flock health check; confirm water and bedding", "domain": "livestock", "status": "open"})
+    if monitoring_pkt:
         items.append({"date": str(today + timedelta(days=2)), "task": "Review monitoring alerts / NDVI changes", "domain": "monitoring", "status": "open"})
+
+    # Season-aware defaults when packets are thin
     if not items:
-        items = [
-            {"date": str(today), "task": "Walk the farm and note top 3 priorities", "domain": "plan", "status": "open"},
-            {"date": str(today + timedelta(days=2)), "task": "Check irrigation / water status", "domain": "crop", "status": "open"},
-            {"date": str(today + timedelta(days=4)), "task": "Review marketplace / inventory listings", "domain": "business", "status": "open"},
-        ]
-    text = "Weekly plan draft (approve to save):\n" + "\n".join(f"- {i['date']}: {i['task']}" for i in items)
+        month = today.month
+        if month in (3, 4, 5) or "spring" in text_q:
+            items = [
+                {"date": str(today), "task": "Confirm soil temps and last-frost date before transplanting", "domain": "crop", "status": "open"},
+                {"date": str(today + timedelta(days=1)), "task": "Service irrigation and check field moisture", "domain": "crop", "status": "open"},
+                {"date": str(today + timedelta(days=2)), "task": "Walk livestock facilities; restock feed and bedding", "domain": "livestock", "status": "open"},
+                {"date": str(today + timedelta(days=3)), "task": "Review Precision Ag alerts and mark fields needing scouting", "domain": "monitoring", "status": "open"},
+                {"date": str(today + timedelta(days=4)), "task": "Update marketplace listings / inventory for spring demand", "domain": "business", "status": "open"},
+            ]
+        else:
+            items = [
+                {"date": str(today), "task": "Walk the farm and note top 3 priorities", "domain": "plan", "status": "open"},
+                {"date": str(today + timedelta(days=2)), "task": "Check irrigation / water status", "domain": "crop", "status": "open"},
+                {"date": str(today + timedelta(days=4)), "task": "Review marketplace / inventory listings", "domain": "business", "status": "open"},
+            ]
+
+    # Deduplicate empty tasks
+    items = [i for i in items if (i.get("task") or "").strip()]
+    header = "Weather mitigation + weekly plan:" if mitigation_text else "Weekly plan draft:"
+    text = header + "\n" + "\n".join(f"- {i['date']}: {i['task']}" for i in items)
+    if mitigation_text and "Mitigation plan" in mitigation_text:
+        text = mitigation_text + "\n\n" + text
     return {
         "source": "plan",
         "text": text,
         "items": items,
-        "recommendations": [i["task"] for i in items],
+        "recommendations": [i["task"] for i in items][:8],
         "propose_save": True,
     }
 
