@@ -125,10 +125,20 @@ def get_primary_business_id(people_id: str) -> Optional[str]:
     """Return the first active BusinessID for this PeopleID, or None if none found."""
     if not people_id:
         return None
+    try:
+        pid = int(people_id)
+    except (TypeError, ValueError):
+        return None
     rows = _query(
-        "SELECT TOP 1 BusinessID FROM BusinessAccess WHERE PeopleID = %s AND Active = 1 ORDER BY BusinessID",
-        (int(people_id),),
+        "SELECT TOP 1 BusinessID FROM BusinessAccess "
+        "WHERE PeopleID = %s AND (Active IS NULL OR Active = 1) ORDER BY BusinessID",
+        (pid,),
     )
+    if not rows:
+        rows = _query(
+            "SELECT TOP 1 BusinessID FROM PeopleBusiness WHERE PeopleID = %s ORDER BY BusinessID",
+            (pid,),
+        )
     if not rows:
         return None
     bid = _row_get(rows[0], "BusinessID", "businessid")
