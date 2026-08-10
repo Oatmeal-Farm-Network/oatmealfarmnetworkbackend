@@ -4,6 +4,7 @@ import logging
 import queue as _queue_mod
 import threading
 import time
+import uuid
 from typing import Dict, Any, List, Optional
 from langgraph.types import interrupt
 
@@ -3754,14 +3755,36 @@ def policy_gate_node(state: SaigeState) -> Dict[str, Any]:
 
 def hitl_gate_node(state: SaigeState) -> Dict[str, Any]:
     """Persist proposals and interrupt for human approve/edit/reject."""
+    from proposals_store import create_proposals
+
     print("[HITL] interrupt")
-    drafts = state.get("proposals") or []
-    rows = create_proposals(
-        people_id=str(state.get("people_id") or ""),
-        business_id=state.get("business_id"),
-        thread_id=str(state.get("thread_id") or ""),
-        drafts=drafts,
-    )
+    drafts = list(state.get("proposals") or [])
+    try:
+        rows = create_proposals(
+            people_id=str(state.get("people_id") or ""),
+            business_id=state.get("business_id"),
+            thread_id=str(state.get("thread_id") or ""),
+            drafts=drafts,
+        )
+    except Exception as e:
+        logger.error("[HITL] create_proposals failed: %s", e, exc_info=True)
+        # Still interrupt so the user can approve/reject ephemeral drafts.
+        rows = []
+        for draft in drafts:
+            rows.append(
+                {
+                    "proposal_id": draft.get("proposal_id") or f"tmp-{uuid.uuid4().hex[:12]}",
+                    "people_id": str(state.get("people_id") or ""),
+                    "business_id": str(state.get("business_id")) if state.get("business_id") else None,
+                    "thread_id": str(state.get("thread_id") or ""),
+                    "tool": draft.get("tool") or "unknown",
+                    "args": draft.get("args") or {},
+                    "risk": draft.get("risk") or "low_write",
+                    "domain": draft.get("domain") or "general",
+                    "summary": draft.get("summary") or "",
+                    "status": "pending",
+                }
+            )
     for i, row in enumerate(rows):
         if i < len(drafts):
             drafts[i]["proposal_id"] = row["proposal_id"]
@@ -3804,7 +3827,7 @@ def execute_node(state: SaigeState) -> Dict[str, Any]:
                 }
             ]
 
-    from proposals_store import decide_proposal
+    from proposals_store import decide_proposal, mark_executed
     from execute_registry import run_approved_tool
 
     for d in decisions:
