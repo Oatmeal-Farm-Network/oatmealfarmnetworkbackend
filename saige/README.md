@@ -1,6 +1,6 @@
 # Saige — AI Agricultural Advisory Assistant
 
-> Part of the [oatmealfarmnetworkbackend](https://github.com/Oatmeal-Farm-Network/oatmealfarmnetworkbackend) repo. For backend setup and how to run the full OFN stack locally, see the [backend README](../README.md) and [docs/SYSTEM.md](../docs/SYSTEM.md).
+> Part of the [oatmealfarmnetworkbackend](https://github.com/Oatmeal-Farm-Network/oatmealfarmnetworkbackend) repo. For backend setup and how to run the full OFN stack locally, see the [backend README](../README.md).
 
 A conversational AI system that provides farm-specific advice across livestock, crops, weather, and mixed topics. Built with LangGraph, FastAPI, and Google Gemini AI, backed by Firestore RAG and Redis for short-term memory.
 
@@ -59,7 +59,7 @@ Supported advisory domains:
 Frontend (React/Vite)
         │
         ▼
-FastAPI REST API  (api.py)
+FastAPI REST API  (app/api.py via root shim api.py)
         │
         ├── Redis  ── short-term message buffer (last N messages)
         │              rate limiter (per-thread INCR/EXPIRE)
@@ -68,19 +68,15 @@ FastAPI REST API  (api.py)
         ├── Firestore ── chat history persistence (chat-history DB)
         │                RAG knowledge collections (charlie DB)
         │
-        └── LangGraph Workflow  (graph.py)
+        └── LangGraph Workflow  (graph/ package)
                 │
-                ├── assessment_node
-                ├── routing_node
-                ├── weather_advisory_node
-                ├── livestock_advisory_node
-                ├── crop_advisory_node
-                ├── mixed_advisory_node
-                ├── bakasura_advisory_node
-                └── news_advisory_node
-                        │
-                        └── Google Gemini AI  (llm.py)
+                ├── User Agent → Supervisor → Specialists|Joke
+                ├── Synthesizer → Policy Gate → HITL → Execute
+                └── Google Gemini AI  (integrations/gemini.py)
 ```
+
+**Entrypoint:** `uvicorn api:app` (root `api.py` re-exports `app` from `app.api`).  
+Root `*.py` modules are **compatibility shims** — prefer editing package implementations.
 
 ---
 
@@ -88,27 +84,34 @@ FastAPI REST API  (api.py)
 
 ```
 saige/
-├── api.py                  # FastAPI app, endpoints, rate limiting, middleware
-├── graph.py                # LangGraph StateGraph construction and compilation
-├── nodes.py                # All node functions, routing logic, advisory engine
-├── models.py               # FarmState TypedDict and Pydantic models
-├── config.py               # Centralized env-var configuration and feature flags
-├── llm.py                  # Google Gemini LLM initialization
-├── rag.py                  # Firestore vector search (livestock, plant, bakasura, news)
-├── chat_history.py         # Firestore-backed conversation persistence
-├── message_buffer.py       # Redis short-term message buffer (last N messages)
-├── jwt_auth.py             # JWT Bearer token verification (FastAPI dependency)
-├── redis_client.py         # RedisClientManager (connection pooling, health checks)
-├── weather.py              # Open-Meteo weather service and LangChain tool wrapper
-├── database.py             # Azure SQL (pymssql) query helpers
-├── Data_Contract.py        # Pydantic data contracts for external integrations
-├── main.py                 # Application entry point / server startup
-├── sync_embeddings.py      # Script to sync embeddings into Firestore RAG collections
-├── seed_firestore.py       # Script to seed initial knowledge data into Firestore
-├── test_api_flow.py        # Integration tests for the full API flow
-├── test_main.py            # Unit tests for core logic
-└── test_redis.py           # Redis connectivity and buffer tests
+├── api.py                  # Shim → app/api.py (ASGI: uvicorn api:app)
+├── app/                    # FastAPI app, lifecycle, dependencies
+├── graph/                  # LangGraph farm graph, nodes, routing, state
+├── chat/                   # Chat turn handlers, streaming, history, buffer
+├── core/                   # config, security, policies, logging, paths
+├── schemas/                # Pydantic models + data contracts
+├── tools/                  # execute_registry, tool_policy, domain tools
+├── agents/sibling/         # Cassia, Pairsley, Rosemarie, Chef (HTTP siblings)
+├── integrations/           # Gemini, RAG, embeddings jobs, Firestore seed
+├── services/               # jokes, KB, cross-links, push, history, learning
+├── data/                   # sql/, redis/, storage/ (+ runtime JSON stubs)
+├── workers/                # farm_digest, proactive scheduled jobs
+├── tests/                  # pytest package
+└── docs/                   # Migration plan + architecture notes
 ```
+
+Canonical homes (shims still work for flat imports):
+
+| Concern | Implementation |
+|---------|----------------|
+| API routes | `app/api.py` |
+| Config | `core/config.py` |
+| Graph / nodes | `graph/graph.py`, `graph/nodes.py` |
+| Chat / history / buffer | `chat/service.py`, `chat/history.py`, `chat/buffer.py` |
+| LLM / RAG | `integrations/gemini.py`, `integrations/rag.py` |
+| SQL / Redis / media | `data/sql/`, `data/redis/`, `data/storage/` |
+| Sibling agents | `agents/sibling/` |
+| Cron jobs | `workers/` |
 
 ---
 
@@ -165,7 +168,7 @@ RAG is enabled only when `FIRESTORE_AVAILABLE` and the full RAG dependency stack
 
 ## Chat History & Message Buffer
 
-### Firestore Chat History (`chat_history.py`)
+### Firestore Chat History (`chat/history.py`, shim: `chat_history.py`)
 
 Persists every conversation to the `chat-history` Firestore database under:
 
@@ -181,7 +184,7 @@ Key operations:
 - `get_analytics()` — aggregate stats (completion rate, type distribution, response latency)
 - `delete_thread()` — batch-deletes messages then the thread doc
 
-### Redis Message Buffer (`message_buffer.py`)
+### Redis Message Buffer (`chat/buffer.py`, shim: `message_buffer.py`)
 
 Keeps the last `SHORT_TERM_N` (default 20) messages per thread in Redis for fast in-context history injection. TTL defaults to 24 hours (`SHORT_TERM_TTL_SECONDS`).
 
@@ -320,7 +323,6 @@ DB_PASSWORD=
 DB_NAME=
 
 # --- API ---
-# Supports a comma-separated list for production origins.
 FRONTEND_URL=http://localhost:5173
 ALLOW_ALL_ORIGINS=false
 
@@ -393,7 +395,7 @@ API available at `http://localhost:8000`. Interactive docs at `http://localhost:
 
 ### Mounted under the unified backend
 
-When running `server_all.py` from the repo root, Saige is served at `/saige/*` (e.g. `http://localhost:8000/saige/health`). See [docs/SYSTEM.md](../docs/SYSTEM.md).
+When running `server_all.py` from the repo root, Saige is served at `/saige/*` (e.g. `http://localhost:8000/saige/health`). See the [backend README](../README.md).
 
 ### Utility Scripts
 
@@ -705,7 +707,7 @@ Each advisory node:
 
 ### Keyword Scoring
 
-From `nodes.py`, the router maintains a keyword dictionary:
+From `graph/nodes.py`, the router maintains a keyword dictionary:
 
 ```python
 ADVISORY_KEYWORDS = {
@@ -854,7 +856,7 @@ For best RAG results:
 | **gemini-2.0-flash** | ⚡⚡ | ✓✓✓ | $$ | Better reasoning |
 | **gemini-1.5-pro** | ⚡ | ✓✓✓✓ | $$$ | Complex analysis |
 
-Change in `config.py`:
+Change in `core/config.py`:
 ```python
 GEMINI_MODEL = "gemini-2.5-flash-lite"  # Fast (default)
 # or
@@ -863,7 +865,7 @@ GEMINI_MODEL = "gemini-2.0-flash"       # Slower but higher quality
 
 ### 2. RAG Optimization
 
-Tune in `config.py`:
+Tune in `core/config.py`:
 
 ```python
 RAG_TOP_K = 10          # Number of documents to retrieve (default 10)
@@ -915,7 +917,7 @@ Indexes:
 
 ### 1. Logging
 
-Enable structured logging in `api.py`:
+Enable structured logging in `app/api.py`:
 
 ```python
 import logging
@@ -999,7 +1001,7 @@ for thread in threads:
 
 ### 1. Adding a New Advisory Node
 
-**Step 1: Create node function in `nodes.py`:**
+**Step 1: Create node function in `graph/nodes.py`:**
 
 ```python
 async def my_advisory_node(state: FarmState) -> FarmState:
@@ -1032,7 +1034,7 @@ async def my_advisory_node(state: FarmState) -> FarmState:
     
     return state
 
-# Step 2: Register in graph (graph.py)
+# Step 2: Register in graph (graph/graph.py)
 graph.add_node("my_advisory_node", my_advisory_node)
 graph.add_edge("routing_node", "my_advisory_node")
 graph.add_edge("my_advisory_node", END)
@@ -1069,7 +1071,7 @@ results = await custom_rag.search("my query")
 
 ### 3. Custom LLM Provider
 
-Replace Gemini with another provider in `llm.py`:
+Replace Gemini with another provider in `integrations/gemini.py`:
 
 ```python
 # Example: OpenAI instead of Gemini
@@ -1168,16 +1170,6 @@ pytest --cov=saige --cov-report=html
 
 ## Deployment
 
-### Production deployment notes
-
-Saige is now set up for production-style deployments with the following expectations:
-
-- The container must bind to the runtime port provided by the platform. On Cloud Run this is `PORT`; the service should not hardcode `8000` when deployed there.
-- `FRONTEND_URL` should be set to the real production origin(s) for CORS. It supports a comma-separated list when multiple origins are needed.
-- `ALLOW_ALL_ORIGINS` should normally stay `false` in production.
-- `SECRET_KEY` should be injected via environment variables or a platform secret store; do not hardcode it into source-controlled deployment scripts.
-- The weather path now defaults to a free, keyless fallback path for U.S. locations (NWS/Open-Meteo), so no paid weather API key is required for the common case.
-
 ### Docker
 
 ```bash
@@ -1195,7 +1187,7 @@ gcloud run deploy saige \
   --source . \
   --platform managed \
   --region us-central1 \
-  --set-env-vars SECRET_KEY="...",GOOGLE_API_KEY="...",FRONTEND_URL="https://your-domain.com",ALLOW_ALL_ORIGINS=false
+  --set-env-vars SECRET_KEY="...",GOOGLE_API_KEY="..."
 ```
 
 ### Kubernetes
@@ -1250,7 +1242,7 @@ spec:
 | `Redis checkpoint indexes missing` | API falls back to `MemorySaver` automatically; restart Redis and re-run |
 | `401 UNAUTHENTICATED` | Verify API key or service account credentials file path |
 | CORS errors | Ensure backend is on port 8000 and `FRONTEND_URL` matches |
-| `No such index` in Redis logs | Redis checkpoint index not initialized; the fallback handler in `api.py` covers this automatically |
+| `No such index` in Redis logs | Redis checkpoint index not initialized; the fallback handler in `app/api.py` covers this automatically |
 | Slow response times (>5s) | Check LLM model (switch to flash-lite), reduce RAG_TOP_K, verify Redis/Firestore latency |
 | `Connection refused` on Redis | Verify Redis is running: `redis-cli ping` should return `PONG` |
 | Firestore quota exceeded | Check daily write quota in GCP console; increase quota if needed |
@@ -1284,7 +1276,7 @@ Recommended: At least use Redis for better production experience.
 
 **A:** Currently hardcoded in `assessment_node`. To customize:
 
-1. Modify the system prompt in `nodes.py`
+1. Modify the system prompt in `graph/nodes.py`
 2. Or implement a custom question database in Firestore
 3. Update `assessment_node` to fetch questions from DB
 
@@ -1322,7 +1314,7 @@ Example: "My cattle are losing weight and I think it's the new corn I planted" �
 **A:**
 1. **Health checks**: `/health`, `/health/redis`, `/health/firestore`, `/ready`
 2. **Metrics endpoint**: `/analytics` (aggregated stats)
-3. **Logging**: Enable in `api.py`, ship logs to GCP Cloud Logging
+3. **Logging**: Enable in `app/api.py`, ship logs to GCP Cloud Logging
 4. **Tracing**: Add OpenTelemetry instrumentation
 5. **Alerts**: Set up alerts on `/ready` (if returns 503, something is down)
 

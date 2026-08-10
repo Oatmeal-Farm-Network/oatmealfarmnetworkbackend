@@ -6,12 +6,12 @@
 
 | Module | Purpose |
 |--------|---------|
-| `chat_history.py` | Firestore read/write helpers |
-| `redis_client.py` | Redis connection manager with pooling |
-| `message_buffer.py` | Last-N message buffer (Redis) |
-| `graph.py` | LangGraph compilation + Redis checkpointing |
-| `config.py` | All environment-driven configuration |
-| `api.py` | FastAPI endpoints, request flow, rate limiter |
+| `chat/history.py` (shim: `chat_history.py`) | Firestore read/write helpers |
+| `data/redis/client.py` (shim: `redis_client.py`) | Redis connection manager with pooling |
+| `chat/buffer.py` (shim: `message_buffer.py`) | Last-N message buffer (Redis) |
+| `graph/graph.py` (package: `from graph import graph`) | LangGraph compilation + Redis checkpointing |
+| `core/config.py` (shim: `config.py`) | All environment-driven configuration |
+| `app/api.py` (shim: `api.py` → `uvicorn api:app`) | FastAPI endpoints, request flow, rate limiter |
 
 **Tests:**
 
@@ -75,7 +75,7 @@ Canonical message shape used everywhere:
 
 ## 3. Firestore (Long-Term Persistence)
 
-Implementation: `chat_history.py` · Config: `THREADS_COLLECTION` in `config.py`
+Implementation: `chat/history.py` · Config: `THREADS_COLLECTION` in `core/config.py`
 
 ### Schema
 
@@ -203,7 +203,7 @@ All Firestore operations emit structured log lines via `logging.getLogger("farm_
 
 ## 4. Redis (Short-Term Memory + Session)
 
-Implementation: `redis_client.py` + `message_buffer.py` · Config: `config.py`
+Implementation: `data/redis/client.py` + `chat/buffer.py` · Config: `core/config.py`
 
 ### Provisioning
 
@@ -241,7 +241,7 @@ Key format: `thread:{thread_id}:last_messages`
 
 ### LangGraph Checkpointing
 
-`graph.py` compiles the graph with `RedisSaver` when Redis is available:
+`graph/graph.py` compiles the graph with `RedisSaver` when Redis is available:
 
 ```python
 from langgraph.checkpoint.redis import RedisSaver
@@ -254,7 +254,7 @@ Falls back to `MemorySaver` if:
 - `langgraph-checkpoint-redis` is not installed
 - Redis connection fails
 
-`api.py` has `safe_graph_stream()` which catches missing checkpoint index errors mid-stream and transparently falls back to `MemorySaver` for that request.
+`app/api.py` has `safe_graph_stream()` which catches missing checkpoint index errors mid-stream and transparently falls back to `MemorySaver` for that request.
 
 ### Health Check
 

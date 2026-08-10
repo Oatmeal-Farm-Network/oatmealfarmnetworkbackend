@@ -1,5 +1,7 @@
 # Changes — February 11, 2026
 
+> **Note:** Paths below refer to the pre-package layout. Implementations now live under `app/`, `core/`, `chat/`, etc., with root compatibility shims (`config.py` → `core/config.py`, `chat_history.py` → `chat/history.py`, …).
+
 ## 1. Fixed Firestore Chat History Not Storing Data
 
 **Problem:** Chat messages were never saved to Firestore because `chat_history.py` was gated behind `RAG_AVAILABLE`, which requires the full RAG stack (pymssql, VertexAI, etc.). If any dependency was missing, chat history was silently disabled.

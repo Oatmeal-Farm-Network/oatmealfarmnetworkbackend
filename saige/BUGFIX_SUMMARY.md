@@ -56,16 +56,15 @@ Updated `frontend/components/advisor.tsx` to:
 
 ### 1. Start Backend (Terminal 1)
 ```bash
-cd C:\Users\bring\Desktop\charlie_lgraph
-python api.py
+cd saige
+uvicorn api:app --reload --port 8000
 ```
 
 Should see:
 ```
 [LLM] Using Vertex AI (gemini-2.5-flash-lite)
-[Graph] Building farm advisory graph...
-✓ Farm Advisory Graph Compiled Successfully!
-[API] Starting Farm Advisory API on port 8000
+[Graph] Building Saige farm graph...
+Saige Graph Compiled
 ```
 
 ### 2. Start Frontend (Terminal 2)
