@@ -82,6 +82,11 @@ def _append_event_sql(proposal_id: str, event_type: str, meta: Optional[Dict[str
     )
 
 
+def _is_weekly_plan_save(draft: Dict[str, Any]) -> bool:
+    """Weekly plans stay in chat only — never HITL save_plan cards."""
+    return (draft.get("tool") or "").strip().lower() == "save_plan"
+
+
 def create_proposals(
     *,
     people_id: str,
@@ -91,9 +96,10 @@ def create_proposals(
 ) -> List[Dict[str, Any]]:
     created: List[Dict[str, Any]] = []
     now = _utcnow()
+    drafts = [d for d in (drafts or []) if not _is_weekly_plan_save(d)]
 
     if _use_sql():
-        for draft in drafts or []:
+        for draft in drafts:
             pid = str(uuid.uuid4())
             people_i = int(people_id) if str(people_id).isdigit() else None
             biz_i = int(business_id) if business_id and str(business_id).isdigit() else None
@@ -138,7 +144,7 @@ def create_proposals(
 
     with _LOCK:
         data = _ensure_json()
-        for draft in drafts or []:
+        for draft in drafts:
             row = {
                 "proposal_id": str(uuid.uuid4()),
                 "people_id": str(people_id or ""),
@@ -295,6 +301,8 @@ def list_proposals(
         if status:
             where.append("Status=%s")
             params.append(status)
+        where.append("LOWER(ToolName) <> %s")
+        params.append("save_plan")
         sql = (
             f"SELECT TOP {max(1, int(limit))} * FROM dbo.SaigeProposals "
             f"WHERE {' AND '.join(where)} ORDER BY CreatedAt DESC"
@@ -310,6 +318,7 @@ def list_proposals(
         rows = [r for r in rows if r.get("business_id") == str(business_id)]
     if status:
         rows = [r for r in rows if r.get("status") == status]
+    rows = [r for r in rows if (r.get("tool") or "").strip().lower() != "save_plan"]
     rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
     return rows[:limit]
 
