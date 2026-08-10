@@ -136,6 +136,84 @@ def _describe_ndvi(mean: Optional[float]) -> str:
 # The LLM should NOT try to guess people_id; nodes.py overrides it.
 # ---------------------------------------------------------------------------
 
+def _fields_for_people(people_id: Optional[str]) -> List[Dict[str, Any]]:
+    biz_ids = _business_ids_for_people(people_id)
+    if not biz_ids:
+        return []
+    placeholders = ",".join(["%s"] * len(biz_ids))
+    return _query(
+        f"SELECT FieldID, Name, CropType, FieldSizeHectares, PlantingDate, "
+        f"MonitoringEnabled, Address FROM dbo.Field "
+        f"WHERE BusinessID IN ({placeholders}) AND DeletedAt IS NULL "
+        f"ORDER BY Name",
+        tuple(biz_ids),
+    )
+
+
+def resolve_field_by_name(name_or_query: str, people_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Match a user's field by name (exact, then fuzzy contains). Returns field row or None."""
+    q = (name_or_query or "").strip().lower()
+    if not q:
+        return None
+    rows = _fields_for_people(people_id)
+    if not rows:
+        return None
+
+    def _fname(row: Dict[str, Any]) -> str:
+        return str(row.get("name") or row.get("Name") or "").strip()
+
+    # Exact name match
+    for row in rows:
+        if _fname(row).lower() == q:
+            return row
+
+    # Query contains field name (prefer longest name to avoid "field" false positives)
+    named = sorted(
+        [( _fname(r), r) for r in rows if _fname(r)],
+        key=lambda t: len(t[0]),
+        reverse=True,
+    )
+    for fname, row in named:
+        fl = fname.lower()
+        if len(fl) >= 3 and fl in q:
+            return row
+
+    # Strip common filler words and retry contains both ways
+    cleaned = q
+    for noise in (
+        "how is my", "how's my", "how is", "how's", "doing", "right now",
+        "status of", "check on", "look at", "my field", "the field", "field",
+        "please", "?",
+    ):
+        cleaned = cleaned.replace(noise, " ")
+    cleaned = " ".join(cleaned.split()).strip()
+    if cleaned:
+        for fname, row in named:
+            fl = fname.lower()
+            if fl == cleaned or cleaned in fl or fl in cleaned:
+                return row
+    return None
+
+
+@tool
+def resolve_field_by_name_tool(name: str, people_id: str = "") -> str:
+    """Resolve a farmer's field by name (e.g. "test field 4", "Alfalfa field 9")
+    to its FieldID. ALWAYS call this before get_field_analysis_tool when the user
+    mentions a field by name instead of a numeric ID. Never ask the user for a
+    field ID if you can resolve it from the name. people_id is injected."""
+    row = resolve_field_by_name(name, people_id)
+    if not row:
+        listed = list_my_fields_tool.invoke({"people_id": people_id})
+        return (
+            f"Could not find a field matching '{name}'. "
+            f"Ask the user to pick from their fields:\n{listed}"
+        )
+    fid = row.get("fieldid") or row.get("FieldID")
+    fname = row.get("name") or row.get("Name") or "Unnamed"
+    crop = row.get("croptype") or row.get("CropType") or "—"
+    return f"Resolved '{name}' → FieldID {fid} ({fname}, crop: {crop}). Use field_id={fid} for analysis tools."
+
+
 @tool
 def list_my_fields_tool(people_id: str = "") -> str:
     """List every field/plot monitored for the current user in the precision-ag
@@ -144,17 +222,9 @@ def list_my_fields_tool(people_id: str = "") -> str:
     when the user asks "what fields do I have", "show my farm plots", "list
     my crops", or any question that needs the ID of one of their fields.
     Do not pass people_id — it is injected automatically from session state."""
-    biz_ids = _business_ids_for_people(people_id)
-    if not biz_ids:
+    rows = _fields_for_people(people_id)
+    if not _business_ids_for_people(people_id):
         return "No fields found — your account is not linked to any business with monitored fields."
-    placeholders = ",".join(["%s"] * len(biz_ids))
-    rows = _query(
-        f"SELECT FieldID, Name, CropType, FieldSizeHectares, PlantingDate, "
-        f"MonitoringEnabled, Address FROM dbo.Field "
-        f"WHERE BusinessID IN ({placeholders}) AND DeletedAt IS NULL "
-        f"ORDER BY Name",
-        tuple(biz_ids),
-    )
     if not rows:
         return "You have no fields set up in the precision-ag system yet. Add one in the Crop Monitor dashboard to start tracking it."
     lines = [f"Fields ({len(rows)}):"]
@@ -1783,6 +1853,7 @@ def get_price_trends_tool(commodity: str = "", days: int = 30, people_id: str = 
 
 precision_ag_tools = [
     list_my_fields_tool,
+    resolve_field_by_name_tool,
     get_field_analysis_tool,
     get_field_history_tool,
     get_field_alerts_tool,
