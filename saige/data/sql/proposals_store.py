@@ -83,7 +83,7 @@ def _append_event_sql(proposal_id: str, event_type: str, meta: Optional[Dict[str
 
 
 def _is_weekly_plan_save(draft: Dict[str, Any]) -> bool:
-    """Weekly plans stay in chat only — never HITL save_plan cards."""
+    """Block legacy save_plan HITL cards (weekly-plan feature removed)."""
     return (draft.get("tool") or "").strip().lower() == "save_plan"
 
 
