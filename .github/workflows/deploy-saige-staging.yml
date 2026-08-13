@@ -1,6 +1,11 @@
 name: Deploy Saige Staging
 
 on:
+  push:
+    branches: [GCP/backend-staging]
+    paths:
+      - 'saige/**'
+      - '.github/workflows/deploy-saige-staging.yml'
   workflow_dispatch:
 
 env:
@@ -28,7 +33,7 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.STAGING_GCP_WIF_PROVIDER }}
+          workload_identity_provider: ${{ secrets.STAGING_GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT }}
 
       - name: Set up Cloud SDK
