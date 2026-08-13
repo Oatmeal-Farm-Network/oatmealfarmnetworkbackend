@@ -52,6 +52,24 @@ jobs:
         run: |
           docker push "${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}:${COMMIT_SHA}"
 
+      - name: Resolve Redis secret
+        shell: bash
+        run: |
+          SECRETS="SECRET_KEY=SECRET_KEY:latest,CRON_SECRET=CRON_SECRET:latest"
+          REDIS_ENABLED=false
+          REDIS_FALLBACK=true
+          if gcloud secrets describe REDIS_URL --project "${PROJECT_ID}" >/dev/null 2>&1; then
+            SECRETS="${SECRETS},REDIS_URL=REDIS_URL:latest"
+            REDIS_ENABLED=true
+            REDIS_FALLBACK=false
+            echo "REDIS_URL secret found — enabling Redis."
+          else
+            echo "::warning::REDIS_URL secret not found in ${PROJECT_ID}; deploying with REDIS_ENABLED=false."
+          fi
+          echo "SAIGE_SECRETS=${SECRETS}" >> "$GITHUB_ENV"
+          echo "REDIS_ENABLED_VALUE=${REDIS_ENABLED}" >> "$GITHUB_ENV"
+          echo "REDIS_ALLOW_MEMORY_FALLBACK_VALUE=${REDIS_FALLBACK}" >> "$GITHUB_ENV"
+
       - name: Deploy to Cloud Run (staging)
         run: |
           gcloud run deploy "${SERVICE_NAME}" \
@@ -66,8 +84,8 @@ jobs:
             --min-instances 1 \
             --max-instances 10 \
             --service-account "saige-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
-            --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},GOOGLE_GENAI_USE_VERTEXAI=true,VERTEX_AI_MODEL=gemini-2.5-flash-lite,GEMINI_MODEL=gemini-2.5-flash-lite,SAIGE_LLM_PROVIDER=gemini,FIRESTORE_DATABASE=charlie,CHAT_HISTORY_DATABASE=chat-history,REDIS_ENABLED=true,REDIS_ALLOW_MEMORY_FALLBACK=false,RAG_HYBRID_ENABLED=true,RAG_RERANK_ENABLED=true,RAG_CACHE_ENABLED=true,ALLOW_ALL_ORIGINS=true,FRONTEND_URL=${{ vars.STAGING_FRONTEND_URL || 'https://oatmeal-frontend-staging-1087130530284.us-central1.run.app' }},OFN_BACKEND_URL=${{ vars.STAGING_BACKEND_URL || 'https://oatmeal-backend-staging-lrviw4iujq-uc.a.run.app' }}" \
-            --set-secrets "SECRET_KEY=SECRET_KEY:latest,CRON_SECRET=CRON_SECRET:latest,REDIS_URL=REDIS_URL:latest"
+            --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},GOOGLE_GENAI_USE_VERTEXAI=true,VERTEX_AI_MODEL=gemini-2.5-flash-lite,GEMINI_MODEL=gemini-2.5-flash-lite,SAIGE_LLM_PROVIDER=gemini,FIRESTORE_DATABASE=charlie,CHAT_HISTORY_DATABASE=chat-history,REDIS_ENABLED=${REDIS_ENABLED_VALUE},REDIS_ALLOW_MEMORY_FALLBACK=${REDIS_ALLOW_MEMORY_FALLBACK_VALUE},RAG_HYBRID_ENABLED=true,RAG_RERANK_ENABLED=true,RAG_CACHE_ENABLED=true,ALLOW_ALL_ORIGINS=true,FRONTEND_URL=${{ vars.STAGING_FRONTEND_URL || 'https://oatmeal-frontend-staging-1087130530284.us-central1.run.app' }},OFN_BACKEND_URL=${{ vars.STAGING_BACKEND_URL || 'https://oatmeal-backend-staging-lrviw4iujq-uc.a.run.app' }}" \
+            --set-secrets "${SAIGE_SECRETS}"
 
       - name: Show deployed URL
         run: |
