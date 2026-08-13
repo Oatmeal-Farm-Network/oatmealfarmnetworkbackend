@@ -574,7 +574,8 @@ async def chat(
         image_data=getattr(request, "image_data", None),
         product=product,
     )
-    status_code = 200 if result.get("status") in {"success", "interrupted"} else 500
+    # success / interrupted / complete are expected client outcomes (HITL pauses as interrupted).
+    status_code = 200 if result.get("status") in {"success", "interrupted", "complete"} else 500
     return JSONResponse(status_code=status_code, content=result)
 
 
