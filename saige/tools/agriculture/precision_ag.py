@@ -22,6 +22,7 @@ so a user cannot ask about a field belonging to another business.
 from __future__ import annotations
 
 import os
+from contextvars import ContextVar
 from typing import List, Optional, Dict, Any
 from langchain_core.tools import tool
 
@@ -32,6 +33,19 @@ try:
     _PMS_AVAILABLE = True
 except ImportError:
     _PMS_AVAILABLE = False
+
+# Session business context injected by advisory/monitoring nodes so tools that
+# only receive people_id still resolve the active farm.
+_SESSION_BUSINESS_ID: ContextVar[Optional[str]] = ContextVar("saige_precision_biz", default=None)
+
+
+def set_session_business_id(business_id: Optional[str]) -> None:
+    """Set active BusinessID for the current advisory turn (precision-ag tools)."""
+    try:
+        bid = str(business_id).strip() if business_id not in (None, "", 0, "0") else None
+        _SESSION_BUSINESS_ID.set(bid)
+    except Exception:
+        _SESSION_BUSINESS_ID.set(None)
 
 
 # ---------------------------------------------------------------------------
@@ -75,14 +89,47 @@ def _query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
             pass
 
 
-def _business_ids_for_people(people_id: Optional[str]) -> List[int]:
-    if not people_id:
-        return []
-    rows = _query(
-        "SELECT BusinessID FROM dbo.BusinessAccess WHERE PeopleID = %s AND (Active IS NULL OR Active = 1)",
-        (str(people_id),),
-    )
-    return [int(r["businessid"]) for r in rows if r.get("businessid") is not None]
+def _business_ids_for_people(
+    people_id: Optional[str],
+    preferred_business_id: Optional[str] = None,
+) -> List[int]:
+    """Resolve BusinessIDs the user can access.
+
+    Prefers dbo.BusinessAccess, falls back to dbo.PeopleBusiness, and finally
+    trusts a session-provided preferred_business_id when ACL tables are empty
+    or missing the row (common after Cassia onboarding).
+    """
+    ids: List[int] = []
+    if people_id and str(people_id).isdigit():
+        pid = int(people_id)
+        rows = _query(
+            "SELECT BusinessID FROM dbo.BusinessAccess "
+            "WHERE PeopleID = %s AND (Active IS NULL OR Active = 1)",
+            (pid,),
+        )
+        ids = [int(r["businessid"]) for r in rows if r.get("businessid") is not None]
+        if not ids:
+            # Cassia / legacy links may only exist on PeopleBusiness
+            rows = _query(
+                "SELECT BusinessID FROM dbo.PeopleBusiness WHERE PeopleID = %s",
+                (pid,),
+            )
+            ids = [int(r["businessid"]) for r in rows if r.get("businessid") is not None]
+
+    if preferred_business_id and str(preferred_business_id).isdigit():
+        pref = int(preferred_business_id)
+        if pref > 0 and pref not in ids:
+            # Trust session business when ACL returned nothing, or append if ACL
+            # already has other businesses (session is the active farm context).
+            if not ids:
+                ids = [pref]
+            else:
+                ids = [pref] + [i for i in ids if i != pref]
+    if not ids:
+        session_bid = _SESSION_BUSINESS_ID.get()
+        if session_bid and str(session_bid).isdigit() and int(session_bid) > 0:
+            ids = [int(session_bid)]
+    return ids
 
 
 def _field_accessible(field_id: int, business_ids: List[int]) -> Optional[Dict[str, Any]]:
@@ -136,27 +183,108 @@ def _describe_ndvi(mean: Optional[float]) -> str:
 # The LLM should NOT try to guess people_id; nodes.py overrides it.
 # ---------------------------------------------------------------------------
 
-@tool
-def list_my_fields_tool(people_id: str = "") -> str:
-    """List every field/plot monitored for the current user in the precision-ag
-    system (CropMonitoringBackend). Returns field ID, name, crop type, size
-    (hectares), planting date, and whether satellite monitoring is on. Use
-    when the user asks "what fields do I have", "show my farm plots", "list
-    my crops", or any question that needs the ID of one of their fields.
-    Do not pass people_id — it is injected automatically from session state."""
-    biz_ids = _business_ids_for_people(people_id)
+def _fields_for_people(
+    people_id: Optional[str],
+    preferred_business_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    biz_ids = _business_ids_for_people(people_id, preferred_business_id)
     if not biz_ids:
-        return "No fields found — your account is not linked to any business with monitored fields."
+        return []
     placeholders = ",".join(["%s"] * len(biz_ids))
-    rows = _query(
+    return _query(
         f"SELECT FieldID, Name, CropType, FieldSizeHectares, PlantingDate, "
         f"MonitoringEnabled, Address FROM dbo.Field "
         f"WHERE BusinessID IN ({placeholders}) AND DeletedAt IS NULL "
         f"ORDER BY Name",
         tuple(biz_ids),
     )
+
+
+def resolve_field_by_name(
+    name_or_query: str,
+    people_id: Optional[str] = None,
+    preferred_business_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Match a user's field by name (exact, then fuzzy contains). Returns field row or None."""
+    q = (name_or_query or "").strip().lower()
+    if not q:
+        return None
+    rows = _fields_for_people(people_id, preferred_business_id)
     if not rows:
-        return "You have no fields set up in the precision-ag system yet. Add one in the Crop Monitor dashboard to start tracking it."
+        return None
+
+    def _fname(row: Dict[str, Any]) -> str:
+        return str(row.get("name") or row.get("Name") or "").strip()
+
+    # Exact name match
+    for row in rows:
+        if _fname(row).lower() == q:
+            return row
+
+    # Query contains field name (prefer longest name to avoid "field" false positives)
+    named = sorted(
+        [( _fname(r), r) for r in rows if _fname(r)],
+        key=lambda t: len(t[0]),
+        reverse=True,
+    )
+    for fname, row in named:
+        fl = fname.lower()
+        if len(fl) >= 3 and fl in q:
+            return row
+
+    # Strip common filler words and retry contains both ways
+    cleaned = q
+    for noise in (
+        "how is my", "how's my", "how is", "how's", "doing", "right now",
+        "status of", "check on", "look at", "my field", "the field", "field",
+        "please", "?",
+    ):
+        cleaned = cleaned.replace(noise, " ")
+    cleaned = " ".join(cleaned.split()).strip()
+    if cleaned:
+        for fname, row in named:
+            fl = fname.lower()
+            if fl == cleaned or cleaned in fl or fl in cleaned:
+                return row
+    return None
+
+
+@tool
+def resolve_field_by_name_tool(name: str, people_id: str = "", business_id: str = "") -> str:
+    """Resolve a farmer's field by name (e.g. "test field 4", "Alfalfa field 9")
+    to its FieldID. ALWAYS call this before get_field_analysis_tool when the user
+    mentions a field by name instead of a numeric ID. Never ask the user for a
+    field ID if you can resolve it from the name. people_id is injected."""
+    row = resolve_field_by_name(name, people_id, business_id or None)
+    if not row:
+        listed = list_my_fields_tool.invoke({"people_id": people_id, "business_id": business_id})
+        return (
+            f"Could not find a field matching '{name}'. "
+            f"Ask the user to pick from their fields:\n{listed}"
+        )
+    fid = row.get("fieldid") or row.get("FieldID")
+    fname = row.get("name") or row.get("Name") or "Unnamed"
+    crop = row.get("croptype") or row.get("CropType") or "—"
+    return f"Resolved '{name}' → FieldID {fid} ({fname}, crop: {crop}). Use field_id={fid} for analysis tools."
+
+
+@tool
+def list_my_fields_tool(people_id: str = "", business_id: str = "") -> str:
+    """List every field/plot monitored for the current user in the precision-ag
+    system (CropMonitoringBackend). Returns field ID, name, crop type, size
+    (hectares), planting date, and whether satellite monitoring is on. Use
+    when the user asks "what fields do I have", "show my farm plots", "list
+    my crops", or any question that needs the ID of one of their fields.
+    Do not pass people_id — it is injected automatically from session state."""
+    biz_ids = _business_ids_for_people(people_id, business_id or None)
+    rows = _fields_for_people(people_id, business_id or None)
+    if not biz_ids:
+        return "No fields found — your account is not linked to any business with monitored fields."
+    if not rows:
+        return (
+            "You have no fields set up in the precision-ag system yet. "
+            "Ask Saige to create a field, or add one in the Crop Monitor dashboard to start tracking it."
+        )
     lines = [f"Fields ({len(rows)}):"]
     for f in rows:
         size = _fmt_num(f.get("fieldsizehectares"), 2)
@@ -173,14 +301,14 @@ def list_my_fields_tool(people_id: str = "") -> str:
 
 
 @tool
-def get_field_analysis_tool(field_id: int, people_id: str = "") -> str:
+def get_field_analysis_tool(field_id: int, people_id: str = "", business_id: str = "") -> str:
     """Get the latest satellite crop analysis for a specific field — vegetation
     indices (NDVI, EVI, SAVI, etc.), analysis date, cloud percent. Also shows
     the trend vs. the previous analysis so the farmer knows if the field is
     improving or declining. Use when the user asks "how is field X doing",
     "what's the NDVI on my corn field", "is my field healthy", or wants to
     judge current crop condition. people_id is injected from session state."""
-    biz_ids = _business_ids_for_people(people_id)
+    biz_ids = _business_ids_for_people(people_id, business_id or None)
     if not biz_ids:
         return "Cannot look up field analysis — your account is not linked to any business."
     field = _field_accessible(int(field_id), biz_ids)
@@ -1783,6 +1911,7 @@ def get_price_trends_tool(commodity: str = "", days: int = 30, people_id: str = 
 
 precision_ag_tools = [
     list_my_fields_tool,
+    resolve_field_by_name_tool,
     get_field_analysis_tool,
     get_field_history_tool,
     get_field_alerts_tool,

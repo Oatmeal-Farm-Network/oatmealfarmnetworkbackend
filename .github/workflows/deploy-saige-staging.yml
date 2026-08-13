@@ -1,0 +1,72 @@
+name: Deploy Saige Staging
+
+on:
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID }}
+  REGION: ${{ vars.STAGING_REGION || 'us-central1' }}
+  GAR_REPOSITORY: ${{ vars.STAGING_ARTIFACT_REGISTRY_REPOSITORY || 'oatmeal-farm-registry' }}
+  SERVICE_NAME: oatmeal-saige-staging
+  IMAGE_NAME: saige
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Derive commit SHA tag
+        shell: bash
+        run: echo "COMMIT_SHA=${GITHUB_SHA::12}" >> "$GITHUB_ENV"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.STAGING_GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Build Docker image
+        run: |
+          docker build -f saige/Dockerfile.backend \
+            -t "${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}:${COMMIT_SHA}" \
+            ./saige
+
+      - name: Push Docker image
+        run: |
+          docker push "${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}:${COMMIT_SHA}"
+
+      - name: Deploy to Cloud Run (staging)
+        run: |
+          gcloud run deploy "${SERVICE_NAME}" \
+            --image "${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}:${COMMIT_SHA}" \
+            --region "${REGION}" \
+            --project "${PROJECT_ID}" \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 8000 \
+            --memory 2Gi \
+            --cpu 2 \
+            --min-instances 1 \
+            --max-instances 10 \
+            --service-account "saige-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+            --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},GOOGLE_GENAI_USE_VERTEXAI=true,VERTEX_AI_MODEL=gemini-2.5-flash-lite,GEMINI_MODEL=gemini-2.5-flash-lite,SAIGE_LLM_PROVIDER=gemini,FIRESTORE_DATABASE=charlie,CHAT_HISTORY_DATABASE=chat-history,REDIS_ENABLED=true,REDIS_ALLOW_MEMORY_FALLBACK=false,RAG_HYBRID_ENABLED=true,RAG_RERANK_ENABLED=true,RAG_CACHE_ENABLED=true,ALLOW_ALL_ORIGINS=true,FRONTEND_URL=${{ vars.STAGING_FRONTEND_URL || 'https://oatmeal-frontend-staging-1087130530284.us-central1.run.app' }},OFN_BACKEND_URL=${{ vars.STAGING_BACKEND_URL || 'https://oatmeal-backend-staging-lrviw4iujq-uc.a.run.app' }}" \
+            --set-secrets "SECRET_KEY=SECRET_KEY:latest,CRON_SECRET=CRON_SECRET:latest,REDIS_URL=REDIS_URL:latest"
+
+      - name: Show deployed URL
+        run: |
+          gcloud run services describe "${SERVICE_NAME}" \
+            --region "${REGION}" \
+            --project "${PROJECT_ID}" \
+            --format='value(status.url)'

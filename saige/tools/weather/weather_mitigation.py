@@ -36,10 +36,15 @@ HAZARD_PLAYBOOKS: Dict[str, Dict[str, List]] = {
             "Harvest anything fully mature that won't survive the forecast.",
             "Light smudge pots / orchard heaters in high-value blocks (permit-dependent).",
             "Turn on a bucket of water with a pond-aeration pump under a covered tomato — 1-2 °F lift.",
+            "Move livestock to sheltered barns or dense windbreaks before the cold arrives.",
+            "Provide dry bedding (straw/hay) so animals can conserve body heat overnight.",
+            "Ensure unfrozen water access; increase feed ration 10-20% ahead of the freeze.",
         ],
         "active": [
             "Do NOT wash frost off leaves at sunrise — rapid thawing ruptures cells and causes the real damage.",
             "Keep row covers on until ambient temperature rises above 32 °F.",
+            "Check livestock water 2–3× during the freeze; dry bedding beats wet straw.",
+            "Bring newborns into a warm, dry area; hypothermia can set in within 30 minutes.",
         ],
         "recovery": [
             "Wait 3-5 days before assessing damage — frost injury takes time to reveal.",
@@ -123,7 +128,7 @@ HAZARD_PLAYBOOKS: Dict[str, Dict[str, List]] = {
         ],
         "recovery": [
             "FDA rule: any edible crop that CONTACTED floodwater is adulterated and must be destroyed.",
-            "Crops >30 days from harvest when floodwater receded may be saleable if no further contact — consult local extension.",
+            "Crops >30 days from harvest when floodwater receded may still be usable if no further contamination — follow FDA/USDA flood guidance for your crop.",
             "Test soil for pathogens (E. coli, heavy metals) before replanting in flooded zones.",
             "Plant a cleanup cover crop (sorghum-sudangrass, buckwheat) to restore aggregation.",
             "Wait 60 days between floodwater recession and replanting edible crops.",
@@ -268,7 +273,16 @@ def _norm(s: str) -> str:
 
 
 def resolve_hazard(name: str) -> Optional[str]:
-    return HAZARD_ALIASES.get(_norm(name))
+    n = _norm(name)
+    if not n:
+        return None
+    if n in HAZARD_ALIASES:
+        return HAZARD_ALIASES[n]
+    # Match aliases inside longer phrases ("frost on livestock", "drought playbook")
+    for alias, hazard in sorted(HAZARD_ALIASES.items(), key=lambda x: len(x[0]), reverse=True):
+        if alias and alias in n:
+            return hazard
+    return None
 
 
 def resolve_phase(name: str) -> str:

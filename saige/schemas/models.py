@@ -181,7 +181,6 @@ VALID_ROUTES = (
     "crop",
     "livestock",
     "weather",
-    "plan",
     "monitoring",
     "bakasura",
     "news",
@@ -196,7 +195,7 @@ class SupervisorRouteDecision(BaseModel):
 
     routes: List[str] = Field(
         description=(
-            "One or more of: crop, livestock, weather, plan, monitoring, "
+            "One or more of: crop, livestock, weather, monitoring, "
             "bakasura, news, joke, user. Use multiple when the question spans domains."
         )
     )

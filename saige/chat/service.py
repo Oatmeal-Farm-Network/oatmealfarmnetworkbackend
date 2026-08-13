@@ -52,11 +52,32 @@ def _buffer_to_history(last_n: List[Dict[str, Any]]) -> List[str]:
     return out
 
 
+def _is_interrupt_exception(exc: BaseException) -> bool:
+    """True for LangGraph interrupt bubble-ups (version-tolerant)."""
+    try:
+        from langgraph.errors import GraphBubbleUp, GraphInterrupt
+
+        if isinstance(exc, (GraphInterrupt, GraphBubbleUp)):
+            return True
+    except Exception:
+        pass
+    name = type(exc).__name__
+    if name in {"GraphInterrupt", "GraphBubbleUp", "NodeInterrupt"}:
+        return True
+    text = str(exc).lower()
+    return "interrupt" in text and ("graph" in text or "node" in text)
+
+
 def _safe_stream(active_graph, input_data, config, stream_mode="values"):
     try:
         for event in active_graph.stream(input_data, config, stream_mode=stream_mode):
             yield event
     except Exception as e:
+        if _is_interrupt_exception(e):
+            # Newer LangGraph usually ends the stream cleanly; older builds may raise.
+            # Checkpoint is already saved — caller should finalize as interrupted.
+            logger.info("[chat] graph interrupt surfaced from stream: %s", type(e).__name__)
+            return
         err = str(e).lower()
         if "no such index" in err and "checkpoint" in err:
             from langgraph.checkpoint.memory import MemorySaver
@@ -87,6 +108,23 @@ def _get_state(active_graph, config):
         if "no such index" in err or "checkpoint" in err:
             return _empty_state()
         raise
+
+
+def _extract_interrupt_payload(final_state) -> Any:
+    """Pull HITL payload from tasks or values.__interrupt__."""
+    try:
+        for t in final_state.tasks or []:
+            interrupts = getattr(t, "interrupts", None) or []
+            if interrupts:
+                return getattr(interrupts[0], "value", interrupts[0])
+    except Exception:
+        pass
+    values = final_state.values if getattr(final_state, "values", None) else {}
+    raw = (values or {}).get("__interrupt__")
+    if not raw:
+        return None
+    first = raw[0] if isinstance(raw, (list, tuple)) and raw else raw
+    return getattr(first, "value", first)
 
 
 def _prepare_turn(
@@ -206,17 +244,9 @@ def _finalize_result(
     final_values = final_state.values if final_state.values else {}
 
     if final_state.next:
-        interrupt_payload = None
-        try:
-            for t in final_state.tasks or []:
-                interrupts = getattr(t, "interrupts", None) or []
-                if interrupts:
-                    interrupt_payload = getattr(interrupts[0], "value", interrupts[0])
-                    break
-        except Exception:
-            pass
+        interrupt_payload = _extract_interrupt_payload(final_state)
         diagnosis = (final_values.get("diagnosis") or "") + (
-            "\n\nI've prepared change proposal(s) for your approval."
+            "\n\nReply yes to approve or no to cancel."
             if (final_values.get("proposals") or (isinstance(interrupt_payload, dict) and interrupt_payload.get("proposals")))
             else ""
         )
@@ -319,6 +349,25 @@ def run_chat(
         for _ in _safe_stream(graph, stream_input, config, stream_mode="values"):
             pass
     except Exception as stream_err:
+        # If the graph already checkpointed an interrupt, surface it instead of a 500.
+        try:
+            st = _get_state(graph, config)
+            if st.next or _is_interrupt_exception(stream_err):
+                logger.info(
+                    "[chat] recovering interrupted turn after stream err=%s",
+                    type(stream_err).__name__,
+                )
+                return _finalize_result(
+                    thread_id=thread_id,
+                    people_id=people_id,
+                    business_id=business_id,
+                    skip_history=skip_history,
+                    turn_start=turn_start,
+                    trace_id=trace_id,
+                    product=product,
+                )
+        except Exception:
+            pass
         logger.error("[chat] stream error: %s", stream_err, exc_info=True)
         return {
             "status": "error",
@@ -360,7 +409,37 @@ def resume_hitl(
             "edits": edits or {},
         }
     print(f"[chat] HITL resume thread={thread_id} product={product} decision={decision}")
-    events_list = list(_safe_stream(graph, Command(resume=payload), config))
+    try:
+        events_list = list(_safe_stream(graph, Command(resume=payload), config))
+    except Exception as stream_err:
+        try:
+            st = _get_state(graph, config)
+            if st.next or _is_interrupt_exception(stream_err):
+                logger.info(
+                    "[chat] resume interrupted again after err=%s",
+                    type(stream_err).__name__,
+                )
+                final_state = st
+                final_values = final_state.values if final_state.values else {}
+                response_text = final_values.get("diagnosis") or "Action requires your approval."
+                return {
+                    "status": "interrupted",
+                    "thread_id": thread_id,
+                    "response": response_text,
+                    "diagnosis": response_text,
+                    "proposals": final_values.get("proposals") or [],
+                    "hitl": _extract_interrupt_payload(final_state),
+                    "hitl_decision": final_values.get("hitl_decision"),
+                    "events_count": 0,
+                }
+        except Exception:
+            pass
+        logger.error("[chat] HITL resume error: %s", stream_err, exc_info=True)
+        return {
+            "status": "error",
+            "message": "Saige encountered an error processing your request. Please try again.",
+            "thread_id": thread_id,
+        }
     final_state = _get_state(graph, config)
     final_values = final_state.values if final_state.values else {}
     response_text = final_values.get("diagnosis") or "Done."

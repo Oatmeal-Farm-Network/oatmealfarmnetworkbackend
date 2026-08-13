@@ -12,6 +12,8 @@ from typing import Any, Dict, Generator, Optional
 from chat.service import (
     _STAGE_LABELS,
     _finalize_result,
+    _get_state,
+    _is_interrupt_exception,
     _prepare_turn,
     _safe_stream,
 )
@@ -78,6 +80,28 @@ def iter_chat_events(
                             "trace_id": trace_id,
                         }
     except Exception as stream_err:
+        try:
+            st = _get_state(graph, config)
+            if st.next or _is_interrupt_exception(stream_err):
+                logger.info(
+                    "[chat] stream recovering interrupted turn after err=%s",
+                    type(stream_err).__name__,
+                )
+                result = _finalize_result(
+                    thread_id=thread_id,
+                    people_id=people_id,
+                    business_id=business_id,
+                    skip_history=skip_history,
+                    turn_start=turn_start,
+                    trace_id=trace_id,
+                    product=product,
+                )
+                if not last_diag and result.get("response"):
+                    yield {"type": "token", "content": result["response"], "trace_id": trace_id}
+                yield {"type": "done", **result}
+                return
+        except Exception:
+            pass
         logger.error("[chat] stream error: %s", stream_err, exc_info=True)
         yield {
             "type": "done",
