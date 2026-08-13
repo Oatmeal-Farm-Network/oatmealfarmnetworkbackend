@@ -136,11 +136,11 @@ Chat specs carry **IDs only** (`field_id`, `analysis_id`, `layer: "NDVI"`). The 
 
 ## 5. Roles and working agreement
 
-### David (lead) — all core work
+### David  — all core work
 
 Schema, mapper, tools, LangGraph, `/chat` + SSE, history metadata, Recharts, maps, LOA wiring, synthesizer prompt.
 
-### Guia (fresher) — presentational React only
+### Guia  — presentational React only
 
 KPI, alert, table, progress, timeline, empty states, action buttons, i18n, playground, QA checklist.
 
