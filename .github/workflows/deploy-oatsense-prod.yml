@@ -1,10 +1,25 @@
 name: Deploy Oatsense Production
 
-# Explicit promote only — do not auto-deploy from main on every commit.
+# Auto-deploys to production on main when oatsense/precision-ag paths change.
+# Manual promote via GCP/oatsense-prod, oatsense-v* tags, or workflow_dispatch still works.
 on:
   push:
-    branches: [GCP/oatsense-prod]
+    branches: [main, GCP/oatsense-prod]
     tags: ['oatsense-v*']
+    paths:
+      - 'oatsense/**'
+      - 'app/routers/precision_ag.py'
+      - 'app/routers/precision_ag_features.py'
+      - 'app/routers/field_maturity.py'
+      - 'app/routers/field_assessment_report.py'
+      - 'app/routers/field_activity.py'
+      - 'app/routers/field_health.py'
+      - 'app/routers/field_health_alerts.py'
+      - 'app/routers/crop_monitor_proxy.py'
+      - 'app/models/precision_ag.py'
+      - 'app/database.py'
+      - 'requirements.txt'
+      - '.github/workflows/deploy-oatsense-prod.yml'
   workflow_dispatch:
 
 env:

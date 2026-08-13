@@ -1,11 +1,24 @@
 name: Deploy Livestock Production
 
-# Explicit promote only — do not auto-deploy from main on every commit.
-# Promote after Phase A staging smoke is green.
+# Auto-deploys to production on main when livestock paths change.
+# Manual promote via GCP/livestock-prod, livestock-v* tags, or workflow_dispatch still works.
 on:
   push:
-    branches: [GCP/livestock-prod]
+    branches: [main, GCP/livestock-prod]
     tags: ['livestock-v*']
+    paths:
+      - 'livestock/**'
+      - 'app/routers/livestock.py'
+      - 'app/routers/marketplace.py'
+      - 'app/routers/ranches.py'
+      - 'app/routers/animals.py'
+      - 'app/routers/herd_health.py'
+      - 'app/routers/auth.py'
+      - 'app/models/livestock.py'
+      - 'app/database.py'
+      - 'app/routers/translation.py'
+      - 'requirements.txt'
+      - '.github/workflows/deploy-livestock-prod.yml'
   workflow_dispatch:
 
 env:

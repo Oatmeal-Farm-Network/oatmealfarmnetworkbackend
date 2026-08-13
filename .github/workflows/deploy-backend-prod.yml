@@ -1,0 +1,87 @@
+name: Deploy Backend Production
+
+# Image-only promote to existing Cloud Run service. Does not rewrite env, secrets, SQL, or SA.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'Dockerfile'
+      - 'requirements.txt'
+      - 'server_all.py'
+      - '.github/workflows/deploy-backend-prod.yml'
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.PROD_GCP_PROJECT_ID }}
+  REGION: ${{ vars.PROD_REGION || 'us-central1' }}
+  IMAGE_URI_PREFIX: us-central1-docker.pkg.dev/animated-flare-421518/cloud-run-source-deploy/oatmealfarmnetworkbackend/oatmealfarmnewtorkbackend
+  CLOUD_RUN_SERVICE: oatmealfarmnewtorkbackend
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Require production secrets
+        shell: bash
+        run: |
+          missing=0
+          if [ -z "${{ secrets.PROD_GCP_PROJECT_ID }}" ]; then
+            echo "::error::Missing GitHub Actions secret: PROD_GCP_PROJECT_ID"
+            missing=1
+          fi
+          if [ -z "${{ secrets.PROD_GCP_WIF_PROVIDER }}" ]; then
+            echo "::error::Missing GitHub Actions secret: PROD_GCP_WIF_PROVIDER"
+            missing=1
+          fi
+          if [ -z "${{ secrets.PROD_GCP_SERVICE_ACCOUNT }}" ]; then
+            echo "::error::Missing GitHub Actions secret: PROD_GCP_SERVICE_ACCOUNT"
+            missing=1
+          fi
+          if [ "$missing" -ne 0 ]; then exit 1; fi
+
+      - name: Set short commit SHA
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.PROD_GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.PROD_GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build Docker image
+        run: |
+          docker build -t "${{ env.IMAGE_URI_PREFIX }}:${{ steps.vars.outputs.sha_short }}" .
+
+      - name: Push Docker image
+        run: |
+          docker push "${{ env.IMAGE_URI_PREFIX }}:${{ steps.vars.outputs.sha_short }}"
+
+      - name: Deploy image to Cloud Run (production)
+        run: |
+          gcloud run deploy ${{ env.CLOUD_RUN_SERVICE }} \
+            --image "${{ env.IMAGE_URI_PREFIX }}:${{ steps.vars.outputs.sha_short }}" \
+            --project ${{ env.PROJECT_ID }} \
+            --region ${{ env.REGION }} \
+            --quiet
+
+      - name: Print deployed URL
+        run: |
+          gcloud run services describe ${{ env.CLOUD_RUN_SERVICE }} \
+            --project ${{ env.PROJECT_ID }} \
+            --region ${{ env.REGION }} \
+            --format="value(status.url)"
