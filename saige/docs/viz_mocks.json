@@ -1,0 +1,129 @@
+[
+  {
+    "id": "viz_kpi_moisture",
+    "type": "kpi",
+    "title": "Soil moisture",
+    "source_tool": "get_field_irrigation_tool",
+    "data": {
+      "value": 28,
+      "unit": "%",
+      "delta": -4,
+      "hint": "drier than last week"
+    },
+    "actions": [
+      { "label": "Open field", "href": "/precision-ag/fields/12" }
+    ]
+  },
+  {
+    "id": "viz_line_ndvi",
+    "type": "line_chart",
+    "title": "NDVI — North 40",
+    "source_tool": "get_field_history_tool",
+    "data": {
+      "xKey": "date",
+      "yKey": "value",
+      "unit": "",
+      "series": [
+        { "date": "2026-07-01", "value": 0.42 },
+        { "date": "2026-07-04", "value": 0.44 },
+        { "date": "2026-07-07", "value": 0.41 },
+        { "date": "2026-07-10", "value": 0.46 },
+        { "date": "2026-07-13", "value": 0.48 },
+        { "date": "2026-07-16", "value": 0.51 },
+        { "date": "2026-07-19", "value": 0.49 },
+        { "date": "2026-07-22", "value": 0.53 },
+        { "date": "2026-07-25", "value": 0.55 },
+        { "date": "2026-07-28", "value": 0.52 },
+        { "date": "2026-07-31", "value": 0.54 },
+        { "date": "2026-08-03", "value": 0.56 }
+      ]
+    },
+    "actions": [
+      { "label": "Open field", "href": "/precision-ag/fields/12" }
+    ]
+  },
+  {
+    "id": "viz_bar_yield",
+    "type": "bar_chart",
+    "title": "Yield by field",
+    "source_tool": "get_field_yield_forecast_tool",
+    "data": {
+      "xKey": "field",
+      "yKey": "yield",
+      "unit": "bu/ac",
+      "series": [
+        { "field": "North 40", "yield": 180 },
+        { "field": "South Bottom", "yield": 165 },
+        { "field": "West 20", "yield": 142 },
+        { "field": "Creek Lot", "yield": 158 }
+      ]
+    },
+    "actions": [
+      { "label": "Open Precision Ag", "href": "/precision-ag/visualizations" }
+    ]
+  },
+  {
+    "id": "viz_table_animals",
+    "type": "table",
+    "title": "Livestock inventory",
+    "source_tool": "list_my_animals_detail_tool",
+    "data": {
+      "columns": ["Name", "Sex", "DOB", "Status"],
+      "rows": [
+        ["Bella", "F", "2022-03-01", "for-sale"],
+        ["Duke", "M", "2021-11-12", "at-stud"],
+        ["Clover", "F", "2023-04-18", "not-listed"],
+        ["Red", "M", "2020-08-09", "for-sale"]
+      ]
+    },
+    "actions": [
+      { "label": "View all animals", "href": "/livestock" }
+    ]
+  },
+  {
+    "id": "viz_alert_heat",
+    "type": "alert_card",
+    "title": "Heat stress warning",
+    "source_tool": "get_field_alerts_tool",
+    "data": {
+      "severity": "high",
+      "message": "Heat stress likely this afternoon",
+      "field_name": "North 40"
+    },
+    "actions": [
+      { "label": "Open field", "href": "/precision-ag/fields/12" }
+    ]
+  },
+  {
+    "id": "viz_timeline_ops",
+    "type": "timeline",
+    "title": "Field activities — North 40",
+    "source_tool": "get_field_activity_log_tool",
+    "data": {
+      "items": [
+        { "date": "2026-07-12", "action": "Tillage", "field": "North 40" },
+        { "date": "2026-07-20", "action": "Planted corn", "field": "North 40" },
+        { "date": "2026-08-01", "action": "Sprayed", "field": "North 40" },
+        { "date": "2026-08-08", "action": "Irrigated", "field": "North 40" },
+        { "date": "2026-08-11", "action": "Scouted", "field": "North 40" }
+      ]
+    },
+    "actions": [
+      { "label": "Open field", "href": "/precision-ag/fields/12" }
+    ]
+  },
+  {
+    "id": "viz_progress_gdd",
+    "type": "progress",
+    "title": "Crop growth stage",
+    "source_tool": "get_field_gdd_tool",
+    "data": {
+      "label": "Flowering",
+      "percent": 62,
+      "hint": "next: grain fill"
+    },
+    "actions": [
+      { "label": "Open field", "href": "/precision-ag/fields/12" }
+    ]
+  }
+]
