@@ -55,3 +55,26 @@ def map_pending(raw_list: Optional[Iterable[Any]] = None) -> List[Dict[str, Any]
         if len(mapped) >= MAX_SPECS:
             break
     return mapped
+
+
+def drain_pending() -> List[Dict[str, Any]]:
+    """Take the thread-local emit bucket and map it (empty → [])."""
+    from visualizations.pending import viz_take
+
+    return map_pending(viz_take())
+
+
+def merge_visualizations(*lists: Any) -> List[Dict[str, Any]]:
+    """Concat specialist packets then validate/cap/dedupe."""
+    raw: List[Any] = []
+    for item in lists:
+        if not item:
+            continue
+        if isinstance(item, dict):
+            raw.append(item)
+            continue
+        try:
+            raw.extend(item)
+        except TypeError:
+            continue
+    return map_pending(raw)

@@ -29,6 +29,8 @@ def _get_stream_queue(thread_id: str):
         return _stream_queues.get(thread_id)
 
 from config import RAG_AVAILABLE, WEATHER_AVAILABLE, MAX_QUESTIONS
+from visualizations.mapper import drain_pending, merge_visualizations
+from visualizations.pending import viz_reset
 from saige_models import (
     FarmState,
     SaigeState,
@@ -573,6 +575,7 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
     Handles context gathering, RAG retrieval, and the Tool-Calling Loop.
     """
     print(f"\n[Advisory Agent] Processing with role: {role_prompt[:50]}...")
+    viz_reset()
 
     # Handle general questions directly without RAG or farming prompts
     _assessment = state.get("assessment_summary", "")
@@ -2313,7 +2316,8 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
         print(f"[Advisory Agent] Error: {e}")
         return {
             "diagnosis": "I'm having trouble generating advice right now. Please try again.",
-            "recommendations": ["Consult a local expert"]
+            "recommendations": ["Consult a local expert"],
+            "visualizations": drain_pending(),
         }
 
     # Append any captured [MAP_CMD] marker so the widget can fire the map event.
@@ -2346,6 +2350,7 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
         "recommendations": recommendations[:5] if recommendations else ["Consider consulting a local expert"],
         "citations": rag_citations[:12],
         "timings": rag_timings,
+        "visualizations": drain_pending(),
     }
 
     if weather_data:
@@ -2933,12 +2938,31 @@ def _packet_from_advisory(result: Dict[str, Any], source: str) -> Dict[str, Any]
         "recommendations": list((result or {}).get("recommendations") or []),
         "citations": list((result or {}).get("citations") or []),
         "latency_ms": (result or {}).get("latency_ms"),
+        "visualizations": list((result or {}).get("visualizations") or []),
         "meta": {
             k: (result or {}).get(k)
             for k in ("weather_conditions", "advisory_type", "soil_info", "timings")
             if (result or {}).get(k) is not None
         },
     }
+
+
+def _visualizations_for_turn(state: SaigeState) -> List[Dict[str, Any]]:
+    """Concat packet + state viz, then recap (multi-specialist)."""
+    chunks: List[Any] = [state.get("visualizations")]
+    for key in (
+        "user_packet",
+        "weather_packet",
+        "crop_packet",
+        "livestock_packet",
+        "monitoring_packet",
+        "bakasura_packet",
+        "news_packet",
+    ):
+        pkt = state.get(key)
+        if isinstance(pkt, dict):
+            chunks.append(pkt.get("visualizations"))
+    return merge_visualizations(*chunks)
 
 
 def _is_account_identity_query(text: str) -> bool:
@@ -3461,6 +3485,7 @@ def joke_route_node(state: SaigeState) -> Dict[str, Any]:
         "assessment_summary": _latest_user_text(state),
         "history": history[-40:],
         "advisory_type": "joke",
+        "visualizations": [],
     }
 
 
@@ -3480,6 +3505,7 @@ def specialist_dispatch_node(state: SaigeState) -> Dict[str, Any]:
     deadline = SPECIALIST_TIMEOUT_SECONDS
 
     def _safe(name: str, fn):
+        viz_reset()
         try:
             print(f"[Specialists] -> {name}")
             return fn(farm)
@@ -3570,6 +3596,9 @@ def specialist_dispatch_node(state: SaigeState) -> Dict[str, Any]:
         except Exception as e:
             logger.debug("[Specialists] mitigation inject failed: %s", e)
 
+    updates["visualizations"] = merge_visualizations(
+        *(pkt.get("visualizations") for pkt in updates.values() if isinstance(pkt, dict))
+    )
     elapsed = (time.perf_counter() - t0) * 1000
     print(f"[Specialists] packets={[k for k in updates if k.endswith('_packet')]} specialist_ms={elapsed:.0f}")
     updates["specialist_ms"] = elapsed
@@ -3662,6 +3691,7 @@ def _run_monitoring_agent(state: SaigeState) -> Dict[str, Any]:
         "text": summary,
         "recommendations": recs,
         "findings": findings,
+        "visualizations": drain_pending(),
     }
 
 
@@ -3690,6 +3720,7 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
             "assessment_summary": user_q,
             "synth_ms": synth_ms,
             "advisory_type": state.get("advisory_type") or "user",
+            "visualizations": [],
         }
 
     # Field create/edit HITL — prefer User Agent copy; never let weekly-plan steal the turn.
@@ -3716,6 +3747,7 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
             "assessment_summary": user_q,
             "synth_ms": synth_ms,
             "advisory_type": state.get("advisory_type") or "user",
+            "visualizations": [],
         }
 
     packets = []
@@ -3745,6 +3777,7 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
             "citations": [],
             "assessment_summary": _latest_user_text(state),
             "synth_ms": (time.perf_counter() - t0) * 1000,
+            "visualizations": [],
         }
 
     if not packets:
@@ -3767,6 +3800,7 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
                 "coherent, practical answer for the farmer. Keep concrete actions. Cite domains inline "
                 "(e.g. Weather:, Crop:). When farm facts come from knowledge base citations, keep claims "
                 "grounded — if retrieval was empty, say so rather than inventing sources. "
+                "If charts will be shown, describe them in one sentence. Do not paste tables of numbers or ASCII charts. "
                 f"User asked: {_latest_user_text(state)!r}\n\n{blob}"
             )
             resp = llm.invoke(prompt)
@@ -3845,6 +3879,7 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
         "handoff": handoff,
         "synth_ms": synth_ms,
         "specialist_ms": state.get("specialist_ms"),
+        "visualizations": _visualizations_for_turn(state),
     }
 
 
