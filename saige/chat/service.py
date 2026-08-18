@@ -17,6 +17,7 @@ from graph import builder, graph
 from chat.buffer import get_last_n, push_message
 from chat.history import chat_history
 from observability import log_event, new_trace_id
+from visualizations.pending import viz_reset
 
 logger = logging.getLogger("farm_advisory.chat")
 
@@ -147,6 +148,7 @@ def _prepare_turn(
     product: Optional[str] = "ofn",
 ) -> Tuple[dict, Any, Optional[str]]:
     """Returns (langgraph_config, stream_input, trace_id)."""
+    viz_reset()
     product = normalize_chat_product(product)
     scoped_id = _scoped_thread_id(product, thread_id)
     trace_id = new_trace_id()
@@ -427,6 +429,7 @@ def resume_hitl(
     business_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """POST /resume helper - Command(resume=...) into the interrupted farm graph."""
+    viz_reset()
     product = normalize_chat_product(product)
     scoped_id = _scoped_thread_id(product, thread_id)
     config = {"configurable": {"thread_id": f"sup:{scoped_id}"}}

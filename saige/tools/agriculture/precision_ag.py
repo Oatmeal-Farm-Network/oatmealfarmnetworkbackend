@@ -27,6 +27,7 @@ from typing import List, Optional, Dict, Any
 from langchain_core.tools import tool
 
 from config import DB_CONFIG, RAG_AVAILABLE
+from visualizations.pending import viz_emit
 
 try:
     import pymssql
@@ -430,6 +431,30 @@ def get_field_history_tool(field_id: int, months: int = 6, people_id: str = "") 
             lines.append(f"NDVI trend over window: {direction} ({first:.3f} → {last:.3f}, Δ {delta:+.3f})")
         except ValueError:
             pass
+    ndvi_series: List[Dict[str, Any]] = []
+    for date, info in sorted(by_date.items()):
+        raw_ndvi = info["idx"].get("NDVI")
+        if raw_ndvi is None:
+            continue
+        try:
+            ndvi_series.append({"date": date, "value": round(float(raw_ndvi), 3)})
+        except (TypeError, ValueError):
+            continue
+    if ndvi_series:
+        fname = field.get("name") or str(field_id)
+        viz_emit({
+            "id": f"hist_ndvi_{field_id}",
+            "type": "line_chart",
+            "title": f"NDVI — {fname}",
+            "source_tool": "get_field_history_tool",
+            "data": {
+                "xKey": "date",
+                "yKey": "value",
+                "unit": "",
+                "series": ndvi_series[-90:],
+            },
+            "actions": [{"label": "Open field", "href": f"/precision-ag/fields/{field_id}"}],
+        })
     return "\n".join(lines)
 
 
@@ -482,6 +507,34 @@ def get_field_alerts_tool(field_id: int = 0, people_id: str = "") -> str:
             f"{atype} · {_fmt_date(a.get('createdat'))}"
             + (f" — {short_msg}" if short_msg else "")
         )
+    for a in rows[:3]:
+        fid = a.get("fieldid")
+        fname = a.get("fieldname") or "Unnamed"
+        sev_raw = str(a.get("severity") or "").strip().lower()
+        if sev_raw in ("critical", "high", "error", "severe"):
+            severity = "high"
+        elif sev_raw in ("medium", "warn", "warning", "moderate"):
+            severity = "medium"
+        else:
+            severity = "low"
+        msg = (a.get("message") or a.get("alerttype") or "Alert").strip()
+        aid = a.get("alertid") or fid or "x"
+        viz_emit({
+            "id": f"alert_{aid}",
+            "type": "alert_card",
+            "title": a.get("alerttype") or "Field alert",
+            "source_tool": "get_field_alerts_tool",
+            "data": {
+                "severity": severity,
+                "message": msg,
+                "field_name": fname,
+            },
+            "actions": (
+                [{"label": "Open field", "href": f"/precision-ag/fields/{fid}"}]
+                if fid
+                else []
+            ),
+        })
     return "\n".join(lines)
 
 
@@ -855,6 +908,24 @@ def get_field_gdd_tool(field_id: int, days: int = 180, people_id: str = "") -> s
         recent = daily[-7:] if len(daily) >= 7 else daily
         recent_total = sum(d.get("gdd", 0) for d in recent)
         lines.append(f"Last 7 days: {recent_total:.0f} GDD ({recent_total/7:.1f}/day avg)")
+    try:
+        gdd_value = int(round(float(total)))
+    except (TypeError, ValueError):
+        gdd_value = None
+    if gdd_value is not None:
+        fname = field.get("name") or str(field_id)
+        viz_emit({
+            "id": f"gdd_{field_id}",
+            "type": "kpi",
+            "title": f"Growing degree days — {fname}",
+            "source_tool": "get_field_gdd_tool",
+            "data": {
+                "value": gdd_value,
+                "unit": "GDD",
+                "hint": f"{crop} · base {base}°F",
+            },
+            "actions": [{"label": "Open field", "href": f"/precision-ag/fields/{field_id}"}],
+        })
     return "\n".join(lines)
 
 
@@ -898,6 +969,52 @@ def get_field_irrigation_tool(field_id: int, days: int = 30, people_id: str = ""
         tp = sum(d.get("precip_in", 0) for d in last7)
         te = sum(d.get("etc_in", 0)   for d in last7)
         lines.append(f"Last 7 days: {tp:.2f}\" precip, {te:.2f}\" crop water use (ETc)")
+    fname = field.get("name") or str(field_id)
+    field_action = [{"label": "Open field", "href": f"/precision-ag/fields/{field_id}"}]
+    try:
+        deficit_value = round(float(deficit), 2)
+    except (TypeError, ValueError):
+        deficit_value = None
+    if deficit_value is not None:
+        viz_emit({
+            "id": f"irrig_kpi_{field_id}",
+            "type": "kpi",
+            "title": f"Water deficit — {fname}",
+            "source_tool": "get_field_irrigation_tool",
+            "data": {
+                "value": deficit_value,
+                "unit": "in",
+                "hint": rec,
+            },
+            "actions": field_action,
+        })
+    series: List[Dict[str, Any]] = []
+    for d in daily or []:
+        if not isinstance(d, dict) or not d.get("date"):
+            continue
+        try:
+            series.append({
+                "date": str(d.get("date")),
+                "precip_in": float(d.get("precip_in") or 0),
+                "etc_in": float(d.get("etc_in") or 0),
+                "deficit_in": float(d.get("deficit_in") or 0),
+            })
+        except (TypeError, ValueError):
+            continue
+    if series:
+        viz_emit({
+            "id": f"irrig_{field_id}",
+            "type": "line_chart",
+            "title": f"ET vs rainfall — {fname}",
+            "source_tool": "get_field_irrigation_tool",
+            "data": {
+                "xKey": "date",
+                "yKey": "deficit_in",
+                "unit": "in",
+                "series": series[-90:],
+            },
+            "actions": field_action,
+        })
     return "\n".join(lines)
 
 
