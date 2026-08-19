@@ -29,6 +29,8 @@ class FarmState(TypedDict, total=False):
     long_term_memory: Optional[Dict[str, Any]]  # per-user memory
     org_memory: Optional[Dict[str, Any]]         # shared across all org members
     image_data: Optional[str]
+    field_id: Optional[str]
+    region: Optional[str]               # "US" or "IN" — determines LLM backend (Gemini vs Sarvam)
 
 
 # ============================================================================

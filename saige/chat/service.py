@@ -146,6 +146,7 @@ def _prepare_turn(
     image_data: Optional[str],
     skip_history: bool,
     product: Optional[str] = "ofn",
+    region: str = "US",
 ) -> Tuple[dict, Any, Optional[str]]:
     """Returns (langgraph_config, stream_input, trace_id)."""
     viz_reset()
@@ -223,6 +224,7 @@ def _prepare_turn(
         "long_term_memory": long_term_memory or {},
         "org_memory": org_memory or {},
         "image_data": image_data,
+        "region": region,
         "proposals": [],
         "visualizations": [],
         "route": [],
@@ -363,6 +365,7 @@ def run_chat(
     image_data: Optional[str] = None,
     skip_history: bool = False,
     product: Optional[str] = "ofn",
+    region: str = "US",
 ) -> Dict[str, Any]:
     """Execute one Saige turn; returns a dict shaped for the /chat JSON body."""
     product = normalize_chat_product(product)
@@ -375,6 +378,7 @@ def run_chat(
         image_data=image_data,
         skip_history=skip_history,
         product=product,
+        region=region,
     )
     try:
         for _ in _safe_stream(graph, stream_input, config, stream_mode="values"):

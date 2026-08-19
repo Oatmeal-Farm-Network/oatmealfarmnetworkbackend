@@ -152,6 +152,7 @@ class ChatRequest(BaseModel):
     # Product namespace for chat history collections: "ofn" (default) | "loa"
     # Auth is shared; Firestore collections stay separate.
     product: Optional[str] = "ofn"
+    region: str = Field(default="US", pattern="^(US|IN)$")  # LLM routing: Gemini (US) or Sarvam AI (IN)
     # NOTE: people_id is NOT here — extracted from Bearer JWT by get_current_user()
 
     @field_validator("user_input")
@@ -573,6 +574,7 @@ async def chat(
         business_id=business_id,
         image_data=getattr(request, "image_data", None),
         product=product,
+        region=request.region,
     )
     # success / interrupted / complete are expected client outcomes (HITL pauses as interrupted).
     status_code = 200 if result.get("status") in {"success", "interrupted", "complete"} else 500
@@ -613,6 +615,7 @@ async def chat_stream(
             business_id=business_id,
             image_data=getattr(request, "image_data", None),
             product=product,
+            region=request.region,
         ):
             yield f"data: {json.dumps(event, default=str)}\n\n"
 

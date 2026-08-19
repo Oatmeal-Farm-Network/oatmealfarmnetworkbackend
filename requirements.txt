@@ -1,4 +1,4 @@
-﻿# =========================================================
+# =========================================================
 # Core LLM / Agent Framework
 # =========================================================
 
@@ -14,6 +14,9 @@ langgraph>=0.2.0
 # Gemini integration
 langchain-google-genai>=2.0.0
 google-generativeai>=0.7.0
+
+# Sarvam AI integration (India region — OpenAI-compatible API)
+langchain-openai
 
 
 # =========================================================

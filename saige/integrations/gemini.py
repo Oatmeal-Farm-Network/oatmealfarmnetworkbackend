@@ -73,6 +73,39 @@ llm = initialize_llm()
 
 
 # ============================================================================
+# REGION-AWARE LLM (Gemini for US, Sarvam AI for IN)
+# ============================================================================
+
+_llm_registry: dict = {}
+
+
+def get_llm(region: str = "US"):
+    """Get or create an LLM instance for a given region.
+
+    - region="US" → Google Gemini (default)
+    - region="IN" → Sarvam AI (sarvam-105b via OpenAI-compatible API)
+    """
+    if region not in _llm_registry:
+        if region == "IN":
+            from langchain_openai import ChatOpenAI
+
+            sarvam_model = os.getenv("SARVAM_MODEL", "sarvam-105b")
+            api_key = os.getenv("SARVAM_API_KEY")
+            if not api_key:
+                raise ValueError("No authentication found. Set SARVAM_API_KEY for region='IN'")
+            print(f"[LLM] Using Sarvam AI ({sarvam_model})")
+            _llm_registry[region] = ChatOpenAI(
+                model=sarvam_model,
+                api_key=api_key,
+                base_url="https://api.sarvam.ai/v1",
+                temperature=0,
+                extra_body={"reasoning_effort": None},
+            )
+        else:
+            _llm_registry[region] = llm  # reuse the default Gemini instance
+    return _llm_registry[region]
+
+# ============================================================================
 # FARM GRAPH LLM (provider-selectable)
 # ============================================================================
 

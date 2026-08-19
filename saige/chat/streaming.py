@@ -31,6 +31,7 @@ def iter_chat_events(
     image_data: Optional[str] = None,
     skip_history: bool = False,
     product: Optional[str] = "ofn",
+    region: str = "US",
 ) -> Generator[Dict[str, Any], None, None]:
     """Yield SSE-ready events while the graph runs, then a final done payload."""
     turn_start = time.time()
@@ -42,6 +43,7 @@ def iter_chat_events(
         image_data=image_data,
         skip_history=skip_history,
         product=product,
+        region=region,
     )
     yield {"type": "status", "stage": "start", "message": "Saige thinking…", "trace_id": trace_id}
 
