@@ -202,7 +202,7 @@ MAX_MESSAGE_CHARS = int(os.getenv("MAX_MESSAGE_CHARS", "4000"))
 MAX_STORED_CONTENT_CHARS = int(os.getenv("MAX_STORED_CONTENT_CHARS", "2000"))
 
 # Metadata whitelist — only these keys are kept when storing messages.
-METADATA_ALLOWED_KEYS = {"type", "options", "advisory_type", "recommendations"}
+METADATA_ALLOWED_KEYS = {"type", "options", "advisory_type", "recommendations", "visualizations"}
 # Max serialized size (bytes) for the metadata dict after filtering.
 MAX_METADATA_BYTES = int(os.getenv("MAX_METADATA_BYTES", "2048"))
 

@@ -107,6 +107,7 @@ def iter_chat_events(
             "type": "done",
             "status": "error",
             "message": "Saige encountered an error processing your request. Please try again.",
+            "visualizations": [],
             "trace_id": trace_id,
         }
         return

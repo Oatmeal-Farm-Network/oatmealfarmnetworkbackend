@@ -25,6 +25,15 @@ def _scoped_thread_id(product: str, thread_id: str) -> str:
     """Isolate Redis buffers / LangGraph checkpoints per product."""
     return f"{normalize_chat_product(product)}:{thread_id}"
 
+
+def _visualizations_from_state(values: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Copy visualizations off graph state. Always a list (empty until D3/D5 emit)."""
+    raw = (values or {}).get("visualizations")
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
+
 _STAGE_LABELS = {
     "user_agent": "Understanding your account & request…",
     "supervisor": "Routing to specialists…",
@@ -213,6 +222,7 @@ def _prepare_turn(
         "org_memory": org_memory or {},
         "image_data": image_data,
         "proposals": [],
+        "visualizations": [],
         "route": [],
         "diagnosis": None,
         "recommendations": [],
@@ -267,6 +277,7 @@ def _finalize_result(
             "processing_stage": "hitl",
             "advisory_type": final_values.get("advisory_type"),
             "citations": final_values.get("citations") or [],
+            "visualizations": _visualizations_from_state(final_values),
             "processing_time_ms": int((time.time() - turn_start) * 1000),
             "trace_id": trace_id,
         }
@@ -274,6 +285,7 @@ def _finalize_result(
         return result
 
     response_text = final_values.get("diagnosis") or "I'm here - ask me about your farm."
+    visualizations = _visualizations_from_state(final_values)
     if not skip_history:
         try:
             chat_history.save_message(
@@ -283,11 +295,27 @@ def _finalize_result(
                 content=response_text,
                 business_id=str(business_id) if business_id else None,
                 product=product,
-                metadata={"type": "advisory", "advisory_type": final_values.get("advisory_type"), "trace_id": trace_id},
+                metadata={
+                    "type": "advisory",
+                    "advisory_type": final_values.get("advisory_type"),
+                    "trace_id": trace_id,
+                    "visualizations": visualizations,
+                },
             )
         except Exception as e:
             logger.debug("[chat] save assistant message failed: %s", e)
-        push_message(thread_id=scoped_id, message={"role": "assistant", "content": response_text})
+        push_message(
+            thread_id=scoped_id,
+            message={
+                "role": "assistant",
+                "content": response_text,
+                "metadata": {
+                    "type": "advisory",
+                    "advisory_type": final_values.get("advisory_type"),
+                    "visualizations": visualizations,
+                },
+            },
+        )
 
     result = {
         "status": "success",
@@ -296,6 +324,7 @@ def _finalize_result(
         "diagnosis": response_text,
         "recommendations": final_values.get("recommendations") or [],
         "proposals": final_values.get("proposals") or [],
+        "visualizations": visualizations,
         "policy_violations": final_values.get("policy_violations") or [],
         "citations": final_values.get("citations") or [],
         "processing_stage": "complete",
@@ -372,6 +401,7 @@ def run_chat(
         return {
             "status": "error",
             "message": "Saige encountered an error processing your request. Please try again.",
+            "visualizations": [],
             "trace_id": trace_id,
         }
     return _finalize_result(
@@ -428,6 +458,7 @@ def resume_hitl(
                     "response": response_text,
                     "diagnosis": response_text,
                     "proposals": final_values.get("proposals") or [],
+                    "visualizations": _visualizations_from_state(final_values),
                     "hitl": _extract_interrupt_payload(final_state),
                     "hitl_decision": final_values.get("hitl_decision"),
                     "events_count": 0,
@@ -439,10 +470,12 @@ def resume_hitl(
             "status": "error",
             "message": "Saige encountered an error processing your request. Please try again.",
             "thread_id": thread_id,
+            "visualizations": [],
         }
     final_state = _get_state(graph, config)
     final_values = final_state.values if final_state.values else {}
     response_text = final_values.get("diagnosis") or "Done."
+    visualizations = _visualizations_from_state(final_values)
     try:
         chat_history.save_message(
             user_id=people_id,
@@ -451,17 +484,25 @@ def resume_hitl(
             content=response_text,
             business_id=str(business_id) if business_id else None,
             product=product,
-            metadata={"type": "hitl_result"},
+            metadata={"type": "hitl_result", "visualizations": visualizations},
         )
     except Exception:
         pass
-    push_message(thread_id=scoped_id, message={"role": "assistant", "content": response_text})
+    push_message(
+        thread_id=scoped_id,
+        message={
+            "role": "assistant",
+            "content": response_text,
+            "metadata": {"type": "hitl_result", "visualizations": visualizations},
+        },
+    )
     return {
         "status": "success" if not final_state.next else "interrupted",
         "thread_id": thread_id,
         "response": response_text,
         "diagnosis": response_text,
         "proposals": final_values.get("proposals") or [],
+        "visualizations": visualizations,
         "hitl_decision": final_values.get("hitl_decision"),
         "events_count": len(events_list),
     }
