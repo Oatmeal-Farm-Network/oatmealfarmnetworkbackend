@@ -21,6 +21,7 @@ import logging
 from typing import Any, Dict, List, Optional
 from langchain_core.tools import tool
 from config import DB_CONFIG
+from visualizations.pending import viz_emit
 
 try:
     import pymssql
@@ -207,18 +208,38 @@ def list_my_animals_detail_tool(business_id: int = 0) -> str:
     if not rows:
         return f"No animals found for business #{business_id}."
     lines = [f"Animals — business #{business_id} ({len(rows)} shown):"]
+    table_rows: List[List[str]] = []
     for a in rows:
         status = []
         if a.get("ForSale"): status.append("for-sale")
         if a.get("ForStud"): status.append("at-stud")
         if not status: status.append("not-listed")
+        status_label = ", ".join(status)
         lines.append(
             f"  #{a.get('AnimalID')} {a.get('FullName') or '—'} · "
             f"{a.get('Sex') or '?'} · DOB {_fmt_date(a.get('DOB'))} · "
             f"price {_fmt_money(a.get('Price'))} · stud {_fmt_money(a.get('StudPrice'))} · "
-            f"[{', '.join(status)}]"
+            f"[{status_label}]"
             + (" · hidden" if not a.get("ShowOnWebsite") else "")
         )
+        table_rows.append([
+            str(a.get("FullName") or "—"),
+            str(a.get("Sex") or "?"),
+            _fmt_date(a.get("DOB")),
+            status_label,
+        ])
+    if table_rows:
+        viz_emit({
+            "id": f"animals_table_{business_id}",
+            "type": "table",
+            "title": "Livestock inventory",
+            "source_tool": "list_my_animals_detail_tool",
+            "data": {
+                "columns": ["Name", "Sex", "DOB", "Status"],
+                "rows": table_rows[:50],
+            },
+            "actions": [{"label": "View all animals", "href": "/livestock"}],
+        })
     return "\n".join(lines)
 
 
