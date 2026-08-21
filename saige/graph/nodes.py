@@ -46,7 +46,7 @@ from graph.routing import route_after_policy, route_after_supervisor  # re-expor
 
 logger = logging.getLogger("farm_advisory.nodes")
 from rag import rag_livestock, rag_plant, rag_bakasura, rag_news, rag_hitl_charlie
-from weather import weather_service, get_weather_tool, weather_tools
+from weather import weather_service, get_weather_tool, weather_tools, emit_weather_visualizations
 try:
     from companion_planting import companion_tools, companion_planting_tool, check_companion_pair_tool
     COMPANION_AVAILABLE = True
@@ -2827,11 +2827,12 @@ Examples:
                     formatted_weather = weather_service.format_forecast_for_llm(weather_data)
                     response = f"Here's the {forecast_days}-day weather forecast for {weather_data.get('location', location)}:\n\n{formatted_weather}"
                     print(f"[Weather Advisory] Successfully fetched forecast, response length: {len(response)}")
-
+                    emit_weather_visualizations(weather_data, source_tool="get_weather_tool")
                     return {
                         "diagnosis": response,
                         "recommendations": [],
-                        "weather_conditions": weather_data
+                        "weather_conditions": weather_data,
+                        "visualizations": drain_pending(),
                     }
                 else:
                     print(f"[Weather Advisory] Forecast failed, falling back to current weather")
@@ -2848,11 +2849,18 @@ Examples:
                 formatted_weather = weather_service.format_for_llm(weather_data)
                 response = f"Here's the current weather for {weather_data.get('location', location)}:\n\n{formatted_weather}"
                 print(f"[Weather Advisory] Successfully fetched weather, response length: {len(response)}")
-
+                try:
+                    forecast = weather_service.get_forecast(
+                        location, 7, lat=resolved_lat, lon=resolved_lon
+                    )
+                    emit_weather_visualizations(forecast, source_tool="get_weather_tool")
+                except Exception:
+                    pass
                 return {
                     "diagnosis": response,
                     "recommendations": [],
-                    "weather_conditions": weather_data
+                    "weather_conditions": weather_data,
+                    "visualizations": drain_pending(),
                 }
             else:
                 error_msg = f"I couldn't fetch weather data for '{location}'. Please check the location name and try again."

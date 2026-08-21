@@ -243,3 +243,76 @@ def test_prepare_turn_resets_pending(monkeypatch):
         skip_history=True,
     )
     assert viz_take() == []
+
+
+def _seven_day_forecast(loc="Boston, US"):
+    days = []
+    for i in range(7):
+        days.append({
+            "date": f"2026-08-{i + 1:02d}",
+            "max_temp": 20 + i,
+            "min_temp": 10 + i,
+            "condition": "Clear",
+            "rain_chance": 10 * i,
+        })
+    return {
+        "location": loc,
+        "current": {"temperature": 22, "condition": "Clear"},
+        "forecast": days,
+        "forecast_days": 7,
+    }
+
+
+def test_weather_forecast_emits_temp_and_rain_lines():
+    from tools.weather.weather import emit_weather_visualizations
+
+    viz_reset()
+    emit_weather_visualizations(_seven_day_forecast())
+    specs = viz_take()
+    assert [s["type"] for s in specs] == ["line_chart", "line_chart"]
+    assert specs[0]["data"]["yKey"] == "max_temp"
+    assert specs[0]["data"]["unit"] == "°C"
+    assert specs[1]["data"]["yKey"] == "rain_chance"
+    assert len(specs[0]["data"]["series"]) == 7
+    assert "min_temp" in specs[0]["data"]["series"][0]
+
+
+def test_weather_forecast_one_day_no_chart():
+    from tools.weather.weather import emit_weather_visualizations
+
+    viz_reset()
+    emit_weather_visualizations({
+        "location": "Boston, US",
+        "forecast": [{"date": "2026-08-01", "max_temp": 20, "rain_chance": 10}],
+    })
+    assert viz_take() == []
+
+
+def test_weather_tool_keeps_format_for_llm_and_emits(monkeypatch):
+    from tools.weather.weather import get_weather_tool
+
+    current = {
+        "location": "Boston, US",
+        "temperature": 22,
+        "feels_like": 21,
+        "condition": "Clear",
+        "humidity": 40,
+        "wind_speed": 10,
+        "pressure": 1012,
+    }
+    monkeypatch.setattr(
+        "tools.weather.weather.weather_service.get_weather",
+        lambda *a, **k: current,
+    )
+    monkeypatch.setattr(
+        "tools.weather.weather.weather_service.get_forecast",
+        lambda *a, **k: _seven_day_forecast(),
+    )
+    viz_reset()
+    text = get_weather_tool.invoke({"location": "Boston"})
+    assert isinstance(text, str)
+    assert "Temperature: 22C" in text
+    assert "Current weather conditions" in text
+    specs = viz_take()
+    assert len(specs) == 2
+    assert all(s["type"] == "line_chart" for s in specs)

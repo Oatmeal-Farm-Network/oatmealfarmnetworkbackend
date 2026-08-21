@@ -13,6 +13,7 @@ from graph.nodes import (
     _visualizations_for_turn,
     joke_route_node,
     synthesizer_node,
+    weather_advisory_node,
 )
 from visualizations.mapper import drain_pending, merge_visualizations
 from visualizations.pending import viz_emit, viz_reset
@@ -165,6 +166,50 @@ def test_joke_route_clears_visualizations(monkeypatch):
     out = joke_route_node({"user_message": "tell me a joke", "history": []})
     assert out["visualizations"] == []
     assert out["advisory_type"] == "joke"
+
+
+def test_weather_advisory_forecast_returns_line_charts(monkeypatch):
+    days = [
+        {
+            "date": f"2026-08-{i + 1:02d}",
+            "max_temp": 20 + i,
+            "min_temp": 10 + i,
+            "condition": "Clear",
+            "rain_chance": 10 * i,
+        }
+        for i in range(7)
+    ]
+    forecast = {
+        "location": "Boston, US",
+        "current": {"temperature": 22, "condition": "Clear"},
+        "forecast": days,
+        "forecast_days": 7,
+    }
+    monkeypatch.setattr(
+        "graph.nodes.weather_service.resolve_location",
+        lambda *a, **k: {
+            "status": "resolved",
+            "canonical_location": "Boston, US",
+            "lat": 42.36,
+            "lon": -71.06,
+            "confidence": 1.0,
+        },
+    )
+    monkeypatch.setattr("graph.nodes.weather_service.get_forecast", lambda *a, **k: forecast)
+    viz_reset()
+    out = weather_advisory_node({
+        "location": "Boston",
+        "current_issues": ["7 day forecast for Boston"],
+        "assessment_summary": "[forecast:7days] weather in Boston",
+        "history": ["User: 7 day forecast for Boston"],
+    })
+    assert "Weather forecast for Boston" in out["diagnosis"]
+    charts = [s for s in out["visualizations"] if s["type"] == "line_chart"]
+    assert len(charts) == 2
+    assert charts[0]["data"]["yKey"] == "max_temp"
+    assert charts[1]["data"]["yKey"] == "rain_chance"
+    pkt = _packet_from_advisory(out, "weather")
+    assert len(pkt["visualizations"]) == 2
 
 
 def test_synthesizer_prompt_forbids_ascii_charts():
