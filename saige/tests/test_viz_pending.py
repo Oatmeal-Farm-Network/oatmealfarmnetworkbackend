@@ -225,6 +225,109 @@ def test_animals_empty_no_viz(monkeypatch):
     assert viz_take() == []
 
 
+def test_animals_two_species_emits_bar(monkeypatch):
+    from tools.farm.business_data import list_my_animals_detail_tool
+
+    monkeypatch.setattr(
+        "tools.farm.business_data._query",
+        lambda *a, **k: [
+            {
+                "AnimalID": 1,
+                "FullName": "Bella",
+                "Sex": "F",
+                "DOB": "2022-03-01",
+                "ForSale": 1,
+                "ForStud": 0,
+                "Price": 1500,
+                "StudPrice": None,
+                "IsActive": 1,
+                "ShowOnWebsite": 1,
+                "Species": "Alpaca",
+            },
+            {
+                "AnimalID": 2,
+                "FullName": "Duke",
+                "Sex": "M",
+                "DOB": "2021-11-12",
+                "ForSale": 0,
+                "ForStud": 1,
+                "Price": None,
+                "StudPrice": 400,
+                "IsActive": 1,
+                "ShowOnWebsite": 1,
+                "Species": "Llama",
+            },
+        ],
+    )
+    viz_reset()
+    text = list_my_animals_detail_tool.invoke({"business_id": 15627})
+    assert isinstance(text, str)
+    specs = viz_take()
+    tables = [s for s in specs if s["type"] == "table"]
+    bars = [s for s in specs if s["type"] == "bar_chart"]
+    assert len(tables) == 1
+    assert len(bars) == 1
+    assert bars[0]["data"]["xKey"] == "species"
+    assert bars[0]["data"]["yKey"] == "count"
+    names = {p["species"] for p in bars[0]["data"]["series"]}
+    assert names == {"Alpaca", "Llama"}
+
+
+def test_price_trends_emits_line(monkeypatch):
+    from tools.agriculture.precision_ag import get_price_trends_tool
+
+    monkeypatch.setattr(
+        "tools.agriculture.precision_ag._query",
+        lambda *a, **k: [
+            {"Commodity": "Corn", "PriceUSD": 4.10, "FetchedAt": "2026-07-01"},
+            {"Commodity": "Corn", "PriceUSD": 4.25, "FetchedAt": "2026-07-15"},
+            {"Commodity": "Corn", "PriceUSD": 4.40, "FetchedAt": "2026-08-01"},
+        ],
+    )
+    viz_reset()
+    text = get_price_trends_tool.invoke({"commodity": "Corn", "days": 30, "people_id": "5699"})
+    assert isinstance(text, str)
+    assert "4.40" in text
+    specs = viz_take()
+    assert len(specs) == 1
+    assert specs[0]["type"] == "line_chart"
+    assert specs[0]["data"]["yKey"] == "value"
+    assert len(specs[0]["data"]["series"]) == 3
+
+
+def test_price_forecast_emits_line_with_band(monkeypatch):
+    from tools.finance.price_forecast import price_forecast_tool
+
+    monkeypatch.setattr(
+        "tools.finance.price_forecast.forecast",
+        lambda *a, **k: {
+            "status": "ok",
+            "commodity": "corn",
+            "unit": "$/bu",
+            "recent_average": 4.25,
+            "source": "test",
+            "forecast": [
+                {"month": "2026-09", "expected": 4.30, "low": 3.65, "high": 4.94},
+                {"month": "2026-10", "expected": 4.35, "low": 3.70, "high": 5.00},
+                {"month": "2026-11", "expected": 4.40, "low": 3.74, "high": 5.06},
+            ],
+            "confidence": "medium",
+            "notes": "",
+        },
+    )
+    viz_reset()
+    text = price_forecast_tool.invoke({"commodity": "corn", "months_ahead": 3})
+    assert isinstance(text, str)
+    assert "Price forecast — corn" in text
+    specs = viz_take()
+    assert len(specs) == 1
+    assert specs[0]["type"] == "line_chart"
+    point = specs[0]["data"]["series"][0]
+    assert point["value"] == 4.30
+    assert point["low"] == 3.65
+    assert point["high"] == 4.94
+
+
 def test_prepare_turn_resets_pending(monkeypatch):
     viz_emit({"id": "stale"})
     monkeypatch.setattr("chat.service.get_last_n", lambda *a, **k: [])
@@ -322,3 +425,74 @@ def test_field_analysis_emits_field_map(monkeypatch):
     assert specs[0]["data"]["analysis_id"] == 99
     assert "raster" not in str(specs[0]).lower()
     assert "geojson" not in str(specs[0]).lower()
+def _seven_day_forecast(loc="Boston, US"):
+    days = []
+    for i in range(7):
+        days.append({
+            "date": f"2026-08-{i + 1:02d}",
+            "max_temp": 20 + i,
+            "min_temp": 10 + i,
+            "condition": "Clear",
+            "rain_chance": 10 * i,
+        })
+    return {
+        "location": loc,
+        "current": {"temperature": 22, "condition": "Clear"},
+        "forecast": days,
+        "forecast_days": 7,
+    }
+
+
+def test_weather_forecast_emits_temp_and_rain_lines():
+    from tools.weather.weather import emit_weather_visualizations
+
+    viz_reset()
+    emit_weather_visualizations(_seven_day_forecast())
+    specs = viz_take()
+    assert [s["type"] for s in specs] == ["line_chart", "line_chart"]
+    assert specs[0]["data"]["yKey"] == "max_temp"
+    assert specs[0]["data"]["unit"] == "°C"
+    assert specs[1]["data"]["yKey"] == "rain_chance"
+    assert len(specs[0]["data"]["series"]) == 7
+    assert "min_temp" in specs[0]["data"]["series"][0]
+
+
+def test_weather_forecast_one_day_no_chart():
+    from tools.weather.weather import emit_weather_visualizations
+
+    viz_reset()
+    emit_weather_visualizations({
+        "location": "Boston, US",
+        "forecast": [{"date": "2026-08-01", "max_temp": 20, "rain_chance": 10}],
+    })
+    assert viz_take() == []
+
+
+def test_weather_tool_keeps_format_for_llm_and_emits(monkeypatch):
+    from tools.weather.weather import get_weather_tool
+
+    current = {
+        "location": "Boston, US",
+        "temperature": 22,
+        "feels_like": 21,
+        "condition": "Clear",
+        "humidity": 40,
+        "wind_speed": 10,
+        "pressure": 1012,
+    }
+    monkeypatch.setattr(
+        "tools.weather.weather.weather_service.get_weather",
+        lambda *a, **k: current,
+    )
+    monkeypatch.setattr(
+        "tools.weather.weather.weather_service.get_forecast",
+        lambda *a, **k: _seven_day_forecast(),
+    )
+    viz_reset()
+    text = get_weather_tool.invoke({"location": "Boston"})
+    assert isinstance(text, str)
+    assert "Temperature: 22C" in text
+    assert "Current weather conditions" in text
+    specs = viz_take()
+    assert len(specs) == 2
+    assert all(s["type"] == "line_chart" for s in specs)

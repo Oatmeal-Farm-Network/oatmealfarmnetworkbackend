@@ -2057,6 +2057,25 @@ def get_price_trends_tool(commodity: str = "", days: int = 30, people_id: str = 
         lines.append("Recent readings:")
         for p, d in zip(prices[-6:], dates[-6:]):
             lines.append(f"  • {d}: ${p:.2f}")
+    series: List[Dict[str, Any]] = []
+    for d, p in zip(dates, prices):
+        if not d:
+            continue
+        series.append({"date": d, "value": round(p, 2)})
+    if len(series) >= 2:
+        viz_emit({
+            "id": f"price_trend_{commodity[:40]}",
+            "type": "line_chart",
+            "title": f"Price trend — {commodity}",
+            "source_tool": "get_price_trends_tool",
+            "data": {
+                "xKey": "date",
+                "yKey": "value",
+                "unit": "$",
+                "series": series[-90:],
+            },
+            "actions": [],
+        })
     return "\n".join(lines)
 
 

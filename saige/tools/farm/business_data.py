@@ -200,8 +200,9 @@ def list_my_animals_detail_tool(business_id: int = 0) -> str:
     rows = _query("""
         SELECT TOP 50 a.AnimalID, a.FullName, a.Sex, a.DOB,
                a.ForSale, a.ForStud, a.Price, a.StudPrice,
-               a.IsActive, a.ShowOnWebsite
+               a.IsActive, a.ShowOnWebsite, s.Species
         FROM Animals a
+        LEFT JOIN Speciesavailable s ON a.SpeciesID = s.SpeciesID
         WHERE a.BusinessID = %s AND a.IsActive = 1
         ORDER BY a.FullName
     """, (int(business_id),))
@@ -237,6 +238,28 @@ def list_my_animals_detail_tool(business_id: int = 0) -> str:
             "data": {
                 "columns": ["Name", "Sex", "DOB", "Status"],
                 "rows": table_rows[:50],
+            },
+            "actions": [{"label": "View all animals", "href": "/livestock"}],
+        })
+    species_counts: Dict[str, int] = {}
+    for a in rows:
+        label = str(a.get("Species") or a.get("species") or "").strip() or "Unknown"
+        species_counts[label] = species_counts.get(label, 0) + 1
+    herd_series = [
+        {"species": name, "count": n}
+        for name, n in sorted(species_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+    if len(herd_series) >= 2:
+        viz_emit({
+            "id": f"herd_bar_{business_id}",
+            "type": "bar_chart",
+            "title": "Herd by species",
+            "source_tool": "list_my_animals_detail_tool",
+            "data": {
+                "xKey": "species",
+                "yKey": "count",
+                "unit": "head",
+                "series": herd_series[:20],
             },
             "actions": [{"label": "View all animals", "href": "/livestock"}],
         })
