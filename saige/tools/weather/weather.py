@@ -6,6 +6,7 @@ from difflib import SequenceMatcher
 from typing import Optional, Dict, Any, List
 from langchain_core.tools import tool
 from config import WEATHER_AVAILABLE
+from visualizations.pending import viz_emit
 
 try:
     import requests
@@ -764,6 +765,80 @@ class WeatherService:
         return "\n".join(parts)
 
 
+def emit_weather_visualizations(
+    forecast_data: Optional[Dict[str, Any]],
+    source_tool: str = "get_weather_tool",
+) -> None:
+    """Emit line_chart specs from forecast daily arrays. No-op if too few points.
+
+    Keeps format_for_llm / format_forecast_for_llm as the spoken text. LineChartViz
+    plots one yKey, so high temp and rain chance are two line_chart specs (not a
+    new type). min_temp is included on the temp series for later dual-line chrome.
+    """
+    if not isinstance(forecast_data, dict):
+        return
+    days = forecast_data.get("forecast")
+    if not isinstance(days, list):
+        return
+
+    temp_series: List[Dict[str, Any]] = []
+    rain_series: List[Dict[str, Any]] = []
+    for day in days:
+        if not isinstance(day, dict) or not day.get("date"):
+            continue
+        date = str(day.get("date"))
+        try:
+            if day.get("max_temp") is not None:
+                point: Dict[str, Any] = {
+                    "date": date,
+                    "max_temp": float(day.get("max_temp")),
+                }
+                if day.get("min_temp") is not None:
+                    point["min_temp"] = float(day.get("min_temp"))
+                temp_series.append(point)
+        except (TypeError, ValueError):
+            pass
+        try:
+            if day.get("rain_chance") is not None:
+                rain_series.append({
+                    "date": date,
+                    "rain_chance": float(day.get("rain_chance")),
+                })
+        except (TypeError, ValueError):
+            pass
+
+    loc = str(forecast_data.get("location") or "").strip() or "forecast"
+
+    if len(temp_series) >= 2:
+        viz_emit({
+            "id": "weather_high",
+            "type": "line_chart",
+            "title": f"Forecast high — {loc}",
+            "source_tool": source_tool,
+            "data": {
+                "xKey": "date",
+                "yKey": "max_temp",
+                "unit": "°C",
+                "series": temp_series[-90:],
+            },
+            "actions": [],
+        })
+    if len(rain_series) >= 2:
+        viz_emit({
+            "id": "weather_rain",
+            "type": "line_chart",
+            "title": f"Rain chance — {loc}",
+            "source_tool": source_tool,
+            "data": {
+                "xKey": "date",
+                "yKey": "rain_chance",
+                "unit": "%",
+                "series": rain_series[-90:],
+            },
+            "actions": [],
+        })
+
+
 weather_service = WeatherService()
 
 
@@ -784,6 +859,12 @@ def get_weather_tool(location: str) -> str:
     weather_data = weather_service.get_weather(location)
     if not weather_data:
         return f"Unable to fetch weather data for {location}. Please check the location name or try again later."
+
+    try:
+        forecast = weather_service.get_forecast(location, days=7)
+        emit_weather_visualizations(forecast, source_tool="get_weather_tool")
+    except Exception:
+        pass
 
     return weather_service.format_for_llm(weather_data)
 
