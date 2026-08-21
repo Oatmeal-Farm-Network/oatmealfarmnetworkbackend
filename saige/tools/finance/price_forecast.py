@@ -26,6 +26,7 @@ except Exception:
 
 import json
 from langchain_core.tools import tool
+from visualizations.pending import viz_emit
 
 
 NASS_API = "https://quickstats.nass.usda.gov/api/api_GET"
@@ -249,16 +250,58 @@ def list_commodities() -> List[str]:
 
 
 def format_for_llm(commodity: str, months_ahead: int = 6) -> str:
-    r = forecast(commodity, months_ahead)
-    if r["status"] != "ok":
-        return f"Price forecast not available for '{commodity}'. Supported: {', '.join(r.get('known', [])[:15])}."
+    return _format_forecast_result(forecast(commodity, months_ahead))
+
+
+def _format_forecast_result(r: Dict) -> str:
+    if r.get("status") != "ok":
+        return f"Price forecast not available for '{r.get('commodity', '')}'. Supported: {', '.join(r.get('known', [])[:15])}."
     lines = [f"Price forecast — {r['commodity']} ({r['unit']}, source: {r['source']}, confidence: {r['confidence']}):"]
     lines.append(f"  Recent average: {r['recent_average']} {r['unit']}")
-    for f in r["forecast"]:
+    for f in r.get("forecast") or []:
         lines.append(f"  {f['month']}: expected {f['expected']} (range {f['low']}–{f['high']})")
     if r.get("notes"):
         lines.append(f"Notes: {r['notes']}")
     return "\n".join(lines)
+
+
+def _emit_price_forecast_chart(r: Dict) -> None:
+    """line_chart of expected price; low/high stay on each point as an optional band."""
+    if not isinstance(r, dict) or r.get("status") != "ok":
+        return
+    series: List[Dict] = []
+    for row in r.get("forecast") or []:
+        if not isinstance(row, dict) or not row.get("month"):
+            continue
+        try:
+            point: Dict = {
+                "date": str(row["month"]),
+                "value": float(row["expected"]),
+            }
+            if row.get("low") is not None:
+                point["low"] = float(row["low"])
+            if row.get("high") is not None:
+                point["high"] = float(row["high"])
+            series.append(point)
+        except (TypeError, ValueError):
+            continue
+    if len(series) < 2:
+        return
+    name = str(r.get("commodity") or "commodity")
+    unit = str(r.get("unit") or "")
+    viz_emit({
+        "id": f"price_forecast_{name}",
+        "type": "line_chart",
+        "title": f"Price forecast — {name}",
+        "source_tool": "price_forecast_tool",
+        "data": {
+            "xKey": "date",
+            "yKey": "value",
+            "unit": unit,
+            "series": series[-90:],
+        },
+        "actions": [],
+    })
 
 
 @tool
@@ -269,7 +312,10 @@ def price_forecast_tool(commodity: str, months_ahead: int = 6) -> str:
     Always returns a range (low-high) plus confidence bucket — not a single-point
     precise estimate. Use when the user asks about pricing, marketing, or when to
     sell."""
-    return format_for_llm(commodity, max(1, min(months_ahead, 12)))
+    months = max(1, min(months_ahead, 12))
+    result = forecast(commodity, months)
+    _emit_price_forecast_chart(result)
+    return _format_forecast_result(result)
 
 
 price_forecast_tools = [price_forecast_tool]

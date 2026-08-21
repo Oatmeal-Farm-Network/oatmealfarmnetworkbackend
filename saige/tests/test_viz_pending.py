@@ -225,6 +225,109 @@ def test_animals_empty_no_viz(monkeypatch):
     assert viz_take() == []
 
 
+def test_animals_two_species_emits_bar(monkeypatch):
+    from tools.farm.business_data import list_my_animals_detail_tool
+
+    monkeypatch.setattr(
+        "tools.farm.business_data._query",
+        lambda *a, **k: [
+            {
+                "AnimalID": 1,
+                "FullName": "Bella",
+                "Sex": "F",
+                "DOB": "2022-03-01",
+                "ForSale": 1,
+                "ForStud": 0,
+                "Price": 1500,
+                "StudPrice": None,
+                "IsActive": 1,
+                "ShowOnWebsite": 1,
+                "Species": "Alpaca",
+            },
+            {
+                "AnimalID": 2,
+                "FullName": "Duke",
+                "Sex": "M",
+                "DOB": "2021-11-12",
+                "ForSale": 0,
+                "ForStud": 1,
+                "Price": None,
+                "StudPrice": 400,
+                "IsActive": 1,
+                "ShowOnWebsite": 1,
+                "Species": "Llama",
+            },
+        ],
+    )
+    viz_reset()
+    text = list_my_animals_detail_tool.invoke({"business_id": 15627})
+    assert isinstance(text, str)
+    specs = viz_take()
+    tables = [s for s in specs if s["type"] == "table"]
+    bars = [s for s in specs if s["type"] == "bar_chart"]
+    assert len(tables) == 1
+    assert len(bars) == 1
+    assert bars[0]["data"]["xKey"] == "species"
+    assert bars[0]["data"]["yKey"] == "count"
+    names = {p["species"] for p in bars[0]["data"]["series"]}
+    assert names == {"Alpaca", "Llama"}
+
+
+def test_price_trends_emits_line(monkeypatch):
+    from tools.agriculture.precision_ag import get_price_trends_tool
+
+    monkeypatch.setattr(
+        "tools.agriculture.precision_ag._query",
+        lambda *a, **k: [
+            {"Commodity": "Corn", "PriceUSD": 4.10, "FetchedAt": "2026-07-01"},
+            {"Commodity": "Corn", "PriceUSD": 4.25, "FetchedAt": "2026-07-15"},
+            {"Commodity": "Corn", "PriceUSD": 4.40, "FetchedAt": "2026-08-01"},
+        ],
+    )
+    viz_reset()
+    text = get_price_trends_tool.invoke({"commodity": "Corn", "days": 30, "people_id": "5699"})
+    assert isinstance(text, str)
+    assert "4.40" in text
+    specs = viz_take()
+    assert len(specs) == 1
+    assert specs[0]["type"] == "line_chart"
+    assert specs[0]["data"]["yKey"] == "value"
+    assert len(specs[0]["data"]["series"]) == 3
+
+
+def test_price_forecast_emits_line_with_band(monkeypatch):
+    from tools.finance.price_forecast import price_forecast_tool
+
+    monkeypatch.setattr(
+        "tools.finance.price_forecast.forecast",
+        lambda *a, **k: {
+            "status": "ok",
+            "commodity": "corn",
+            "unit": "$/bu",
+            "recent_average": 4.25,
+            "source": "test",
+            "forecast": [
+                {"month": "2026-09", "expected": 4.30, "low": 3.65, "high": 4.94},
+                {"month": "2026-10", "expected": 4.35, "low": 3.70, "high": 5.00},
+                {"month": "2026-11", "expected": 4.40, "low": 3.74, "high": 5.06},
+            ],
+            "confidence": "medium",
+            "notes": "",
+        },
+    )
+    viz_reset()
+    text = price_forecast_tool.invoke({"commodity": "corn", "months_ahead": 3})
+    assert isinstance(text, str)
+    assert "Price forecast — corn" in text
+    specs = viz_take()
+    assert len(specs) == 1
+    assert specs[0]["type"] == "line_chart"
+    point = specs[0]["data"]["series"][0]
+    assert point["value"] == 4.30
+    assert point["low"] == 3.65
+    assert point["high"] == 4.94
+
+
 def test_prepare_turn_resets_pending(monkeypatch):
     viz_emit({"id": "stale"})
     monkeypatch.setattr("chat.service.get_last_n", lambda *a, **k: [])
