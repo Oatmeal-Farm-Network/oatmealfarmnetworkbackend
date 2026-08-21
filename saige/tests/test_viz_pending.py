@@ -348,6 +348,83 @@ def test_prepare_turn_resets_pending(monkeypatch):
     assert viz_take() == []
 
 
+def test_list_fields_emits_farm_map(monkeypatch):
+    from tools.agriculture.precision_ag import list_my_fields_tool
+
+    monkeypatch.setattr(
+        "tools.agriculture.precision_ag._business_ids_for_people",
+        lambda *a, **k: [15627],
+    )
+    monkeypatch.setattr(
+        "tools.agriculture.precision_ag._fields_for_people",
+        lambda *a, **k: [
+            {
+                "fieldid": 12,
+                "name": "North 40",
+                "croptype": "corn",
+                "fieldsizehectares": 10,
+                "plantingdate": "2026-04-01",
+                "monitoringenabled": 1,
+                "address": "",
+            },
+            {
+                "fieldid": 15,
+                "name": "West 20",
+                "croptype": "soy",
+                "fieldsizehectares": 8,
+                "plantingdate": "2026-04-10",
+                "monitoringenabled": 1,
+                "address": "",
+            },
+        ],
+    )
+    viz_reset()
+    text = list_my_fields_tool.invoke({"people_id": "5699"})
+    assert isinstance(text, str)
+    assert "North 40" in text
+    specs = viz_take()
+    assert len(specs) == 1
+    assert specs[0]["type"] == "farm_map"
+    assert specs[0]["data"]["field_ids"] == [12, 15]
+    assert "geojson" not in str(specs[0]).lower()
+
+
+def test_field_analysis_emits_field_map(monkeypatch):
+    from tools.agriculture.precision_ag import get_field_analysis_tool
+
+    _patch_field(monkeypatch)
+
+    def _fake_query(sql, params=()):
+        s = sql.lower()
+        if "from dbo.analysis" in s:
+            return [{
+                "analysisid": 99,
+                "analysisdate": "2026-08-01",
+                "cloudpercent": 4.0,
+                "satelliteacquiredat": None,
+            }]
+        if "vegetationindex" in s:
+            return [{
+                "indextype": "NDVI",
+                "meanvalue": 0.55,
+                "minvalue": 0.2,
+                "maxvalue": 0.8,
+                "stddev": 0.1,
+            }]
+        return []
+
+    monkeypatch.setattr("tools.agriculture.precision_ag._query", _fake_query)
+    viz_reset()
+    text = get_field_analysis_tool.invoke({"field_id": 12, "people_id": "5699"})
+    assert isinstance(text, str)
+    specs = viz_take()
+    assert len(specs) == 1
+    assert specs[0]["type"] == "field_map"
+    assert specs[0]["data"]["field_id"] == 12
+    assert specs[0]["data"]["layer"] == "NDVI"
+    assert specs[0]["data"]["analysis_id"] == 99
+    assert "raster" not in str(specs[0]).lower()
+    assert "geojson" not in str(specs[0]).lower()
 def _seven_day_forecast(loc="Boston, US"):
     days = []
     for i in range(7):

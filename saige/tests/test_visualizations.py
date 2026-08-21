@@ -58,6 +58,58 @@ def test_empty_line_series_rejected():
     )
 
 
+def test_farm_map_without_ids_rejected():
+    assert (
+        validate_spec(
+            {
+                "id": "viz_farm",
+                "type": "farm_map",
+                "title": "Farm fields",
+                "data": {"field_ids": []},
+            }
+        )
+        is None
+    )
+
+
+def test_field_map_without_field_id_rejected():
+    assert (
+        validate_spec(
+            {
+                "id": "viz_field",
+                "type": "field_map",
+                "title": "NDVI map",
+                "data": {"layer": "NDVI"},
+            }
+        )
+        is None
+    )
+
+
+def test_farm_and_field_map_parse():
+    farm = validate_spec(
+        {
+            "id": "viz_farm",
+            "type": "farm_map",
+            "title": "Farm fields",
+            "data": {"field_ids": [12, 15]},
+            "actions": [{"label": "Open map", "href": "/precision-ag/analysis/maps"}],
+        }
+    )
+    assert farm is not None
+    assert farm.data["field_ids"] == [12, 15]
+    field = validate_spec(
+        {
+            "id": "viz_field",
+            "type": "field_map",
+            "title": "NDVI map — North 40",
+            "data": {"field_id": 12, "layer": "NDVI"},
+        }
+    )
+    assert field is not None
+    assert field.data["field_id"] == 12
+
+
 def test_unknown_type_rejected():
     assert (
         validate_spec(
@@ -135,7 +187,7 @@ def test_viz_mocks_round_trip():
         again = validate_spec(spec_to_dict(spec))
         assert again is not None
         assert again.id == spec.id
-    assert types_seen == set(TIER1_TYPES)
+    assert types_seen >= set(TIER1_TYPES)
 
 
 def test_saige_state_accepts_visualizations():
