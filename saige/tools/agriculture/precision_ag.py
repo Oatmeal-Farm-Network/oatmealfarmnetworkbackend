@@ -298,6 +298,21 @@ def list_my_fields_tool(people_id: str = "", business_id: str = "") -> str:
         if addr:
             parts.append(addr)
         lines.append("  • " + " · ".join(parts))
+    field_ids: List[int] = []
+    for f in rows:
+        try:
+            field_ids.append(int(f.get("fieldid") or f.get("FieldID")))
+        except (TypeError, ValueError):
+            continue
+    if field_ids:
+        viz_emit({
+            "id": "farm_map",
+            "type": "farm_map",
+            "title": "Farm fields",
+            "source_tool": "list_my_fields_tool",
+            "data": {"field_ids": field_ids[:50]},
+            "actions": [{"label": "Open map", "href": "/precision-ag/analysis/maps"}],
+        })
     return "\n".join(lines)
 
 
@@ -369,6 +384,25 @@ def get_field_analysis_tool(field_id: int, people_id: str = "", business_id: str
                 f"  • {itype}: mean {_fmt_num(mean_f, 3)} "
                 f"(range {_fmt_num(idx.get('minvalue'), 3)}–{_fmt_num(idx.get('maxvalue'), 3)}){descriptor}{trend}"
             )
+    fname = field.get("name") or str(field_id)
+    try:
+        analysis_id = int(latest.get("analysisid") or latest.get("AnalysisID"))
+    except (TypeError, ValueError):
+        analysis_id = None
+    map_data: Dict[str, Any] = {"field_id": int(field_id), "layer": "NDVI"}
+    if analysis_id is not None:
+        map_data["analysis_id"] = analysis_id
+    viz_emit({
+        "id": f"field_map_{field_id}",
+        "type": "field_map",
+        "title": f"NDVI map — {fname}",
+        "source_tool": "get_field_analysis_tool",
+        "data": map_data,
+        "actions": [{
+            "label": "Open map",
+            "href": f"/precision-ag/analysis/maps?field_id={int(field_id)}&layer=NDVI",
+        }],
+    })
     return "\n".join(lines)
 
 

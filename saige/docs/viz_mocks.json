@@ -125,5 +125,31 @@
     "actions": [
       { "label": "Open field", "href": "/precision-ag/fields/12" }
     ]
+  },
+  {
+    "id": "viz_farm_map",
+    "type": "farm_map",
+    "title": "Farm fields",
+    "source_tool": "list_my_fields_tool",
+    "data": {
+      "field_ids": [12, 15]
+    },
+    "actions": [
+      { "label": "Open map", "href": "/precision-ag/analysis/maps" }
+    ]
+  },
+  {
+    "id": "viz_field_map",
+    "type": "field_map",
+    "title": "NDVI map — North 40",
+    "source_tool": "get_field_analysis_tool",
+    "data": {
+      "field_id": 12,
+      "analysis_id": 99,
+      "layer": "NDVI"
+    },
+    "actions": [
+      { "label": "Open map", "href": "/precision-ag/analysis/maps?field_id=12&layer=NDVI" }
+    ]
   }
 ]
