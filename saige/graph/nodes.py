@@ -3626,6 +3626,7 @@ def _run_monitoring_agent(state: SaigeState) -> Dict[str, Any]:
             list_my_fields_tool,
             get_field_alerts_tool,
             get_field_analysis_tool,
+            get_field_scouting_tool,
             resolve_field_by_name,
             set_session_business_id,
         )
@@ -3654,6 +3655,14 @@ def _run_monitoring_agent(state: SaigeState) -> Dict[str, Any]:
                 })
                 lines.append(f"Resolved field '{fname}' → analysis:\n{analysis}")
                 findings.append({"rank": 0, "text": str(analysis)[:800], "field_id": fid})
+                try:
+                    scout = get_field_scouting_tool.invoke({
+                        "field_id": fid,
+                        "people_id": people_id,
+                    })
+                    lines.append(f"Scouting:\n{scout}")
+                except Exception:
+                    pass
             else:
                 lines.append(f"Matched field name '{fname}' but could not read FieldID.")
         elif any(k in text_q.lower() for k in ("how is", "how's", "doing", "status", "health")):

@@ -724,6 +724,26 @@ def get_field_scouting_tool(field_id: int, people_id: str = "") -> str:
         if snippet:
             line += f": {snippet[:120]}"
         lines.append(line)
+    fname = field.get("name") or str(field_id)
+    items: List[Dict[str, Any]] = []
+    for r in rows:
+        date = _fmt_date(r.get("notedate") or r.get("NoteDate"))
+        cat = str(r.get("category") or r.get("Category") or "Scouting").strip() or "Scouting"
+        snippet = str(r.get("title") or r.get("content") or r.get("Title") or r.get("Content") or "").strip()
+        sev = str(r.get("severity") or r.get("Severity") or "").strip()
+        action = f"{cat} ({sev})" if sev else cat
+        if snippet:
+            action = f"{action}: {snippet[:80]}"
+        items.append({"date": date, "action": action, "field": fname})
+    if items:
+        viz_emit({
+            "id": f"scout_timeline_{field_id}",
+            "type": "timeline",
+            "title": f"Scouting — {fname}",
+            "source_tool": "get_field_scouting_tool",
+            "data": {"items": items[:20]},
+            "actions": [{"label": "Open field", "href": f"/precision-ag/fields/{int(field_id)}"}],
+        })
     return "\n".join(lines)
 
 
@@ -1708,6 +1728,30 @@ def get_field_agronomy_tool(field_id: int, people_id: str = "") -> str:
             lines.append(f"    [{sev}] {name} ({atype}): {a.get('action', '')}")
             if why:
                 lines.append(f"        why: {why}")
+        for a in pda[:3]:
+            if not isinstance(a, dict):
+                continue
+            name = str(a.get("name") or "").strip() or "Pest alert"
+            sev_raw = str(a.get("severity") or "").strip().lower()
+            if sev_raw in ("critical", "high", "error", "severe"):
+                severity = "high"
+            elif sev_raw in ("medium", "warn", "warning", "moderate"):
+                severity = "medium"
+            else:
+                severity = "low"
+            msg = str(a.get("action") or a.get("why") or a.get("type") or name).strip()
+            viz_emit({
+                "id": f"agro_pest_{field_id}_{name[:40]}",
+                "type": "alert_card",
+                "title": name,
+                "source_tool": "get_field_agronomy_tool",
+                "data": {
+                    "severity": severity,
+                    "message": msg,
+                    "field_name": field_name,
+                },
+                "actions": [{"label": "Open field", "href": f"/precision-ag/fields/{int(field_id)}"}],
+            })
 
     # Provider visibility — flag when running on fallback so Saige can caveat
     wps = agro.get("weather_provider_status") or {}

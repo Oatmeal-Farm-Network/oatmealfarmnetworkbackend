@@ -348,6 +348,34 @@ def test_prepare_turn_resets_pending(monkeypatch):
     assert viz_take() == []
 
 
+def test_scouting_emits_timeline_not_heatmap(monkeypatch):
+    from tools.agriculture.precision_ag import get_field_scouting_tool
+
+    _patch_field(monkeypatch)
+    monkeypatch.setattr(
+        "tools.agriculture.precision_ag._query",
+        lambda *a, **k: [
+            {
+                "noteid": 1,
+                "notedate": "2026-08-01",
+                "category": "Pest",
+                "severity": "high",
+                "title": "Aphids on leaves",
+                "content": "Colony on lower canopy",
+                "latitude": 42.36,
+                "longitude": -71.06,
+                "imageurl": "https://example.com/aphid.jpg",
+            },
+            {
+                "noteid": 2,
+                "notedate": "2026-08-08",
+                "category": "Disease",
+                "severity": "medium",
+                "title": "Leaf spot",
+                "content": "",
+                "latitude": None,
+                "longitude": None,
+                "imageurl": None,
 def test_list_fields_emits_farm_map(monkeypatch):
     from tools.agriculture.precision_ag import list_my_fields_tool
 
@@ -379,6 +407,104 @@ def test_list_fields_emits_farm_map(monkeypatch):
         ],
     )
     viz_reset()
+    text = get_field_scouting_tool.invoke({"field_id": 12, "people_id": "5699"})
+    assert isinstance(text, str)
+    assert "Aphids" in text
+    specs = viz_take()
+    assert len(specs) == 1
+    assert specs[0]["type"] == "timeline"
+    assert len(specs[0]["data"]["items"]) == 2
+    blob = str(specs).lower()
+    assert "heatmap" not in blob
+    assert "geojson" not in blob
+
+
+def test_scouting_empty_no_viz(monkeypatch):
+    from tools.agriculture.precision_ag import get_field_scouting_tool
+
+    _patch_field(monkeypatch)
+    monkeypatch.setattr("tools.agriculture.precision_ag._query", lambda *a, **k: [])
+    viz_reset()
+    text = get_field_scouting_tool.invoke({"field_id": 12, "people_id": "5699"})
+    assert "No scouting" in text
+    assert viz_take() == []
+
+
+def test_pest_photos_emit_alert_with_confidence(monkeypatch):
+    from tools.agriculture.pest_detection import get_recent_pest_detections_tool
+
+    monkeypatch.setattr("tools.agriculture.pest_detection._HISTORY_AVAILABLE", True)
+    monkeypatch.setattr(
+        "tools.agriculture.pest_detection._history",
+        SimpleNamespace(list_for_user=lambda *a, **k: [
+            {
+                "id": "p1",
+                "created_at": "2026-08-10T12:00:00",
+                "payload": {
+                    "diagnosis": "Corn earworm",
+                    "confidence": "high",
+                    "category": "pest",
+                    "crop_identified": "corn",
+                },
+            },
+            {
+                "id": "p2",
+                "created_at": "2026-08-08T12:00:00",
+                "payload": {
+                    "diagnosis": "Nitrogen deficiency",
+                    "confidence": "medium",
+                    "category": "deficiency",
+                    "crop_identified": "corn",
+                },
+            },
+        ]),
+    )
+    viz_reset()
+    text = get_recent_pest_detections_tool.invoke({"limit": 3, "people_id": "5699"})
+    assert isinstance(text, str)
+    assert "Corn earworm" in text
+    specs = viz_take()
+    assert len(specs) == 2
+    assert all(s["type"] == "alert_card" for s in specs)
+    assert "high confidence" in specs[0]["data"]["message"]
+    assert specs[0]["data"]["severity"] == "high"
+    assert specs[1]["data"]["severity"] == "medium"
+
+
+def test_agronomy_pest_alerts_emit_cards(monkeypatch):
+    from tools.agriculture.precision_ag import get_field_agronomy_tool
+
+    _patch_field(monkeypatch)
+
+    def _fake_api(path):
+        if "agronomy" in path:
+            return {
+                "pest_disease_alerts": [
+                    {
+                        "name": "Gray Leaf Spot",
+                        "type": "disease",
+                        "severity": "high",
+                        "action": "Scout lower canopy; consider fungicide if wet.",
+                        "why": "humid nights",
+                    },
+                    {
+                        "name": "European Corn Borer",
+                        "type": "pest",
+                        "severity": "medium",
+                        "action": "Check for shot-hole feeding.",
+                    },
+                ]
+            }
+        return {}
+
+    monkeypatch.setattr("tools.agriculture.precision_ag._api_get", _fake_api)
+    viz_reset()
+    text = get_field_agronomy_tool.invoke({"field_id": 12, "people_id": "5699"})
+    assert isinstance(text, str)
+    specs = viz_take()
+    assert len(specs) == 2
+    assert all(s["type"] == "alert_card" for s in specs)
+    assert specs[0]["title"] == "Gray Leaf Spot"
     text = list_my_fields_tool.invoke({"people_id": "5699"})
     assert isinstance(text, str)
     assert "North 40" in text
