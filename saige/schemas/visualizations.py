@@ -21,6 +21,13 @@ TIER1_TYPES = (
     "progress",
 )
 
+MAP_TYPES = (
+    "farm_map",
+    "field_map",
+)
+
+ALLOWED_TYPES = TIER1_TYPES + MAP_TYPES
+
 VizType = Literal[
     "kpi",
     "line_chart",
@@ -29,6 +36,8 @@ VizType = Literal[
     "alert_card",
     "timeline",
     "progress",
+    "farm_map",
+    "field_map",
 ]
 
 
@@ -64,12 +73,26 @@ def _has_rows(data: Dict[str, Any]) -> bool:
     return isinstance(rows, list) and len(rows) > 0
 
 
+def _as_int(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _has_field_ids(data: Dict[str, Any]) -> bool:
+    raw = data.get("field_ids")
+    if not isinstance(raw, list) or not raw:
+        return False
+    return any(_as_int(x) is not None for x in raw)
+
+
 def validate_spec(raw: Any) -> Optional[VisualizationSpec]:
     """Parse a spec dict. Return None if the type/data cannot be rendered."""
     if not isinstance(raw, dict):
         return None
     viz_type = raw.get("type")
-    if viz_type not in TIER1_TYPES:
+    if viz_type not in ALLOWED_TYPES:
         return None
     try:
         spec = VisualizationSpec.model_validate(raw)
@@ -82,6 +105,10 @@ def validate_spec(raw: Any) -> Optional[VisualizationSpec]:
     if spec.type in ("line_chart", "bar_chart") and not _has_series(data):
         return None
     if spec.type == "table" and not _has_rows(data):
+        return None
+    if spec.type == "farm_map" and not _has_field_ids(data):
+        return None
+    if spec.type == "field_map" and _as_int(data.get("field_id")) is None:
         return None
     return spec
 
