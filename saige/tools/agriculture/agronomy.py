@@ -14,8 +14,11 @@ conversational guidance, not prescriptive recommendations.
 """
 from __future__ import annotations
 
+from datetime import date, datetime, timedelta
 from typing import Optional, List, Dict, Any
 from langchain_core.tools import tool
+
+from visualizations.pending import viz_emit
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +264,72 @@ def _zone_from_lat(lat: float) -> Optional[int]:
     return 11
 
 
+def _parse_frost_md(md: str, year: int) -> Optional[date]:
+    if not md or md == "frost-free":
+        return None
+    for fmt in ("%b %d %Y", "%B %d %Y"):
+        try:
+            return datetime.strptime(f"{md} {year}", fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _calendar_focus(events: List[Dict[str, Any]]) -> tuple[int, int]:
+    """Year/month for the grid: plant event if present, else first dated event."""
+    today = date.today()
+    plant = next((e for e in events if e.get("kind") == "plant" and e.get("date")), None)
+    raw = (plant or (events[0] if events else {})).get("date") or ""
+    try:
+        d = datetime.strptime(str(raw)[:10], "%Y-%m-%d").date()
+        return d.year, d.month
+    except ValueError:
+        return today.year, today.month
+
+
+def _planting_calendar_events(
+    crop_key: str,
+    cal: Dict[str, Any],
+    frost: Dict[str, str],
+    year: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    year = int(year or date.today().year)
+    events: List[Dict[str, Any]] = []
+    last_spring = _parse_frost_md(frost.get("last_spring") or "", year)
+    first_fall = _parse_frost_md(frost.get("first_fall") or "", year)
+    offset = int(cal.get("offset", 0) or 0)
+    dtm = int(cal.get("dtm", 0) or 0)
+    crop_name = crop_key.replace("_", " ")
+
+    plant: Optional[date] = None
+    if last_spring is not None:
+        plant = last_spring + timedelta(days=offset)
+        events.append({
+            "date": last_spring.isoformat(),
+            "kind": "frost",
+            "label": "Last spring frost",
+        })
+        events.append({
+            "date": plant.isoformat(),
+            "kind": "plant",
+            "label": f"Plant {crop_name}",
+        })
+    if plant is not None and dtm > 0:
+        harvest = plant + timedelta(days=dtm)
+        events.append({
+            "date": harvest.isoformat(),
+            "kind": "harvest",
+            "label": f"Est. maturity (~{dtm} days)",
+        })
+    if first_fall is not None:
+        events.append({
+            "date": first_fall.isoformat(),
+            "kind": "frost",
+            "label": "First fall frost",
+        })
+    return events
+
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -320,6 +389,21 @@ def planting_calendar_tool(
     ]
     if cal.get("notes"):
         lines.append(f"  • Note: {cal['notes']}")
+    events = _planting_calendar_events(crop_key, cal, frost)
+    if events:
+        year, month = _calendar_focus(events)
+        viz_emit({
+            "id": f"plant_cal_{crop_key}_z{z}",
+            "type": "calendar",
+            "title": f"Planting calendar — {crop_key.replace('_', ' ')}",
+            "source_tool": "planting_calendar_tool",
+            "data": {
+                "year": year,
+                "month": month,
+                "events": events,
+            },
+            "actions": [],
+        })
     return "\n".join(lines)
 
 

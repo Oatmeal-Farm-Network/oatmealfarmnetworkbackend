@@ -376,6 +376,22 @@ def test_scouting_emits_timeline_not_heatmap(monkeypatch):
                 "latitude": None,
                 "longitude": None,
                 "imageurl": None,
+            },
+        ],
+    )
+    viz_reset()
+    text = get_field_scouting_tool.invoke({"field_id": 12, "people_id": "5699"})
+    assert isinstance(text, str)
+    assert "Aphids" in text
+    specs = viz_take()
+    assert len(specs) == 1
+    assert specs[0]["type"] == "timeline"
+    assert len(specs[0]["data"]["items"]) == 2
+    blob = str(specs).lower()
+    assert "heatmap" not in blob
+    assert "geojson" not in blob
+
+
 def test_list_fields_emits_farm_map(monkeypatch):
     from tools.agriculture.precision_ag import list_my_fields_tool
 
@@ -407,16 +423,14 @@ def test_list_fields_emits_farm_map(monkeypatch):
         ],
     )
     viz_reset()
-    text = get_field_scouting_tool.invoke({"field_id": 12, "people_id": "5699"})
+    text = list_my_fields_tool.invoke({"people_id": "5699"})
     assert isinstance(text, str)
-    assert "Aphids" in text
+    assert "North 40" in text
     specs = viz_take()
     assert len(specs) == 1
-    assert specs[0]["type"] == "timeline"
-    assert len(specs[0]["data"]["items"]) == 2
-    blob = str(specs).lower()
-    assert "heatmap" not in blob
-    assert "geojson" not in blob
+    assert specs[0]["type"] == "farm_map"
+    assert specs[0]["data"]["field_ids"] == [12, 15]
+    assert "geojson" not in str(specs[0]).lower()
 
 
 def test_scouting_empty_no_viz(monkeypatch):
@@ -505,14 +519,6 @@ def test_agronomy_pest_alerts_emit_cards(monkeypatch):
     assert len(specs) == 2
     assert all(s["type"] == "alert_card" for s in specs)
     assert specs[0]["title"] == "Gray Leaf Spot"
-    text = list_my_fields_tool.invoke({"people_id": "5699"})
-    assert isinstance(text, str)
-    assert "North 40" in text
-    specs = viz_take()
-    assert len(specs) == 1
-    assert specs[0]["type"] == "farm_map"
-    assert specs[0]["data"]["field_ids"] == [12, 15]
-    assert "geojson" not in str(specs[0]).lower()
 
 
 def test_field_analysis_emits_field_map(monkeypatch):
@@ -622,3 +628,92 @@ def test_weather_tool_keeps_format_for_llm_and_emits(monkeypatch):
     specs = viz_take()
     assert len(specs) == 2
     assert all(s["type"] == "line_chart" for s in specs)
+
+
+def test_planting_calendar_emits_plant_and_harvest(monkeypatch):
+    from tools.agriculture.agronomy import planting_calendar_tool
+
+    viz_reset()
+    text = planting_calendar_tool.invoke({"crop": "tomato", "zone": 6})
+    assert isinstance(text, str)
+    assert "Planting" in text
+    assert "Days to maturity" in text
+    specs = viz_take()
+    assert len(specs) == 1
+    assert specs[0]["type"] == "calendar"
+    assert specs[0]["source_tool"] == "planting_calendar_tool"
+    kinds = {e["kind"] for e in specs[0]["data"]["events"]}
+    assert "plant" in kinds
+    assert "harvest" in kinds
+    assert specs[0]["data"]["month"] == 4
+
+
+def test_planting_unknown_crop_no_viz():
+    from tools.agriculture.agronomy import planting_calendar_tool
+
+    viz_reset()
+    text = planting_calendar_tool.invoke({"crop": "not-a-crop", "zone": 6})
+    assert "No planting-window" in text
+    assert viz_take() == []
+
+
+def test_activity_log_emits_calendar(monkeypatch):
+    from tools.agriculture.precision_ag import get_field_activity_log_tool
+
+    _patch_field(monkeypatch)
+    monkeypatch.setattr(
+        "tools.agriculture.precision_ag._query",
+        lambda *a, **k: [
+            {
+                "activitydate": "2026-04-20",
+                "activitytype": "Planting",
+                "product": "corn",
+                "rate": None,
+                "rateunit": None,
+                "operatorname": "Sam",
+                "notes": "",
+            },
+            {
+                "activitydate": "2026-08-01",
+                "activitytype": "Spray",
+                "product": "fungicide",
+                "rate": 1.2,
+                "rateunit": "pt/ac",
+                "operatorname": "",
+                "notes": "",
+            },
+            {
+                "activitydate": "2026-08-11",
+                "activitytype": "Harvest",
+                "product": "",
+                "rate": None,
+                "rateunit": None,
+                "operatorname": "",
+                "notes": "",
+            },
+        ],
+    )
+    viz_reset()
+    text = get_field_activity_log_tool.invoke({"field_id": 12, "people_id": "5699"})
+    assert isinstance(text, str)
+    assert "Planting" in text
+    specs = viz_take()
+    assert len(specs) == 1
+    assert specs[0]["type"] == "calendar"
+    kinds = [e["kind"] for e in specs[0]["data"]["events"]]
+    assert "plant" in kinds
+    assert "harvest" in kinds
+    assert "activity" in kinds
+    assert specs[0]["data"]["month"] == 8
+
+
+def test_activity_log_empty_no_viz(monkeypatch):
+    from tools.agriculture.precision_ag import get_field_activity_log_tool
+
+    _patch_field(monkeypatch)
+    monkeypatch.setattr("tools.agriculture.precision_ag._query", lambda *a, **k: [])
+    viz_reset()
+    text = get_field_activity_log_tool.invoke({"field_id": 12, "people_id": "5699"})
+    assert "No activities" in text
+    assert viz_take() == []
+

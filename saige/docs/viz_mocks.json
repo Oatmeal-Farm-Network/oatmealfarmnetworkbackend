@@ -151,5 +151,22 @@
     "actions": [
       { "label": "Open map", "href": "/precision-ag/analysis/maps?field_id=12&layer=NDVI" }
     ]
+  },
+  {
+    "id": "viz_calendar_plant",
+    "type": "calendar",
+    "title": "Planting calendar — tomato",
+    "source_tool": "planting_calendar_tool",
+    "data": {
+      "year": 2026,
+      "month": 4,
+      "events": [
+        { "date": "2026-04-15", "kind": "frost", "label": "Last spring frost" },
+        { "date": "2026-04-29", "kind": "plant", "label": "Plant tomato" },
+        { "date": "2026-07-13", "kind": "harvest", "label": "Est. maturity (~75 days)" },
+        { "date": "2026-10-15", "kind": "frost", "label": "First fall frost" }
+      ]
+    },
+    "actions": []
   }
 ]

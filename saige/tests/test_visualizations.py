@@ -86,6 +86,43 @@ def test_field_map_without_field_id_rejected():
     )
 
 
+def test_calendar_without_events_rejected():
+    assert (
+        validate_spec(
+            {
+                "id": "viz_cal",
+                "type": "calendar",
+                "title": "Planting",
+                "data": {"year": 2026, "month": 4, "events": []},
+            }
+        )
+        is None
+    )
+
+
+def test_calendar_parses():
+    spec = validate_spec(
+        {
+            "id": "viz_cal",
+            "type": "calendar",
+            "title": "Planting calendar — tomato",
+            "source_tool": "planting_calendar_tool",
+            "data": {
+                "year": 2026,
+                "month": 4,
+                "events": [
+                    {"date": "2026-04-29", "kind": "plant", "label": "Plant tomato"},
+                    {"date": "2026-07-13", "kind": "harvest", "label": "Est. maturity (~75 days)"},
+                ],
+            },
+        }
+    )
+    assert spec is not None
+    assert spec.type == "calendar"
+    assert spec.data["month"] == 4
+    assert spec.data["events"][0]["kind"] == "plant"
+
+
 def test_farm_and_field_map_parse():
     farm = validate_spec(
         {
