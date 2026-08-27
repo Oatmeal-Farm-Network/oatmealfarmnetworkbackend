@@ -26,7 +26,11 @@ MAP_TYPES = (
     "field_map",
 )
 
-ALLOWED_TYPES = TIER1_TYPES + MAP_TYPES
+CALENDAR_TYPES = (
+    "calendar",
+)
+
+ALLOWED_TYPES = TIER1_TYPES + MAP_TYPES + CALENDAR_TYPES
 
 VizType = Literal[
     "kpi",
@@ -38,6 +42,7 @@ VizType = Literal[
     "progress",
     "farm_map",
     "field_map",
+    "calendar",
 ]
 
 
@@ -80,6 +85,13 @@ def _as_int(value: Any) -> Optional[int]:
         return None
 
 
+def _has_events(data: Dict[str, Any]) -> bool:
+    events = data.get("events")
+    if not isinstance(events, list) or not events:
+        return False
+    return any(isinstance(e, dict) and e.get("date") for e in events)
+
+
 def _has_field_ids(data: Dict[str, Any]) -> bool:
     raw = data.get("field_ids")
     if not isinstance(raw, list) or not raw:
@@ -109,6 +121,8 @@ def validate_spec(raw: Any) -> Optional[VisualizationSpec]:
     if spec.type == "farm_map" and not _has_field_ids(data):
         return None
     if spec.type == "field_map" and _as_int(data.get("field_id")) is None:
+        return None
+    if spec.type == "calendar" and not _has_events(data):
         return None
     return spec
 

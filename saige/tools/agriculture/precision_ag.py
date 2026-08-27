@@ -156,6 +156,38 @@ def _fmt_date(val) -> str:
     return s.split(" ")[0].split("T")[0]
 
 
+def _activity_kind(activity_type: str) -> str:
+    t = (activity_type or "").strip().lower()
+    if t in ("planting", "plant"):
+        return "plant"
+    if t == "harvest":
+        return "harvest"
+    return "activity"
+
+
+def _activity_calendar_focus(events: List[Dict[str, Any]]) -> tuple:
+    """Month with the most events; tie-break to the latest date."""
+    from datetime import date as _date, datetime as _dt
+
+    counts: Dict[tuple, int] = {}
+    latest: Dict[tuple, _date] = {}
+    for e in events:
+        raw = str(e.get("date") or "")[:10]
+        try:
+            d = _dt.strptime(raw, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        key = (d.year, d.month)
+        counts[key] = counts.get(key, 0) + 1
+        if key not in latest or d > latest[key]:
+            latest[key] = d
+    if not counts:
+        today = _date.today()
+        return today.year, today.month
+    best = max(counts.keys(), key=lambda k: (counts[k], latest[k]))
+    return best
+
+
 def _fmt_num(v, digits: int = 2) -> str:
     try:
         return f"{float(v):.{digits}f}"
@@ -828,6 +860,35 @@ def get_field_activity_log_tool(field_id: int, people_id: str = "") -> str:
         if notes:
             line += f" ({notes[:80]})"
         lines.append(line)
+    fname = field.get("name") or str(field_id)
+    events: List[Dict[str, Any]] = []
+    for r in rows:
+        d = _fmt_date(r.get("activitydate") or r.get("ActivityDate"))
+        if not d or d == "—":
+            continue
+        atype = str(r.get("activitytype") or r.get("ActivityType") or "Activity").strip() or "Activity"
+        product = str(r.get("product") or r.get("Product") or "").strip()
+        label = f"{atype}: {product}" if product else atype
+        events.append({
+            "date": d,
+            "kind": _activity_kind(atype),
+            "label": label,
+            "field": fname,
+        })
+    if events:
+        year, month = _activity_calendar_focus(events)
+        viz_emit({
+            "id": f"activity_cal_{field_id}",
+            "type": "calendar",
+            "title": f"Field calendar — {fname}",
+            "source_tool": "get_field_activity_log_tool",
+            "data": {
+                "year": year,
+                "month": month,
+                "events": events[:50],
+            },
+            "actions": [{"label": "Open field", "href": f"/precision-ag/fields/{int(field_id)}"}],
+        })
     return "\n".join(lines)
 
 

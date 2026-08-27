@@ -7,7 +7,13 @@ os.environ.setdefault("GOOGLE_API_KEY", "test-key-not-used")
 os.environ.setdefault("REDIS_ENABLED", "false")
 os.environ.setdefault("REDIS_ALLOW_MEMORY_FALLBACK", "true")
 
-from visualizations.mapper import MAX_SERIES_POINTS, MAX_SPECS, MAX_TABLE_ROWS, map_pending
+from visualizations.mapper import (
+    MAX_CALENDAR_EVENTS,
+    MAX_SERIES_POINTS,
+    MAX_SPECS,
+    MAX_TABLE_ROWS,
+    map_pending,
+)
 
 
 def _alert(i: int, title: str | None = None) -> dict:
@@ -114,3 +120,23 @@ def test_table_rows_capped_at_50():
     assert len(out[0]["data"]["rows"]) == MAX_TABLE_ROWS
     assert out[0]["data"]["rows"][0][0] == "animal_0"
     assert out[0]["data"]["rows"][-1][0] == "animal_49"
+
+
+def test_calendar_events_capped_at_50():
+    events = [
+        {"date": f"2026-04-{(i % 28) + 1:02d}", "kind": "activity", "label": f"Op {i}"}
+        for i in range(60)
+    ]
+    out = map_pending(
+        [
+            {
+                "id": "cal",
+                "type": "calendar",
+                "title": "Field calendar",
+                "data": {"year": 2026, "month": 4, "events": events},
+            }
+        ]
+    )
+    assert len(out[0]["data"]["events"]) == MAX_CALENDAR_EVENTS
+    assert out[0]["data"]["events"][0]["label"] == "Op 0"
+    assert out[0]["data"]["events"][-1]["label"] == "Op 49"

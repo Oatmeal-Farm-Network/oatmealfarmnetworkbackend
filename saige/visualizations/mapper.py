@@ -13,6 +13,7 @@ from schemas.visualizations import spec_to_dict, validate_spec
 MAX_SPECS = 3
 MAX_SERIES_POINTS = 90
 MAX_TABLE_ROWS = 50
+MAX_CALENDAR_EVENTS = 50
 
 
 def _trim_data(viz_type: str, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -28,6 +29,11 @@ def _trim_data(viz_type: str, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if not isinstance(rows, list) or not rows:
             return None
         out["rows"] = rows[:MAX_TABLE_ROWS]
+    elif viz_type == "calendar":
+        events = out.get("events")
+        if not isinstance(events, list) or not events:
+            return None
+        out["events"] = events[:MAX_CALENDAR_EVENTS]
     return out
 
 
