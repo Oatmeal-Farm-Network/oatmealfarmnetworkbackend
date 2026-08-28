@@ -12,6 +12,7 @@ from graph.nodes import (
     _packet_from_advisory,
     _visualizations_for_turn,
     joke_route_node,
+    specialist_dispatch_node,
     synthesizer_node,
     weather_advisory_node,
 )
@@ -68,6 +69,7 @@ def test_synthesizer_passes_irrigation_kpi():
         {
             "user_message": "Should I irrigate North 40?",
             "history": ["User: Should I irrigate North 40?"],
+            "route": ["crop"],
             "crop_packet": {
                 "source": "crop",
                 "text": "North 40 has a 0.42 in water deficit. Irrigate soon.",
@@ -92,6 +94,7 @@ def test_synthesizer_animals_table():
         {
             "user_message": "List my animals",
             "history": ["User: List my animals"],
+            "route": ["livestock"],
             "livestock_packet": {
                 "source": "livestock",
                 "text": "You have 1 animal on file.",
@@ -120,10 +123,67 @@ def test_synthesizer_hello_no_visualizations():
         {
             "user_message": "Hello",
             "history": ["User: Hello"],
+            "route": ["user"],
             "proposals": [],
         }
     )
     assert out["visualizations"] == []
+    assert "I'm Saige" in (out["diagnosis"] or "")
+
+
+def test_synthesizer_hello_ignores_stale_specialist_packets():
+    """G12: leftover weather/livestock/monitoring from earlier turns must not bleed into Hello."""
+    stale_kpi = _kpi(9, "Forecast high — Boston")
+    out = synthesizer_node(
+        {
+            "user_message": "Hello",
+            "history": ["User: Hello"],
+            "route": ["user"],
+            "weather_packet": {
+                "source": "weather",
+                "text": "High today is 91F with a frost risk tonight.",
+                "visualizations": [stale_kpi],
+            },
+            "livestock_packet": {
+                "source": "livestock",
+                "text": "Herd has 12 cattle on file.",
+            },
+            "monitoring_packet": {
+                "source": "monitoring",
+                "text": "NDVI dropped on North 40.",
+            },
+            "proposals": [],
+        }
+    )
+    diagnosis = out["diagnosis"] or ""
+    assert "91F" not in diagnosis
+    assert "cattle" not in diagnosis.lower()
+    assert "NDVI" not in diagnosis
+    assert out["visualizations"] == []
+    assert "I'm Saige" in diagnosis
+
+
+def test_specialist_dispatch_clears_stale_packets_on_user_route():
+    out = specialist_dispatch_node(
+        {
+            "user_message": "Hello",
+            "history": ["User: Hello"],
+            "route": ["user"],
+            "weather_packet": {
+                "source": "weather",
+                "text": "High today is 91F.",
+                "visualizations": [_kpi(1)],
+            },
+            "livestock_packet": {"source": "livestock", "text": "12 cattle."},
+            "monitoring_packet": {"source": "monitoring", "text": "NDVI dropped."},
+        }
+    )
+    assert out["weather_packet"] is None
+    assert out["livestock_packet"] is None
+    assert out["monitoring_packet"] is None
+    assert out["crop_packet"] is None
+    assert out.get("visualizations") in ([], None)
+    assert out.get("specialist_ms") is not None
 
 
 def test_synthesizer_concat_caps_alerts():
@@ -131,6 +191,7 @@ def test_synthesizer_concat_caps_alerts():
         {
             "user_message": "Any field alerts?",
             "history": ["User: Any field alerts?"],
+            "route": ["crop", "monitoring"],
             "crop_packet": {
                 "source": "crop",
                 "text": "Several alerts.",
@@ -153,6 +214,7 @@ def test_visualizations_for_turn_uses_state_and_packets():
         {
             "visualizations": [spec],
             "crop_packet": {"visualizations": [_kpi(2, "Water deficit")]},
+            "route": ["crop"],
         }
     )
     assert len(out) == 2
@@ -163,9 +225,16 @@ def test_joke_route_clears_visualizations(monkeypatch):
         "graph.nodes.joke_node",
         lambda state: {"diagnosis": "ha", "recommendations": []},
     )
-    out = joke_route_node({"user_message": "tell me a joke", "history": []})
+    out = joke_route_node({
+        "user_message": "tell me a joke",
+        "history": [],
+        "weather_packet": {"source": "weather", "text": "stale forecast"},
+    })
     assert out["visualizations"] == []
     assert out["advisory_type"] == "joke"
+    assert out["joke_text"]
+    assert out["weather_packet"] is None
+    assert out["livestock_packet"] is None
 
 
 def test_weather_advisory_forecast_returns_line_charts(monkeypatch):

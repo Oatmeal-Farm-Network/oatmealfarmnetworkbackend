@@ -2939,6 +2939,52 @@ def _as_farm_state(state: SaigeState) -> Dict[str, Any]:
     }
 
 
+_ROUTE_TO_PACKET = {
+    "user": "user_packet",
+    "weather": "weather_packet",
+    "crop": "crop_packet",
+    "livestock": "livestock_packet",
+    "monitoring": "monitoring_packet",
+    "bakasura": "bakasura_packet",
+    "news": "news_packet",
+}
+
+SPECIALIST_PACKET_KEYS = tuple(_ROUTE_TO_PACKET.values())
+
+
+def _packet_keys_for_routes(routes: Optional[List[str]]) -> List[str]:
+    keys: List[str] = []
+    for route in routes or []:
+        key = _ROUTE_TO_PACKET.get(route)
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def _packets_for_routes(state: SaigeState, *, require_text: bool = False) -> List[Dict[str, Any]]:
+    """Packets for this turn's supervisor routes only — never leftover checkpoint text."""
+    packets: List[Dict[str, Any]] = []
+    for key in _packet_keys_for_routes(state.get("route")):
+        pkt = state.get(key)
+        if not isinstance(pkt, dict):
+            continue
+        if require_text and not pkt.get("text"):
+            continue
+        packets.append(pkt)
+    return packets
+
+
+def _active_packets(state: SaigeState) -> List[Dict[str, Any]]:
+    return _packets_for_routes(state, require_text=True)
+
+
+def _cleared_specialist_packets() -> Dict[str, Any]:
+    """LangGraph LastValue keeps omitted keys; unused packets must be written as None."""
+    cleared: Dict[str, Any] = {key: None for key in SPECIALIST_PACKET_KEYS}
+    cleared["joke_text"] = None
+    return cleared
+
+
 def _packet_from_advisory(result: Dict[str, Any], source: str) -> Dict[str, Any]:
     return {
         "source": source,
@@ -2956,20 +3002,10 @@ def _packet_from_advisory(result: Dict[str, Any], source: str) -> Dict[str, Any]
 
 
 def _visualizations_for_turn(state: SaigeState) -> List[Dict[str, Any]]:
-    """Concat packet + state viz, then recap (multi-specialist)."""
+    """Concat this-turn packet + state viz, then recap (multi-specialist)."""
     chunks: List[Any] = [state.get("visualizations")]
-    for key in (
-        "user_packet",
-        "weather_packet",
-        "crop_packet",
-        "livestock_packet",
-        "monitoring_packet",
-        "bakasura_packet",
-        "news_packet",
-    ):
-        pkt = state.get(key)
-        if isinstance(pkt, dict):
-            chunks.append(pkt.get("visualizations"))
+    for pkt in _packets_for_routes(state, require_text=False):
+        chunks.append(pkt.get("visualizations"))
     return merge_visualizations(*chunks)
 
 
@@ -3156,6 +3192,7 @@ def user_agent_node(state: SaigeState) -> Dict[str, Any]:
         "proposals": list(state.get("proposals") or []),
         "policy_violations": [],
         "mode": state.get("mode") or "farm",
+        "user_packet": None,
     }
 
     # Account profile (never password)
@@ -3487,6 +3524,7 @@ def joke_route_node(state: SaigeState) -> Dict[str, Any]:
     history = list(state.get("history") or [])
     history.append(f"AI: {joke}")
     return {
+        **_cleared_specialist_packets(),
         "joke_text": joke,
         "diagnosis": joke,
         "recommendations": [],
@@ -3508,7 +3546,7 @@ def specialist_dispatch_node(state: SaigeState) -> Dict[str, Any]:
     routes = [r for r in (state.get("route") or []) if r != "joke"]
     knowledge = [r for r in routes if r in ("weather", "livestock", "crop", "bakasura", "news")]
     farm = _as_farm_state(state)
-    updates: Dict[str, Any] = {}
+    updates: Dict[str, Any] = _cleared_specialist_packets()
     t0 = time.perf_counter()
     deadline = SPECIALIST_TIMEOUT_SECONDS
 
@@ -3568,6 +3606,8 @@ def specialist_dispatch_node(state: SaigeState) -> Dict[str, Any]:
 
     if "user" in routes and state.get("user_packet"):
         updates["user_packet"] = state.get("user_packet")
+    else:
+        updates["user_packet"] = None
 
     # Monitoring — lightweight only when requested
     if "monitoring" in routes:
@@ -3767,25 +3807,12 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
             "visualizations": [],
         }
 
-    packets = []
+    packets = _active_packets(state)
     citations = []
-    for key in (
-        "user_packet",
-        "weather_packet",
-        "crop_packet",
-        "livestock_packet",
-        "monitoring_packet",
-        "bakasura_packet",
-        "news_packet",
-    ):
-        pkt = state.get(key)
-        if pkt and pkt.get("text"):
-            packets.append(pkt)
-            # Prefer document-level RAG citations from specialists
-            for c in (pkt.get("citations") or []):
-                if isinstance(c, dict) and (c.get("doc_id") or c.get("chunk_id") or c.get("quote") or c.get("url")):
-                    citations.append(c)
-            # Do not invent citations from packet text — only real retrieval hits.
+    for pkt in packets:
+        for c in (pkt.get("citations") or []):
+            if isinstance(c, dict) and (c.get("doc_id") or c.get("chunk_id") or c.get("quote") or c.get("url")):
+                citations.append(c)
 
     if state.get("joke_text") and not packets:
         return {
