@@ -136,6 +136,104 @@ def test_history_empty_query_no_viz(monkeypatch):
     assert viz_take() == []
 
 
+def _ndvi_history_rows(start: float, n: int = 3):
+    rows = []
+    for i in range(n):
+        rows.append({
+            "analysisid": i + 1,
+            "analysisdate": f"2026-07-{i + 1:02d}",
+            "cloudpercent": 5,
+            "indextype": "NDVI",
+            "meanvalue": start + i * 0.03,
+        })
+    return rows
+
+
+def _patch_two_fields(monkeypatch):
+    monkeypatch.setattr(
+        "tools.agriculture.precision_ag._business_ids_for_people",
+        lambda *a, **k: [15627],
+    )
+
+    def _access(field_id, *a, **k):
+        fid = int(field_id)
+        if fid == 12:
+            return {"name": "North 40", "croptype": "corn", "businessid": 15627}
+        if fid == 15:
+            return {"name": "West 20", "croptype": "soy", "businessid": 15627}
+        return None
+
+    monkeypatch.setattr("tools.agriculture.precision_ag._field_accessible", _access)
+
+
+def test_compare_two_fields_emits_kpi_and_two_lines(monkeypatch):
+    from tools.agriculture.precision_ag import compare_two_fields_tool
+
+    _patch_two_fields(monkeypatch)
+
+    def _fake_query(sql, params=()):
+        fid = int(params[0]) if params else 0
+        if fid == 12:
+            return _ndvi_history_rows(0.50)
+        if fid == 15:
+            return _ndvi_history_rows(0.42)
+        return []
+
+    monkeypatch.setattr("tools.agriculture.precision_ag._query", _fake_query)
+    viz_reset()
+    text = compare_two_fields_tool.invoke({
+        "field_id_a": 12,
+        "field_id_b": 15,
+        "months": 6,
+        "people_id": "5699",
+    })
+    assert isinstance(text, str)
+    assert "North 40" in text
+    assert "West 20" in text
+    specs = viz_take()
+    assert [s["type"] for s in specs] == ["kpi", "line_chart", "line_chart"]
+    kpi = specs[0]
+    assert kpi["title"] == "NDVI — North 40 vs West 20"
+    assert kpi["data"]["value"] == 0.56
+    assert kpi["data"]["delta"] == 0.08
+    assert kpi["data"]["unit"] == ""
+    assert "North 40" in kpi["data"]["hint"]
+    assert "West 20" in kpi["data"]["hint"]
+    assert specs[1]["title"] == "NDVI — North 40"
+    assert specs[2]["title"] == "NDVI — West 20"
+    assert len(specs[1]["data"]["series"]) == 3
+    assert len(specs[2]["data"]["series"]) == 3
+
+
+def test_compare_same_field_no_viz(monkeypatch):
+    from tools.agriculture.precision_ag import compare_two_fields_tool
+
+    _patch_two_fields(monkeypatch)
+    viz_reset()
+    text = compare_two_fields_tool.invoke({
+        "field_id_a": 12,
+        "field_id_b": 12,
+        "people_id": "5699",
+    })
+    assert "two different fields" in text.lower()
+    assert viz_take() == []
+
+
+def test_compare_empty_analyses_no_viz(monkeypatch):
+    from tools.agriculture.precision_ag import compare_two_fields_tool
+
+    _patch_two_fields(monkeypatch)
+    monkeypatch.setattr("tools.agriculture.precision_ag._query", lambda *a, **k: [])
+    viz_reset()
+    text = compare_two_fields_tool.invoke({
+        "field_id_a": 12,
+        "field_id_b": 15,
+        "people_id": "5699",
+    })
+    assert "No analyses" in text
+    assert viz_take() == []
+
+
 def test_alerts_cap_three(monkeypatch):
     from tools.agriculture.precision_ag import get_field_alerts_tool
 
