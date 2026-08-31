@@ -24,6 +24,7 @@ TIER1_TYPES = (
 MAP_TYPES = (
     "farm_map",
     "field_map",
+    "heatmap",
 )
 
 CALENDAR_TYPES = (
@@ -42,6 +43,7 @@ VizType = Literal[
     "progress",
     "farm_map",
     "field_map",
+    "heatmap",
     "calendar",
 ]
 
@@ -92,6 +94,33 @@ def _has_events(data: Dict[str, Any]) -> bool:
     return any(isinstance(e, dict) and e.get("date") for e in events)
 
 
+def _has_geo_points(data: Dict[str, Any]) -> bool:
+    points = data.get("points")
+    if not isinstance(points, list) or not points:
+        return False
+    for p in points:
+        if not isinstance(p, dict):
+            continue
+        try:
+            lat = float(p.get("lat"))
+            lon = float(p.get("lon"))
+        except (TypeError, ValueError):
+            continue
+        if -90 <= lat <= 90 and -180 <= lon <= 180:
+            return True
+    return False
+
+
+def _has_heatmap_data(data: Dict[str, Any]) -> bool:
+    """Raster heatmaps are IDs only. Geo heatmaps need lat/lon points."""
+    if _has_geo_points(data):
+        return True
+    kind = str(data.get("kind") or "").strip().lower()
+    if kind == "geo":
+        return False
+    return _as_int(data.get("field_id")) is not None
+
+
 def _has_field_ids(data: Dict[str, Any]) -> bool:
     raw = data.get("field_ids")
     if not isinstance(raw, list) or not raw:
@@ -121,6 +150,8 @@ def validate_spec(raw: Any) -> Optional[VisualizationSpec]:
     if spec.type == "farm_map" and not _has_field_ids(data):
         return None
     if spec.type == "field_map" and _as_int(data.get("field_id")) is None:
+        return None
+    if spec.type == "heatmap" and not _has_heatmap_data(data):
         return None
     if spec.type == "calendar" and not _has_events(data):
         return None

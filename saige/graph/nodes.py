@@ -3160,7 +3160,7 @@ def _keyword_routes(text: str) -> List[str]:
     if any(k in t for k in ("crop", "plant", "soil", "tomato", "corn", "wheat", "pest", "disease", "irrigat", "spray")):
         routes.append("crop")
     if any(k in t for k in (
-        "ndvi", "monitor", "satellite", "zone", "precision", "field health", "got worse",
+        "ndvi", "monitor", "satellite", "zone", "precision", "field health", "heatmap", "got worse",
         "how is my", "how's my", "how is field", "field doing", "my field", "test field",
     )):
         routes.append("monitoring")

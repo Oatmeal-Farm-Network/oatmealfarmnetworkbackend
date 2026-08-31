@@ -72,6 +72,60 @@ def test_farm_map_without_ids_rejected():
     )
 
 
+def test_heatmap_without_field_or_points_rejected():
+    assert (
+        validate_spec(
+            {
+                "id": "viz_heat",
+                "type": "heatmap",
+                "title": "NDVI heat",
+                "data": {"kind": "raster"},
+            }
+        )
+        is None
+    )
+    assert (
+        validate_spec(
+            {
+                "id": "viz_heat_geo",
+                "type": "heatmap",
+                "title": "Scout heat",
+                "data": {"kind": "geo", "points": []},
+            }
+        )
+        is None
+    )
+
+
+def test_heatmap_raster_and_geo_parse():
+    raster = validate_spec(
+        {
+            "id": "viz_heat",
+            "type": "heatmap",
+            "title": "NDVI zones — North 40",
+            "source_tool": "get_field_zones_tool",
+            "data": {"kind": "raster", "field_id": 12, "layer": "NDVI"},
+        }
+    )
+    assert raster is not None
+    assert raster.data["field_id"] == 12
+    geo = validate_spec(
+        {
+            "id": "viz_heat_geo",
+            "type": "heatmap",
+            "title": "Scout locations — North 40",
+            "source_tool": "get_field_scouting_tool",
+            "data": {
+                "kind": "geo",
+                "field_id": 12,
+                "points": [{"lat": 42.36, "lon": -71.06, "label": "Aphids", "weight": 3}],
+            },
+        }
+    )
+    assert geo is not None
+    assert geo.data["points"][0]["lat"] == 42.36
+
+
 def test_field_map_without_field_id_rejected():
     assert (
         validate_spec(
