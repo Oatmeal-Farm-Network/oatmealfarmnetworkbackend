@@ -431,6 +431,80 @@ def test_list_fields_emits_farm_map(monkeypatch):
     assert specs[0]["type"] == "farm_map"
     assert specs[0]["data"]["field_ids"] == [12, 15]
     assert "geojson" not in str(specs[0]).lower()
+    hrefs = [a["href"] for a in specs[0]["actions"]]
+    assert "/precision-ag/fields" in hrefs
+
+
+def test_benchmark_emits_overview_kpi_bar_and_map(monkeypatch):
+    from tools.agriculture.precision_ag import get_farm_benchmark_tool
+
+    monkeypatch.setattr(
+        "tools.agriculture.precision_ag._business_ids_for_people",
+        lambda *a, **k: [15627],
+    )
+    monkeypatch.setattr(
+        "tools.agriculture.precision_ag._api_get",
+        lambda path: {
+            "fields": [
+                {"field_id": 12, "name": "North 40", "crop_type": "corn", "ndvi": 0.56, "health": 80, "trend": 0.02},
+                {"field_id": 15, "name": "West 20", "crop_type": "soy", "ndvi": 0.48, "health": 62, "trend": -0.01},
+            ]
+        },
+    )
+    viz_reset()
+    text = get_farm_benchmark_tool.invoke({"people_id": "5699"})
+    assert isinstance(text, str)
+    assert "North 40" in text
+    specs = viz_take()
+    assert [s["type"] for s in specs] == ["kpi", "bar_chart", "farm_map"]
+    assert specs[0]["data"]["value"] == 0.52
+    assert specs[1]["data"]["yKey"] == "ndvi"
+    assert specs[1]["data"]["series"][0]["field"] == "North 40"
+    assert specs[2]["data"]["field_ids"] == [12, 15]
+    hrefs = [a["href"] for a in specs[0]["actions"]]
+    assert "/precision-ag/fields" in hrefs
+    assert "/precision-ag/benchmark" in hrefs
+    blob = str(specs).lower()
+    assert "geojson" not in blob
+    assert "/farm-kpi" not in blob
+
+
+def test_benchmark_empty_fields_no_viz(monkeypatch):
+    from tools.agriculture.precision_ag import get_farm_benchmark_tool
+
+    monkeypatch.setattr(
+        "tools.agriculture.precision_ag._business_ids_for_people",
+        lambda *a, **k: [15627],
+    )
+    monkeypatch.setattr(
+        "tools.agriculture.precision_ag._api_get",
+        lambda path: {"fields": []},
+    )
+    viz_reset()
+    text = get_farm_benchmark_tool.invoke({"people_id": "5699"})
+    assert "No fields" in text
+    assert viz_take() == []
+
+
+def test_benchmark_no_ndvi_no_viz(monkeypatch):
+    from tools.agriculture.precision_ag import get_farm_benchmark_tool
+
+    monkeypatch.setattr(
+        "tools.agriculture.precision_ag._business_ids_for_people",
+        lambda *a, **k: [15627],
+    )
+    monkeypatch.setattr(
+        "tools.agriculture.precision_ag._api_get",
+        lambda path: {
+            "fields": [
+                {"field_id": 12, "name": "North 40", "ndvi": None},
+            ]
+        },
+    )
+    viz_reset()
+    text = get_farm_benchmark_tool.invoke({"people_id": "5699"})
+    assert "No fields have NDVI" in text
+    assert viz_take() == []
 
 
 def test_scouting_empty_no_viz(monkeypatch):

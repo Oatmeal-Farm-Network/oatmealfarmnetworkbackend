@@ -343,7 +343,10 @@ def list_my_fields_tool(people_id: str = "", business_id: str = "") -> str:
             "title": "Farm fields",
             "source_tool": "list_my_fields_tool",
             "data": {"field_ids": field_ids[:50]},
-            "actions": [{"label": "Open map", "href": "/precision-ag/analysis/maps"}],
+            "actions": [
+                {"label": "Open dashboard", "href": "/precision-ag/fields"},
+                {"label": "Open map", "href": "/precision-ag/analysis/maps"},
+            ],
         })
     return "\n".join(lines)
 
@@ -1240,9 +1243,10 @@ def get_field_carbon_tool(field_id: int, people_id: str = "") -> str:
 def get_farm_benchmark_tool(people_id: str = "") -> str:
     """Compare all fields on the farm by NDVI, health score, and trend — a
     ranking that shows which fields are performing best and which need attention.
-    Use when the user asks "which of my fields is doing best", "compare my
-    fields", "which field needs the most work", "show me a farm overview".
-    people_id is injected from session state."""
+    Use when the user asks "which of my fields is doing best", "farm overview",
+    "how's the farm", "which field needs the most work", or a whole-farm
+    ranking. Emits a farm snapshot and links to Precision Ag — do not rebuild
+    the dashboard in chat. people_id is injected from session state."""
     biz_ids = _business_ids_for_people(people_id)
     if not biz_ids:
         return "Cannot run benchmark — account not linked to any business."
@@ -1283,6 +1287,64 @@ def get_farm_benchmark_tool(people_id: str = "") -> str:
         lines.append("")
         lines.append(f"Best performer: {best.get('name') or 'Unnamed'} (NDVI {best['ndvi']:.3f})")
         lines.append(f"Needs most attention: {worst.get('name') or 'Unnamed'} (NDVI {worst['ndvi']:.3f})")
+    overview_actions = [
+        {"label": "Open dashboard", "href": "/precision-ag/fields"},
+        {"label": "Open benchmark", "href": "/precision-ag/benchmark"},
+    ]
+    avg_rounded = round(float(avg_ndvi), 3)
+    best_name = with_ndvi[0].get("name") or "Unnamed"
+    viz_emit({
+        "id": "farm_overview_kpi",
+        "type": "kpi",
+        "title": "Farm NDVI",
+        "source_tool": "get_farm_benchmark_tool",
+        "data": {
+            "value": avg_rounded,
+            "unit": "",
+            "hint": f"{len(with_ndvi)} fields · best {best_name}",
+        },
+        "actions": overview_actions,
+    })
+    bar_series: List[Dict[str, Any]] = []
+    for f in with_ndvi[:20]:
+        try:
+            bar_series.append({
+                "field": f.get("name") or str(f.get("field_id") or f.get("fieldid") or "Field"),
+                "ndvi": round(float(f["ndvi"]), 3),
+            })
+        except (TypeError, ValueError):
+            continue
+    if bar_series:
+        viz_emit({
+            "id": "farm_overview_ndvi",
+            "type": "bar_chart",
+            "title": "NDVI by field",
+            "source_tool": "get_farm_benchmark_tool",
+            "data": {
+                "xKey": "field",
+                "yKey": "ndvi",
+                "unit": "",
+                "series": bar_series,
+            },
+            "actions": overview_actions,
+        })
+    field_ids: List[int] = []
+    for f in fields:
+        try:
+            field_ids.append(int(f.get("field_id") or f.get("fieldid")))
+        except (TypeError, ValueError):
+            continue
+    if field_ids:
+        viz_emit({
+            "id": "farm_map",
+            "type": "farm_map",
+            "title": "Farm fields",
+            "source_tool": "get_farm_benchmark_tool",
+            "data": {"field_ids": field_ids[:50]},
+            "actions": overview_actions + [
+                {"label": "Open map", "href": "/precision-ag/analysis/maps"},
+            ],
+        })
     return "\n".join(lines)
 
 
