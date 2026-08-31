@@ -168,6 +168,7 @@ ALLOWED_ORIGINS = [
     "https://lkm-frontend-mt7mh6zhoa-uc.a.run.app",
     "https://www.lkmcpa.com", "https://lkmcpa.com",
     "https://www.islandcpas.com", "https://islandcpas.com",
+    "https://oatsense-frontend-usa-802455386518.us-central1.run.app",
 ]
 
 def _is_allowed_origin(origin: str) -> bool:

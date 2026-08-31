@@ -1,108 +1,54 @@
-# Deploy Saige backend to Cloud Run.
-# Run from this directory: .\deploy.ps1
-# Env-only update (no rebuild): .\deploy.ps1 -EnvOnly
-# Requires: gcloud CLI authenticated.
+# Staging-only Saige Cloud Run deploy helper.
+# Run from repo root or from the saige directory:
+#   pwsh ./saige/deploy.ps1
+#
+# Prereqs:
+# - gcloud CLI installed and authenticated
+# - Access to the oatmeal-farm-staging project
+# - Artifact Registry repository already created
+# - Cloud Build API enabled
+# - Required Secret Manager secrets already provisioned (`SECRET_KEY`; `CRON_SECRET` optional but recommended)
 
 param(
-    [switch]$EnvOnly
+    [string]$ProjectId = "oatmeal-farm-staging",
+    [string]$Region = "us-central1",
+    [string]$Repository = "oatmeal-farm-registry",
+    [string]$ServiceName = "oatmeal-saige-staging",
+    [string]$ServiceAccount = "saige-sa@oatmeal-farm-staging.iam.gserviceaccount.com",
+    [string]$ImageName = "saige",
+    [string]$CommitSha = "",
+    [string]$FrontendUrl = "https://staging.oatmealfarmnetwork.com"
 )
 
-$PROJECT   = "animated-flare-421518"
-$REGION    = "us-central1"
-$SERVICE   = "saige-backend"
-$MAIN_SVC  = "oatmealfarmnewtorkbackend"
-$IMAGE_TAG = "us-central1-docker.pkg.dev/$PROJECT/cloud-run-source-deploy/saige-backend:latest"
+$ErrorActionPreference = "Stop"
 
-# SECRET_KEY must match the main backend's SECRET_KEY so JWTs can be verified.
-$SECRET_KEY = $env:SECRET_KEY
-if (-not $SECRET_KEY) {
-    Write-Host "Fetching SECRET_KEY from main backend Cloud Run service..."
-    $SECRET_KEY = gcloud run services describe $MAIN_SVC `
-        --region=$REGION --project=$PROJECT `
-        --format="value(spec.template.spec.containers[0].env.filter(name=SECRET_KEY).extract(value).flatten())" 2>$null
-}
-if (-not $SECRET_KEY) {
-    Write-Error "SECRET_KEY not found. Set `$env:SECRET_KEY or ensure main backend has it configured."
-    exit 1
+if (-not $CommitSha) {
+    $CommitSha = (git rev-parse --short=12 HEAD).Trim()
 }
 
-function Get-MainEnv($Name) {
-    return gcloud run services describe $MAIN_SVC `
-        --region=$REGION --project=$PROJECT `
-        --format="value(spec.template.spec.containers[0].env.filter(name=$Name).extract(value).flatten())" 2>$null
-}
+$ImageUri = "$Region-docker.pkg.dev/$ProjectId/$Repository/$ImageName`:$CommitSha"
 
-# DB credentials must match the main backend so Saige can read user/business profiles.
-$DB_HOST     = Get-MainEnv "DB_HOST"
-$DB_NAME     = Get-MainEnv "DB_NAME"
-$DB_USER     = Get-MainEnv "DB_USER"
-$DB_PASSWORD = Get-MainEnv "DB_PASSWORD"
-if (-not $DB_HOST -or -not $DB_NAME -or -not $DB_USER -or -not $DB_PASSWORD) {
-    Write-Error "DB_* env vars not found on main backend. Ensure DB_HOST, DB_NAME, DB_USER, DB_PASSWORD are configured."
-    exit 1
-}
+Write-Host "Building Saige image: $ImageUri"
+gcloud builds submit ./saige --tag $ImageUri --project $ProjectId
 
-$REDIS_URL = Get-MainEnv "REDIS_URL"
-$CRON_SECRET = Get-MainEnv "CRON_SECRET"
-if (-not $CRON_SECRET) { $CRON_SECRET = $env:CRON_SECRET }
-$REDIS_ENABLED = if ($REDIS_URL) { "true" } else { "false" }
-if (-not $REDIS_URL) {
-    Write-Warning "REDIS_URL not found on main backend - Redis stays disabled. Add Memorystore URL to main backend for rate limiting and shared checkpoints."
-}
+Write-Host "Deploying $ServiceName to Cloud Run (staging)"
+gcloud run deploy $ServiceName `
+    --image $ImageUri `
+    --project $ProjectId `
+    --region $Region `
+    --service-account $ServiceAccount `
+    --allow-unauthenticated `
+    --port 8000 `
+    --memory 2Gi `
+    --cpu 2 `
+    --min-instances 1 `
+    --max-instances 10 `
+    --set-env-vars "GOOGLE_CLOUD_PROJECT=$ProjectId,GOOGLE_CLOUD_LOCATION=$Region,FRONTEND_URL=$FrontendUrl,ALLOW_ALL_ORIGINS=false,GOOGLE_GENAI_USE_VERTEXAI=true,VERTEX_AI_MODEL=gemini-2.5-flash-lite,GEMINI_MODEL=gemini-2.5-flash-lite,SAIGE_LLM_PROVIDER=gemini,FIRESTORE_DATABASE=charlie,CHAT_HISTORY_DATABASE=chat-history,REDIS_ENABLED=true,REDIS_ALLOW_MEMORY_FALLBACK=false,OFN_BACKEND_URL=https://oatmeal-backend-staging-lrviw4iujq-uc.a.run.app,RAG_HYBRID_ENABLED=true,RAG_RERANK_ENABLED=true,RAG_CACHE_ENABLED=true" `
+    --set-secrets "SECRET_KEY=SECRET_KEY:latest,CRON_SECRET=CRON_SECRET:latest,REDIS_URL=REDIS_URL:latest"
 
-$envFile = Join-Path $env:TEMP "saige-backend-env.yaml"
-$envLines = @(
-    "SECRET_KEY: `"$SECRET_KEY`"",
-    "DB_HOST: `"$DB_HOST`"",
-    "DB_PORT: `"1433`"",
-    "DB_NAME: `"$DB_NAME`"",
-    "DB_USER: `"$DB_USER`"",
-    "DB_PASSWORD: `"$DB_PASSWORD`"",
-    "GOOGLE_CLOUD_PROJECT: `"$PROJECT`"",
-    "GOOGLE_CLOUD_LOCATION: `"$REGION`"",
-    "FIRESTORE_DATABASE: `"charlie`"",
-    "CHAT_HISTORY_DATABASE: `"chat-history`"",
-    "FRONTEND_URL: `"https://www.oatmealfarmnetwork.com,https://oatmealfarmnetwork.com`"",
-    "GEMINI_MODEL: `"gemini-2.5-flash-lite`"",
-    "GOOGLE_GENAI_USE_VERTEXAI: `"true`"",
-    "OFN_BACKEND_URL: `"https://oatmealfarmnewtorkbackend-802455386518.us-central1.run.app`"",
-    "WEATHER_API_PROVIDER: `"openmeteo`"",
-    "ALLOW_ALL_ORIGINS: `"true`"",
-    "REDIS_ENABLED: `"$REDIS_ENABLED`"",
-    "RAG_TOP_K: `"3`"",
-    "ADVISORY_MAX_ITERATIONS: `"2`"",
-    "ASSESSMENT_USE_LLM_CLASSIFIER: `"false`"",
-    "COMMUNITY_LEARNINGS_ENABLED: `"false`""
-)
-if ($REDIS_URL) { $envLines += "REDIS_URL: `"$REDIS_URL`"" }
-if ($CRON_SECRET) { $envLines += "CRON_SECRET: `"$CRON_SECRET`"" }
-$envLines | Set-Content -Path $envFile -Encoding UTF8
+$Url = gcloud run services describe $ServiceName `
+    --project $ProjectId `
+    --region $Region `
+    --format "value(status.url)"
 
-if ($EnvOnly) {
-    Write-Host "Updating Cloud Run env vars only (no rebuild)..."
-    gcloud run services update $SERVICE `
-        --region $REGION `
-        --project $PROJECT `
-        --env-vars-file $envFile
-    if (-not $?) { Write-Error "Env update failed"; exit 1 }
-} else {
-    Write-Host "Building image via Cloud Build..."
-    gcloud builds submit --tag $IMAGE_TAG --project=$PROJECT
-    if (-not $?) { Write-Error "Build failed"; exit 1 }
-
-    Write-Host "Deploying to Cloud Run..."
-    gcloud run deploy $SERVICE `
-        --image $IMAGE_TAG `
-        --region $REGION `
-        --project $PROJECT `
-        --env-vars-file $envFile `
-        --allow-unauthenticated
-
-    if (-not $?) { Write-Error "Deploy failed"; exit 1 }
-}
-
-Remove-Item $envFile -Force -ErrorAction SilentlyContinue
-
-Write-Host "Done. Testing health..."
-Start-Sleep -Seconds 8
-Invoke-RestMethod "https://$SERVICE-802455386518.$REGION.run.app/health"
+Write-Host "Saige staging URL: $Url"

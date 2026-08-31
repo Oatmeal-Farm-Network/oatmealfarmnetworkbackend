@@ -41,7 +41,7 @@ jobs:
         run: |
           SECRET_KEY="${{ secrets.SECRET_KEY }}"
           if [ -z "$SECRET_KEY" ]; then
-            echo "GitHub SECRET_KEY secret empty — fetching from main backend..."
+            echo "GitHub SECRET_KEY secret empty ΓÇö fetching from main backend..."
             SECRET_KEY=$(gcloud run services describe "$MAIN_SERVICE_NAME" \
               --region "$REGION" --project "$PROJECT_ID" \
               --format="value(spec.template.spec.containers[0].env.filter(name=SECRET_KEY).extract(value).flatten())")

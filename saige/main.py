@@ -1,6 +1,5 @@
-# --- main.py --- (Backward-compatibility shim)
-# Import from specific modules instead:
-#   from graph import graph
-#   from saige_models import FarmState
+# --- main.py --- (compat entry; prefer api:app)
 from graph import graph
-from saige_models import FarmState
+from saige_models import SaigeState, FarmState  # noqa: F401
+
+__all__ = ["graph", "SaigeState", "FarmState"]
