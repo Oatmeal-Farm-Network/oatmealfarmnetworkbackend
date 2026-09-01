@@ -838,6 +838,38 @@ def get_field_soil_samples_tool(field_id: int, people_id: str = "") -> str:
 _SCOUTING_CATEGORIES = ("Scouting", "Pest", "Disease", "Weed", "Nutrient", "Irrigation", "Weather", "General")
 
 
+def _scout_geo_points(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Lat/lon pins only — never GeoJSON or rasters."""
+    points: List[Dict[str, Any]] = []
+    for r in rows or []:
+        try:
+            lat = float(r.get("latitude") if r.get("latitude") is not None else r.get("Latitude"))
+            lon = float(r.get("longitude") if r.get("longitude") is not None else r.get("Longitude"))
+        except (TypeError, ValueError):
+            continue
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            continue
+        sev = str(r.get("severity") or r.get("Severity") or "").strip().lower()
+        if sev in ("critical", "high"):
+            weight = 3
+        elif sev in ("medium", "moderate", "warn", "warning"):
+            weight = 2
+        else:
+            weight = 1
+        label = str(
+            r.get("title") or r.get("Title") or r.get("category") or r.get("Category") or "Scout"
+        ).strip()[:80]
+        points.append({
+            "lat": round(lat, 5),
+            "lon": round(lon, 5),
+            "label": label,
+            "weight": weight,
+        })
+        if len(points) >= 50:
+            break
+    return points
+
+
 @tool
 def get_field_scouting_tool(field_id: int, people_id: str = "") -> str:
     """Get recent field scouting observations — pest sightings, disease, weed
@@ -894,6 +926,7 @@ def get_field_scouting_tool(field_id: int, people_id: str = "") -> str:
         if snippet:
             action = f"{action}: {snippet[:80]}"
         items.append({"date": date, "action": action, "field": fname})
+    field_action = [{"label": "Open field", "href": f"/precision-ag/fields/{int(field_id)}"}]
     if items:
         viz_emit({
             "id": f"scout_timeline_{field_id}",
@@ -901,7 +934,21 @@ def get_field_scouting_tool(field_id: int, people_id: str = "") -> str:
             "title": f"Scouting — {fname}",
             "source_tool": "get_field_scouting_tool",
             "data": {"items": items[:20]},
-            "actions": [{"label": "Open field", "href": f"/precision-ag/fields/{int(field_id)}"}],
+            "actions": field_action,
+        })
+    points = _scout_geo_points(rows)
+    if points:
+        viz_emit({
+            "id": f"scout_heat_{field_id}",
+            "type": "heatmap",
+            "title": f"Scout locations — {fname}",
+            "source_tool": "get_field_scouting_tool",
+            "data": {
+                "kind": "geo",
+                "field_id": int(field_id),
+                "points": points,
+            },
+            "actions": field_action,
         })
     return "\n".join(lines)
 
@@ -2037,6 +2084,22 @@ def get_field_zones_tool(field_id: int, num_zones: int = 4, index: str = "NDVI",
             lines.append(f"  Stressed zone (#{(worst.get('zone') or 0) + 1}) covers ≥{worst.get('area_pct'):.0f}% — scout that area.")
 
     lines.append("  Variable-rate Rx export: `/api/fields/{id}/zones/prescription?fmt=geojson` (or fmt=csv).".replace("{id}", str(field_id)))
+    if zones:
+        viz_emit({
+            "id": f"zone_heat_{field_id}_{idx}",
+            "type": "heatmap",
+            "title": f"{idx} zones — {field_name}",
+            "source_tool": "get_field_zones_tool",
+            "data": {
+                "kind": "raster",
+                "field_id": int(field_id),
+                "layer": idx,
+            },
+            "actions": [{
+                "label": "Open map",
+                "href": f"/precision-ag/analysis/maps?field_id={int(field_id)}&layer={idx}",
+            }],
+        })
     return "\n".join(lines)
 
 

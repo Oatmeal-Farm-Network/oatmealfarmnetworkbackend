@@ -9,6 +9,7 @@ os.environ.setdefault("REDIS_ALLOW_MEMORY_FALLBACK", "true")
 
 from visualizations.mapper import (
     MAX_CALENDAR_EVENTS,
+    MAX_HEATMAP_POINTS,
     MAX_SERIES_POINTS,
     MAX_SPECS,
     MAX_TABLE_ROWS,
@@ -140,3 +141,20 @@ def test_calendar_events_capped_at_50():
     assert len(out[0]["data"]["events"]) == MAX_CALENDAR_EVENTS
     assert out[0]["data"]["events"][0]["label"] == "Op 0"
     assert out[0]["data"]["events"][-1]["label"] == "Op 49"
+
+
+def test_heatmap_points_capped_at_50():
+    points = [{"lat": 42.0 + i * 0.001, "lon": -71.0, "label": f"p{i}", "weight": 1} for i in range(60)]
+    out = map_pending(
+        [
+            {
+                "id": "heat",
+                "type": "heatmap",
+                "title": "Scout locations",
+                "data": {"kind": "geo", "field_id": 12, "points": points},
+            }
+        ]
+    )
+    assert len(out[0]["data"]["points"]) == MAX_HEATMAP_POINTS
+    assert out[0]["data"]["points"][0]["label"] == "p0"
+    assert out[0]["data"]["points"][-1]["label"] == "p49"
