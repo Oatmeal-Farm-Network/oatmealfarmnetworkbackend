@@ -1146,8 +1146,7 @@ PRECISION AG — Field Data (resolve names before asking for IDs):
 - get_field_irrigation_tool(field_id, days): irrigation recommendation from ET₀ vs precipitation — "irrigate now / soon / not needed" + water deficit in inches. Use for "should I irrigate", "when to water", "water stress", irrigation scheduling.
 - get_field_yield_forecast_tool(field_id): NDVI-based yield estimate vs crop-type baseline with trend. Use for "expected yield", "will this be a good harvest", "am I above or below average yield".
 - get_field_carbon_tool(field_id): soil OM trends, SOC stock estimates, cover crop history, rotation diversity, sustainability score. Use for "carbon sequestration", "soil health trend", "regenerative ag score", "how sustainable is my farm".
-- get_farm_benchmark_tool(): compare all fields by NDVI/health/trend — ranks best-to-worst and links to Precision Ag. Use for "which field is doing best", "farm overview", "how's the farm", "which field needs most attention". Do not embed a dashboard; the charts plus Open dashboard / Open benchmark links are enough.
-- get_farm_benchmark_tool(): compare all fields by NDVI/health/trend — ranks best-to-worst. Use for "which field is doing best", "farm overview", "which field needs most attention". When the user names two specific fields, use compare_two_fields_tool instead.
+- get_farm_benchmark_tool(): compare all fields by NDVI/health/trend — ranks best-to-worst and links to Precision Ag. Use for "which field is doing best", "farm overview", "how's the farm", "which field needs most attention". Do not embed a dashboard; the charts plus Open dashboard / Open benchmark links are enough. When the user names two specific fields, use compare_two_fields_tool instead.
 - get_field_weather_tool(field_id, days): recent temp/precipitation/ET₀ at the field location. Use for "recent weather on my farm", "how much rain", when weather context helps agronomic advice.
 - get_field_biomass_tool(field_id): current dry-matter biomass estimate (kg DM/ha) for a field with confidence and capture date. If confidence is low, the response automatically explains WHY and how to fix it. Use for "what's my biomass", "how much forage", "what does this biomass number mean", or any biomass / dry-matter question. ALSO use whenever the user asks why biomass confidence is low.
 - improve_field_biomass_confidence_tool(field_id): trigger a fresh satellite biomass run and average it with recent passes to raise confidence. Use when the user asks to "improve confidence", "fix the biomass confidence", "average the biomass passes", or follows up on a low-confidence biomass result. PROACTIVELY OFFER this any time get_field_biomass_tool returns confidence < 0.4.
@@ -3179,6 +3178,7 @@ def _keyword_routes(text: str) -> List[str]:
     if any(k in t for k in ("crop", "plant", "soil", "tomato", "corn", "wheat", "pest", "disease", "irrigat", "spray")):
         routes.append("crop")
     if any(k in t for k in ("farm overview", "whole farm", "how's the farm", "how is the farm", "how is my farm")):
+        routes.append("crop")
     if any(k in t for k in ("compare ", " vs ", "versus")):
         routes.append("crop")
     if any(k in t for k in (

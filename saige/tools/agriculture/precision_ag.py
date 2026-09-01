@@ -1420,10 +1420,8 @@ def get_farm_benchmark_tool(people_id: str = "") -> str:
     Use when the user asks "which of my fields is doing best", "farm overview",
     "how's the farm", "which field needs the most work", or a whole-farm
     ranking. Emits a farm snapshot and links to Precision Ag — do not rebuild
-    the dashboard in chat. people_id is injected from session state."""
-    "which field needs the most work", or a whole-farm ranking. When the user
-    names two specific fields, use compare_two_fields_tool instead.
-    people_id is injected from session state."""
+    the dashboard in chat. When the user names two specific fields, use
+    compare_two_fields_tool instead. people_id is injected from session state."""
     biz_ids = _business_ids_for_people(people_id)
     if not biz_ids:
         return "Cannot run benchmark — account not linked to any business."
