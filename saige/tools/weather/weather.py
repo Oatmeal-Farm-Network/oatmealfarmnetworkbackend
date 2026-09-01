@@ -15,6 +15,37 @@ except ImportError:
     requests = None  # type: ignore
     _REQUESTS_OK = False
 
+# USPS abbreviations → state names (50 states + DC).
+_US_STATE_ABBREV = {
+    "al": "alabama", "ak": "alaska", "az": "arizona", "ar": "arkansas",
+    "ca": "california", "co": "colorado", "ct": "connecticut",
+    "dc": "district of columbia", "de": "delaware", "fl": "florida",
+    "ga": "georgia", "hi": "hawaii", "id": "idaho", "il": "illinois",
+    "in": "indiana", "ia": "iowa", "ks": "kansas", "ky": "kentucky",
+    "la": "louisiana", "me": "maine", "md": "maryland", "ma": "massachusetts",
+    "mi": "michigan", "mn": "minnesota", "ms": "mississippi", "mo": "missouri",
+    "mt": "montana", "ne": "nebraska", "nv": "nevada", "nh": "new hampshire",
+    "nj": "new jersey", "nm": "new mexico", "ny": "new york",
+    "nc": "north carolina", "nd": "north dakota", "oh": "ohio", "ok": "oklahoma",
+    "or": "oregon", "pa": "pennsylvania", "ri": "rhode island",
+    "sc": "south carolina", "sd": "south dakota", "tn": "tennessee",
+    "tx": "texas", "ut": "utah", "vt": "vermont", "va": "virginia",
+    "wa": "washington", "wv": "west virginia", "wi": "wisconsin", "wy": "wyoming",
+}
+_US_STATE_NAMES = set(_US_STATE_ABBREV.values())
+_COUNTRY_TOKENS = {"us", "usa", "united states", "unitedstates"}
+_ZIP_RE = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
+_PLACE_NOISE = frozenset({
+    "weather", "forecast", "temperature", "rain", "climate", "report", "today",
+    "todays", "what's", "whats", "the", "a", "an", "my", "our", "your", "this",
+    "coming", "days", "day", "week", "weeks", "month", "months", "please",
+    "check", "can", "you", "in", "at", "near", "for", "about", "current",
+})
+_US_STATE_PATTERN = "(?:%s|%s)" % (
+    "|".join(re.escape(name) for name in sorted(_US_STATE_NAMES, key=len, reverse=True)),
+    "|".join(re.escape(abbr) for abbr in sorted(_US_STATE_ABBREV, key=len, reverse=True)),
+)
+
 
 class WeatherService:
     """Weather service for fetching current and forecast data from weather APIs."""
@@ -60,15 +91,128 @@ class WeatherService:
         parts = [part for part in [city, state, country] if part]
         return ", ".join(parts)
 
+    @staticmethod
+    def _extract_us_zip(text: str) -> Optional[str]:
+        match = _ZIP_RE.search(text or "")
+        return match.group(1) if match else None
+
+    @classmethod
+    def extract_us_place_query(cls, text: str) -> Optional[str]:
+        """Pull a US city/state/ZIP from free text. Works for any US place, not one city."""
+        raw = (text or "").strip()
+        if not raw:
+            return None
+        zip_code = cls._extract_us_zip(raw)
+        matches = []
+        pattern = re.compile(
+            rf"(?i)\b(?P<city>[A-Za-z][A-Za-z.'\-]+(?:\s+[A-Za-z][A-Za-z.'\-]+){{0,3}})"
+            rf"\s*,?\s+(?P<state>{_US_STATE_PATTERN})\b"
+            rf"(?:\s+(?P<zip>\d{{5}}))?"
+        )
+        for match in pattern.finditer(raw):
+            city_parts = [
+                part for part in re.split(r"\s+", (match.group("city") or "").strip())
+                if part and part.lower() not in _PLACE_NOISE
+            ]
+            if not city_parts:
+                continue
+            city = " ".join(city_parts)
+            if city.lower() in _US_STATE_NAMES or city.lower() in _US_STATE_ABBREV:
+                continue
+            matches.append((city, match.group("state"), match.group("zip") or zip_code))
+        chosen = None
+        for item in matches:
+            if item[2]:
+                chosen = item
+                break
+        if not chosen and matches:
+            chosen = matches[-1]
+        if chosen:
+            city, state, zipp = chosen
+            state_fmt = state.upper() if len(state) == 2 else state.title()
+            city_fmt = " ".join(
+                w.capitalize() if w.lower() != "of" else w.lower() for w in city.split()
+            )
+            out = f"{city_fmt}, {state_fmt}"
+            if zipp:
+                out = f"{out} {zipp}"
+            return out
+        if zip_code:
+            return zip_code
+        return None
+
+    @staticmethod
+    def _expand_us_tokens(tokens: List[str]) -> List[str]:
+        expanded: List[str] = []
+        for tok in tokens:
+            low = tok.lower()
+            if low in _US_STATE_ABBREV:
+                expanded.append(_US_STATE_ABBREV[low])
+            elif low in ("usa", "unitedstates"):
+                expanded.append("us")
+            else:
+                expanded.append(low)
+        return expanded
+
+    @classmethod
+    def _canonical_location_text(cls, text: str) -> str:
+        tokens = [tok for tok in re.split(r"[\s,]+", cls._normalize_location_text(text)) if tok]
+        return " ".join(cls._expand_us_tokens(tokens))
+
+    @classmethod
+    def _canonical_state(cls, state: str) -> str:
+        low = (state or "").strip().lower()
+        return _US_STATE_ABBREV.get(low, low)
+
+    @staticmethod
+    def _canonical_country(country: str) -> str:
+        low = (country or "").strip().lower()
+        if low in _COUNTRY_TOKENS or low == "united states of america":
+            return "us"
+        return low
+
+    @classmethod
+    def _state_from_query(cls, text: str) -> Optional[str]:
+        tokens = cls._expand_us_tokens(
+            [tok for tok in re.split(r"[\s,]+", cls._normalize_location_text(text)) if tok]
+        )
+        for tok in tokens:
+            if tok in _US_STATE_NAMES:
+                return tok
+        return None
+
+    @classmethod
+    def _states_match(cls, candidate_state: str, wanted_state: str) -> bool:
+        return cls._canonical_state(candidate_state) == cls._canonical_state(wanted_state)
+
+    @classmethod
+    def _place_key(cls, candidate: Dict[str, Any]) -> str:
+        city = cls._collapse_location_text(candidate.get("city") or "")
+        state = cls._collapse_location_text(cls._canonical_state(candidate.get("state") or ""))
+        country = cls._collapse_location_text(cls._canonical_country(candidate.get("country") or ""))
+        return f"{city}|{state}|{country}"
+
     def _generate_location_queries(self, location_query: str, max_queries: int = 5) -> List[str]:
-        """
-        Generate normalized location query variants without word-block lists.
-        Skips tiny fragments (e.g. "des") that pollute geocoding.
-        """
-        normalized = self._normalize_location_text(location_query)
-        tokens = [tok for tok in re.split(r"[\s,]+", normalized) if tok]
-        if not tokens:
-            return [location_query.strip()]
+        """Name variants for geocoders. Never drop a stated state/ZIP down to city-only."""
+        zip_code = self._extract_us_zip(location_query)
+        raw_tokens = [
+            tok for tok in re.split(r"[\s,]+", self._normalize_location_text(location_query)) if tok
+        ]
+        tokens = self._expand_us_tokens(raw_tokens)
+        name_tokens = [
+            tok for tok in tokens
+            if not (tok.isdigit() and len(tok) == 5) and tok not in _COUNTRY_TOKENS
+        ]
+        state_idx = None
+        for i, tok in enumerate(name_tokens):
+            if tok in _US_STATE_NAMES:
+                state_idx = i
+        if state_idx is not None and state_idx > 0:
+            city_tokens = name_tokens[:state_idx]
+            state_name = name_tokens[state_idx]
+        else:
+            city_tokens = [tok for tok in name_tokens if tok not in _US_STATE_NAMES]
+            state_name = next((tok for tok in name_tokens if tok in _US_STATE_NAMES), None)
 
         queries: List[str] = []
 
@@ -76,27 +220,58 @@ class WeatherService:
             q = q.strip(" ,")
             if not q or q in queries:
                 return
-            # Avoid single short tokens that geocode poorly ("des", "ia")
             parts = [p for p in re.split(r"[\s,]+", q) if p]
             if len(parts) == 1 and len(parts[0]) < 4:
                 return
             queries.append(q)
 
-        _push(" ".join(tokens))
-        # Prefer city + state form with commas for APIs ("Des Moines, Iowa")
-        if len(tokens) >= 3:
-            _push(f"{' '.join(tokens[:-1])}, {tokens[-1]}")
-        elif len(tokens) == 2:
-            _push(f"{tokens[0]}, {tokens[1]}")
-        if len(tokens) > 1:
-            for end in range(len(tokens) - 1, 0, -1):
-                _push(" ".join(tokens[:end]))
-            for start in range(1, len(tokens)):
-                chunk = " ".join(tokens[start:])
-                if len(chunk) >= 4:
-                    _push(chunk)
+        if city_tokens and state_name:
+            city = " ".join(city_tokens)
+            _push(f"{city}, {state_name}")
+            _push(f"{city}, {state_name}, US")
+            _push(f"{city} {state_name}")
+        elif name_tokens:
+            _push(" ".join(name_tokens))
+            if len(name_tokens) >= 2:
+                _push(f"{name_tokens[0]}, {' '.join(name_tokens[1:])}")
+            # City-only / suffix variants only when the user did not name a state or ZIP.
+            if not state_name and not zip_code and len(name_tokens) > 1:
+                for end in range(len(name_tokens) - 1, 0, -1):
+                    _push(" ".join(name_tokens[:end]))
+                for start in range(1, len(name_tokens)):
+                    chunk = " ".join(name_tokens[start:])
+                    if len(chunk) >= 4:
+                        _push(chunk)
 
         return queries[:max_queries] or [location_query.strip()]
+
+    def _fetch_zip_location(self, zip_code: str) -> Optional[Dict[str, Any]]:
+        """Resolve a US ZIP via Zippopotam (no API key)."""
+        if not _REQUESTS_OK or not zip_code:
+            return None
+        try:
+            response = requests.get(f"https://api.zippopotam.us/us/{zip_code}", timeout=5)
+            if response.status_code != 200:
+                return None
+            data = response.json() or {}
+            places = data.get("places") or []
+            if not places:
+                return None
+            place = places[0]
+            city = place.get("place name") or ""
+            state = place.get("state") or ""
+            country = data.get("country abbreviation") or "US"
+            return {
+                "city": city,
+                "state": state,
+                "country": country,
+                "display_name": self._build_display_name(city, state, country),
+                "lat": float(place.get("latitude")),
+                "lon": float(place.get("longitude")),
+            }
+        except Exception as e:
+            print(f"[Weather] ZIP geocode error: {e}")
+            return None
 
     def _fetch_openweathermap_geocode(self, location_query: str, limit: int = 5) -> List[Dict[str, Any]]:
         if not self._api_key or not _REQUESTS_OK:
@@ -137,6 +312,8 @@ class WeatherService:
         try:
             url = "https://geocoding-api.open-meteo.com/v1/search"
             params = {"name": location_query, "count": limit, "language": "en", "format": "json"}
+            if WeatherService._state_from_query(location_query) or WeatherService._extract_us_zip(location_query):
+                params["countryCode"] = "US"
             response = requests.get(url, params=params, timeout=8)
             if response.status_code != 200:
                 print(f"[Weather] Open-Meteo geocode error: {response.status_code}")
@@ -201,8 +378,8 @@ class WeatherService:
         result: Dict[str, Any],
         variant_rank: int,
     ) -> float:
-        candidate_norm = self._normalize_location_text(candidate_query)
-        original_norm = self._normalize_location_text(original_query)
+        candidate_norm = self._canonical_location_text(candidate_query)
+        original_norm = self._canonical_location_text(original_query)
         candidate_compact = self._collapse_location_text(candidate_norm)
         original_compact = self._collapse_location_text(original_norm)
 
@@ -265,6 +442,20 @@ class WeatherService:
         if not normalized_query or normalized_query == "Unknown":
             return {"status": "not_found", "query": location_query}
 
+        zip_code = self._extract_us_zip(normalized_query)
+        if zip_code:
+            zipped = self._fetch_zip_location(zip_code)
+            if zipped:
+                return {
+                    "status": "resolved",
+                    "query": location_query,
+                    "canonical_location": zipped["display_name"],
+                    "confidence": 0.99,
+                    "lat": zipped.get("lat"),
+                    "lon": zipped.get("lon"),
+                    "candidates": [zipped],
+                }
+
         query_variants = self._generate_location_queries(normalized_query)
         scored_candidates: List[Dict[str, Any]] = []
 
@@ -297,20 +488,28 @@ class WeatherService:
 
         deduped: Dict[str, Dict[str, Any]] = {}
         for candidate in scored_candidates:
-            key = f"{round(candidate.get('lat') or 0, 4)}:{round(candidate.get('lon') or 0, 4)}:{candidate.get('display_name', '').lower()}"
+            key = self._place_key(candidate)
+            if key == "||":
+                key = f"{round(candidate.get('lat') or 0, 4)}:{round(candidate.get('lon') or 0, 4)}"
             existing = deduped.get(key)
             if not existing or candidate["confidence"] > existing["confidence"]:
                 deduped[key] = candidate
 
         ranked = sorted(deduped.values(), key=lambda x: x["confidence"], reverse=True)
+        wanted_state = self._state_from_query(original_query or normalized_query)
+        if wanted_state:
+            matching = [c for c in ranked if self._states_match(c.get("state") or "", wanted_state)]
+            if matching:
+                ranked = matching
+
         best = ranked[0]
         second = ranked[1] if len(ranked) > 1 else None
 
         # Prefer unique state/region match from the original query text
-        orig_norm = self._normalize_location_text(original_query or normalized_query)
+        orig_norm = self._canonical_location_text(original_query or normalized_query)
         state_hits = []
         for c in ranked:
-            st = (c.get("state") or "").strip().lower()
+            st = self._canonical_state(c.get("state") or "")
             if st and st in orig_norm:
                 state_hits.append(c)
         if len(state_hits) == 1:

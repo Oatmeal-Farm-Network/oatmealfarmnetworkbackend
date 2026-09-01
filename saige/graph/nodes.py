@@ -2523,15 +2523,20 @@ def weather_advisory_node(state: FarmState):
     issues = state.get("current_issues") or []
     assessment = state.get("assessment_summary", "")
     history = state.get("history") or []
-    
-    # Build user query from multiple sources
-    user_query = ' '.join(issues) if issues else assessment
+
+    # This turn wins over farm/session location so weather works for any US place.
+    latest = _latest_user_text(state)
+    user_query = latest or (" ".join(issues) if issues else assessment)
     if not user_query or len(user_query.strip()) < 5:
-        # Try to get from history
         for msg in reversed(history):
-            if msg.startswith("User:"):
-                user_query = msg.replace("User:", "").strip()
+            if isinstance(msg, str) and msg.startswith("User:"):
+                user_query = msg.replace("User:", "", 1).strip()
                 break
+
+    mentioned_place = weather_service.extract_us_place_query(user_query)
+    if mentioned_place:
+        location = mentioned_place
+        print(f"[Weather Advisory] Place from this turn: {location}")
     
     print(f"[Weather Advisory] User query: {user_query[:100] if user_query else 'None'}...")
     print(f"[Weather Advisory] Location from state: {location}")
@@ -2572,10 +2577,11 @@ Extract:
 - Confidence score between 0.0 and 1.0
 
 Examples:
-- "weather in Hayward, California" -> is_weather_query: true, location: "Hayward, California", is_forecast: false, forecast_days: null, confidence: 0.95
-- "150 day forecast for New York" -> is_weather_query: true, location: "New York", is_forecast: true, forecast_days: 150, confidence: 0.93
+- "weather in Miami, Florida" -> is_weather_query: true, location: "Miami, Florida", is_forecast: false, forecast_days: null, confidence: 0.95
+- "150 day forecast for Des Moines, Iowa" -> is_weather_query: true, location: "Des Moines, Iowa", is_forecast: true, forecast_days: 150, confidence: 0.93
 - "weather for my tomato farm in Boston" -> is_weather_query: true, location: "Boston", is_forecast: false, has_farm_context: true, confidence: 0.90
-- "im in sanjose, can you check the weather in the coming days" -> is_weather_query: true, location: "Sanjose", is_forecast: true, forecast_days: 7, confidence: 0.90"""
+- "im in sanjose, can you check the weather in the coming days" -> is_weather_query: true, location: "San Jose, California", is_forecast: true, forecast_days: 7, confidence: 0.90
+- "Portland, ME" -> is_weather_query: true, location: "Portland, ME", is_forecast: false, forecast_days: null, confidence: 0.95"""
                     parsed_query_result[0] = weather_parser.invoke(parse_prompt)
                 except Exception as e:
                     exception_result[0] = e
@@ -2604,9 +2610,10 @@ Examples:
                 f"is_forecast: {parsed_query.is_forecast}, days: {parsed_query.forecast_days}, confidence: {llm_confidence:.2f}"
             )
 
-            if parsed_query.is_weather_query and parsed_location and (not location or location == "Unknown") and llm_confidence >= 0.55:
-                location = parsed_location
-                print(f"[Weather Advisory] Accepted LLM location: {location}")
+            if parsed_query.is_weather_query and parsed_location and llm_confidence >= 0.55:
+                if not mentioned_place:
+                    location = parsed_location
+                    print(f"[Weather Advisory] Accepted LLM location: {location}")
 
             if not forecast_days:
                 if parsed_query.is_forecast and parsed_query.forecast_days and parsed_query.forecast_days > 0:
@@ -2724,9 +2731,10 @@ Extract:
 - Confidence score between 0.0 and 1.0
 
 Examples:
-- "weather in Hayward, California" → location: "Hayward, California", is_forecast: false, forecast_days: null
-- "150 day forecast for New York" → location: "New York", is_forecast: true, forecast_days: 150
-- "weather for my tomato farm in Boston" → location: "Boston", is_forecast: false, has_farm_context: true"""
+- "weather in Miami, Florida" → location: "Miami, Florida", is_forecast: false, forecast_days: null
+- "150 day forecast for Des Moines, Iowa" → location: "Des Moines, Iowa", is_forecast: true, forecast_days: 150
+- "weather for my tomato farm in Boston" → location: "Boston", is_forecast: false, has_farm_context: true
+- "Portland, ME" → location: "Portland, ME", is_forecast: false, forecast_days: null"""
                         parsed_query_result[0] = weather_parser.invoke(parse_prompt)
                     except Exception as e:
                         exception_result[0] = e
@@ -2791,7 +2799,13 @@ Examples:
                 resolved_lon = resolution.get("lon")
             elif resolution and resolution.get("status") == "ambiguous":
                 candidates = resolution.get("candidates", [])[:3]
-                options = [c.get("display_name") for c in candidates if c.get("display_name")]
+                options = []
+                seen = set()
+                for c in candidates:
+                    name = (c.get("display_name") or "").strip()
+                    if name and name.lower() not in seen:
+                        seen.add(name.lower())
+                        options.append(name)
                 pretty_options = ", ".join(options) if options else "a more specific city/region"
                 return {
                     "diagnosis": (
