@@ -39,16 +39,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from langchain_core.tools import tool
 
 from chat_history import ChatHistory
-from config import DB_CONFIG, SHORT_TERM_N
+from config import SHORT_TERM_N
 from llm import llm
 from message_buffer import get_last_n, push_message
 from rag import RAGSystem
-
-try:
-    import pymssql
-    _PMS_AVAILABLE = True
-except ImportError:
-    _PMS_AVAILABLE = False
+from data.sql.connect import sql_connect
 
 logger = logging.getLogger("pairsley")
 
@@ -94,17 +89,7 @@ rag_pairsley = RAGSystem(PAIRSLEY_CHUNKS_COLLECTION, label="pairsley")
 # ---------------------------------------------------------------------------
 
 def _connect():
-    if not _PMS_AVAILABLE or not all([DB_CONFIG.get("host"), DB_CONFIG.get("user"), DB_CONFIG.get("database")]):
-        return None
-    try:
-        return pymssql.connect(
-            server=DB_CONFIG["host"], port=DB_CONFIG["port"],
-            user=DB_CONFIG["user"], password=DB_CONFIG["password"],
-            database=DB_CONFIG["database"], as_dict=True,
-        )
-    except Exception as e:
-        logger.error("[Pairsley] DB connect failed: %s", e)
-        return None
+    return sql_connect(as_dict=True)
 
 
 def _query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:

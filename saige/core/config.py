@@ -63,8 +63,12 @@ except ImportError:
 # DATABASE CONFIGURATION
 # ============================================================================
 
+# Cloud Run SQL Server: use the Python Connector (see data/sql/connect.py).
+# DB_SERVER is the Secret Manager name OFN backend already mounts.
+INSTANCE_CONNECTION_NAME = (os.getenv("INSTANCE_CONNECTION_NAME") or "").strip()
+
 DB_CONFIG = {
-    "host": os.getenv("DB_HOST", "").strip(),
+    "host": (os.getenv("DB_HOST") or os.getenv("DB_SERVER") or "").strip(),
     "port": int(os.getenv("DB_PORT", "1433").strip()) if os.getenv("DB_PORT") else 1433,
     "user": os.getenv("DB_USER", "").strip(),
     "password": os.getenv("DB_PASSWORD", ""),

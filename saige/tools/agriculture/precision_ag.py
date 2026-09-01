@@ -26,14 +26,8 @@ from contextvars import ContextVar
 from typing import List, Optional, Dict, Any
 from langchain_core.tools import tool
 
-from config import DB_CONFIG, RAG_AVAILABLE
 from visualizations.pending import viz_emit
-
-try:
-    import pymssql
-    _PMS_AVAILABLE = True
-except ImportError:
-    _PMS_AVAILABLE = False
+from data.sql.connect import sql_connect
 
 # Session business context injected by advisory/monitoring nodes so tools that
 # only receive people_id still resolve the active farm.
@@ -55,20 +49,7 @@ def set_session_business_id(business_id: Optional[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def _connect():
-    if not _PMS_AVAILABLE or not all([DB_CONFIG.get("host"), DB_CONFIG.get("user"), DB_CONFIG.get("database")]):
-        return None
-    try:
-        return pymssql.connect(
-            server=DB_CONFIG["host"],
-            port=DB_CONFIG["port"],
-            user=DB_CONFIG["user"],
-            password=DB_CONFIG["password"],
-            database=DB_CONFIG["database"],
-            as_dict=True,
-        )
-    except Exception as e:
-        print(f"[precision_ag] DB connect failed: {e}")
-        return None
+    return sql_connect(as_dict=True)
 
 
 def _query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:

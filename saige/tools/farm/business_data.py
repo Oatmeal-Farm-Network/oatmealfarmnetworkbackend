@@ -20,14 +20,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 from langchain_core.tools import tool
-from config import DB_CONFIG
 from visualizations.pending import viz_emit
-
-try:
-    import pymssql
-    _PMS_AVAILABLE = True
-except ImportError:
-    _PMS_AVAILABLE = False
+from data.sql.connect import sql_connect
 
 logger = logging.getLogger("business_data")
 
@@ -35,16 +29,7 @@ logger = logging.getLogger("business_data")
 # ── DB helpers ───────────────────────────────────────────────────────────────
 
 def _connect():
-    if not _PMS_AVAILABLE or not all([DB_CONFIG.get("host"), DB_CONFIG.get("user"), DB_CONFIG.get("database")]):
-        return None
-    try:
-        return pymssql.connect(
-            server=DB_CONFIG["host"], user=DB_CONFIG["user"],
-            password=DB_CONFIG["password"], database=DB_CONFIG["database"],
-            timeout=10, login_timeout=10,
-        )
-    except Exception:
-        return None
+    return sql_connect(timeout=10, login_timeout=10)
 
 
 def _query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
