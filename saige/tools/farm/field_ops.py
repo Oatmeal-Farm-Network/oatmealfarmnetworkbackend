@@ -5,15 +5,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from config import DB_CONFIG, OFN_BACKEND_URL
+from config import OFN_BACKEND_URL
+from data.sql.connect import sql_connect
 
 logger = logging.getLogger("farm_advisory.field_ops")
-
-try:
-    import pymssql
-    _OK = True
-except ImportError:
-    _OK = False
 
 try:
     import requests as _requests
@@ -24,20 +19,7 @@ _HTTP_TIMEOUT = 20
 
 
 def _connect():
-    if not _OK or not all([DB_CONFIG.get("host"), DB_CONFIG.get("user"), DB_CONFIG.get("database")]):
-        return None
-    try:
-        return pymssql.connect(
-            server=DB_CONFIG["host"],
-            user=DB_CONFIG["user"],
-            password=DB_CONFIG["password"],
-            database=DB_CONFIG["database"],
-            timeout=12,
-            login_timeout=12,
-        )
-    except Exception as e:
-        logger.error("[field_ops] connect: %s", e)
-        return None
+    return sql_connect(timeout=12, login_timeout=12)
 
 
 def _business_owns_field(conn, field_id: int, business_id: int) -> bool:

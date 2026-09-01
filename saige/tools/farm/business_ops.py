@@ -19,28 +19,13 @@ from __future__ import annotations
 from typing import List, Optional, Dict, Any
 from langchain_core.tools import tool
 
-from config import DB_CONFIG
-
-try:
-    import pymssql
-    _PMS_AVAILABLE = True
-except ImportError:
-    _PMS_AVAILABLE = False
+from data.sql.connect import sql_connect
 
 
 # ── DB helpers ──────────────────────────────────────────────────────────────
 
 def _connect():
-    if not _PMS_AVAILABLE or not all([DB_CONFIG.get("host"), DB_CONFIG.get("user"), DB_CONFIG.get("database")]):
-        return None
-    try:
-        return pymssql.connect(
-            server=DB_CONFIG["host"], user=DB_CONFIG["user"],
-            password=DB_CONFIG["password"], database=DB_CONFIG["database"],
-            timeout=10, login_timeout=10,
-        )
-    except Exception:
-        return None
+    return sql_connect(timeout=10, login_timeout=10)
 
 
 def _query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:

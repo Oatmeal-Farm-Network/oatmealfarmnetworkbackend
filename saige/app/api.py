@@ -374,16 +374,14 @@ async def health_check(request: Request):
     except Exception:
         checks["firestore"] = "unhealthy"
     try:
-        from config import DB_CONFIG
-        import pymssql
-        if DB_CONFIG.get("host"):
-            conn = pymssql.connect(
-                server=DB_CONFIG["host"], user=DB_CONFIG["user"],
-                password=DB_CONFIG["password"], database=DB_CONFIG["database"],
-                timeout=4, login_timeout=4,
-            )
-            conn.close()
-            checks["sql"] = "healthy"
+        from data.sql.connect import sql_configured, sql_connect
+        if sql_configured():
+            conn = sql_connect(timeout=4, login_timeout=4)
+            if conn is None:
+                checks["sql"] = "unhealthy:connect"
+            else:
+                conn.close()
+                checks["sql"] = "healthy"
         else:
             checks["sql"] = "unconfigured"
     except Exception as e:
@@ -1446,15 +1444,12 @@ except Exception as _act_err:
 def _commit_produce_draft(payload: dict) -> Optional[int]:
     """Insert a Produce row from an approved draft. Returns new ProduceID or None."""
     try:
-        import pymssql
-        from config import DB_CONFIG
+        from data.sql.connect import sql_connect
     except Exception:
         return None
-    conn = pymssql.connect(
-        server=DB_CONFIG["host"], port=DB_CONFIG["port"],
-        user=DB_CONFIG["user"], password=DB_CONFIG["password"],
-        database=DB_CONFIG["database"], as_dict=True,
-    )
+    conn = sql_connect(as_dict=True)
+    if conn is None:
+        return None
     try:
         cur = conn.cursor()
         # Resolve ingredient and measurement IDs from names
@@ -1511,15 +1506,12 @@ def _commit_produce_draft(payload: dict) -> Optional[int]:
 
 def _commit_event_draft(payload: dict) -> Optional[int]:
     try:
-        import pymssql
-        from config import DB_CONFIG
+        from data.sql.connect import sql_connect
     except Exception:
         return None
-    conn = pymssql.connect(
-        server=DB_CONFIG["host"], port=DB_CONFIG["port"],
-        user=DB_CONFIG["user"], password=DB_CONFIG["password"],
-        database=DB_CONFIG["database"], as_dict=True,
-    )
+    conn = sql_connect(as_dict=True)
+    if conn is None:
+        return None
     try:
         cur = conn.cursor()
         cur.execute(
@@ -1565,16 +1557,13 @@ def _commit_event_draft(payload: dict) -> Optional[int]:
 
 def _commit_blog_draft(payload: dict) -> Optional[int]:
     try:
-        import pymssql
         import re as _re
-        from config import DB_CONFIG
+        from data.sql.connect import sql_connect
     except Exception:
         return None
-    conn = pymssql.connect(
-        server=DB_CONFIG["host"], port=DB_CONFIG["port"],
-        user=DB_CONFIG["user"], password=DB_CONFIG["password"],
-        database=DB_CONFIG["database"], as_dict=True,
-    )
+    conn = sql_connect(as_dict=True)
+    if conn is None:
+        return None
     try:
         cur = conn.cursor()
         title = str(payload.get("Title") or "").strip()

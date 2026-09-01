@@ -1,10 +1,9 @@
 # --- data/sql/database.py ---
 import re
 from typing import List, Dict
-from config import DB_CONFIG, ALLOWED_TABLES, RAG_AVAILABLE
 
-if RAG_AVAILABLE:
-    import pymssql
+from config import ALLOWED_TABLES
+from data.sql.connect import sql_connect, sql_configured
 
 
 class Database:
@@ -17,18 +16,11 @@ class Database:
     @property
     def connection(self):
         """Lazy connection to database."""
-        if self._connection is None and RAG_AVAILABLE:
+        if self._connection is None and sql_configured():
             try:
-                if all([DB_CONFIG["host"], DB_CONFIG["user"], DB_CONFIG["database"]]):
-                    self._connection = pymssql.connect(
-                        server=DB_CONFIG["host"],
-                        port=DB_CONFIG["port"],
-                        user=DB_CONFIG["user"],
-                        password=DB_CONFIG["password"],
-                        database=DB_CONFIG["database"],
-                        as_dict=True
-                    )
-                    print(f"[DB] Connected to {DB_CONFIG['database']}")
+                self._connection = sql_connect(as_dict=True)
+                if self._connection is not None:
+                    print("[DB] Connected")
             except Exception as e:
                 print(f"[DB] Connection failed: {e}")
         return self._connection
