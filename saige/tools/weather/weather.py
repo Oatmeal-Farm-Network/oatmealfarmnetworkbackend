@@ -35,6 +35,16 @@ _US_STATE_ABBREV = {
 _US_STATE_NAMES = set(_US_STATE_ABBREV.values())
 _COUNTRY_TOKENS = {"us", "usa", "united states", "unitedstates"}
 _ZIP_RE = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
+_PLACE_NOISE = frozenset({
+    "weather", "forecast", "temperature", "rain", "climate", "report", "today",
+    "todays", "what's", "whats", "the", "a", "an", "my", "our", "your", "this",
+    "coming", "days", "day", "week", "weeks", "month", "months", "please",
+    "check", "can", "you", "in", "at", "near", "for", "about", "current",
+})
+_US_STATE_PATTERN = "(?:%s|%s)" % (
+    "|".join(re.escape(name) for name in sorted(_US_STATE_NAMES, key=len, reverse=True)),
+    "|".join(re.escape(abbr) for abbr in sorted(_US_STATE_ABBREV, key=len, reverse=True)),
+)
 
 
 class WeatherService:
@@ -85,6 +95,51 @@ class WeatherService:
     def _extract_us_zip(text: str) -> Optional[str]:
         match = _ZIP_RE.search(text or "")
         return match.group(1) if match else None
+
+    @classmethod
+    def extract_us_place_query(cls, text: str) -> Optional[str]:
+        """Pull a US city/state/ZIP from free text. Works for any US place, not one city."""
+        raw = (text or "").strip()
+        if not raw:
+            return None
+        zip_code = cls._extract_us_zip(raw)
+        matches = []
+        pattern = re.compile(
+            rf"(?i)\b(?P<city>[A-Za-z][A-Za-z.'\-]+(?:\s+[A-Za-z][A-Za-z.'\-]+){{0,3}})"
+            rf"\s*,?\s+(?P<state>{_US_STATE_PATTERN})\b"
+            rf"(?:\s+(?P<zip>\d{{5}}))?"
+        )
+        for match in pattern.finditer(raw):
+            city_parts = [
+                part for part in re.split(r"\s+", (match.group("city") or "").strip())
+                if part and part.lower() not in _PLACE_NOISE
+            ]
+            if not city_parts:
+                continue
+            city = " ".join(city_parts)
+            if city.lower() in _US_STATE_NAMES or city.lower() in _US_STATE_ABBREV:
+                continue
+            matches.append((city, match.group("state"), match.group("zip") or zip_code))
+        chosen = None
+        for item in matches:
+            if item[2]:
+                chosen = item
+                break
+        if not chosen and matches:
+            chosen = matches[-1]
+        if chosen:
+            city, state, zipp = chosen
+            state_fmt = state.upper() if len(state) == 2 else state.title()
+            city_fmt = " ".join(
+                w.capitalize() if w.lower() != "of" else w.lower() for w in city.split()
+            )
+            out = f"{city_fmt}, {state_fmt}"
+            if zipp:
+                out = f"{out} {zipp}"
+            return out
+        if zip_code:
+            return zip_code
+        return None
 
     @staticmethod
     def _expand_us_tokens(tokens: List[str]) -> List[str]:
@@ -148,8 +203,16 @@ class WeatherService:
             tok for tok in tokens
             if not (tok.isdigit() and len(tok) == 5) and tok not in _COUNTRY_TOKENS
         ]
-        state_name = next((tok for tok in name_tokens if tok in _US_STATE_NAMES), None)
-        city_tokens = [tok for tok in name_tokens if tok not in _US_STATE_NAMES]
+        state_idx = None
+        for i, tok in enumerate(name_tokens):
+            if tok in _US_STATE_NAMES:
+                state_idx = i
+        if state_idx is not None and state_idx > 0:
+            city_tokens = name_tokens[:state_idx]
+            state_name = name_tokens[state_idx]
+        else:
+            city_tokens = [tok for tok in name_tokens if tok not in _US_STATE_NAMES]
+            state_name = next((tok for tok in name_tokens if tok in _US_STATE_NAMES), None)
 
         queries: List[str] = []
 
@@ -249,6 +312,8 @@ class WeatherService:
         try:
             url = "https://geocoding-api.open-meteo.com/v1/search"
             params = {"name": location_query, "count": limit, "language": "en", "format": "json"}
+            if WeatherService._state_from_query(location_query) or WeatherService._extract_us_zip(location_query):
+                params["countryCode"] = "US"
             response = requests.get(url, params=params, timeout=8)
             if response.status_code != 200:
                 print(f"[Weather] Open-Meteo geocode error: {response.status_code}")
