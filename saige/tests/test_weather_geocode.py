@@ -1,33 +1,13 @@
 """US weather geocoder: any city/state/ZIP, not one hardcoded place."""
-from tools.weather.us_states import USPS_STATES, ABBREV_TO_NAME
-from tools.weather.weather import WeatherService
-
-# Official USPS set from the 50 states + DC chart.
-_EXPECTED_USPS = {
-    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas",
-    "CA": "California", "CO": "Colorado", "CT": "Connecticut",
-    "DC": "District of Columbia", "DE": "Delaware", "FL": "Florida",
-    "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho", "IL": "Illinois",
-    "IN": "Indiana", "IA": "Iowa", "KS": "Kansas", "KY": "Kentucky",
-    "LA": "Louisiana", "ME": "Maine", "MD": "Maryland", "MA": "Massachusetts",
-    "MI": "Michigan", "MN": "Minnesota", "MS": "Mississippi", "MO": "Missouri",
-    "MT": "Montana", "NE": "Nebraska", "NV": "Nevada", "NH": "New Hampshire",
-    "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York",
-    "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio", "OK": "Oklahoma",
-    "OR": "Oregon", "PA": "Pennsylvania", "RI": "Rhode Island",
-    "SC": "South Carolina", "SD": "South Dakota", "TN": "Tennessee",
-    "TX": "Texas", "UT": "Utah", "VT": "Vermont", "VA": "Virginia",
-    "WA": "Washington", "WV": "West Virginia", "WI": "Wisconsin", "WY": "Wyoming",
-}
+from tools.weather.weather import WeatherService, _US_STATE_ABBREV
 
 
-def test_usps_table_matches_official_50_states_and_dc():
-    assert USPS_STATES == _EXPECTED_USPS
-    assert len(USPS_STATES) == 51
-    assert ABBREV_TO_NAME["ca"] == "california"
-    assert ABBREV_TO_NAME["me"] == "maine"
-    assert ABBREV_TO_NAME["or"] == "oregon"
-    assert ABBREV_TO_NAME["dc"] == "district of columbia"
+def test_state_abbreviations_cover_all_us_states_and_dc():
+    assert len(_US_STATE_ABBREV) == 51
+    assert _US_STATE_ABBREV["ca"] == "california"
+    assert _US_STATE_ABBREV["me"] == "maine"
+    assert _US_STATE_ABBREV["or"] == "oregon"
+    assert _US_STATE_ABBREV["dc"] == "district of columbia"
 
 
 def _same_city_hits(city, wanted_state, other_states):

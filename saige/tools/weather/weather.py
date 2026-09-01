@@ -7,8 +7,6 @@ from typing import Optional, Dict, Any, List
 from langchain_core.tools import tool
 from config import WEATHER_AVAILABLE
 from visualizations.pending import viz_emit
-from tools.weather.us_states import ABBREV_TO_NAME as _US_STATE_ABBREV
-from tools.weather.us_states import STATE_NAMES as _US_STATE_NAMES
 
 try:
     import requests
@@ -17,7 +15,24 @@ except ImportError:
     requests = None  # type: ignore
     _REQUESTS_OK = False
 
-# Lowercase USPS abbreviations → full names (see tools/weather/us_states.py).
+# USPS abbreviations → state names (50 states + DC).
+_US_STATE_ABBREV = {
+    "al": "alabama", "ak": "alaska", "az": "arizona", "ar": "arkansas",
+    "ca": "california", "co": "colorado", "ct": "connecticut",
+    "dc": "district of columbia", "de": "delaware", "fl": "florida",
+    "ga": "georgia", "hi": "hawaii", "id": "idaho", "il": "illinois",
+    "in": "indiana", "ia": "iowa", "ks": "kansas", "ky": "kentucky",
+    "la": "louisiana", "me": "maine", "md": "maryland", "ma": "massachusetts",
+    "mi": "michigan", "mn": "minnesota", "ms": "mississippi", "mo": "missouri",
+    "mt": "montana", "ne": "nebraska", "nv": "nevada", "nh": "new hampshire",
+    "nj": "new jersey", "nm": "new mexico", "ny": "new york",
+    "nc": "north carolina", "nd": "north dakota", "oh": "ohio", "ok": "oklahoma",
+    "or": "oregon", "pa": "pennsylvania", "ri": "rhode island",
+    "sc": "south carolina", "sd": "south dakota", "tn": "tennessee",
+    "tx": "texas", "ut": "utah", "vt": "vermont", "va": "virginia",
+    "wa": "washington", "wv": "west virginia", "wi": "wisconsin", "wy": "wyoming",
+}
+_US_STATE_NAMES = set(_US_STATE_ABBREV.values())
 _COUNTRY_TOKENS = {"us", "usa", "united states", "unitedstates"}
 _ZIP_RE = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
 _PLACE_NOISE = frozenset({
