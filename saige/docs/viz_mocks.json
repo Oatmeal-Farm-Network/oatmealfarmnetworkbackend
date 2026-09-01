@@ -168,5 +168,49 @@
       ]
     },
     "actions": []
+  },
+  {
+    "id": "viz_kpi_ndvi_compare",
+    "type": "kpi",
+    "title": "NDVI — North 40 vs West 20",
+    "source_tool": "compare_two_fields_tool",
+    "data": {
+      "value": 0.56,
+      "unit": "",
+      "delta": 0.08,
+      "hint": "North 40 0.56 · West 20 0.48"
+    },
+    "actions": [
+      { "label": "Open North 40", "href": "/precision-ag/fields/12" },
+      { "label": "Open West 20", "href": "/precision-ag/fields/15" }
+    ]
+  },
+  {
+    "id": "viz_line_ndvi_west",
+    "type": "line_chart",
+    "title": "NDVI — West 20",
+    "source_tool": "compare_two_fields_tool",
+    "data": {
+      "xKey": "date",
+      "yKey": "value",
+      "unit": "",
+      "series": [
+        { "date": "2026-07-01", "value": 0.42 },
+        { "date": "2026-07-04", "value": 0.44 },
+        { "date": "2026-07-07", "value": 0.41 },
+        { "date": "2026-07-10", "value": 0.45 },
+        { "date": "2026-07-13", "value": 0.46 },
+        { "date": "2026-07-16", "value": 0.47 },
+        { "date": "2026-07-19", "value": 0.45 },
+        { "date": "2026-07-22", "value": 0.48 },
+        { "date": "2026-07-25", "value": 0.49 },
+        { "date": "2026-07-28", "value": 0.47 },
+        { "date": "2026-07-31", "value": 0.48 },
+        { "date": "2026-08-03", "value": 0.48 }
+      ]
+    },
+    "actions": [
+      { "label": "Open field", "href": "/precision-ag/fields/15" }
+    ]
   }
 ]
