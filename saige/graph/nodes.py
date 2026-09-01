@@ -2791,7 +2791,13 @@ Examples:
                 resolved_lon = resolution.get("lon")
             elif resolution and resolution.get("status") == "ambiguous":
                 candidates = resolution.get("candidates", [])[:3]
-                options = [c.get("display_name") for c in candidates if c.get("display_name")]
+                options = []
+                seen = set()
+                for c in candidates:
+                    name = (c.get("display_name") or "").strip()
+                    if name and name.lower() not in seen:
+                        seen.add(name.lower())
+                        options.append(name)
                 pretty_options = ", ".join(options) if options else "a more specific city/region"
                 return {
                     "diagnosis": (
