@@ -14,6 +14,7 @@ MAX_SPECS = 3
 MAX_SERIES_POINTS = 90
 MAX_TABLE_ROWS = 50
 MAX_CALENDAR_EVENTS = 50
+MAX_HEATMAP_POINTS = 50
 
 
 def _trim_data(viz_type: str, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -34,6 +35,12 @@ def _trim_data(viz_type: str, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         if not isinstance(events, list) or not events:
             return None
         out["events"] = events[:MAX_CALENDAR_EVENTS]
+    elif viz_type == "heatmap":
+        points = out.get("points")
+        if isinstance(points, list):
+            out["points"] = points[:MAX_HEATMAP_POINTS]
+            if not out["points"] and out.get("field_id") is None:
+                return None
     return out
 
 

@@ -144,6 +144,7 @@ try:
         resolve_field_by_name,
         get_field_analysis_tool,
         get_field_history_tool,
+        compare_two_fields_tool,
         get_field_alerts_tool,
         get_field_soil_samples_tool,
         get_field_scouting_tool,
@@ -177,6 +178,7 @@ except Exception as _e:
     resolve_field_by_name = None
     get_field_analysis_tool = None
     get_field_history_tool = None
+    compare_two_fields_tool = None
     get_field_alerts_tool = None
     get_field_soil_samples_tool = None
     get_field_scouting_tool = None
@@ -1131,7 +1133,8 @@ PRECISION AG — Field Data (resolve names before asking for IDs):
 - resolve_field_by_name_tool(name): map a field name like "test field 4" to FieldID. ALWAYS call this when the user names a field instead of giving a numeric ID. NEVER ask the user for a field ID if a name is present — resolve it.
 - get_field_analysis_tool(field_id): latest NDVI/EVI analysis. Call after resolving the name to an ID.
 - get_field_analysis_tool(field_id): latest NDVI/EVI/SAVI vegetation indices + trend. Use for "how is field X doing", "is my crop healthy", NDVI questions.
-- get_field_history_tool(field_id, months): NDVI time series over last N months. Use for trend, improvement/decline questions.
+- get_field_history_tool(field_id, months): NDVI time series over last N months. Use for trend, improvement/decline questions on a single field.
+- compare_two_fields_tool(field_id_a, field_id_b, months): NDVI time series for two named fields plus a latest-NDVI KPI. Use for "compare North 40 vs West 20", "Field A vs Field B", two specific fields. Resolve both names first. Do not use this for a whole-farm ranking.
 - get_field_alerts_tool(field_id): precision-ag alerts across fields (field_id=0 = all fields). Use for "any issues", "what needs attention", "are there problems".
 - get_field_soil_samples_tool(field_id): soil test results — pH, organic matter, NPK with deficiency/excess flags and amendment recommendations. Use for "soil health", "fertilizer", "what nutrients does my field need", soil questions.
 - get_field_scouting_tool(field_id): in-field scout observations — pests, disease, weeds, nutrient deficiency symptoms with severity. Use for "what's been found in the field", "any pest issues", "scouting reports".
@@ -1144,6 +1147,7 @@ PRECISION AG — Field Data (resolve names before asking for IDs):
 - get_field_yield_forecast_tool(field_id): NDVI-based yield estimate vs crop-type baseline with trend. Use for "expected yield", "will this be a good harvest", "am I above or below average yield".
 - get_field_carbon_tool(field_id): soil OM trends, SOC stock estimates, cover crop history, rotation diversity, sustainability score. Use for "carbon sequestration", "soil health trend", "regenerative ag score", "how sustainable is my farm".
 - get_farm_benchmark_tool(): compare all fields by NDVI/health/trend — ranks best-to-worst and links to Precision Ag. Use for "which field is doing best", "farm overview", "how's the farm", "which field needs most attention". Do not embed a dashboard; the charts plus Open dashboard / Open benchmark links are enough.
+- get_farm_benchmark_tool(): compare all fields by NDVI/health/trend — ranks best-to-worst. Use for "which field is doing best", "farm overview", "which field needs most attention". When the user names two specific fields, use compare_two_fields_tool instead.
 - get_field_weather_tool(field_id, days): recent temp/precipitation/ET₀ at the field location. Use for "recent weather on my farm", "how much rain", when weather context helps agronomic advice.
 - get_field_biomass_tool(field_id): current dry-matter biomass estimate (kg DM/ha) for a field with confidence and capture date. If confidence is low, the response automatically explains WHY and how to fix it. Use for "what's my biomass", "how much forage", "what does this biomass number mean", or any biomass / dry-matter question. ALSO use whenever the user asks why biomass confidence is low.
 - improve_field_biomass_confidence_tool(field_id): trigger a fresh satellite biomass run and average it with recent passes to raise confidence. Use when the user asks to "improve confidence", "fix the biomass confidence", "average the biomass passes", or follows up on a low-confidence biomass result. PROACTIVELY OFFER this any time get_field_biomass_tool returns confidence < 0.4.
@@ -1664,6 +1668,21 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
                             print(f"[Advisory Agent] Executing Get Field History Tool: field_id={fid}, months={months}")
                             tool_result = get_field_history_tool.invoke({
                                 "field_id": fid,
+                                "months": months,
+                                "people_id": people_id_for_tools,
+                            })
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'compare_two_fields_tool' and PRECISION_AG_AVAILABLE:
+                            fid_a = _safe_int(tc_args.get('field_id_a', 0) or 0)
+                            fid_b = _safe_int(tc_args.get('field_id_b', 0) or 0)
+                            months = _safe_int(tc_args.get('months', 6) or 6)
+                            print(
+                                f"[Advisory Agent] Executing Compare Two Fields: "
+                                f"field_id_a={fid_a}, field_id_b={fid_b}, months={months}"
+                            )
+                            tool_result = compare_two_fields_tool.invoke({
+                                "field_id_a": fid_a,
+                                "field_id_b": fid_b,
                                 "months": months,
                                 "people_id": people_id_for_tools,
                             })
@@ -3160,9 +3179,10 @@ def _keyword_routes(text: str) -> List[str]:
     if any(k in t for k in ("crop", "plant", "soil", "tomato", "corn", "wheat", "pest", "disease", "irrigat", "spray")):
         routes.append("crop")
     if any(k in t for k in ("farm overview", "whole farm", "how's the farm", "how is the farm", "how is my farm")):
+    if any(k in t for k in ("compare ", " vs ", "versus")):
         routes.append("crop")
     if any(k in t for k in (
-        "ndvi", "monitor", "satellite", "zone", "precision", "field health", "got worse",
+        "ndvi", "monitor", "satellite", "zone", "precision", "field health", "heatmap", "got worse",
         "how is my", "how's my", "how is field", "field doing", "my field", "test field",
     )):
         routes.append("monitoring")
