@@ -9,6 +9,7 @@ os.environ.setdefault("REDIS_ALLOW_MEMORY_FALLBACK", "true")
 
 from graph.farm_viz_intents import farm_viz_intent, pinned_routes
 from graph.nodes import _keyword_routes, supervisor_node
+from tools.agriculture.precision_ag import resolve_commodity_name
 from visualizations.mapper import merge_visualizations
 
 
@@ -26,6 +27,17 @@ def test_qa_prompts_pin_routes():
     assert farm_viz_intent("Tell me a joke") == "joke"
     assert farm_viz_intent("Hello") == "hello"
     assert farm_viz_intent("3-day forecast for Des Moines, Iowa?") is None
+    assert farm_viz_intent("Which of my fields is doing best?") == "farm_benchmark"
+    assert pinned_routes("Which of my fields is doing best?") == ["crop"]
+    assert farm_viz_intent("how's the farm") == "farm_benchmark"
+    assert farm_viz_intent("Show field activity for Alfalfa field 9") == "field_activity"
+    assert pinned_routes("Show field activity for Alfalfa field 9") == ["crop"]
+    assert farm_viz_intent("Show management zones for Alfalfa field 9") == "field_zones"
+    assert pinned_routes("Show management zones for Alfalfa field 9") == ["monitoring"]
+    assert farm_viz_intent("What's the corn price trend over the last 30 days?") == "price_trend"
+    assert pinned_routes("What's the corn price trend over the last 30 days?") == ["crop"]
+    assert farm_viz_intent("List my fields") == "farm_map"
+    assert pinned_routes("List my fields") == ["crop"]
 
 
 def test_field_alerts_not_weather():
@@ -33,6 +45,13 @@ def test_field_alerts_not_weather():
     assert _keyword_routes("Any field alerts?") == ["monitoring"]
     assert _keyword_routes("Should I irrigate Alfalfa field 9?") == ["crop"]
     assert _keyword_routes("Show my animals") == ["livestock"]
+    assert _keyword_routes("Which of my fields is doing best?") == ["crop"]
+    assert _keyword_routes("how's the farm") == ["crop"]
+    assert _keyword_routes("Show field activity for Alfalfa field 9") == ["crop"]
+    assert _keyword_routes("Show management zones for Alfalfa field 9") == ["monitoring"]
+    assert _keyword_routes("What's the corn price trend over the last 30 days?") == ["crop"]
+    assert "weather" not in _keyword_routes("how's the farm")
+    assert "monitoring" not in _keyword_routes("Which of my fields is doing best?")
 
 
 def test_supervisor_skips_llm_for_pinned_intents():
@@ -43,6 +62,11 @@ def test_supervisor_skips_llm_for_pinned_intents():
     })
     assert out["route"] == ["monitoring"]
     assert out["supervisor_reasoning"].startswith("farm-viz:")
+
+
+def test_commodity_from_price_prompt():
+    assert resolve_commodity_name("What's the corn price trend over the last 30 days?") == "Corn"
+    assert resolve_commodity_name("soybean prices") == "Nat'l Soybeans"
 
 
 def test_merge_prefers_kpi_over_farm_map():

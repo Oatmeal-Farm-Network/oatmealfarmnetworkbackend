@@ -598,6 +598,7 @@ def test_benchmark_emits_overview_kpi_bar_and_map(monkeypatch):
     assert specs[1]["data"]["yKey"] == "ndvi"
     assert specs[1]["data"]["series"][0]["field"] == "North 40"
     assert specs[2]["data"]["field_ids"] == [12, 15]
+    assert specs[2]["data"]["business_id"] == 15627
     hrefs = [a["href"] for a in specs[0]["actions"]]
     assert "/precision-ag/fields" in hrefs
     assert "/precision-ag/benchmark" in hrefs
@@ -766,6 +767,7 @@ def test_field_analysis_emits_field_map(monkeypatch):
     assert specs[0]["data"]["field_id"] == 12
     assert specs[0]["data"]["layer"] == "NDVI"
     assert specs[0]["data"]["analysis_id"] == 99
+    assert specs[0]["data"]["business_id"] == 15627
     assert "raster" not in str(specs[0]).lower()
     assert "geojson" not in str(specs[0]).lower()
 
@@ -794,6 +796,7 @@ def test_zones_emits_raster_heatmap_ids_only(monkeypatch):
     assert specs[0]["data"]["kind"] == "raster"
     assert specs[0]["data"]["field_id"] == 12
     assert specs[0]["data"]["layer"] == "NDVI"
+    assert specs[0]["data"]["business_id"] == 15627
     blob = str(specs[0]).lower()
     assert "geojson" not in blob
     assert "valid_pixels" not in blob
@@ -887,6 +890,8 @@ def test_weather_tool_keeps_format_for_llm_and_emits(monkeypatch):
 def test_planting_calendar_emits_plant_and_harvest(monkeypatch):
     from tools.agriculture.agronomy import planting_calendar_tool
 
+    from datetime import date
+
     viz_reset()
     text = planting_calendar_tool.invoke({"crop": "tomato", "zone": 6})
     assert isinstance(text, str)
@@ -899,7 +904,9 @@ def test_planting_calendar_emits_plant_and_harvest(monkeypatch):
     kinds = {e["kind"] for e in specs[0]["data"]["events"]}
     assert "plant" in kinds
     assert "harvest" in kinds
-    assert specs[0]["data"]["month"] == 4
+    today = date.today()
+    assert specs[0]["data"]["year"] == today.year
+    assert specs[0]["data"]["month"] == today.month
 
 
 def test_planting_unknown_crop_no_viz():
@@ -952,16 +959,23 @@ def test_activity_log_emits_calendar(monkeypatch):
     assert isinstance(text, str)
     assert "Planting" in text
     specs = viz_take()
-    assert len(specs) == 1
-    assert specs[0]["type"] == "calendar"
-    kinds = [e["kind"] for e in specs[0]["data"]["events"]]
+    types = [s["type"] for s in specs]
+    assert "timeline" in types
+    assert "calendar" in types
+    cal = next(s for s in specs if s["type"] == "calendar")
+    kinds = [e["kind"] for e in cal["data"]["events"]]
     assert "plant" in kinds
     assert "harvest" in kinds
     assert "activity" in kinds
-    assert specs[0]["data"]["month"] == 8
+    from datetime import date
+    today = date.today()
+    assert cal["data"]["year"] == today.year
+    assert cal["data"]["month"] == today.month
+    tl = next(s for s in specs if s["type"] == "timeline")
+    assert len(tl["data"]["items"]) == 3
 
 
-def test_activity_log_empty_no_viz(monkeypatch):
+def test_activity_log_empty_emits_timeline(monkeypatch):
     from tools.agriculture.precision_ag import get_field_activity_log_tool
 
     _patch_field(monkeypatch)
@@ -969,5 +983,8 @@ def test_activity_log_empty_no_viz(monkeypatch):
     viz_reset()
     text = get_field_activity_log_tool.invoke({"field_id": 12, "people_id": "5699"})
     assert "No activities" in text
-    assert viz_take() == []
+    specs = viz_take()
+    assert len(specs) == 1
+    assert specs[0]["type"] == "timeline"
+    assert specs[0]["data"]["items"][0]["action"] == "No activities logged yet"
 

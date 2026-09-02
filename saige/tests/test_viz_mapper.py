@@ -80,11 +80,11 @@ def test_dedupe_by_type_and_title():
         ]
     )
     assert [(s["type"], s["title"]) for s in out] == [
-        ("alert_card", "Heat stress"),
         ("kpi", "Water deficit"),
+        ("alert_card", "Heat stress"),
     ]
-    assert out[0]["id"] == "alert_1"
-    assert out[1]["data"]["value"] == 28
+    assert out[0]["data"]["value"] == 28
+    assert out[1]["id"] == "alert_1"
 
 
 def test_series_capped_at_90():

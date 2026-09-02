@@ -87,7 +87,7 @@ def get_fields(business_id: int, db: Session = Depends(get_db)):
             SELECT
                 F.FieldID, F.BusinessID, F.Name, F.Address,
                 F.Latitude, F.Longitude, F.FieldSizeHectares,
-                F.CropType, F.PlantingDate,
+                F.CropType, F.PlantingDate, F.BoundaryGeoJSON,
                 F.MonitoringEnabled, F.MonitoringIntervalDays, F.AlertThresholdHealth,
                 LA.AnalysisDate  AS LatestAnalysisDate,
                 LA.HealthScore   AS LatestHealthScore,
@@ -115,6 +115,8 @@ def get_fields(business_id: int, db: Session = Depends(get_db)):
                 "field_size_hectares":      float(r.FieldSizeHectares) if r.FieldSizeHectares is not None else None,
                 "crop_type":                r.CropType,
                 "planting_date":            str(r.PlantingDate) if r.PlantingDate else None,
+                "boundary_geojson":         r.BoundaryGeoJSON,
+                "BoundaryGeoJSON":          r.BoundaryGeoJSON,
                 "monitoring_enabled":       bool(r.MonitoringEnabled) if r.MonitoringEnabled is not None else True,
                 "monitoring_interval_days": r.MonitoringIntervalDays,
                 "alert_threshold_health":   r.AlertThresholdHealth,
