@@ -192,6 +192,17 @@ def list_my_animals_detail_tool(business_id: int = 0) -> str:
         ORDER BY a.FullName
     """, (int(business_id),))
     if not rows:
+        viz_emit({
+            "id": f"animals_table_{business_id}",
+            "type": "table",
+            "title": "Livestock inventory",
+            "source_tool": "list_my_animals_detail_tool",
+            "data": {
+                "columns": ["Name", "Sex", "DOB", "Status"],
+                "rows": [["—", "—", "—", "none on file"]],
+            },
+            "actions": [{"label": "View all animals", "href": "/livestock"}],
+        })
         return f"No animals found for business #{business_id}."
     lines = [f"Animals — business #{business_id} ({len(rows)} shown):"]
     table_rows: List[List[str]] = []

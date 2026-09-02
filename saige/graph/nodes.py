@@ -43,6 +43,7 @@ from saige_models import (
 )
 from llm import llm, get_llm_farm
 from graph.routing import route_after_policy, route_after_supervisor  # re-export for shims
+from graph.farm_viz_intents import farm_viz_intent, pinned_routes, prefetch_farm_viz
 
 logger = logging.getLogger("farm_advisory.nodes")
 from rag import rag_livestock, rag_plant, rag_bakasura, rag_news, rag_hitl_charlie
@@ -717,8 +718,10 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
     ))
     _INTENT_MAP = _MAP_KW_MATCH or _MAP_ADDR_MATCH
 
-    _INTENT_BUSINESS = any(k in _rl for k in (
-        "my animal", "my listing", "my inventory", "my order", "my service",
+    _farm_viz = farm_viz_intent(_rl)
+
+    _INTENT_BUSINESS = _farm_viz != "animals" and any(k in _rl for k in (
+        "my listing", "my inventory", "my order", "my service",
         "my blog", "my cert", "my profile", "my account", "my vehicle",
         "my truck", "my fleet", "my ranch info", "my business",
         "cold chain vehicle", "list vehicle", "fleet vehicle",
@@ -731,14 +734,16 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
         "cold chain sla", "sla impact", "degradation",
     ))
 
-    _INTENT_PRECISION_AG = any(k in _rl for k in (
+    _INTENT_PRECISION_AG = _farm_viz in (
+        "irrigate", "ndvi_history", "field_alerts", "growth_stage",
+    ) or any(k in _rl for k in (
         "my field", "ndvi", "evi", "savi", "my crop monitoring",
         "field analysis", "field alert", "field health", "field soil",
         "biomass confidence", "improve confidence", "field zones",
         "management zone", "yield forecast", "gdd", "growing degree",
-        "irrigation recom", "field weather", "scouting report",
+        "irrigation recom", "irrigat", "field weather", "scouting report",
         "field activity", "field assessment", "log scouting",
-        "log field", "add soil sample",
+        "log field", "add soil sample", "growth stage",
     ))
 
     # Pure agronomy / plant-knowledge questions (no "my field") — keep KB + agronomy tools only
@@ -1367,6 +1372,9 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
         _acct_tool_names = {t.name for t in business_ops_tools if BUSINESS_OPS_AVAILABLE}
         bound_tools = [t for t in bound_tools if t.name in _acct_tool_names]
         print(f"[Intent Router] Tool list pruned to accounting/events tools ({len(bound_tools)} tools)")
+    if _farm_viz in ("irrigate", "ndvi_history", "field_alerts", "growth_stage", "animals"):
+        bound_tools = [t for t in bound_tools if getattr(t, "name", "") != "get_weather_tool"]
+        print(f"[Intent Router] Weather tool stripped for farm-viz intent={_farm_viz}")
     # _INTENT_KNOWLEDGE_ONLY: full tool list kept as-is
     # ── end tool pruning ──────────────────────────────────────────────────────
 
@@ -1417,6 +1425,20 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
         set_session_business_id(str(business_id_for_tools) if business_id_for_tools else None)
     except Exception:
         pass
+
+    _viz_prefetch = ""
+    if _farm_viz in ("irrigate", "growth_stage", "animals"):
+        _viz_prefetch = prefetch_farm_viz(
+            latest_user_message,
+            people_id=str(people_id_for_tools or ""),
+            business_id=business_id_for_tools,
+        )
+        if _viz_prefetch:
+            print(f"[Advisory Agent] Prefetched farm-viz intent={_farm_viz} chars={len(_viz_prefetch)}")
+            if _farm_viz == "animals":
+                farm_data_context = _viz_prefetch
+            else:
+                precision_ag_context = _viz_prefetch
 
     def _safe_int(val, default: int = 0) -> int:
         try:
@@ -1480,6 +1502,12 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
                     "\n\n⚠ MAP ALREADY UPDATED — geocode_location_tool has already run and the "
                     "map has moved. Do NOT call it again. Respond in one short sentence confirming "
                     "the place name shown in [Farm Data] above."
+                )
+            if _viz_prefetch:
+                current_input += (
+                    "\n\nFarm data for this question is already loaded in the context above. "
+                    "Do not ask for a city or location. Do not call get_weather_tool. "
+                    "Write a short practical caption — charts will render separately."
                 )
             _thread_id = state.get("thread_id", "")
             _stream_q = _get_stream_queue(_thread_id) if _thread_id else None
@@ -3167,6 +3195,9 @@ def _is_field_manage_request(text: str) -> bool:
 
 def _keyword_routes(text: str) -> List[str]:
     t = _normalize_field_typos(text or "").lower()
+    pinned = pinned_routes(text)
+    if pinned:
+        return list(pinned)
     routes: List[str] = []
     if _is_account_identity_query(t):
         return ["user"]
@@ -3488,6 +3519,20 @@ def supervisor_node(state: SaigeState) -> Dict[str, Any]:
             "route_ms": route_ms,
         }
 
+    pinned = pinned_routes(text)
+    if pinned:
+        routes = pinned
+        reasoning = f"farm-viz:{farm_viz_intent(text)}"
+        route_ms = (time.perf_counter() - t0) * 1000
+        print(f"[Supervisor] routes={routes} handoff=none route_ms={route_ms:.0f} ({reasoning})")
+        return {
+            "route": routes,
+            "supervisor_reasoning": reasoning,
+            "handoff": "none",
+            "advisory_type": ",".join(routes),
+            "route_ms": route_ms,
+        }
+
     # If user packet already answered password/account fully and no farm ask, keep user route
     if state.get("user_packet") and not any(
         k in _normalize_field_typos(text).lower() for k in ("weather", "crop", "cattle", "field", "news", "joke", "frost", "soil")
@@ -3697,6 +3742,7 @@ def _run_monitoring_agent(state: SaigeState) -> Dict[str, Any]:
     lines = ["Crop Monitoring Agent investigation:"]
     text_q = _latest_user_text(state)
 
+    intent = farm_viz_intent(text_q)
     try:
         from precision_ag import (
             list_my_fields_tool,
@@ -3708,44 +3754,65 @@ def _run_monitoring_agent(state: SaigeState) -> Dict[str, Any]:
         )
         set_session_business_id(business_id or None)
 
-        fields_txt = list_my_fields_tool.invoke({
-            "people_id": people_id,
-            "business_id": business_id,
-        }) if people_id else "No people_id"
-        lines.append(str(fields_txt)[:2000])
-        alerts_txt = get_field_alerts_tool.invoke({"field_id": 0, "people_id": people_id}) if people_id else ""
-        if alerts_txt:
-            lines.append("Alerts:\n" + str(alerts_txt)[:1500])
-            findings.append({"rank": 1, "text": str(alerts_txt)[:500], "field_id": None})
+        if intent in ("field_alerts", "ndvi_history"):
+            pre = prefetch_farm_viz(
+                text_q,
+                people_id=people_id,
+                business_id=int(business_id or 0) if str(business_id).isdigit() else 0,
+            )
+            if pre:
+                lines.append(pre[:4000])
+                findings.append({"rank": 0, "text": pre[:500], "field_id": None})
+            if intent == "ndvi_history":
+                resolved = resolve_field_by_name(text_q, people_id, business_id or None) if people_id else None
+                if resolved:
+                    try:
+                        fid = int(resolved.get("fieldid") or resolved.get("FieldID") or 0)
+                    except (TypeError, ValueError):
+                        fid = 0
+                    if fid:
+                        if findings:
+                            findings[0]["field_id"] = fid
+                        else:
+                            findings.append({"rank": 0, "text": (pre or "")[:500], "field_id": fid})
+        else:
+            fields_txt = list_my_fields_tool.invoke({
+                "people_id": people_id,
+                "business_id": business_id,
+            }) if people_id else "No people_id"
+            lines.append(str(fields_txt)[:2000])
+            alerts_txt = get_field_alerts_tool.invoke({"field_id": 0, "people_id": people_id}) if people_id else ""
+            if alerts_txt:
+                lines.append("Alerts:\n" + str(alerts_txt)[:1500])
+                findings.append({"rank": 1, "text": str(alerts_txt)[:500], "field_id": None})
 
-        # Resolve named field from the user question and pull latest analysis
-        resolved = resolve_field_by_name(text_q, people_id, business_id or None) if people_id else None
-        if resolved:
-            fid = int(resolved.get("fieldid") or resolved.get("FieldID") or 0)
-            fname = resolved.get("name") or resolved.get("Name") or f"#{fid}"
-            if fid:
-                analysis = get_field_analysis_tool.invoke({
-                    "field_id": fid,
-                    "people_id": people_id,
-                    "business_id": business_id,
-                })
-                lines.append(f"Resolved field '{fname}' → analysis:\n{analysis}")
-                findings.append({"rank": 0, "text": str(analysis)[:800], "field_id": fid})
-                try:
-                    scout = get_field_scouting_tool.invoke({
+            resolved = resolve_field_by_name(text_q, people_id, business_id or None) if people_id else None
+            if resolved:
+                fid = int(resolved.get("fieldid") or resolved.get("FieldID") or 0)
+                fname = resolved.get("name") or resolved.get("Name") or f"#{fid}"
+                if fid:
+                    analysis = get_field_analysis_tool.invoke({
                         "field_id": fid,
                         "people_id": people_id,
+                        "business_id": business_id,
                     })
-                    lines.append(f"Scouting:\n{scout}")
-                except Exception:
-                    pass
-            else:
-                lines.append(f"Matched field name '{fname}' but could not read FieldID.")
-        elif any(k in text_q.lower() for k in ("how is", "how's", "doing", "status", "health")):
-            lines.append(
-                "No field name matched the question. Use a name from the field list above "
-                "(never ask the farmer for a raw FieldID if a name is available)."
-            )
+                    lines.append(f"Resolved field '{fname}' → analysis:\n{analysis}")
+                    findings.append({"rank": 0, "text": str(analysis)[:800], "field_id": fid})
+                    try:
+                        scout = get_field_scouting_tool.invoke({
+                            "field_id": fid,
+                            "people_id": people_id,
+                        })
+                        lines.append(f"Scouting:\n{scout}")
+                    except Exception:
+                        pass
+                else:
+                    lines.append(f"Matched field name '{fname}' but could not read FieldID.")
+            elif any(k in text_q.lower() for k in ("how is", "how's", "doing", "status", "health")):
+                lines.append(
+                    "No field name matched the question. Use a name from the field list above "
+                    "(never ask the farmer for a raw FieldID if a name is available)."
+                )
     except Exception as e:
         lines.append(f"Field list failed: {e}")
 

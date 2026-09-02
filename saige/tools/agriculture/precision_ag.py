@@ -323,7 +323,10 @@ def list_my_fields_tool(people_id: str = "", business_id: str = "") -> str:
             "type": "farm_map",
             "title": "Farm fields",
             "source_tool": "list_my_fields_tool",
-            "data": {"field_ids": field_ids[:50]},
+            "data": {
+                "field_ids": field_ids[:50],
+                "business_id": int(biz_ids[0]) if biz_ids else None,
+            },
             "actions": [
                 {"label": "Open dashboard", "href": "/precision-ag/fields"},
                 {"label": "Open map", "href": "/precision-ag/analysis/maps"},
@@ -654,8 +657,10 @@ def get_field_alerts_tool(field_id: int = 0, people_id: str = "") -> str:
         rows = _query(
             "SELECT TOP 20 a.AlertID, a.AlertType, a.Severity, a.Message, a.Status, "
             "       a.CreatedAt, f.Name as FieldName, a.FieldID "
-            "FROM dbo.Alert a LEFT JOIN dbo.Field f ON f.FieldID = a.FieldID "
+            "FROM dbo.Alert a "
+            "INNER JOIN dbo.Field f ON f.FieldID = a.FieldID "
             "WHERE a.FieldID = %s AND (a.Status IS NULL OR a.Status <> 'resolved') "
+            "  AND f.DeletedAt IS NULL "
             "ORDER BY a.CreatedAt DESC",
             (int(field_id),),
         )
@@ -664,8 +669,10 @@ def get_field_alerts_tool(field_id: int = 0, people_id: str = "") -> str:
         rows = _query(
             "SELECT TOP 20 a.AlertID, a.AlertType, a.Severity, a.Message, a.Status, "
             "       a.CreatedAt, f.Name as FieldName, a.FieldID "
-            "FROM dbo.Alert a LEFT JOIN dbo.Field f ON f.FieldID = a.FieldID "
-            f"WHERE a.BusinessID IN ({placeholders}) "
+            "FROM dbo.Alert a "
+            "INNER JOIN dbo.Field f ON f.FieldID = a.FieldID "
+            f"WHERE f.BusinessID IN ({placeholders}) "
+            "  AND f.DeletedAt IS NULL "
             "  AND (a.Status IS NULL OR a.Status <> 'resolved') "
             "ORDER BY a.CreatedAt DESC",
             tuple(biz_ids),
@@ -1199,6 +1206,31 @@ def get_field_gdd_tool(field_id: int, days: int = 180, people_id: str = "") -> s
             },
             "actions": [{"label": "Open field", "href": f"/precision-ag/fields/{field_id}"}],
         })
+        crop_key = str(crop or "").lower().split()[0]
+        maturity_gdd = {
+            "corn": 2700,
+            "maize": 2700,
+            "alfalfa": 700,
+            "wheat": 2400,
+            "soy": 2500,
+            "soybean": 2500,
+            "tomato": 1600,
+            "cotton": 2200,
+        }.get(crop_key, 2000)
+        if maturity_gdd > 0:
+            pct = max(0, min(100, int(round(100.0 * gdd_value / maturity_gdd))))
+            viz_emit({
+                "id": f"gdd_progress_{field_id}",
+                "type": "progress",
+                "title": f"Crop growth stage — {fname}",
+                "source_tool": "get_field_gdd_tool",
+                "data": {
+                    "label": str(crop or "Crop"),
+                    "percent": pct,
+                    "hint": f"{gdd_value} / {maturity_gdd} GDD to typical maturity",
+                },
+                "actions": [{"label": "Open field", "href": f"/precision-ag/fields/{field_id}"}],
+            })
     return "\n".join(lines)
 
 
