@@ -123,6 +123,37 @@ def test_history_ndvi_emits_line(monkeypatch):
     assert len(specs) == 1
     assert specs[0]["type"] == "line_chart"
     assert len(specs[0]["data"]["series"]) == 7
+    assert specs[0]["actions"][0]["href"] == (
+        "/precision-ag/analyses?BusinessID=15627&FieldID=12"
+    )
+
+
+def test_history_one_point_emits_kpi_and_line(monkeypatch):
+    from tools.agriculture.precision_ag import get_field_history_tool
+
+    _patch_field(monkeypatch)
+    monkeypatch.setattr(
+        "tools.agriculture.precision_ag._query",
+        lambda *a, **k: [{
+            "analysisid": 1,
+            "analysisdate": "2026-03-31",
+            "cloudpercent": 5,
+            "indextype": "NDVI",
+            "meanvalue": 0.58,
+        }],
+    )
+    viz_reset()
+    get_field_history_tool.invoke({"field_id": 12, "months": 6, "people_id": "5699"})
+    specs = viz_take()
+    types = [s["type"] for s in specs]
+    assert "kpi" in types
+    assert "line_chart" in types
+    line = next(s for s in specs if s["type"] == "line_chart")
+    assert len(line["data"]["series"]) == 1
+    assert line["data"]["series"][0]["value"] == 0.58
+    assert line["actions"][0]["href"] == (
+        "/precision-ag/analyses?BusinessID=15627&FieldID=12"
+    )
 
 
 def test_history_empty_query_no_viz(monkeypatch):
@@ -569,7 +600,8 @@ def test_list_fields_emits_farm_map(monkeypatch):
     assert specs[0]["data"]["field_ids"] == [12, 15]
     assert "geojson" not in str(specs[0]).lower()
     hrefs = [a["href"] for a in specs[0]["actions"]]
-    assert "/precision-ag/fields" in hrefs
+    assert "/precision-ag/fields?BusinessID=15627" in hrefs
+    assert any(h.startswith("/precision-ag/analysis/maps") for h in hrefs)
 
 
 def test_benchmark_emits_overview_kpi_bar_and_map(monkeypatch):
@@ -600,7 +632,7 @@ def test_benchmark_emits_overview_kpi_bar_and_map(monkeypatch):
     assert specs[2]["data"]["field_ids"] == [12, 15]
     assert specs[2]["data"]["business_id"] == 15627
     hrefs = [a["href"] for a in specs[0]["actions"]]
-    assert "/precision-ag/fields" in hrefs
+    assert "/precision-ag/fields?BusinessID=15627" in hrefs
     assert "/precision-ag/benchmark" in hrefs
     blob = str(specs).lower()
     assert "geojson" not in blob
@@ -882,6 +914,8 @@ def test_weather_tool_keeps_format_for_llm_and_emits(monkeypatch):
     assert isinstance(text, str)
     assert "Temperature: 22C" in text
     assert "Current weather conditions" in text
+    assert "Weather forecast for Boston" in text
+    assert "Forecast:" in text
     specs = viz_take()
     assert len(specs) == 2
     assert all(s["type"] == "line_chart" for s in specs)
@@ -987,4 +1021,18 @@ def test_activity_log_empty_emits_timeline(monkeypatch):
     assert len(specs) == 1
     assert specs[0]["type"] == "timeline"
     assert specs[0]["data"]["items"][0]["action"] == "No activities logged yet"
+
+
+def test_field_page_href_uses_analyses_query_string():
+    from tools.agriculture.precision_ag import _field_page_href, _map_page_href
+
+    field = {"businessid": 15627}
+    assert _field_page_href(26, field, [15627]) == (
+        "/precision-ag/analyses?BusinessID=15627&FieldID=26"
+    )
+    href = _map_page_href(26, "NDVI", field, [15627])
+    assert "BusinessID=15627" in href
+    assert "FieldID=26" in href
+    assert "field_id=26" in href
+    assert "layer=NDVI" in href
 

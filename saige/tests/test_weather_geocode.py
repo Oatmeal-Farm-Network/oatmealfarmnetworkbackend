@@ -140,3 +140,43 @@ def test_state_disambiguates_duplicate_us_city_names(monkeypatch):
         assert wanted in result["canonical_location"], query
         for other in others:
             assert other not in result["canonical_location"], query
+
+
+def test_open_meteo_current_fills_humidity_wind_pressure():
+    from tools.weather.weather import _is_stub_current, _open_meteo_current
+
+    parsed = _open_meteo_current({
+        "current": {
+            "temperature_2m": 15.4,
+            "apparent_temperature": 14.8,
+            "relative_humidity_2m": 72,
+            "weather_code": 2,
+            "wind_speed_10m": 11.2,
+            "surface_pressure": 1013.2,
+            "cloud_cover": 40,
+        }
+    })
+    assert parsed["temperature"] == 15
+    assert parsed["condition"] == "Partly cloudy"
+    assert parsed["humidity"] == 72
+    assert parsed["wind_speed"] == 11.2
+    assert parsed["pressure"] == 1013
+    assert not _is_stub_current(parsed)
+
+
+def test_format_for_llm_omits_stub_condition_and_missing_details():
+    from tools.weather.weather import WeatherService
+
+    text = WeatherService().format_for_llm({
+        "temperature": 15,
+        "feels_like": 15,
+        "condition": "Current conditions",
+        "humidity": None,
+        "wind_speed": None,
+        "pressure": None,
+    })
+    assert "Temperature: 15C" in text
+    assert "Condition:" not in text
+    assert "Humidity:" not in text
+    assert "Wind Speed:" not in text
+    assert "Pressure:" not in text
