@@ -146,6 +146,54 @@ def _spec_business_id(field: Optional[Dict[str, Any]], biz_ids: List[int]) -> Op
     return None
 
 
+def _fields_dashboard_href(biz_ids: Optional[List[int]] = None) -> str:
+    bid = _spec_business_id(None, biz_ids or [])
+    if bid:
+        return f"/precision-ag/fields?BusinessID={bid}"
+    return "/precision-ag/fields"
+
+
+def _field_page_href(
+    field_id: int,
+    field: Optional[Dict[str, Any]] = None,
+    biz_ids: Optional[List[int]] = None,
+) -> str:
+    """SPA field page is query-string, not `/precision-ag/fields/:id`."""
+    bid = _spec_business_id(field, biz_ids or [])
+    fid = int(field_id)
+    if bid:
+        return f"/precision-ag/analyses?BusinessID={bid}&FieldID={fid}"
+    return f"/precision-ag/analyses?FieldID={fid}"
+
+
+def _map_page_href(
+    field_id: Optional[int] = None,
+    layer: str = "NDVI",
+    field: Optional[Dict[str, Any]] = None,
+    biz_ids: Optional[List[int]] = None,
+) -> str:
+    bid = _spec_business_id(field, biz_ids or [])
+    parts: List[str] = []
+    if bid:
+        parts.append(f"BusinessID={bid}")
+    if field_id is not None:
+        fid = int(field_id)
+        parts.append(f"FieldID={fid}")
+        parts.append(f"field_id={fid}")
+    if layer:
+        parts.append(f"layer={layer}")
+    return "/precision-ag/analysis/maps" + (("?" + "&".join(parts)) if parts else "")
+
+
+def _open_field_action(
+    field_id: int,
+    field: Optional[Dict[str, Any]] = None,
+    biz_ids: Optional[List[int]] = None,
+    label: str = "Open field",
+) -> List[Dict[str, str]]:
+    return [{"label": label, "href": _field_page_href(field_id, field, biz_ids)}]
+
+
 _COMMODITY_HINTS = (
     ("soybean", "Nat'l Soybeans"),
     ("soy", "Nat'l Soybeans"),
@@ -381,8 +429,8 @@ def list_my_fields_tool(people_id: str = "", business_id: str = "") -> str:
                 "business_id": int(biz_ids[0]) if biz_ids else None,
             },
             "actions": [
-                {"label": "Open dashboard", "href": "/precision-ag/fields"},
-                {"label": "Open map", "href": "/precision-ag/analysis/maps"},
+                {"label": "Open dashboard", "href": _fields_dashboard_href(biz_ids)},
+                {"label": "Open map", "href": _map_page_href(biz_ids=biz_ids)},
             ],
         })
     return "\n".join(lines)
@@ -475,7 +523,7 @@ def get_field_analysis_tool(field_id: int, people_id: str = "", business_id: str
         "data": map_data,
         "actions": [{
             "label": "Open map",
-            "href": f"/precision-ag/analysis/maps?field_id={int(field_id)}&layer=NDVI",
+            "href": _map_page_href(int(field_id), "NDVI", field, biz_ids),
         }],
     })
     return "\n".join(lines)
@@ -576,9 +624,25 @@ def _emit_field_ndvi_line(
     fname: str,
     series: List[Dict[str, Any]],
     source_tool: str,
+    field: Optional[Dict[str, Any]] = None,
+    biz_ids: Optional[List[int]] = None,
 ) -> None:
     if not series:
         return
+    actions = _open_field_action(field_id, field, biz_ids)
+    if len(series) == 1 and series[0].get("value") is not None:
+        viz_emit({
+            "id": f"hist_ndvi_kpi_{field_id}",
+            "type": "kpi",
+            "title": f"Latest NDVI — {fname}",
+            "source_tool": source_tool,
+            "data": {
+                "value": series[0]["value"],
+                "unit": "",
+                "hint": str(series[0].get("date") or ""),
+            },
+            "actions": actions,
+        })
     viz_emit({
         "id": f"hist_ndvi_{field_id}",
         "type": "line_chart",
@@ -590,7 +654,7 @@ def _emit_field_ndvi_line(
             "unit": "",
             "series": series[-90:],
         },
-        "actions": [{"label": "Open field", "href": f"/precision-ag/fields/{field_id}"}],
+        "actions": actions,
     })
 
 
@@ -613,6 +677,8 @@ def get_field_history_tool(field_id: int, months: int = 6, people_id: str = "") 
             bundle["name"],
             bundle["series"],
             "get_field_history_tool",
+            bundle.get("field"),
+            biz_ids,
         )
     return "\n".join(bundle["lines"])
 
@@ -683,14 +749,18 @@ def compare_two_fields_tool(
                 "hint": f"{name_a} {_fmt_num(latest_a, 2)} · {name_b} {_fmt_num(latest_b, 2)}",
             },
             "actions": [
-                {"label": f"Open {name_a}", "href": f"/precision-ag/fields/{id_a}"},
-                {"label": f"Open {name_b}", "href": f"/precision-ag/fields/{id_b}"},
+                {"label": f"Open {name_a}", "href": _field_page_href(id_a, a.get("field"), biz_ids)},
+                {"label": f"Open {name_b}", "href": _field_page_href(id_b, b.get("field"), biz_ids)},
             ],
         })
-    if len(a["series"]) >= 2:
-        _emit_field_ndvi_line(id_a, name_a, a["series"], "compare_two_fields_tool")
-    if len(b["series"]) >= 2:
-        _emit_field_ndvi_line(id_b, name_b, b["series"], "compare_two_fields_tool")
+    if a["series"]:
+        _emit_field_ndvi_line(
+            id_a, name_a, a["series"], "compare_two_fields_tool", a.get("field"), biz_ids
+        )
+    if b["series"]:
+        _emit_field_ndvi_line(
+            id_b, name_b, b["series"], "compare_two_fields_tool", b.get("field"), biz_ids
+        )
     return "\n".join(lines)
 
 
@@ -770,9 +840,7 @@ def get_field_alerts_tool(field_id: int = 0, people_id: str = "") -> str:
                 "field_name": fname,
             },
             "actions": (
-                [{"label": "Open field", "href": f"/precision-ag/fields/{fid}"}]
-                if fid
-                else []
+                _open_field_action(int(fid), None, biz_ids) if fid else []
             ),
         })
     return "\n".join(lines)
@@ -973,7 +1041,7 @@ def get_field_scouting_tool(field_id: int, people_id: str = "") -> str:
         if snippet:
             action = f"{action}: {snippet[:80]}"
         items.append({"date": date, "action": action, "field": fname})
-    field_action = [{"label": "Open field", "href": f"/precision-ag/fields/{int(field_id)}"}]
+    field_action = _open_field_action(int(field_id), field, biz_ids)
     if items:
         viz_emit({
             "id": f"scout_timeline_{field_id}",
@@ -1063,7 +1131,7 @@ def get_field_activity_log_tool(field_id: int, people_id: str = "") -> str:
         (int(field_id),),
     )
     fname = field.get("name") or str(field_id)
-    field_action = [{"label": "Open field", "href": f"/precision-ag/fields/{int(field_id)}"}]
+    field_action = _open_field_action(int(field_id), field, biz_ids)
     if not rows:
         viz_emit({
             "id": f"activity_tl_{field_id}",
@@ -1286,7 +1354,7 @@ def get_field_gdd_tool(field_id: int, days: int = 180, people_id: str = "") -> s
                 "unit": "GDD",
                 "hint": f"{crop} · base {base}°F",
             },
-            "actions": [{"label": "Open field", "href": f"/precision-ag/fields/{field_id}"}],
+            "actions": _open_field_action(field_id, field, biz_ids),
         })
         crop_key = str(crop or "").lower().split()[0]
         maturity_gdd = {
@@ -1311,7 +1379,7 @@ def get_field_gdd_tool(field_id: int, days: int = 180, people_id: str = "") -> s
                     "percent": pct,
                     "hint": f"{gdd_value} / {maturity_gdd} GDD to typical maturity",
                 },
-                "actions": [{"label": "Open field", "href": f"/precision-ag/fields/{field_id}"}],
+                "actions": _open_field_action(field_id, field, biz_ids),
             })
     return "\n".join(lines)
 
@@ -1357,7 +1425,7 @@ def get_field_irrigation_tool(field_id: int, days: int = 30, people_id: str = ""
         te = sum(d.get("etc_in", 0)   for d in last7)
         lines.append(f"Last 7 days: {tp:.2f}\" precip, {te:.2f}\" crop water use (ETc)")
     fname = field.get("name") or str(field_id)
-    field_action = [{"label": "Open field", "href": f"/precision-ag/fields/{field_id}"}]
+    field_action = _open_field_action(field_id, field, biz_ids)
     try:
         deficit_value = round(float(deficit), 2)
     except (TypeError, ValueError):
@@ -1558,7 +1626,7 @@ def get_farm_benchmark_tool(people_id: str = "") -> str:
         lines.append(f"Best performer: {best.get('name') or 'Unnamed'} (NDVI {best['ndvi']:.3f})")
         lines.append(f"Needs most attention: {worst.get('name') or 'Unnamed'} (NDVI {worst['ndvi']:.3f})")
     overview_actions = [
-        {"label": "Open dashboard", "href": "/precision-ag/fields"},
+        {"label": "Open dashboard", "href": _fields_dashboard_href(biz_ids)},
         {"label": "Open benchmark", "href": "/precision-ag/benchmark"},
     ]
     avg_rounded = round(float(avg_ndvi), 3)
@@ -1616,7 +1684,7 @@ def get_farm_benchmark_tool(people_id: str = "") -> str:
             "source_tool": "get_farm_benchmark_tool",
             "data": map_data,
             "actions": overview_actions + [
-                {"label": "Open map", "href": "/precision-ag/analysis/maps"},
+                {"label": "Open map", "href": _map_page_href(biz_ids=biz_ids)},
             ],
         })
     return "\n".join(lines)
@@ -2147,7 +2215,7 @@ def get_field_agronomy_tool(field_id: int, people_id: str = "") -> str:
                     "message": msg,
                     "field_name": field_name,
                 },
-                "actions": [{"label": "Open field", "href": f"/precision-ag/fields/{int(field_id)}"}],
+                "actions": _open_field_action(int(field_id), field, biz_ids),
             })
 
     # Provider visibility — flag when running on fallback so Saige can caveat
@@ -2262,7 +2330,7 @@ def get_field_zones_tool(field_id: int, num_zones: int = 4, index: str = "NDVI",
             "data": heat_data,
             "actions": [{
                 "label": "Open map",
-                "href": f"/precision-ag/analysis/maps?field_id={int(field_id)}&layer={idx}",
+                "href": _map_page_href(int(field_id), idx, field, biz_ids),
             }],
         })
     return "\n".join(lines)

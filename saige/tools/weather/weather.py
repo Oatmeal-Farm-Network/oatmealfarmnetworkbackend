@@ -45,6 +45,94 @@ _US_STATE_PATTERN = "(?:%s|%s)" % (
     "|".join(re.escape(name) for name in sorted(_US_STATE_NAMES, key=len, reverse=True)),
     "|".join(re.escape(abbr) for abbr in sorted(_US_STATE_ABBREV, key=len, reverse=True)),
 )
+_OPEN_METEO_CODES = {
+    0: "Clear", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+    45: "Fog", 48: "Depositing rime fog",
+    51: "Light drizzle", 53: "Drizzle", 55: "Dense drizzle",
+    61: "Light rain", 63: "Rain", 65: "Heavy rain",
+    71: "Light snow", 73: "Snow", 75: "Heavy snow",
+    80: "Rain showers", 81: "Rain showers", 82: "Violent rain showers",
+    95: "Thunderstorm", 96: "Thunderstorm with hail", 99: "Thunderstorm with hail",
+}
+_STUB_CONDITIONS = frozenset({"", "current conditions", "unknown", "varying conditions"})
+
+
+def _open_meteo_condition(code: Any) -> str:
+    try:
+        return _OPEN_METEO_CODES.get(int(code), "Varying conditions")
+    except (TypeError, ValueError):
+        return "Varying conditions"
+
+
+def _round_or_none(value: Any, digits: int = 0) -> Optional[Any]:
+    if value is None:
+        return None
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(n, digits) if digits else round(n)
+
+
+def _open_meteo_current(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse Open-Meteo `current` (preferred) or legacy `current_weather`."""
+    block = data.get("current") if isinstance(data.get("current"), dict) else {}
+    legacy = data.get("current_weather") if isinstance(data.get("current_weather"), dict) else {}
+    temp = block.get("temperature_2m")
+    if temp is None:
+        temp = legacy.get("temperature")
+    feels = block.get("apparent_temperature")
+    if feels is None:
+        feels = temp
+    code = block.get("weather_code")
+    if code is None:
+        code = legacy.get("weathercode")
+    humidity = block.get("relative_humidity_2m")
+    wind = block.get("wind_speed_10m")
+    if wind is None:
+        wind = legacy.get("windspeed")
+    pressure = block.get("surface_pressure")
+    clouds = block.get("cloud_cover")
+    return {
+        "temperature": _round_or_none(temp),
+        "feels_like": _round_or_none(feels),
+        "condition": _open_meteo_condition(code),
+        "humidity": _round_or_none(humidity),
+        "wind_speed": _round_or_none(wind, 1),
+        "pressure": _round_or_none(pressure),
+        "clouds": _round_or_none(clouds),
+        "visibility": None,
+    }
+
+
+def _current_from_forecast(forecast: Dict[str, Any], location: str) -> Dict[str, Any]:
+    current = forecast.get("current") if isinstance(forecast.get("current"), dict) else {}
+    temp = current.get("temperature")
+    feels = current.get("feels_like")
+    if feels is None:
+        feels = temp
+    return {
+        "location": forecast.get("location") or location,
+        "temperature": temp,
+        "feels_like": feels,
+        "condition": current.get("condition") or "Varying conditions",
+        "humidity": current.get("humidity"),
+        "wind_speed": current.get("wind_speed"),
+        "pressure": current.get("pressure"),
+        "clouds": current.get("clouds") or 0,
+        "visibility": current.get("visibility"),
+    }
+
+
+def _is_stub_current(data: Optional[Dict[str, Any]]) -> bool:
+    """True when humidity/wind/pressure were never filled (legacy Open-Meteo zeros)."""
+    if not isinstance(data, dict):
+        return True
+    cond = str(data.get("condition") or "").strip().lower()
+    missing_details = all(
+        data.get(k) in (None, 0, 0.0) for k in ("humidity", "wind_speed", "pressure")
+    )
+    return missing_details and cond in _STUB_CONDITIONS
 
 
 class WeatherService:
@@ -802,8 +890,14 @@ class WeatherService:
             params = {
                 "latitude": lat,
                 "longitude": lon,
-                "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode",
-                "current_weather": "true",
+                "daily": (
+                    "temperature_2m_max,temperature_2m_min,"
+                    "precipitation_probability_max,weather_code,wind_speed_10m_max"
+                ),
+                "current": (
+                    "temperature_2m,relative_humidity_2m,apparent_temperature,"
+                    "weather_code,wind_speed_10m,surface_pressure,cloud_cover"
+                ),
                 "forecast_days": days,
                 "timezone": "auto",
             }
@@ -817,33 +911,26 @@ class WeatherService:
             tmax = daily.get("temperature_2m_max") or []
             tmin = daily.get("temperature_2m_min") or []
             rain = daily.get("precipitation_probability_max") or []
-            codes = daily.get("weathercode") or []
-            code_map = {
-                0: "Clear", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
-                45: "Fog", 48: "Depositing rime fog",
-                51: "Light drizzle", 61: "Light rain", 63: "Rain", 65: "Heavy rain",
-                71: "Light snow", 73: "Snow", 75: "Heavy snow",
-                80: "Rain showers", 95: "Thunderstorm",
-            }
+            codes = daily.get("weather_code") or daily.get("weathercode") or []
+            winds = daily.get("wind_speed_10m_max") or []
             forecast_days = []
             for i, day in enumerate(dates[:days]):
+                wind = winds[i] if i < len(winds) and winds[i] is not None else None
                 forecast_days.append(
                     {
                         "date": day,
                         "min_temp": round(tmin[i]) if i < len(tmin) and tmin[i] is not None else None,
                         "max_temp": round(tmax[i]) if i < len(tmax) and tmax[i] is not None else None,
-                        "condition": code_map.get(int(codes[i]) if i < len(codes) and codes[i] is not None else -1, "Varying conditions"),
+                        "condition": _open_meteo_condition(
+                            codes[i] if i < len(codes) else None
+                        ),
                         "rain_chance": int(rain[i]) if i < len(rain) and rain[i] is not None else 0,
-                        "max_wind": 0,
+                        "max_wind": round(float(wind), 1) if wind is not None else None,
                     }
                 )
-            current = data.get("current_weather") or {}
             return {
                 "location": location_label,
-                "current": {
-                    "temperature": round(current.get("temperature") or 0),
-                    "condition": code_map.get(int(current.get("weathercode") or -1), "Current conditions"),
-                },
+                "current": _open_meteo_current(data),
                 "forecast": forecast_days,
                 "forecast_days": len(forecast_days),
             }
@@ -858,13 +945,30 @@ class WeatherService:
 
         parts = [f"Weather forecast for {forecast_data['location']}:\n"]
 
-        if forecast_data.get("current"):
-            parts.append(f"Current: {forecast_data['current']['temperature']}C, {forecast_data['current']['condition']}\n")
+        current = forecast_data.get("current") or {}
+        if current:
+            cur_bits = []
+            if current.get("temperature") is not None:
+                cur_bits.append(f"{current['temperature']}C")
+            if current.get("condition") and str(current.get("condition")).lower() not in _STUB_CONDITIONS:
+                cur_bits.append(str(current["condition"]))
+            if current.get("humidity") is not None:
+                cur_bits.append(f"humidity {current['humidity']}%")
+            if current.get("wind_speed") is not None:
+                cur_bits.append(f"wind {current['wind_speed']} km/h")
+            if current.get("pressure") is not None:
+                cur_bits.append(f"{current['pressure']} hPa")
+            if cur_bits:
+                parts.append("Current: " + ", ".join(cur_bits) + "\n")
 
         parts.append("Forecast:")
         for day in forecast_data["forecast"]:
             rain_str = f", {day['rain_chance']}% rain" if day.get('rain_chance', 0) > 0 else ""
-            parts.append(f"  {day['date']}: {day['min_temp']}C - {day['max_temp']}C, {day['condition']}{rain_str}")
+            wind_str = f", wind {day['max_wind']} km/h" if day.get("max_wind") else ""
+            parts.append(
+                f"  {day['date']}: {day['min_temp']}C - {day['max_temp']}C, "
+                f"{day['condition']}{rain_str}{wind_str}"
+            )
 
         return "\n".join(parts)
 
@@ -880,7 +984,7 @@ class WeatherService:
 
         cache_key = location if location and location != "Unknown" else f"{lat},{lon}"
         cached = self._get_from_cache(cache_key)
-        if cached:
+        if cached and not _is_stub_current(cached):
             print(f"[Weather] Using cached data for {cache_key}")
             return cached
 
@@ -895,24 +999,23 @@ class WeatherService:
             else:
                 data = self._fetch_openweathermap(location)
 
-        if not data and lat is not None and lon is not None:
-            forecast = self._fetch_open_meteo_forecast(float(lat), float(lon), 1, location or cache_key)
+        om_lat, om_lon, om_label = lat, lon, location or cache_key
+        if not data and (om_lat is None or om_lon is None) and location and location != "Unknown":
+            resolved = self.resolve_location(location)
+            if resolved and resolved.get("status") == "resolved" and resolved.get("lat") is not None:
+                om_lat = resolved.get("lat")
+                om_lon = resolved.get("lon")
+                om_label = resolved.get("canonical_location") or om_label
+        if not data and om_lat is not None and om_lon is not None:
+            forecast = self._fetch_open_meteo_forecast(float(om_lat), float(om_lon), 1, om_label)
             if forecast and forecast.get("current"):
-                data = {
-                    "location": forecast.get("location") or location or cache_key,
-                    "temperature": forecast["current"]["temperature"],
-                    "feels_like": forecast["current"]["temperature"],
-                    "condition": forecast["current"]["condition"],
-                    "humidity": 0,
-                    "wind_speed": 0,
-                    "pressure": 0,
-                    "clouds": 0,
-                    "visibility": None,
-                }
+                data = _current_from_forecast(forecast, om_label)
 
-        if data:
+        if data and not _is_stub_current(data):
             self._save_to_cache(cache_key, data)
             print(f"[Weather] Weather data retrieved")
+        elif data:
+            print(f"[Weather] Weather data retrieved (incomplete current; not cached)")
 
         return data
 
@@ -952,13 +1055,24 @@ class WeatherService:
         if not weather_data:
             return ""
 
-        parts = ["Current weather conditions:\n"]
-        parts.append(f"Temperature: {weather_data['temperature']}C (feels like {weather_data['feels_like']}C)")
-        parts.append(f"Condition: {weather_data['condition']}")
-        parts.append(f"Humidity: {weather_data['humidity']}%")
-        parts.append(f"Wind Speed: {weather_data['wind_speed']} km/h")
-        parts.append(f"Pressure: {weather_data['pressure']} hPa")
-        if weather_data.get('visibility'):
+        parts = ["Current weather conditions:"]
+        temp = weather_data.get("temperature")
+        feels = weather_data.get("feels_like")
+        if temp is not None:
+            if feels is not None and feels != temp:
+                parts.append(f"Temperature: {temp}C (feels like {feels}C)")
+            else:
+                parts.append(f"Temperature: {temp}C")
+        cond = str(weather_data.get("condition") or "").strip()
+        if cond and cond.lower() not in _STUB_CONDITIONS:
+            parts.append(f"Condition: {cond}")
+        if weather_data.get("humidity") is not None:
+            parts.append(f"Humidity: {weather_data['humidity']}%")
+        if weather_data.get("wind_speed") is not None:
+            parts.append(f"Wind Speed: {weather_data['wind_speed']} km/h")
+        if weather_data.get("pressure") is not None:
+            parts.append(f"Pressure: {weather_data['pressure']} hPa")
+        if weather_data.get("visibility"):
             parts.append(f"Visibility: {weather_data['visibility']} km")
 
         return "\n".join(parts)
@@ -1059,13 +1173,17 @@ def get_weather_tool(location: str) -> str:
     if not weather_data:
         return f"Unable to fetch weather data for {location}. Please check the location name or try again later."
 
+    pieces = [weather_service.format_for_llm(weather_data)]
     try:
         forecast = weather_service.get_forecast(location, days=7)
         emit_weather_visualizations(forecast, source_tool="get_weather_tool")
+        forecast_text = weather_service.format_forecast_for_llm(forecast)
+        if forecast_text:
+            pieces.append(forecast_text)
     except Exception:
         pass
 
-    return weather_service.format_for_llm(weather_data)
+    return "\n\n".join(p for p in pieces if p)
 
 
 weather_tools = [get_weather_tool]

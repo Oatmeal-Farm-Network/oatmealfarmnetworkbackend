@@ -2940,13 +2940,20 @@ Examples:
 
             if weather_data:
                 formatted_weather = weather_service.format_for_llm(weather_data)
-                response = f"Here's the current weather for {weather_data.get('location', location)}:\n\n{formatted_weather}"
+                loc_label = weather_data.get("location", location)
+                response = f"Here's the current weather for {loc_label}:\n\n{formatted_weather}"
                 print(f"[Weather Advisory] Successfully fetched weather, response length: {len(response)}")
                 try:
                     forecast = weather_service.get_forecast(
                         location, 7, lat=resolved_lat, lon=resolved_lon
                     )
                     emit_weather_visualizations(forecast, source_tool="get_weather_tool")
+                    forecast_text = weather_service.format_forecast_for_llm(forecast)
+                    if forecast_text:
+                        response = (
+                            f"Here's the weather for {loc_label}:\n\n"
+                            f"{formatted_weather}\n\n{forecast_text}"
+                        )
                 except Exception:
                     pass
                 return {
