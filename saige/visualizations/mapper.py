@@ -16,6 +16,21 @@ MAX_TABLE_ROWS = 50
 MAX_CALENDAR_EVENTS = 50
 MAX_HEATMAP_POINTS = 50
 
+# Prefer in-chat numbers over map shells when the bubble can only show three.
+_TYPE_RANK = {
+    "kpi": 0,
+    "line_chart": 1,
+    "progress": 2,
+    "bar_chart": 3,
+    "table": 4,
+    "alert_card": 5,
+    "timeline": 6,
+    "calendar": 7,
+    "field_map": 8,
+    "farm_map": 9,
+    "heatmap": 10,
+}
+
 
 def _trim_data(viz_type: str, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Cap series/rows. Return None if the spec would be empty after trim."""
@@ -65,9 +80,9 @@ def map_pending(raw_list: Optional[Iterable[Any]] = None) -> List[Dict[str, Any]
         dumped["data"] = trimmed
         seen.add(key)
         mapped.append(dumped)
-        if len(mapped) >= MAX_SPECS:
-            break
-    return mapped
+
+    mapped.sort(key=lambda spec: (_TYPE_RANK.get(spec.get("type"), 99)))
+    return mapped[:MAX_SPECS]
 
 
 def drain_pending() -> List[Dict[str, Any]]:

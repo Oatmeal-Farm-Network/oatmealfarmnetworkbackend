@@ -277,10 +277,14 @@ def test_gdd_emits_kpi(monkeypatch):
     text = get_field_gdd_tool.invoke({"field_id": 12, "days": 180, "people_id": "5699"})
     assert isinstance(text, str)
     specs = viz_take()
-    assert len(specs) == 1
-    assert specs[0]["type"] == "kpi"
-    assert specs[0]["data"]["value"] == 1420
-    assert specs[0]["data"]["unit"] == "GDD"
+    types = [s["type"] for s in specs]
+    assert "kpi" in types
+    kpi = next(s for s in specs if s["type"] == "kpi")
+    assert kpi["data"]["value"] == 1420
+    assert kpi["data"]["unit"] == "GDD"
+    progress = next((s for s in specs if s["type"] == "progress"), None)
+    assert progress is not None
+    assert progress["data"]["percent"] == 53  # 1420/2700 corn
 
 
 def test_animals_emits_table(monkeypatch):
@@ -313,14 +317,17 @@ def test_animals_emits_table(monkeypatch):
     assert specs[0]["data"]["rows"][0][0] == "Bella"
 
 
-def test_animals_empty_no_viz(monkeypatch):
+def test_animals_empty_emits_table(monkeypatch):
     from tools.farm.business_data import list_my_animals_detail_tool
 
     monkeypatch.setattr("tools.farm.business_data._query", lambda *a, **k: [])
     viz_reset()
     text = list_my_animals_detail_tool.invoke({"business_id": 15627})
     assert "No animals" in text
-    assert viz_take() == []
+    specs = viz_take()
+    assert len(specs) == 1
+    assert specs[0]["type"] == "table"
+    assert specs[0]["data"]["rows"][0][3] == "none on file"
 
 
 def test_animals_two_species_emits_bar(monkeypatch):
