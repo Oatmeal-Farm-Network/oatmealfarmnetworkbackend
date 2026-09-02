@@ -50,6 +50,58 @@ _WEATHER = (
     "heat wave",
     "heatwave",
 )
+_BENCHMARK = (
+    "farm overview",
+    "whole farm",
+    "how's the farm",
+    "hows the farm",
+    "how is the farm",
+    "how's my farm",
+    "hows my farm",
+    "how is my farm",
+    "which field is doing",
+    "which of my fields",
+    "which field needs",
+    "doing best",
+    "doing worst",
+    "needs the most work",
+    "needs most attention",
+)
+_ACTIVITY = (
+    "field activity",
+    "activity log",
+    "what was applied",
+    "operation history",
+    "field operation",
+    "what have we done",
+)
+_ZONES = (
+    "management zone",
+    "stress zone",
+    "field zone",
+    "variable-rate",
+    "variable rate",
+)
+_FARM_MAP = (
+    "list my fields",
+    "show my fields",
+    "farm map",
+    "show my farm map",
+    "map of my farm",
+    "my field list",
+)
+_PRICE = (
+    "price trend",
+    "market price",
+    "commodity price",
+    "corn price",
+    "soy price",
+    "soybean price",
+    "wheat price",
+    "cattle price",
+    "hog price",
+    "pork price",
+)
 
 
 def _norm(text: str) -> str:
@@ -82,6 +134,21 @@ def farm_viz_intent(text: str) -> Optional[str]:
     if any(k in t for k in _IRRIGATE):
         return "irrigate"
 
+    if any(k in t for k in _BENCHMARK):
+        return "farm_benchmark"
+
+    if any(k in t for k in _ZONES) or re.search(r"\bzones?\b", t):
+        return "field_zones"
+
+    if any(k in t for k in _ACTIVITY):
+        return "field_activity"
+
+    if any(k in t for k in _FARM_MAP):
+        return "farm_map"
+
+    if any(k in t for k in _PRICE) or ("price" in t and "trend" in t):
+        return "price_trend"
+
     if "ndvi" in t or "vegetation index" in t or (
         "how has" in t and "field" in t
     ):
@@ -101,8 +168,13 @@ _PINNED_ROUTES = {
     "irrigate": ["crop"],
     "ndvi_history": ["monitoring"],
     "field_alerts": ["monitoring"],
+    "field_zones": ["monitoring"],
     "animals": ["livestock"],
     "growth_stage": ["crop"],
+    "farm_benchmark": ["crop"],
+    "field_activity": ["crop"],
+    "farm_map": ["crop"],
+    "price_trend": ["crop"],
     "joke": ["joke"],
 }
 
@@ -134,11 +206,18 @@ def prefetch_farm_viz(
             }) or "")
 
         from tools.agriculture.precision_ag import (
+            get_farm_benchmark_tool,
+            get_field_activity_log_tool,
             get_field_agronomy_tool,
             get_field_alerts_tool,
+            get_field_analysis_tool,
             get_field_gdd_tool,
             get_field_history_tool,
             get_field_irrigation_tool,
+            get_field_zones_tool,
+            get_price_trends_tool,
+            list_my_fields_tool,
+            resolve_commodity_name,
             resolve_field_by_name,
             set_session_business_id,
         )
@@ -147,6 +226,22 @@ def prefetch_farm_viz(
         if intent == "field_alerts":
             return str(get_field_alerts_tool.invoke({
                 "field_id": 0,
+                "people_id": people_id,
+            }) or "")
+        if intent == "farm_benchmark":
+            return str(get_farm_benchmark_tool.invoke({
+                "people_id": people_id,
+            }) or "")
+        if intent == "farm_map":
+            return str(list_my_fields_tool.invoke({
+                "people_id": people_id,
+                "business_id": bid or "",
+            }) or "")
+        if intent == "price_trend":
+            commodity = resolve_commodity_name(text) or "Corn"
+            return str(get_price_trends_tool.invoke({
+                "commodity": commodity,
+                "days": 30,
                 "people_id": people_id,
             }) or "")
 
@@ -163,11 +258,20 @@ def prefetch_farm_viz(
         if intent == "irrigate":
             return str(get_field_irrigation_tool.invoke({**args, "days": 30}) or "")
         if intent == "ndvi_history":
-            return str(get_field_history_tool.invoke({**args, "months": 6}) or "")
+            hist = str(get_field_history_tool.invoke({**args, "months": 6}) or "")
+            analysis = str(get_field_analysis_tool.invoke({
+                **args,
+                "business_id": bid or "",
+            }) or "")
+            return (hist + "\n\n" + analysis).strip()
         if intent == "growth_stage":
             gdd = str(get_field_gdd_tool.invoke({**args, "days": 180}) or "")
             agro = str(get_field_agronomy_tool.invoke(args) or "")
             return (gdd + "\n\n" + agro).strip()
+        if intent == "field_activity":
+            return str(get_field_activity_log_tool.invoke(args) or "")
+        if intent == "field_zones":
+            return str(get_field_zones_tool.invoke(args) or "")
     except Exception as exc:
         print(f"[farm_viz_intents] prefetch failed ({intent}): {exc}")
         return ""

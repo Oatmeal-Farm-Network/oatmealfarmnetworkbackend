@@ -276,15 +276,9 @@ def _parse_frost_md(md: str, year: int) -> Optional[date]:
 
 
 def _calendar_focus(events: List[Dict[str, Any]]) -> tuple[int, int]:
-    """Year/month for the grid: plant event if present, else first dated event."""
+    """Open the grid on the current month; other dates list under Other months."""
     today = date.today()
-    plant = next((e for e in events if e.get("kind") == "plant" and e.get("date")), None)
-    raw = (plant or (events[0] if events else {})).get("date") or ""
-    try:
-        d = datetime.strptime(str(raw)[:10], "%Y-%m-%d").date()
-        return d.year, d.month
-    except ValueError:
-        return today.year, today.month
+    return today.year, today.month
 
 
 def _planting_calendar_events(

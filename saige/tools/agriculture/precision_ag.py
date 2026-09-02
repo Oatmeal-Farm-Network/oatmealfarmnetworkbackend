@@ -22,6 +22,7 @@ so a user cannot ask about a field belonging to another business.
 from __future__ import annotations
 
 import os
+import re
 from contextvars import ContextVar
 from typing import List, Optional, Dict, Any
 from langchain_core.tools import tool
@@ -126,6 +127,73 @@ def _field_accessible(field_id: int, business_ids: List[int]) -> Optional[Dict[s
     return rows[0] if rows else None
 
 
+def _spec_business_id(field: Optional[Dict[str, Any]], biz_ids: List[int]) -> Optional[int]:
+    """BusinessID for map specs so /saige can load outlines without AccountContext."""
+    if field:
+        for key in ("businessid", "BusinessID", "business_id"):
+            raw = field.get(key)
+            if raw in (None, "", 0, "0"):
+                continue
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                continue
+    if biz_ids:
+        try:
+            return int(biz_ids[0])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+_COMMODITY_HINTS = (
+    ("soybean", "Nat'l Soybeans"),
+    ("soy", "Nat'l Soybeans"),
+    ("cattle", "Live Cattle"),
+    ("hog", "Nat'l Pork Loin"),
+    ("pork", "Nat'l Pork Loin"),
+    ("chicken", "Nat'l Chicken Breast"),
+    ("wheat", "Wheat"),
+    ("tomato", "Roma Tomatoes"),
+    ("corn", "Corn"),
+)
+
+
+def resolve_commodity_name(text: str) -> str:
+    """Map a farmer phrase like 'corn price trend' onto a CommodityPriceHistory name."""
+    t = (text or "").strip().lower()
+    if not t:
+        return ""
+    for hint, canonical in _COMMODITY_HINTS:
+        if re.search(rf"\b{re.escape(hint)}\b", t):
+            return canonical
+    return ""
+
+
+def _commodity_candidates(name: str) -> List[str]:
+    raw = (name or "").strip()
+    if not raw:
+        return []
+    out: List[str] = [raw]
+    hinted = resolve_commodity_name(raw)
+    if hinted:
+        out.append(hinted)
+    lower = raw.lower()
+    if "corn" in lower:
+        out.extend(["Corn", "Nat'l Corn"])
+    if "soy" in lower:
+        out.extend(["Nat'l Soybeans", "Soybeans"])
+    seen = set()
+    uniq: List[str] = []
+    for item in out:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(item)
+    return uniq
+
+
 # ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
@@ -147,26 +215,11 @@ def _activity_kind(activity_type: str) -> str:
 
 
 def _activity_calendar_focus(events: List[Dict[str, Any]]) -> tuple:
-    """Month with the most events; tie-break to the latest date."""
-    from datetime import date as _date, datetime as _dt
+    """Always open the grid on the current month; other dates list below."""
+    from datetime import date as _date
 
-    counts: Dict[tuple, int] = {}
-    latest: Dict[tuple, _date] = {}
-    for e in events:
-        raw = str(e.get("date") or "")[:10]
-        try:
-            d = _dt.strptime(raw, "%Y-%m-%d").date()
-        except ValueError:
-            continue
-        key = (d.year, d.month)
-        counts[key] = counts.get(key, 0) + 1
-        if key not in latest or d > latest[key]:
-            latest[key] = d
-    if not counts:
-        today = _date.today()
-        return today.year, today.month
-    best = max(counts.keys(), key=lambda k: (counts[k], latest[k]))
-    return best
+    today = _date.today()
+    return today.year, today.month
 
 
 def _fmt_num(v, digits: int = 2) -> str:
@@ -411,6 +464,9 @@ def get_field_analysis_tool(field_id: int, people_id: str = "", business_id: str
     map_data: Dict[str, Any] = {"field_id": int(field_id), "layer": "NDVI"}
     if analysis_id is not None:
         map_data["analysis_id"] = analysis_id
+    bid = _spec_business_id(field, biz_ids)
+    if bid:
+        map_data["business_id"] = bid
     viz_emit({
         "id": f"field_map_{field_id}",
         "type": "field_map",
@@ -1006,11 +1062,27 @@ def get_field_activity_log_tool(field_id: int, people_id: str = "") -> str:
         "FROM dbo.FieldActivityLog WHERE FieldID = %s ORDER BY ActivityDate DESC",
         (int(field_id),),
     )
+    fname = field.get("name") or str(field_id)
+    field_action = [{"label": "Open field", "href": f"/precision-ag/fields/{int(field_id)}"}]
     if not rows:
+        viz_emit({
+            "id": f"activity_tl_{field_id}",
+            "type": "timeline",
+            "title": f"Field activity — {fname}",
+            "source_tool": "get_field_activity_log_tool",
+            "data": {
+                "items": [{
+                    "date": "—",
+                    "action": "No activities logged yet",
+                    "field": fname,
+                }],
+            },
+            "actions": field_action,
+        })
         return (f"No activities logged yet for field #{field_id} "
-                f"({field.get('name') or 'Unnamed'}). "
+                f"({fname}). "
                 "Log operations in Precision Ag → Activity Log.")
-    lines = [f"Activity log for field #{field_id} ({field.get('name') or 'Unnamed'}) — {len(rows)} record(s):"]
+    lines = [f"Activity log for field #{field_id} ({fname}) — {len(rows)} record(s):"]
     for r in rows:
         date  = _fmt_date(r.get("activitydate"))
         atype = r.get("activitytype") or "Activity"
@@ -1025,20 +1097,30 @@ def get_field_activity_log_tool(field_id: int, people_id: str = "") -> str:
         if notes:
             line += f" ({notes[:80]})"
         lines.append(line)
-    fname = field.get("name") or str(field_id)
     events: List[Dict[str, Any]] = []
+    items: List[Dict[str, Any]] = []
     for r in rows:
         d = _fmt_date(r.get("activitydate") or r.get("ActivityDate"))
-        if not d or d == "—":
-            continue
         atype = str(r.get("activitytype") or r.get("ActivityType") or "Activity").strip() or "Activity"
         product = str(r.get("product") or r.get("Product") or "").strip()
         label = f"{atype}: {product}" if product else atype
+        items.append({"date": d if d != "—" else "", "action": label, "field": fname})
+        if not d or d == "—":
+            continue
         events.append({
             "date": d,
             "kind": _activity_kind(atype),
             "label": label,
             "field": fname,
+        })
+    if items:
+        viz_emit({
+            "id": f"activity_tl_{field_id}",
+            "type": "timeline",
+            "title": f"Field activity — {fname}",
+            "source_tool": "get_field_activity_log_tool",
+            "data": {"items": items[:20]},
+            "actions": field_action,
         })
     if events:
         year, month = _activity_calendar_focus(events)
@@ -1052,7 +1134,7 @@ def get_field_activity_log_tool(field_id: int, people_id: str = "") -> str:
                 "month": month,
                 "events": events[:50],
             },
-            "actions": [{"label": "Open field", "href": f"/precision-ag/fields/{int(field_id)}"}],
+            "actions": field_action,
         })
     return "\n".join(lines)
 
@@ -1523,12 +1605,16 @@ def get_farm_benchmark_tool(people_id: str = "") -> str:
         except (TypeError, ValueError):
             continue
     if field_ids:
+        map_data: Dict[str, Any] = {"field_ids": field_ids[:50]}
+        bid = _spec_business_id(None, biz_ids)
+        if bid:
+            map_data["business_id"] = bid
         viz_emit({
             "id": "farm_map",
             "type": "farm_map",
             "title": "Farm fields",
             "source_tool": "get_farm_benchmark_tool",
-            "data": {"field_ids": field_ids[:50]},
+            "data": map_data,
             "actions": overview_actions + [
                 {"label": "Open map", "href": "/precision-ag/analysis/maps"},
             ],
@@ -2160,16 +2246,20 @@ def get_field_zones_tool(field_id: int, num_zones: int = 4, index: str = "NDVI",
 
     lines.append("  Variable-rate Rx export: `/api/fields/{id}/zones/prescription?fmt=geojson` (or fmt=csv).".replace("{id}", str(field_id)))
     if zones:
+        heat_data: Dict[str, Any] = {
+            "kind": "raster",
+            "field_id": int(field_id),
+            "layer": idx,
+        }
+        bid = _spec_business_id(field, biz_ids)
+        if bid:
+            heat_data["business_id"] = bid
         viz_emit({
             "id": f"zone_heat_{field_id}_{idx}",
             "type": "heatmap",
             "title": f"{idx} zones — {field_name}",
             "source_tool": "get_field_zones_tool",
-            "data": {
-                "kind": "raster",
-                "field_id": int(field_id),
-                "layer": idx,
-            },
+            "data": heat_data,
             "actions": [{
                 "label": "Open map",
                 "href": f"/precision-ag/analysis/maps?field_id={int(field_id)}&layer={idx}",
@@ -2388,15 +2478,32 @@ def get_price_trends_tool(commodity: str = "", days: int = 30, people_id: str = 
     Commodity names match the Market Intelligence panel labels, e.g. 'Nat\\'l Chicken Breast'
     or 'Nat\\'l Pork Loin'. people_id is not needed for this tool."""
     if not commodity:
-        return "Please specify a commodity name (e.g. \"Nat'l Chicken Breast\" or \"Nat'l Pork Loin\")."
+        return "Please specify a commodity name (e.g. \"Corn\" or \"Nat'l Chicken Breast\")."
     days = max(7, min(int(days or 30), 365))
-    rows = _query(
-        "SELECT TOP 200 Commodity, PriceUSD, FetchedAt "
-        "FROM CommodityPriceHistory "
-        "WHERE Commodity = %s AND FetchedAt >= DATEADD(day, -%s, GETDATE()) "
-        "ORDER BY FetchedAt ASC",
-        (str(commodity), days),
-    )
+    rows: List[Dict[str, Any]] = []
+    matched = commodity
+    for candidate in _commodity_candidates(commodity):
+        rows = _query(
+            "SELECT TOP 200 Commodity, PriceUSD, FetchedAt "
+            "FROM CommodityPriceHistory "
+            "WHERE Commodity = %s AND FetchedAt >= DATEADD(day, -%s, GETDATE()) "
+            "ORDER BY FetchedAt ASC",
+            (str(candidate), days),
+        )
+        if rows:
+            matched = candidate
+            break
+    if not rows:
+        like = f"%{(commodity or '').strip()}%"
+        rows = _query(
+            "SELECT TOP 200 Commodity, PriceUSD, FetchedAt "
+            "FROM CommodityPriceHistory "
+            "WHERE Commodity LIKE %s AND FetchedAt >= DATEADD(day, -%s, GETDATE()) "
+            "ORDER BY FetchedAt ASC",
+            (like, days),
+        )
+        if rows:
+            matched = str(rows[0].get("commodity") or rows[0].get("Commodity") or commodity)
     if not rows:
         return (
             f"No historical price data found for '{commodity}'. "
@@ -2418,7 +2525,7 @@ def get_price_trends_tool(commodity: str = "", days: int = 30, people_id: str = 
     pct   = (last - first) / first * 100 if first else 0
     trend = "rising" if pct > 2 else ("falling" if pct < -2 else "stable")
     lines = [
-        f"Price trend for {commodity} (last {days} days, {len(prices)} observations):",
+        f"Price trend for {matched} (last {days} days, {len(prices)} observations):",
         f"  Start:   ${first:.2f}  ({dates[0]})",
         f"  Latest:  ${last:.2f}  ({dates[-1]})",
         f"  Average: ${avg:.2f}",
@@ -2435,9 +2542,9 @@ def get_price_trends_tool(commodity: str = "", days: int = 30, people_id: str = 
         series.append({"date": d, "value": round(p, 2)})
     if len(series) >= 2:
         viz_emit({
-            "id": f"price_trend_{commodity[:40]}",
+            "id": f"price_trend_{matched[:40]}",
             "type": "line_chart",
-            "title": f"Price trend — {commodity}",
+            "title": f"Price trend — {matched}",
             "source_tool": "get_price_trends_tool",
             "data": {
                 "xKey": "date",

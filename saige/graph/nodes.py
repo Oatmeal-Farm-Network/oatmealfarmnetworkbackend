@@ -168,6 +168,8 @@ try:
         get_field_agronomy_tool,
         get_field_zones_tool,
         get_field_assessment_history_tool,
+        get_price_trends_tool,
+        resolve_commodity_name,
     )
     PRECISION_AG_AVAILABLE = True
 except Exception as _e:
@@ -201,6 +203,8 @@ except Exception as _e:
     get_field_water_use_tool = None
     get_field_agronomy_tool = None
     get_field_assessment_history_tool = None
+    get_price_trends_tool = None
+    resolve_commodity_name = lambda *_a, **_k: ""
     PRECISION_AG_AVAILABLE = False
 
 try:
@@ -736,6 +740,7 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
 
     _INTENT_PRECISION_AG = _farm_viz in (
         "irrigate", "ndvi_history", "field_alerts", "growth_stage",
+        "farm_benchmark", "field_activity", "field_zones", "price_trend", "farm_map",
     ) or any(k in _rl for k in (
         "my field", "ndvi", "evi", "savi", "my crop monitoring",
         "field analysis", "field alert", "field health", "field soil",
@@ -1372,7 +1377,10 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
         _acct_tool_names = {t.name for t in business_ops_tools if BUSINESS_OPS_AVAILABLE}
         bound_tools = [t for t in bound_tools if t.name in _acct_tool_names]
         print(f"[Intent Router] Tool list pruned to accounting/events tools ({len(bound_tools)} tools)")
-    if _farm_viz in ("irrigate", "ndvi_history", "field_alerts", "growth_stage", "animals"):
+    if _farm_viz in (
+        "irrigate", "ndvi_history", "field_alerts", "growth_stage", "animals",
+        "farm_benchmark", "field_activity", "field_zones", "price_trend", "farm_map",
+    ):
         bound_tools = [t for t in bound_tools if getattr(t, "name", "") != "get_weather_tool"]
         print(f"[Intent Router] Weather tool stripped for farm-viz intent={_farm_viz}")
     # _INTENT_KNOWLEDGE_ONLY: full tool list kept as-is
@@ -1427,7 +1435,10 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
         pass
 
     _viz_prefetch = ""
-    if _farm_viz in ("irrigate", "growth_stage", "animals"):
+    if _farm_viz in (
+        "irrigate", "growth_stage", "animals",
+        "farm_benchmark", "field_activity", "price_trend", "farm_map",
+    ):
         _viz_prefetch = prefetch_farm_viz(
             latest_user_message,
             people_id=str(people_id_for_tools or ""),
@@ -1805,6 +1816,28 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
                         elif tc_name == 'get_farm_benchmark_tool' and PRECISION_AG_AVAILABLE:
                             print(f"[Advisory Agent] Executing Farm Benchmark")
                             tool_result = get_farm_benchmark_tool.invoke({"people_id": people_id_for_tools})
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_field_zones_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            nz = _safe_int(tc_args.get('num_zones', 4) or 4)
+                            idx = str(tc_args.get('index') or 'NDVI')
+                            print(f"[Advisory Agent] Executing Field Zones: field_id={fid}")
+                            tool_result = get_field_zones_tool.invoke({
+                                "field_id": fid,
+                                "num_zones": nz,
+                                "index": idx,
+                                "people_id": people_id_for_tools,
+                            })
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_price_trends_tool' and PRECISION_AG_AVAILABLE:
+                            commodity = tc_args.get('commodity') or resolve_commodity_name(latest_user_message) or "Corn"
+                            days = _safe_int(tc_args.get('days', 30) or 30)
+                            print(f"[Advisory Agent] Executing Price Trends: commodity={commodity}")
+                            tool_result = get_price_trends_tool.invoke({
+                                "commodity": commodity,
+                                "days": days,
+                                "people_id": people_id_for_tools,
+                            })
                             precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
                         elif tc_name == 'get_field_weather_tool' and PRECISION_AG_AVAILABLE:
                             fid = _safe_int(tc_args.get('field_id', 0) or 0)
@@ -3227,8 +3260,7 @@ def _keyword_routes(text: str) -> List[str]:
     if any(k in t for k in ("compare ", " vs ", "versus")):
         routes.append("crop")
     if any(k in t for k in (
-        "ndvi", "monitor", "satellite", "zone", "precision", "field health", "heatmap", "got worse",
-        "how is my", "how's my", "how is field", "field doing", "my field", "test field",
+        "ndvi", "monitor", "satellite", "precision", "field health", "heatmap", "got worse",
     )):
         routes.append("monitoring")
     if any(k in t for k in (
@@ -3754,7 +3786,7 @@ def _run_monitoring_agent(state: SaigeState) -> Dict[str, Any]:
         )
         set_session_business_id(business_id or None)
 
-        if intent in ("field_alerts", "ndvi_history"):
+        if intent in ("field_alerts", "ndvi_history", "field_zones"):
             pre = prefetch_farm_viz(
                 text_q,
                 people_id=people_id,
