@@ -7,7 +7,6 @@ import json
 import os
 import uuid
 import models
-import requests
 from pydantic import BaseModel, validator
 from typing import Optional
 from geo_utils import polygon_area_hectares
@@ -41,12 +40,6 @@ def _ensure_field_profile_table(db: Session):
     db.commit()
     _field_profile_ready = True
 
-CROP_MONITOR_URL = os.getenv(
-    "CROP_MONITOR_URL",
-    "https://oatmealfarmnetworkcropmonitorbackend-git-802455386518.us-central1.run.app"
-    if os.getenv("GAE_ENV") or os.getenv("K_SERVICE")
-    else "http://127.0.0.1:8002",
-)
 BIOMASS_GCS_BUCKET = os.getenv("BIOMASS_GCS_BUCKET", "oatmeal-farm-network-images")
 BIOMASS_GCS_PREFIX = os.getenv("BIOMASS_GCS_PREFIX", "biomass-uploads")
 
@@ -381,45 +374,68 @@ def _serialize_biomass_row(row: "models.FieldBiomassAnalysis") -> dict:
     }
 
 
-def _ndvi_to_biomass(ndvi: float, crop_type: str = None) -> dict:
-    """
-    Convert NDVI mean to dry-matter biomass estimate.
-    Formula: linear ramp from 0 at NDVI=0.1 (bare soil) to 10,000 kg DM/ha at NDVI=1.0.
-    Confidence is proportional to how green the canopy is (higher NDVI = more reliable).
-    """
-    biomass = max(0.0, (ndvi - 0.1) / 0.9 * 10000.0)
-    confidence = min(1.0, max(0.1, (ndvi - 0.1) / 0.7))
-    return {
-        "biomass_kg_per_ha": round(biomass, 1),
-        "confidence": round(confidence, 3),
-        "model_version": "ndvi-linear-v1",
-        "features": {"ndvi": round(ndvi, 4), "formula": "max(0,(ndvi-0.1)/0.9*10000)"},
-    }
-
-
-def _fetch_latest_crop_analysis(field_id: int) -> dict | None:
-    """Pull the most recent stored analysis from the crop monitoring backend."""
-    try:
-        r = requests.get(
-            f"{CROP_MONITOR_URL}/api/fields/{field_id}/analyses?limit=1",
-            timeout=15,
-        )
-        if not r.ok:
-            return None
-        data = r.json()
-        analyses = data.get("analyses") or []
-        return analyses[0] if analyses else None
-    except requests.RequestException:
-        return None
-
-
 def _call_estimator_upload(image_bytes: bytes, filename: str, content_type: str, source: str, field_id: int) -> dict:
-    raise HTTPException(status_code=501, detail="Upload-based biomass estimation not yet implemented")
+    """Local CSIRO-inspired dual-stream estimator (no paid vision APIs)."""
+    try:
+        import sys
+        from pathlib import Path
+        from dotenv import load_dotenv
+
+        backend_dir = Path(__file__).resolve().parent.parent
+        if str(backend_dir) not in sys.path:
+            sys.path.insert(0, str(backend_dir))
+        load_dotenv(backend_dir / ".env", override=True)
+
+        # Prefer multi-domain pack, then CSIRO-only DINO pack.
+        multi_pack = backend_dir / "biomass_estimator" / "calibration_multidomain.npz"
+        dino_pack = backend_dir / "biomass_estimator" / "calibration_dino.npz"
+        pack = multi_pack if multi_pack.is_file() else dino_pack
+        if pack.is_file():
+            os.environ["BIOMASS_USE_DINO"] = "true"
+            os.environ["BIOMASS_CALIBRATION_PATH"] = str(pack)
+            os.environ.setdefault("BIOMASS_IMG_SIZE", "518")
+
+        # Drop stale cached calib loads from prior requests / old env
+        try:
+            from biomass_estimator import calibration as _calib
+            _calib._load_npz.cache_clear()
+        except Exception:
+            pass
+
+        from biomass_estimator import estimate_biomass_from_image
+        result = estimate_biomass_from_image(image_bytes, field_id=field_id)
+        if result.get("rejected"):
+            raise HTTPException(
+                status_code=400,
+                detail=result.get("reject_reason")
+                or "Photo rejected: not a pasture/crop canopy image.",
+            )
+        try:
+            dbg = Path(backend_dir) / "biomass_estimator" / "_last_upload_debug.json"
+            import json as _json
+            dbg.write_text(_json.dumps({
+                "model_version": result.get("model_version"),
+                "calibration_mode": (result.get("features") or {}).get("calibration_mode"),
+                "backbone": (result.get("features") or {}).get("backbone"),
+                "stream": (result.get("features") or {}).get("stream"),
+                "calib_env": os.environ.get("BIOMASS_CALIBRATION_PATH"),
+                "dino_env": os.environ.get("BIOMASS_USE_DINO"),
+            }, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Biomass estimation failed: {e}",
+        ) from e
 
 
 @router.get("/fields/{field_id}/biomass")
 def get_biomass(field_id: int, db: Session = Depends(get_db)):
-    """Latest satellite + latest upload analysis for a field. Returns empty
+    """Latest photo-upload biomass analysis for a field. Returns empty
     payload (not 500) when the FieldBiomassAnalysis table hasn't been migrated yet."""
     field = (
         db.query(models.Field)
@@ -429,149 +445,37 @@ def get_biomass(field_id: int, db: Session = Depends(get_db)):
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
 
-    empty = {"field_id": field_id, "satellite": None, "upload": None, "history": []}
+    empty = {"field_id": field_id, "upload": None, "history": []}
     try:
-        def latest(source: str):
-            row = (
-                db.query(models.FieldBiomassAnalysis)
-                .filter(
-                    models.FieldBiomassAnalysis.FieldID == field_id,
-                    models.FieldBiomassAnalysis.Source == source,
-                )
-                .order_by(desc(models.FieldBiomassAnalysis.CapturedAt))
-                .first()
+        latest_upload = (
+            db.query(models.FieldBiomassAnalysis)
+            .filter(
+                models.FieldBiomassAnalysis.FieldID == field_id,
+                models.FieldBiomassAnalysis.Source == "upload",
             )
-            return _serialize_biomass_row(row) if row else None
-
+            .order_by(desc(models.FieldBiomassAnalysis.CapturedAt))
+            .first()
+        )
         history = (
             db.query(models.FieldBiomassAnalysis)
-            .filter(models.FieldBiomassAnalysis.FieldID == field_id)
+            .filter(
+                models.FieldBiomassAnalysis.FieldID == field_id,
+                models.FieldBiomassAnalysis.Source == "upload",
+            )
             .order_by(desc(models.FieldBiomassAnalysis.CreatedAt))
             .limit(20)
             .all()
         )
         return {
-            "field_id":  field_id,
-            "satellite": latest("satellite"),
-            "upload":    latest("upload"),
-            "history":   [_serialize_biomass_row(r) for r in history],
+            "field_id": field_id,
+            "upload": _serialize_biomass_row(latest_upload) if latest_upload else None,
+            "history": [_serialize_biomass_row(r) for r in history],
         }
     except Exception as e:
         # Most common cause: FieldBiomassAnalysis table hasn't been created yet.
-        # Log and return empty so the UI shows "no analysis yet" instead of an error.
         print(f"[biomass] GET failed, returning empty (table missing?): {e}")
         db.rollback()
         return empty
-
-
-def _run_satellite_biomass(field_id: int, db: Session) -> "models.FieldBiomassAnalysis":
-    """Pull the latest NDVI analysis, convert to biomass, persist, and return the row.
-    Shared by the manual-trigger satellite endpoint and the auto-resolver endpoint."""
-    field = (
-        db.query(models.Field)
-        .filter(models.Field.FieldID == field_id, models.Field.DeletedAt.is_(None))
-        .first()
-    )
-    if not field:
-        raise HTTPException(status_code=404, detail="Field not found")
-
-    analysis = _fetch_latest_crop_analysis(field_id)
-    if not analysis:
-        raise HTTPException(
-            status_code=503,
-            detail="No satellite analysis available yet for this field. "
-                   "Run an analysis from the Crop Monitor dashboard first.",
-        )
-
-    indices = analysis.get("vegetation_indices") or []
-    ndvi_entry = next((i for i in indices if (i.get("index_type") or "").upper() == "NDVI"), None)
-    if not ndvi_entry or ndvi_entry.get("mean") is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Latest analysis has no NDVI data. Re-run analysis from Crop Monitor.",
-        )
-
-    ndvi_mean = float(ndvi_entry["mean"])
-    prediction = _ndvi_to_biomass(ndvi_mean, crop_type=field.CropType)
-
-    try:
-        captured = datetime.fromisoformat(
-            (analysis.get("satellite_acquired_at") or analysis.get("analysis_date") or "").replace("Z", "")
-        )
-    except Exception:
-        captured = datetime.utcnow()
-
-    image_url = f"{CROP_MONITOR_URL}/api/fields/{field_id}/heatmap/ndvi"
-
-    row = models.FieldBiomassAnalysis(
-        FieldID=      field_id,
-        BusinessID=   field.BusinessID,
-        Source=       "satellite",
-        BiomassKgHa=  prediction.get("biomass_kg_per_ha"),
-        Confidence=   prediction.get("confidence"),
-        ImageUrl=     image_url,
-        CapturedAt=   captured,
-        ModelVersion= prediction.get("model_version"),
-        FeaturesJSON= json.dumps(prediction.get("features") or {}),
-        CreatedAt=    datetime.utcnow(),
-    )
-    db.add(row)
-    db.commit()
-    db.refresh(row)
-    return row
-
-
-@router.post("/fields/{field_id}/biomass/satellite")
-def analyze_satellite(field_id: int, db: Session = Depends(get_db)):
-    """
-    Compute biomass from the latest Sentinel-2 NDVI analysis stored by the
-    crop monitoring backend.  No GEE or external ML service required — the
-    crop monitoring backend already pulls real satellite data on its own schedule.
-    """
-    row = _run_satellite_biomass(field_id, db)
-    return _serialize_biomass_row(row)
-
-
-@router.post("/fields/{field_id}/biomass/resolve")
-def resolve_biomass(field_id: int, db: Session = Depends(get_db)):
-    """
-    Improve biomass-estimate confidence by averaging a fresh satellite run
-    with up to 4 prior recent satellite runs. Returns the combined estimate
-    plus per-sample detail so the caller can show how the average was reached.
-    """
-    fresh = _run_satellite_biomass(field_id, db)
-
-    samples = (
-        db.query(models.FieldBiomassAnalysis)
-        .filter(
-            models.FieldBiomassAnalysis.FieldID == field_id,
-            models.FieldBiomassAnalysis.Source == "satellite",
-        )
-        .order_by(desc(models.FieldBiomassAnalysis.CapturedAt))
-        .limit(5)
-        .all()
-    )
-
-    biomass_vals   = [float(s.BiomassKgHa) for s in samples if s.BiomassKgHa is not None]
-    conf_vals      = [float(s.Confidence)  for s in samples if s.Confidence  is not None]
-    avg_biomass    = round(sum(biomass_vals) / len(biomass_vals), 1) if biomass_vals else None
-    # Averaging N independent samples reduces noise by ~sqrt(N), so confidence
-    # in the combined estimate scales the same way (capped at 0.95).
-    if conf_vals:
-        n = len(conf_vals)
-        boost = min(0.95, (sum(conf_vals) / n) * (n ** 0.5))
-        avg_confidence = round(boost, 3)
-    else:
-        avg_confidence = None
-
-    return {
-        "field_id":         field_id,
-        "fresh_sample":     _serialize_biomass_row(fresh),
-        "samples":          [_serialize_biomass_row(s) for s in samples],
-        "n_samples":        len(samples),
-        "averaged_biomass_kg_per_ha": avg_biomass,
-        "averaged_confidence":        avg_confidence,
-    }
 
 
 @router.post("/fields/{field_id}/biomass/upload")
