@@ -13,7 +13,7 @@ from .model import COMPONENT_KEYS, _canopy_scores, BORDERS_DICT, interval_index,
 from .features import extract_features, try_dino_embedding, stream_vegetation_features
 from .preprocess import prepare_dual_streams
 from .postprocess import apply_writeup_postprocess, grams_to_kg_per_ha, overall_confidence
-from .scene_gate import assess_vegetation_scene, rejection_payload
+from .scene_gate import assess_vegetation_scene, rejection_payload, scene_confidence_scale
 
 _DEFAULT_MULTI = Path(__file__).resolve().parent / "calibration_multidomain.npz"
 _DEFAULT_DINO = Path(__file__).resolve().parent / "calibration_dino.npz"
@@ -52,7 +52,6 @@ def calibration_path() -> Optional[str]:
     """Prefer multi-domain pack, then CSIRO DINO, then veg, then env override."""
     env = os.getenv("BIOMASS_CALIBRATION_PATH", "").strip()
     force_veg = os.getenv("BIOMASS_FORCE_VEG_CALIB", "").strip().lower() in ("1", "true", "yes")
-    require_dino = os.getenv("BIOMASS_REQUIRE_DINO", "").strip().lower() in ("1", "true", "yes")
 
     if env and Path(env).is_file():
         name = Path(env).name
@@ -60,22 +59,12 @@ def calibration_path() -> Optional[str]:
             if name == "calibration.npz" and (_DEFAULT_MULTI.is_file() or _DEFAULT_DINO.is_file()) and not force_veg:
                 pass  # fall through to prefer better packs
             else:
-                if require_dino and name == "calibration.npz":
-                    raise RuntimeError(
-                        "BIOMASS_REQUIRE_DINO=true but calibration path points at veg pack. "
-                        "Use calibration_multidomain.npz"
-                    )
                 return env
 
     if _DEFAULT_MULTI.is_file() and not force_veg:
         return str(_DEFAULT_MULTI)
     if _DEFAULT_DINO.is_file() and not force_veg:
         return str(_DEFAULT_DINO)
-    if require_dino:
-        raise RuntimeError(
-            "BIOMASS_REQUIRE_DINO=true but no DINOv2 calibration pack found "
-            "(expected biomass_estimator/calibration_multidomain.npz)"
-        )
     if env and Path(env).is_file():
         return env
     if _DEFAULT_VEG.is_file():
@@ -147,18 +136,13 @@ def estimate_with_calibration(image_bytes: bytes, field_id: int | None = None) -
         img_size = int(os.getenv("BIOMASS_IMG_SIZE", str(pack.get("img_size", 518))))
         img_size = max(224, (img_size // 14) * 14)
     else:
-        if os.getenv("BIOMASS_REQUIRE_DINO", "").strip().lower() in ("1", "true", "yes"):
-            raise RuntimeError(
-                f"BIOMASS_REQUIRE_DINO=true but loaded pack mode={mode!r}; "
-                "expected dino_pca_ridge (calibration_multidomain.npz)"
-            )
         img_size = int(os.getenv("BIOMASS_IMG_SIZE", "512"))
         img_size = max(224, min(img_size, 1024))
 
     sample_area = float(os.getenv("BIOMASS_SAMPLE_AREA_M2", "0.25"))
     full, left, right, stream_mode = prepare_dual_streams(image_bytes, img_size=img_size)
 
-    # Scene gate on full-frame vegetation stats (before heavy DINO if possible)
+    # Scene gate — only blank / no-vegetation frames are rejected
     full_stats = stream_vegetation_features(full)
     ok, reason = assess_vegetation_scene(full, full_stats)
     if not ok:
@@ -167,12 +151,30 @@ def estimate_with_calibration(image_bytes: bytes, field_id: int | None = None) -
     bundle = extract_features(left, right, full)
     scores = _canopy_scores(bundle["fused"])
     fused = bundle["fused"]
+    conf_scale = scene_confidence_scale(full_stats)
 
+    used_mode = mode
     if mode == "dino_pca_ridge":
-        x = _dino_vector(left, right, scores, fused)
-        x = _apply_pca(x, pack["pca_components"], pack["pca_mean"])
-        model_version = pack.get("model_version") or "csiro-dinov2-v1"
-        backbone = pack.get("backbone", "dinov2_vits14")
+        try:
+            x = _dino_vector(left, right, scores, fused)
+            x = _apply_pca(x, pack["pca_components"], pack["pca_mean"])
+            model_version = pack.get("model_version") or "pasture-dinov2-v2"
+            backbone = pack.get("backbone", "dinov2_vits14")
+        except Exception as e:
+            # Soft fallback if torch/DINO unavailable in the running image
+            print(f"[biomass] DINOv2 failed ({e}); falling back to vegetation calibration")
+            veg_path = str(_DEFAULT_VEG) if _DEFAULT_VEG.is_file() else None
+            if not veg_path:
+                raise
+            veg_pack = _load_npz(veg_path)
+            if not veg_pack:
+                raise
+            pack = veg_pack
+            used_mode = veg_pack["mode"]
+            x = _veg_vector(scores, fused)
+            model_version = "csiro-dual-v1-calibrated-fallback"
+            backbone = "vegetation-proxy"
+            conf_scale *= 0.75
     else:
         x = _veg_vector(scores, fused)
         model_version = pack.get("model_version") or "csiro-dual-v1-calibrated"
@@ -190,7 +192,7 @@ def estimate_with_calibration(image_bytes: bytes, field_id: int | None = None) -
         }
         for k in COMPONENT_KEYS
     }
-    conf = overall_confidence(intervals, components)
+    conf = round(min(0.99, overall_confidence(intervals, components) * conf_scale), 3)
     kg_ha = grams_to_kg_per_ha(components["Dry_Total_g"], sample_area)
 
     return {
@@ -211,8 +213,9 @@ def estimate_with_calibration(image_bytes: bytes, field_id: int | None = None) -
             "exg_mean": fused.get("exg_mean"),
             "vari_mean": fused.get("vari_mean"),
             "stream": stream_mode,
-            "cost_model": "local-dino" if mode == "dino_pca_ridge" else "local-cpu",
+            "scene_confidence_scale": conf_scale,
+            "cost_model": "local-dino" if used_mode == "dino_pca_ridge" else "local-cpu",
             "calibration": path,
-            "calibration_mode": mode,
+            "calibration_mode": used_mode,
         },
     }

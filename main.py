@@ -224,10 +224,15 @@ class DynamicCORSMiddleware(BaseHTTPMiddleware):
                     resp.headers[k] = v
             return resp
 
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception as e:
+            response = JSONResponse(status_code=500, content={"detail": str(e)})
         if allowed:
             response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Access-Control-Allow-Credentials"] = "true"
+            for k, v in self.CORS_HEADERS.items():
+                response.headers.setdefault(k, v)
         return response
 
 app = FastAPI()
