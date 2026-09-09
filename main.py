@@ -555,6 +555,17 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     )
 
 app.add_middleware(DynamicCORSMiddleware)
+# Outermost static CORS so known production origins always get ACAO even if
+# DynamicCORS origin lookup fails or an upstream edge error is remapped.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "Accept", "x-people-id", "*"],
+    expose_headers=["*"],
+    max_age=86400,
+)
 
 app.include_router(auth.router)
 app.include_router(associations.router)

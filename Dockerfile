@@ -17,7 +17,7 @@ COPY . .
 
 # Max-accuracy photo biomass: DINOv2 + multi-domain calibration (CPU torch)
 ENV BIOMASS_SAMPLE_AREA_M2=0.25 \
-    BIOMASS_IMG_SIZE=518 \
+    BIOMASS_IMG_SIZE=392 \
     BIOMASS_USE_DINO=true \
     BIOMASS_REQUIRE_DINO=false \
     BIOMASS_CALIBRATION_PATH=/app/biomass_estimator/calibration_multidomain.npz \
@@ -29,5 +29,5 @@ ENV BIOMASS_SAMPLE_AREA_M2=0.25 \
 RUN mkdir -p /app/.cache/torch/hub \
     && python -c "import torch; torch.hub.load('facebookresearch/dinov2', 'dinov2_vits14', pretrained=True); print('DINOv2 weights cached')"
 
-# Cloud Run: recommend --memory 4Gi --cpu 2 --timeout 300 for DINO inference
+# Cloud Run: require --memory 8Gi --cpu 2 --timeout 300 for DINO inference
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]

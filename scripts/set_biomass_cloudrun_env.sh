@@ -12,10 +12,10 @@ SERVICE="${SERVICE:-oatmealfarmnewtorkbackend}"
 gcloud run services update "$SERVICE" \
   --project="$PROJECT" \
   --region="$REGION" \
-  --memory=4Gi \
+  --memory=8Gi \
   --cpu=2 \
   --timeout=300 \
   --cpu-boost \
-  --update-env-vars="BIOMASS_SAMPLE_AREA_M2=0.25,BIOMASS_IMG_SIZE=518,BIOMASS_USE_DINO=true,BIOMASS_REQUIRE_DINO=false,BIOMASS_CALIBRATION_PATH=/app/biomass_estimator/calibration_multidomain.npz,BIOMASS_GCS_BUCKET=oatmeal-farm-network-images,BIOMASS_GCS_PREFIX=biomass-uploads,TORCH_HOME=/app/.cache/torch"
+  --update-env-vars="BIOMASS_SAMPLE_AREA_M2=0.25,BIOMASS_IMG_SIZE=392,BIOMASS_USE_DINO=true,BIOMASS_REQUIRE_DINO=false,BIOMASS_CALIBRATION_PATH=/app/biomass_estimator/calibration_multidomain.npz,BIOMASS_GCS_BUCKET=oatmeal-farm-network-images,BIOMASS_GCS_PREFIX=biomass-uploads,TORCH_HOME=/app/.cache/torch"
 
-echo "Updated Cloud Run ${SERVICE} for max-accuracy DINOv2 biomass (4Gi / 2 CPU / 300s)."
+echo "Updated Cloud Run ${SERVICE} for DINOv2 biomass (8Gi / 2 CPU / 300s)."
