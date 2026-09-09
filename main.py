@@ -158,6 +158,8 @@ from fastapi.responses import JSONResponse
 
 ALLOWED_ORIGINS = [
     "http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://localhost:5176", "http://localhost:5177", "http://localhost:3000",
+    "http://127.0.0.1:5173", "http://127.0.0.1:5174", "http://127.0.0.1:5175", "http://127.0.0.1:5176", "http://127.0.0.1:5177", "http://127.0.0.1:3000",
+    "http://127.0.0.1:8000", "http://localhost:8000",
     "https://oatmealfarmnetwork-802455386518.us-central1.run.app",
     "https://oatmealfarmnewtorkbackend-802455386518.us-central1.run.app",
     "https://crop-detection-dcecevhvh5ard2ah.eastus-01.azurewebsites.net",
@@ -384,6 +386,36 @@ async def _startup_migrations():
                     _db.commit()
         except Exception:
             pass
+
+        # Photo biomass estimates (Field Detail → Biomass Estimate)
+        try:
+            with SessionLocal() as _db:
+                _db.execute(_t(
+                    "IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'FieldBiomassAnalysis') "
+                    "BEGIN "
+                    "CREATE TABLE FieldBiomassAnalysis ("
+                    "  AnalysisID INT IDENTITY(1,1) PRIMARY KEY,"
+                    "  FieldID INT NOT NULL,"
+                    "  BusinessID INT NOT NULL,"
+                    "  Source VARCHAR(20) NOT NULL,"
+                    "  BiomassKgHa DECIMAL(10,2) NULL,"
+                    "  Confidence DECIMAL(5,3) NULL,"
+                    "  ImageUrl VARCHAR(1000) NULL,"
+                    "  CapturedAt DATETIME NULL,"
+                    "  ModelVersion VARCHAR(50) NULL,"
+                    "  FeaturesJSON NVARCHAR(MAX) NULL,"
+                    "  CreatedByPeopleID INT NULL,"
+                    "  CreatedAt DATETIME NOT NULL DEFAULT GETUTCDATE()"
+                    "); "
+                    "CREATE INDEX IX_FieldBiomassAnalysis_FieldID ON FieldBiomassAnalysis(FieldID); "
+                    "CREATE INDEX IX_FieldBiomassAnalysis_BusinessID ON FieldBiomassAnalysis(BusinessID); "
+                    "CREATE INDEX IX_FieldBiomassAnalysis_Field_Src ON FieldBiomassAnalysis(FieldID, Source, CapturedAt DESC); "
+                    "END"
+                ))
+                _db.commit()
+                print("[startup] FieldBiomassAnalysis table ensured")
+        except Exception as _e:
+            print(f"[startup] FieldBiomassAnalysis ensure skipped: {_e}")
 
     asyncio.get_event_loop().run_in_executor(None, _run)
 

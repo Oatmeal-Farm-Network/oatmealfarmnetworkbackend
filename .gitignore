@@ -1,10 +1,8 @@
-# Environment Variables & Secrets
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-.env*.local
+# Biomass estimator local caches / debug dumps (keep calibration_*.npz)
+biomass_estimator/dino_feat_cache*.npz
+biomass_estimator/_calib_debug.txt
+biomass_estimator/_last_upload_debug.json
+biomass_estimator/__pycache__/
 
 # Google Cloud Credentials & Service Account Keys
 credentials/

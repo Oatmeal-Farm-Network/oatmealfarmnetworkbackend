@@ -1,7 +1,8 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import InvalidTokenError, PyJWTError
 from datetime import datetime, timedelta, timezone
 import bcrypt as _bcrypt
 from database import get_db
@@ -29,10 +30,11 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
     # Legacy: accounts created before bcrypt was introduced have plaintext passwords.
     # Bcrypt hashes start with $2a$ / $2b$ / $2y$. Anything else → compare as plaintext.
-    if not hashed.startswith("$2"):
+    if not str(hashed).startswith("$2"):
         return plain == hashed
     try:
-        return _bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+        hashed_str = hashed.decode("utf-8") if isinstance(hashed, (bytes, bytearray)) else str(hashed)
+        return _bcrypt.checkpw(plain.encode("utf-8"), hashed_str.encode("utf-8"))
     except Exception:
         return False
 
@@ -53,7 +55,7 @@ def verify_password_reset_token(token: str) -> int:
         if payload.get("type") != "pwd_reset":
             raise ValueError("wrong token type")
         return int(payload["sub"])
-    except (JWTError, ValueError, KeyError):
+    except (InvalidTokenError, PyJWTError, ValueError, KeyError):
         raise HTTPException(status_code=400, detail="Invalid or expired reset token.")
 
 
@@ -78,7 +80,7 @@ def get_current_user(
         if sub is None:
             raise credentials_exception
         people_id = int(sub)
-    except (JWTError, ValueError):
+    except (InvalidTokenError, PyJWTError, ValueError):
         raise credentials_exception
 
     user = db.query(models.People).filter(

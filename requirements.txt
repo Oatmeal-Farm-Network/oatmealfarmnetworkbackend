@@ -129,7 +129,18 @@ ftfy>=6.0
 # =========================================================
 
 python-jose>=3.5.0
+PyJWT>=2.8.0
 bcrypt>=4.0.0
+
+
+# =========================================================
+# Biomass photo estimator (max accuracy = DINOv2 via torch)
+# =========================================================
+
+Pillow>=10.0.0
+numpy>=1.26.0
+# torch/torchvision: installed in Dockerfile from the PyTorch CPU index
+# (keeps requirements.txt installable without CUDA wheels on Windows)
 
 
 # =========================================================
