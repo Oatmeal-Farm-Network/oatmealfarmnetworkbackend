@@ -52,20 +52,30 @@ def calibration_path() -> Optional[str]:
     """Prefer multi-domain pack, then CSIRO DINO, then veg, then env override."""
     env = os.getenv("BIOMASS_CALIBRATION_PATH", "").strip()
     force_veg = os.getenv("BIOMASS_FORCE_VEG_CALIB", "").strip().lower() in ("1", "true", "yes")
+    require_dino = os.getenv("BIOMASS_REQUIRE_DINO", "").strip().lower() in ("1", "true", "yes")
 
     if env and Path(env).is_file():
-        # Honor explicit path unless it is the old veg pack while better packs exist
         name = Path(env).name
         if force_veg or name not in ("calibration.npz",):
             if name == "calibration.npz" and (_DEFAULT_MULTI.is_file() or _DEFAULT_DINO.is_file()) and not force_veg:
                 pass  # fall through to prefer better packs
             else:
+                if require_dino and name == "calibration.npz":
+                    raise RuntimeError(
+                        "BIOMASS_REQUIRE_DINO=true but calibration path points at veg pack. "
+                        "Use calibration_multidomain.npz"
+                    )
                 return env
 
     if _DEFAULT_MULTI.is_file() and not force_veg:
         return str(_DEFAULT_MULTI)
     if _DEFAULT_DINO.is_file() and not force_veg:
         return str(_DEFAULT_DINO)
+    if require_dino:
+        raise RuntimeError(
+            "BIOMASS_REQUIRE_DINO=true but no DINOv2 calibration pack found "
+            "(expected biomass_estimator/calibration_multidomain.npz)"
+        )
     if env and Path(env).is_file():
         return env
     if _DEFAULT_VEG.is_file():
@@ -137,6 +147,11 @@ def estimate_with_calibration(image_bytes: bytes, field_id: int | None = None) -
         img_size = int(os.getenv("BIOMASS_IMG_SIZE", str(pack.get("img_size", 518))))
         img_size = max(224, (img_size // 14) * 14)
     else:
+        if os.getenv("BIOMASS_REQUIRE_DINO", "").strip().lower() in ("1", "true", "yes"):
+            raise RuntimeError(
+                f"BIOMASS_REQUIRE_DINO=true but loaded pack mode={mode!r}; "
+                "expected dino_pca_ridge (calibration_multidomain.npz)"
+            )
         img_size = int(os.getenv("BIOMASS_IMG_SIZE", "512"))
         img_size = max(224, min(img_size, 1024))
 

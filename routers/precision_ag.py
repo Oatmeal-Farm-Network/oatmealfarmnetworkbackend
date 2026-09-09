@@ -485,6 +485,8 @@ async def analyze_upload(
     db: Session = Depends(get_db),
 ):
     """User-uploaded ground-level image → estimator → stored analysis."""
+    from biomass_estimator.table import ensure_biomass_table
+
     field = (
         db.query(models.Field)
         .filter(models.Field.FieldID == field_id, models.Field.DeletedAt.is_(None))
@@ -492,6 +494,14 @@ async def analyze_upload(
     )
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
+
+    try:
+        ensure_biomass_table(db)
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Biomass storage is not ready (FieldBiomassAnalysis): {e}",
+        ) from e
 
     raw = await file.read()
     if not raw:

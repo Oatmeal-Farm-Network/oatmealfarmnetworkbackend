@@ -134,13 +134,13 @@ bcrypt>=4.0.0
 
 
 # =========================================================
-# Biomass photo estimator (local CSIRO-style; no paid vision APIs)
+# Biomass photo estimator (max accuracy = DINOv2 via torch)
 # =========================================================
 
 Pillow>=10.0.0
 numpy>=1.26.0
-# Optional: set BIOMASS_USE_DINO=true and install torch/torchvision for DINOv2
-# torch / torchvision are intentionally NOT required for Cloud Run
+# torch/torchvision: installed in Dockerfile from the PyTorch CPU index
+# (keeps requirements.txt installable without CUDA wheels on Windows)
 
 
 # =========================================================

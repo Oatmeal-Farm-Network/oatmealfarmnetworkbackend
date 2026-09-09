@@ -31,7 +31,16 @@ def estimate_biomass_from_image(image_bytes: bytes, field_id: int | None = None)
         if calibrated is not None:
             return calibrated
     except Exception as e:
+        require = os.getenv("BIOMASS_REQUIRE_DINO", "").strip().lower() in ("1", "true", "yes")
+        if require:
+            raise
         print(f"[biomass_estimator] calibration path failed, falling back: {e}")
+
+    if os.getenv("BIOMASS_REQUIRE_DINO", "").strip().lower() in ("1", "true", "yes"):
+        raise RuntimeError(
+            "BIOMASS_REQUIRE_DINO=true but DINOv2 calibration did not run. "
+            "Check torch install and calibration_multidomain.npz."
+        )
 
     img_size = int(os.getenv("BIOMASS_IMG_SIZE", "512"))
     img_size = max(224, min(img_size, 1024))
