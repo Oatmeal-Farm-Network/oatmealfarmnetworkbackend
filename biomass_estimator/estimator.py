@@ -9,7 +9,7 @@ from .features import extract_features, stream_vegetation_features
 from .model import predict_components
 from .postprocess import finalize
 from .preprocess import prepare_dual_streams
-from .scene_gate import assess_vegetation_scene, rejection_payload
+from .scene_gate import assess_vegetation_scene, rejection_payload, scene_confidence_scale
 
 MODEL_VERSION = "csiro-dual-v1"
 
@@ -18,12 +18,11 @@ def estimate_biomass_from_image(image_bytes: bytes, field_id: int | None = None)
     """
     Local multi-domain pasture/crop biomass estimate.
     Prefers calibrated DINOv2 heads when available. No paid vision / LLM APIs.
-    May return rejected=True for non-vegetation scenes.
+    Accepts angled / side / phone field photos; only rejects blank frames.
     """
     if not image_bytes:
         raise ValueError("Empty image")
 
-    # Prefer dataset-calibrated heads when a calibration pack is present
     try:
         from .calibration import estimate_with_calibration
 
@@ -31,16 +30,7 @@ def estimate_biomass_from_image(image_bytes: bytes, field_id: int | None = None)
         if calibrated is not None:
             return calibrated
     except Exception as e:
-        require = os.getenv("BIOMASS_REQUIRE_DINO", "").strip().lower() in ("1", "true", "yes")
-        if require:
-            raise
         print(f"[biomass_estimator] calibration path failed, falling back: {e}")
-
-    if os.getenv("BIOMASS_REQUIRE_DINO", "").strip().lower() in ("1", "true", "yes"):
-        raise RuntimeError(
-            "BIOMASS_REQUIRE_DINO=true but DINOv2 calibration did not run. "
-            "Check torch install and calibration_multidomain.npz."
-        )
 
     img_size = int(os.getenv("BIOMASS_IMG_SIZE", "512"))
     img_size = max(224, min(img_size, 1024))
@@ -57,6 +47,8 @@ def estimate_biomass_from_image(image_bytes: bytes, field_id: int | None = None)
     components, kg_ha, confidence = finalize(
         raw_components, meta["intervals"], sample_area_m2=sample_area
     )
+    scale = scene_confidence_scale(full_stats)
+    confidence = round(min(0.99, float(confidence) * scale), 3)
 
     return {
         "rejected": False,
@@ -76,6 +68,7 @@ def estimate_biomass_from_image(image_bytes: bytes, field_id: int | None = None)
             "exg_mean": feature_bundle["fused"].get("exg_mean"),
             "vari_mean": feature_bundle["fused"].get("vari_mean"),
             "stream": stream_mode,
+            "scene_confidence_scale": scale,
             "cost_model": "local-cpu",
         },
     }

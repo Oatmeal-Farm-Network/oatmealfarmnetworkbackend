@@ -19,7 +19,7 @@ COPY . .
 ENV BIOMASS_SAMPLE_AREA_M2=0.25 \
     BIOMASS_IMG_SIZE=518 \
     BIOMASS_USE_DINO=true \
-    BIOMASS_REQUIRE_DINO=true \
+    BIOMASS_REQUIRE_DINO=false \
     BIOMASS_CALIBRATION_PATH=/app/biomass_estimator/calibration_multidomain.npz \
     BIOMASS_GCS_BUCKET=oatmeal-farm-network-images \
     BIOMASS_GCS_PREFIX=biomass-uploads \
