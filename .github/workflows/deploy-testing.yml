@@ -4,7 +4,8 @@ name: Deploy to Testing
 # Fails clearly until TESTING_* secrets/vars and isolated Cloud SQL exist.
 on:
   push:
-    branches: [GCP/backend-testing]
+    branches:
+      - 'GCP/backend-testing'
     paths-ignore:
       - 'docs/**'
       - 'README.md'
