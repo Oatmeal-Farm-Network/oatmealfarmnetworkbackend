@@ -1,0 +1,72 @@
+name: Train direction
+
+# Enforce allowed PR hops only:
+#   work → GCP/*-staging → GCP/*-testing → main
+# Native GitHub rulesets cannot restrict head→base pairs; this check does.
+on:
+  pull_request:
+    branches:
+      - main
+      - 'GCP/*-staging'
+      - 'GCP/*-testing'
+
+jobs:
+  enforce:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce train head → base
+        shell: bash
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          echo "PR: ${HEAD} → ${BASE}"
+
+          is_staging=0
+          is_testing=0
+          is_main=0
+          case "$BASE" in
+            GCP/*-staging) is_staging=1 ;;
+            GCP/*-testing) is_testing=1 ;;
+            main) is_main=1 ;;
+          esac
+
+          if [[ "$is_staging" -eq 1 ]]; then
+            case "$HEAD" in
+              GCP/*-testing)
+                echo "::error::Forbidden hop: ${HEAD} → ${BASE}. Testing cannot merge into staging. Train is work → staging → testing → main."
+                exit 1
+                ;;
+            esac
+            echo "OK: work/sync → staging (${HEAD} → ${BASE})"
+            exit 0
+          fi
+
+          if [[ "$is_testing" -eq 1 ]]; then
+            case "$HEAD" in
+              GCP/*-staging)
+                echo "OK: staging → testing (${HEAD} → ${BASE})"
+                exit 0
+                ;;
+              *)
+                echo "::error::Forbidden hop: ${HEAD} → ${BASE}. Testing accepts PRs only from staging (GCP/*-staging)."
+                exit 1
+                ;;
+            esac
+          fi
+
+          if [[ "$is_main" -eq 1 ]]; then
+            case "$HEAD" in
+              GCP/*-testing)
+                echo "OK: testing → main (${HEAD} → ${BASE})"
+                exit 0
+                ;;
+              *)
+                echo "::error::Forbidden hop: ${HEAD} → ${BASE}. main accepts PRs only from testing (GCP/*-testing)."
+                exit 1
+                ;;
+            esac
+          fi
+
+          echo "::warning::Base ${BASE} is not an environment branch; nothing to enforce."
