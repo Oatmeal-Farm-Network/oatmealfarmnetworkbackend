@@ -48,9 +48,14 @@ jobs:
           require TESTING_BACKEND_RUNTIME_SA "${{ vars.TESTING_BACKEND_RUNTIME_SA }}"
           require TESTING_CLOUD_SQL_INSTANCE "${{ vars.TESTING_CLOUD_SQL_INSTANCE }}"
           require TESTING_FRONTEND_URL "${{ vars.TESTING_FRONTEND_URL }}"
+          project="${{ secrets.TESTING_GCP_PROJECT_ID }}"
+          if [ -n "$project" ] && [ "$project" != "oatmeal-farm-staging" ]; then
+            echo "::error::TESTING_GCP_PROJECT_ID must be oatmeal-farm-staging. Never animated-flare-421518 (Oatmeal AI)."
+            missing=1
+          fi
           if [ "$missing" -ne 0 ]; then
-            echo "Testing deploy blocked. Create oatmeal-backend-testing, isolated Cloud SQL/Firestore, and TESTING_* vars."
-            echo "Do not point testing at production DB or SECRET_KEY. Same GCP project as staging is OK."
+            echo "Testing deploy blocked. Create oatmeal-backend-testing in oatmeal-farm-staging, isolated Cloud SQL/Firestore, and TESTING_* vars."
+            echo "Do not point testing at production DB or SECRET_KEY."
             exit 1
           fi
 

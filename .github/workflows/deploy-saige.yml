@@ -1,5 +1,9 @@
 name: Deploy Saige Backend to Cloud Run
 
+# main → saige-backend in animated-flare-421518 (Oatmeal AI) only.
+# Official Saige prod Cloud Run is saige-backend. Staging/testing stay
+# oatmeal-saige-staging / oatmeal-saige-testing in oatmeal-farm-staging.
+# Gated by PROD_SAIGE_DEPLOY_ENABLED — do not set that variable yet.
 on:
   push:
     branches:
@@ -10,7 +14,7 @@ on:
   workflow_dispatch:
 
 env:
-  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  PROJECT_ID: ${{ secrets.PROD_GCP_PROJECT_ID || secrets.GCP_PROJECT_ID }}
   GAR_LOCATION: us-central1
   GAR_REPOSITORY: docker-repo
   REGION: us-central1
@@ -20,6 +24,7 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: production
     permissions:
       contents: read
       id-token: write
@@ -27,6 +32,28 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Gate Saige production until the testing hop is live
+        shell: bash
+        run: |
+          if [ "${{ vars.PROD_SAIGE_DEPLOY_ENABLED }}" != "true" ]; then
+            echo "::error::Saige production deploy is blocked."
+            echo "Official prod target is saige-backend in animated-flare-421518 (Oatmeal AI)."
+            echo "Do not deploy Saige to oatmeal-farm-staging from main."
+            echo "A saige/** push to main must not deploy prod until GCP/backend-testing exists and Environment reviewers are assigned."
+            echo "Set repo variable PROD_SAIGE_DEPLOY_ENABLED=true only after a testing → main promotion path is in use."
+            exit 1
+          fi
+          project="${{ env.PROJECT_ID }}"
+          if [ -z "$project" ]; then
+            echo "::error::Missing PROD_GCP_PROJECT_ID (or GCP_PROJECT_ID). Must be animated-flare-421518."
+            exit 1
+          fi
+          if [ "$project" != "animated-flare-421518" ]; then
+            echo "::error::Saige prod must use project animated-flare-421518 (Oatmeal AI). Got: $project"
+            echo "Never deploy saige-backend into oatmeal-farm-staging from main."
+            exit 1
+          fi
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
@@ -41,7 +68,7 @@ jobs:
         run: |
           SECRET_KEY="${{ secrets.SECRET_KEY }}"
           if [ -z "$SECRET_KEY" ]; then
-            echo "GitHub SECRET_KEY secret empty ΓÇö fetching from main backend..."
+            echo "GitHub SECRET_KEY secret empty — fetching from main backend..."
             SECRET_KEY=$(gcloud run services describe "$MAIN_SERVICE_NAME" \
               --region "$REGION" --project "$PROJECT_ID" \
               --format="value(spec.template.spec.containers[0].env.filter(name=SECRET_KEY).extract(value).flatten())")
@@ -74,6 +101,7 @@ jobs:
         run: |
           gcloud run deploy $SERVICE_NAME \
             --image $GAR_LOCATION-docker.pkg.dev/$PROJECT_ID/$GAR_REPOSITORY/$SERVICE_NAME:$GITHUB_SHA \
+            --project $PROJECT_ID \
             --region $REGION \
             --platform managed \
             --allow-unauthenticated \
@@ -87,5 +115,6 @@ jobs:
       - name: Show deployed URL
         run: |
           URL=$(gcloud run services describe $SERVICE_NAME \
+            --project $PROJECT_ID \
             --region $REGION --format 'value(status.url)')
           echo "Saige backend deployed at: $URL"

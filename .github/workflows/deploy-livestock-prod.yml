@@ -1,7 +1,8 @@
 name: Deploy Livestock Production
 
-# Auto-deploys to production on main when livestock paths change.
-# Manual promote via GCP/livestock-prod, livestock-v* tags, or workflow_dispatch still works.
+# NOT an official prod surface. Official shared API is oatmealfarmnewtorkbackend.
+# Official LOA frontend is livestock-frontend-prod in the livestock-of-america repo.
+# This workflow stays fail-closed so it cannot invent oatmeal-livestock-prod.
 on:
   push:
     branches: [main, GCP/livestock-prod]
@@ -41,6 +42,14 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Not an official prod surface
+        shell: bash
+        run: |
+          echo "::error::oatmeal-livestock-prod is not an official production Cloud Run service."
+          echo "Official shared API is oatmealfarmnewtorkbackend (deploy-backend-prod.yml)."
+          echo "Official LOA frontend is livestock-frontend-prod in livestock-of-america."
+          exit 1
 
       - name: Require production vars
         shell: bash
