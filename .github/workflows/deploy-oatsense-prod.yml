@@ -1,7 +1,7 @@
 name: Deploy Oatsense Production
 
-# Auto-deploys to production on main when oatsense/precision-ag paths change.
-# Manual promote via GCP/oatsense-prod, oatsense-v* tags, or workflow_dispatch still works.
+# NOT an official prod surface. Official shared API is oatmealfarmnewtorkbackend.
+# Official Oatsense frontend is oatsense-frontend-usa in Oatsense-america-frontend.
 on:
   push:
     branches: [main, GCP/oatsense-prod]
@@ -43,6 +43,14 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Not an official prod surface
+        shell: bash
+        run: |
+          echo "::error::oatmeal-oatsense is not an official production Cloud Run service."
+          echo "Official shared API is oatmealfarmnewtorkbackend (deploy-backend-prod.yml)."
+          echo "Official Oatsense frontend is oatsense-frontend-usa in Oatsense-america-frontend."
+          exit 1
 
       - name: Derive commit SHA tag
         shell: bash
