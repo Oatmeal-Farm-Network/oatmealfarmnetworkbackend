@@ -1,0 +1,26 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y \
+    freetds-dev \
+    freetds-bin \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# Cloud Run sets PORT (8080 on livestock-backend-prod, 8000 on oatmeal-livestock-staging).
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD python -c "import os,urllib.request; p=os.environ.get('PORT','8080'); urllib.request.urlopen(f'http://127.0.0.1:{p}/health', timeout=3)" || exit 1
+
+CMD ["sh", "-c", "uvicorn livestock.api:app --host 0.0.0.0 --port ${PORT:-8080}"]

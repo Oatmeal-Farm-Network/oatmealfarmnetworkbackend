@@ -1,0 +1,19 @@
+steps:
+  # Build Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-f'
+      - 'livestock/Dockerfile.backend'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/animated-flare-421518/cloud-run-source-deploy/livestock:latest'
+      - '.'
+
+  # Push image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'us-central1-docker.pkg.dev/animated-flare-421518/cloud-run-source-deploy/livestock:latest'
+
+images:
+  - 'us-central1-docker.pkg.dev/animated-flare-421518/cloud-run-source-deploy/livestock:latest'

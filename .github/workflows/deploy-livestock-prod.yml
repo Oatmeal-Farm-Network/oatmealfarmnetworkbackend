@@ -1,8 +1,8 @@
 name: Deploy Livestock Production
 
 # main → livestock-backend-prod in animated-flare-421518 (Oatmeal AI).
-# One of four backend Cloud Run services. Image-only promote (keep existing env/SQL/SA).
-# Skips cleanly when prod WIF secrets are unset. Never uses staging.
+# Source of truth is oatmealfarmnetworkbackend/livestock (not LivestockOfAmericabackend).
+# Image-only promote (keep existing env/SQL/SA on the service). Never uses staging project.
 on:
   push:
     branches: [main]
@@ -14,9 +14,14 @@ on:
       - 'app/routers/animals.py'
       - 'app/routers/herd_health.py'
       - 'app/routers/auth.py'
+      - 'app/routers/businesses.py'
+      - 'app/routers/business_photos.py'
+      - 'app/routers/services.py'
+      - 'app/routers/platform_subscriptions.py'
+      - 'app/routers/translation.py'
       - 'app/models/livestock.py'
       - 'app/database.py'
-      - 'app/routers/translation.py'
+      - 'app/core/**'
       - 'requirements.txt'
       - '.github/workflows/deploy-livestock-prod.yml'
   workflow_dispatch:
@@ -24,9 +29,10 @@ on:
 env:
   PROJECT_ID: ${{ secrets.PROD_GCP_PROJECT_ID || 'animated-flare-421518' }}
   REGION: ${{ vars.PROD_REGION || 'us-central1' }}
-  GAR_REPOSITORY: ${{ vars.PROD_ARTIFACT_REGISTRY_REPOSITORY || 'cloud-run-source-deploy' }}
+  # Match the live prod image path used by the previous LOA backend CD.
+  GAR_REPOSITORY: ${{ vars.PROD_ARTIFACT_REGISTRY_REPOSITORY || 'oatmeal-farm-registry' }}
   SERVICE_NAME: livestock-backend-prod
-  IMAGE_NAME: livestock-backend-prod
+  IMAGE_NAME: livestock-backend
 
 jobs:
   check-prod-wif:
@@ -60,12 +66,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Require Oatmeal AI project
+      - name: Require Oatmeal AI project and livestock entrypoint
         shell: bash
         run: |
           project="${{ env.PROJECT_ID }}"
           if [ "$project" != "animated-flare-421518" ]; then
             echo "::error::Livestock prod must use animated-flare-421518 (Oatmeal AI). Got: $project"
+            exit 1
+          fi
+          if [ ! -f livestock/Dockerfile.backend ] || [ ! -f livestock/api.py ]; then
+            echo "::error::livestock/Dockerfile.backend and livestock/api.py are required on main."
             exit 1
           fi
 
@@ -84,18 +94,21 @@ jobs:
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
-      - name: Build Docker image
+      - name: Build Docker image from livestock/
         run: |
           docker build -f livestock/Dockerfile.backend \
             -t "${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}:${COMMIT_SHA}" \
+            -t "${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}:latest" \
             .
 
       - name: Push Docker image
         run: |
           docker push "${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}:${COMMIT_SHA}"
+          docker push "${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}:latest"
 
       - name: Deploy image to livestock-backend-prod
         run: |
+          # Image-only: preserve existing env vars, Cloud SQL, and runtime SA on the service.
           gcloud run deploy "${SERVICE_NAME}" \
             --image "${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}:${COMMIT_SHA}" \
             --project "${PROJECT_ID}" \
