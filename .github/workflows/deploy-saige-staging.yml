@@ -1,6 +1,11 @@
 name: Deploy Saige Staging
 
 on:
+  push:
+    branches: ['GCP/backend-staging']
+    paths:
+      - 'saige/**'
+      - '.github/workflows/deploy-saige-staging.yml'
   workflow_dispatch:
 
 env:
@@ -9,6 +14,7 @@ env:
   GAR_REPOSITORY: ${{ vars.STAGING_ARTIFACT_REGISTRY_REPOSITORY || 'oatmeal-farm-registry' }}
   SERVICE_NAME: oatmeal-saige-staging
   IMAGE_NAME: saige
+  CLOUD_SQL_INSTANCE: oatmeal-farm-staging:us-central1:oatmeal-staging-sqlserver
 
 jobs:
   deploy:
@@ -28,7 +34,7 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.STAGING_GCP_WIF_PROVIDER }}
+          workload_identity_provider: ${{ secrets.STAGING_GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT }}
 
       - name: Set up Cloud SDK
@@ -61,8 +67,9 @@ jobs:
             --min-instances 1 \
             --max-instances 10 \
             --service-account "saige-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
-            --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},GOOGLE_GENAI_USE_VERTEXAI=true,VERTEX_AI_MODEL=gemini-2.5-flash-lite,GEMINI_MODEL=gemini-2.5-flash-lite,SAIGE_LLM_PROVIDER=gemini,FIRESTORE_DATABASE=charlie,CHAT_HISTORY_DATABASE=chat-history,REDIS_ENABLED=true,REDIS_ALLOW_MEMORY_FALLBACK=false,RAG_HYBRID_ENABLED=true,RAG_RERANK_ENABLED=true,RAG_CACHE_ENABLED=true,ALLOW_ALL_ORIGINS=true,FRONTEND_URL=${{ vars.STAGING_FRONTEND_URL || 'https://oatmeal-frontend-staging-1087130530284.us-central1.run.app' }},OFN_BACKEND_URL=${{ vars.STAGING_BACKEND_URL || 'https://oatmeal-backend-staging-lrviw4iujq-uc.a.run.app' }}" \
-            --set-secrets "SECRET_KEY=SECRET_KEY:latest,CRON_SECRET=CRON_SECRET:latest,REDIS_URL=REDIS_URL:latest"
+            --set-cloudsql-instances "${CLOUD_SQL_INSTANCE}" \
+            --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},GOOGLE_GENAI_USE_VERTEXAI=true,VERTEX_AI_MODEL=gemini-2.5-flash-lite,GEMINI_MODEL=gemini-2.5-flash-lite,SAIGE_LLM_PROVIDER=gemini,FIRESTORE_DATABASE=charlie,CHAT_HISTORY_DATABASE=chat-history,REDIS_ENABLED=false,REDIS_ALLOW_MEMORY_FALLBACK=true,RAG_HYBRID_ENABLED=true,RAG_RERANK_ENABLED=true,RAG_CACHE_ENABLED=true,ALLOW_ALL_ORIGINS=true,FRONTEND_URL=${{ vars.STAGING_FRONTEND_URL || 'https://oatmeal-frontend-staging-1087130530284.us-central1.run.app' }},OFN_BACKEND_URL=${{ vars.STAGING_BACKEND_URL || 'https://oatmeal-backend-staging-lrviw4iujq-uc.a.run.app' }},INSTANCE_CONNECTION_NAME=${CLOUD_SQL_INSTANCE}" \
+            --set-secrets "SECRET_KEY=SECRET_KEY:latest,CRON_SECRET=CRON_SECRET:latest,DB_SERVER=DB_SERVER:latest,DB_USER=DB_USER:latest,DB_PASSWORD=DB_PASSWORD:latest,DB_NAME=DB_NAME:latest"
 
       - name: Show deployed URL
         run: |
