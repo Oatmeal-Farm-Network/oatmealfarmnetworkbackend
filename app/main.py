@@ -175,7 +175,23 @@ ALLOWED_ORIGINS = [
     # Staging frontend (oatmeal-farm-staging)
     "https://oatmeal-frontend-staging-1087130530284.us-central1.run.app",
     "https://oatmeal-frontend-staging-lrviw4iujq-uc.a.run.app",
+    # Testing frontend (oatmeal-farm-staging)
+    "https://oatmeal-frontend-testing-1087130530284.us-central1.run.app",
+    "https://oatmeal-frontend-testing-lrviw4iujq-uc.a.run.app",
+    "https://livestock-frontend-testing-1087130530284.us-central1.run.app",
+    "https://livestock-frontend-testing-lrviw4iujq-uc.a.run.app",
+    "https://oatsense-frontend-testing-1087130530284.us-central1.run.app",
+    "https://oatsense-frontend-testing-lrviw4iujq-uc.a.run.app",
 ]
+
+# FRONTEND_URL / LOA / Oatsense env (set per Cloud Run service) also allow CORS.
+for _env_origin in (
+    os.getenv("FRONTEND_URL", "").strip(),
+    os.getenv("LOA_FRONTEND_URL", "").strip(),
+    os.getenv("OATSENSE_FRONTEND_URL", "").strip(),
+):
+    if _env_origin and _env_origin not in ALLOWED_ORIGINS:
+        ALLOWED_ORIGINS.append(_env_origin)
 
 def _is_allowed_origin(origin: str) -> bool:
     """Return True if origin is in the static list or matches a registered custom domain in the DB."""
