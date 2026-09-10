@@ -75,12 +75,16 @@ Package code lives under **`app/`** (not a top-level `routers/` folder):
 ├── requirements.txt
 └── .github/workflows/
     ├── deploy-staging.yml            # Main backend → oatmeal-backend-staging
+    ├── deploy-testing.yml            # Main backend → oatmeal-backend-testing
     ├── deploy-backend-prod.yml       # Main backend → oatmealfarmnewtorkbackend
     ├── deploy-saige-staging.yml      # Saige → oatmeal-saige-staging
-    ├── deploy-saige.yml              # Saige → saige-backend (prod)
+    ├── deploy-saige-testing.yml      # Saige → oatmeal-saige-testing
+    ├── deploy-saige.yml              # Saige → saige-backend (prod, gated)
     ├── deploy-oatsense-staging.yml   # Oatsense → oatmeal-oatsense-staging
+    ├── deploy-oatsense-testing.yml   # Oatsense → oatmeal-oatsense-testing
     ├── deploy-oatsense-prod.yml      # Oatsense → oatmeal-oatsense
     ├── deploy-livestock-staging.yml  # Livestock → oatmeal-livestock-staging
+    ├── deploy-livestock-testing.yml  # Livestock → oatmeal-livestock-testing
     ├── deploy-livestock-prod.yml     # Livestock → oatmeal-livestock-prod
     └── ci.yml
 ```
@@ -177,7 +181,7 @@ FRONTEND_URL=http://localhost:3000
 
 **Staging** GCP: **`oatmeal-farm-staging`** · **Production** GCP: **`animated-flare-421518`** · Region: **`us-central1`**
 
-Push or merge to `GCP/backend-staging` deploys staging. Merge that branch to `main` deploys production (path-filtered per service).
+Git train: feature → `GCP/backend-staging` → `GCP/backend-testing` → `main`. See [docs/BRANCHING.md](docs/BRANCHING.md). Do not merge staging straight to `main`.
 
 | Pipeline | Trigger | Workflow | Cloud Run service | Project |
 |----------|---------|----------|-------------------|---------|
@@ -185,8 +189,12 @@ Push or merge to `GCP/backend-staging` deploys staging. Merge that branch to `ma
 | Saige staging | `GCP/backend-staging` (`saige/**`) | `.github/workflows/deploy-saige-staging.yml` | `oatmeal-saige-staging` | `oatmeal-farm-staging` |
 | Livestock staging | `GCP/backend-staging` (path-filtered) | `.github/workflows/deploy-livestock-staging.yml` | `oatmeal-livestock-staging` | `oatmeal-farm-staging` |
 | Oatsense staging | `GCP/backend-staging` (path-filtered) | `.github/workflows/deploy-oatsense-staging.yml` | `oatmeal-oatsense-staging` | `oatmeal-farm-staging` |
+| Main backend testing | `GCP/backend-testing` | `.github/workflows/deploy-testing.yml` | `oatmeal-backend-testing` | fail-closed until `TESTING_*` |
+| Saige testing | `GCP/backend-testing` (`saige/**`) | `.github/workflows/deploy-saige-testing.yml` | `oatmeal-saige-testing` | fail-closed until `TESTING_*` |
+| Livestock testing | `GCP/backend-testing` (path-filtered) | `.github/workflows/deploy-livestock-testing.yml` | `oatmeal-livestock-testing` | fail-closed until `TESTING_*` |
+| Oatsense testing | `GCP/backend-testing` (path-filtered) | `.github/workflows/deploy-oatsense-testing.yml` | `oatmeal-oatsense-testing` | fail-closed until `TESTING_*` |
 | Main backend prod | `main` (`app/**`, Dockerfile, …) | `.github/workflows/deploy-backend-prod.yml` | `oatmealfarmnewtorkbackend` | `animated-flare-421518` |
-| Saige prod | `main` (`saige/**`) | `.github/workflows/deploy-saige.yml` | `saige-backend` | `animated-flare-421518` |
+| Saige prod | `main` (`saige/**`) | `.github/workflows/deploy-saige.yml` | `saige-backend` | gated (`PROD_SAIGE_DEPLOY_ENABLED`) |
 | Livestock prod | `main` (path-filtered) / `GCP/livestock-prod` / `livestock-v*` | `.github/workflows/deploy-livestock-prod.yml` | `oatmeal-livestock-prod` | `animated-flare-421518` |
 | Oatsense prod | `main` (path-filtered) / `GCP/oatsense-prod` / `oatsense-v*` | `.github/workflows/deploy-oatsense-prod.yml` | `oatmeal-oatsense` | `animated-flare-421518` |
 
@@ -224,16 +232,15 @@ Push or merge to `GCP/backend-staging` deploys staging. Merge that branch to `ma
 
 ### Day-to-day merge targets
 
-| Change type | Merge / push to | Then promote to prod |
-|-------------|-----------------|----------------------|
-| Main API (`app/`, root Dockerfile, backend workflow) | `GCP/backend-staging` | merge to `main` |
-| Saige (`saige/`, Saige staging workflow) | `GCP/backend-staging` | merge to `main` |
-| Livestock (`livestock/**`, livestock routers) | `GCP/backend-staging` | merge to `main` |
-| Oatsense (`oatsense/`, precision-ag routers) | `GCP/backend-staging` | merge to `main` |
+| Change type | Merge / push to | Then promote |
+|-------------|-----------------|--------------|
+| Main API (`app/`, root Dockerfile, backend workflow) | `GCP/backend-staging` | staging → testing → `main` |
+| Saige (`saige/`, Saige staging workflow) | `GCP/backend-staging` | staging → testing → `main` |
+| Livestock (`livestock/**`, livestock routers) | `GCP/backend-staging` | staging → testing → `main` |
+| Oatsense (`oatsense/`, precision-ag routers) | `GCP/backend-staging` | staging → testing → `main` |
 | Docs only (`docs/`) | Either; backend staging CD skips `docs/**` | — |
 
-A Saige-only change on `GCP/backend-staging` deploys `oatmeal-saige-staging`. The same change merged to `main` deploys `saige-backend`.
-Oatsense staging **does** deploy from `GCP/backend-staging` when `oatsense/**` or its precision-ag path filters change.
+A Saige-only change on `GCP/backend-staging` deploys `oatmeal-saige-staging`. The same change must go through `GCP/backend-testing` before `main`. Raw `saige/**` pushes to `main` no longer auto-deploy production until `PROD_SAIGE_DEPLOY_ENABLED` is set.
 
 ---
 

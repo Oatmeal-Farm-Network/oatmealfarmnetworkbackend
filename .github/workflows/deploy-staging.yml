@@ -23,6 +23,7 @@ env:
 jobs:
   deploy-staging:
     runs-on: ubuntu-latest
+    environment: staging
     permissions:
       contents: read
       id-token: write   # required for Workload Identity Federation

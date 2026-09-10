@@ -1,9 +1,12 @@
 name: CI
 
-# CI gate for every pull request targeting main.
+# CI gate for every hop: feature → staging → testing → main.
 on:
   pull_request:
-    branches: [main]
+    branches:
+      - GCP/backend-staging
+      - GCP/backend-testing
+      - main
 
 jobs:
   lint:
