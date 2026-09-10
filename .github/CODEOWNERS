@@ -1,0 +1,6 @@
+# Fill GitHub usernames or org teams once the branching-strategy plan §1.1
+# names are assigned.
+#
+# .github/workflows/ @platform-lead
+# saige/ @saige-lead
+# * @backend-lead

@@ -1,0 +1,120 @@
+name: CI
+
+# CI gate for every hop: feature → staging → testing → main.
+on:
+  pull_request:
+    branches:
+      - GCP/backend-staging
+      - GCP/backend-testing
+      - main
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint app/, saige/, livestock/, and oatsense/
+        run: ruff check app saige livestock oatsense
+
+  boot-check:
+    name: Boot check (server_all.py)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install --no-cache-dir -r requirements.txt
+
+      - name: Boot server_all.py and probe /health
+        env:
+          PORT: "8000"
+        run: |
+          python server_all.py &
+          SERVER_PID=$!
+          sleep 12
+          if curl --fail --silent --show-error http://127.0.0.1:8000/health; then
+            echo "boot OK"
+            RESULT=0
+          else
+            echo "boot/health check FAILED"
+            RESULT=1
+          fi
+          kill "$SERVER_PID" 2>/dev/null || true
+          exit $RESULT
+
+  boot-check-livestock:
+    name: Boot check (livestock service)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install --no-cache-dir -r requirements.txt
+
+      - name: Boot livestock service and probe /health
+        env:
+          PORT: "8000"
+        run: |
+          uvicorn livestock.api:app --host 127.0.0.1 --port 8000 &
+          SERVER_PID=$!
+          sleep 8
+          if curl --fail --silent --show-error http://127.0.0.1:8000/health; then
+            echo "livestock boot OK"
+            RESULT=0
+          else
+            echo "livestock boot/health check FAILED"
+            RESULT=1
+          fi
+          kill "$SERVER_PID" 2>/dev/null || true
+          exit $RESULT
+
+  boot-check-oatsense:
+    name: Boot check (oatsense service)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install --no-cache-dir -r requirements.txt
+
+      - name: Boot oatsense service and probe /health
+        env:
+          PORT: "8000"
+        run: |
+          uvicorn oatsense.api:app --host 127.0.0.1 --port 8000 &
+          SERVER_PID=$!
+          sleep 8
+          if curl --fail --silent --show-error http://127.0.0.1:8000/health; then
+            echo "oatsense boot OK"
+            RESULT=0
+          else
+            echo "oatsense boot/health check FAILED"
+            RESULT=1
+          fi
+          kill "$SERVER_PID" 2>/dev/null || true
+          exit $RESULT

@@ -20,6 +20,7 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: production
     permissions:
       contents: read
       id-token: write
@@ -27,6 +28,16 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Gate Saige production until the testing hop is live
+        shell: bash
+        run: |
+          if [ "${{ vars.PROD_SAIGE_DEPLOY_ENABLED }}" != "true" ]; then
+            echo "::error::Saige production deploy is blocked."
+            echo "A saige/** push to main must not deploy prod until GCP/backend-testing exists and Environment reviewers are assigned."
+            echo "Set repo variable PROD_SAIGE_DEPLOY_ENABLED=true only after a testing → main promotion path is in use."
+            exit 1
+          fi
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
