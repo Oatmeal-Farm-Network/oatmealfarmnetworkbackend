@@ -3,6 +3,7 @@ name: Deploy Oatsense Production
 # main → oatsense-backend-prod in animated-flare-421518 (Oatmeal AI).
 # Fourth backend Cloud Run service (with main API, Saige, livestock).
 # Image-only promote. First deploy creates the service if it does not exist yet.
+# Skips cleanly when prod WIF secrets are unset. Never uses staging.
 on:
   push:
     branches: [main]
@@ -30,7 +31,27 @@ env:
   IMAGE_NAME: oatsense-backend-prod
 
 jobs:
+  check-prod-wif:
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - name: Check prod WIF secrets
+        id: check
+        shell: bash
+        run: |
+          provider="${{ secrets.PROD_GCP_WIF_PROVIDER }}${{ secrets.PROD_GCP_WORKLOAD_IDENTITY_PROVIDER }}"
+          sa="${{ secrets.PROD_GCP_SERVICE_ACCOUNT }}"
+          if [ -n "$provider" ] && [ -n "$sa" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Prod WIF is not configured. Skipping Oatsense production deploy."
+          fi
+
   deploy:
+    needs: check-prod-wif
+    if: needs.check-prod-wif.outputs.configured == 'true'
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -41,20 +62,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Require production project and WIF
+      - name: Require Oatmeal AI project
         shell: bash
         run: |
           project="${{ env.PROJECT_ID }}"
           if [ "$project" != "animated-flare-421518" ]; then
             echo "::error::Oatsense API prod must use animated-flare-421518 (Oatmeal AI). Got: $project"
-            exit 1
-          fi
-          if [ -z "${{ secrets.PROD_GCP_WIF_PROVIDER }}${{ secrets.PROD_GCP_WORKLOAD_IDENTITY_PROVIDER }}" ]; then
-            echo "::error::Set PROD_GCP_WIF_PROVIDER or PROD_GCP_WORKLOAD_IDENTITY_PROVIDER plus PROD_GCP_SERVICE_ACCOUNT."
-            exit 1
-          fi
-          if [ -z "${{ secrets.PROD_GCP_SERVICE_ACCOUNT }}" ]; then
-            echo "::error::Missing PROD_GCP_SERVICE_ACCOUNT."
             exit 1
           fi
 
