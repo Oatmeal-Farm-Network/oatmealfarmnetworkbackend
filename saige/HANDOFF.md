@@ -20,7 +20,7 @@
 | `tests/test_chat_history.py` | Firestore helpers (unit, mocked) |
 | `tests/test_message_buffer.py` | Redis buffer (unit, real Redis) |
 | `tests/test_integration.py` | Health endpoints, rate limiter, input validation |
-| `test_redis.py` | Quick Redis connection + checkpoint smoke test |
+| `scripts/smoke_test_redis.py` | Quick Redis connection + checkpoint smoke test |
 
 ---
 
@@ -267,7 +267,7 @@ Falls back to `MemorySaver` if:
 **Quick verification:**
 
 ```bash
-python test_redis.py
+python -m scripts.smoke_test_redis
 ```
 
 ### Troubleshooting

@@ -46,7 +46,7 @@ Saige may be on **:8002** if :8001 is a stale process. Frontend `.env.developmen
 
 ```powershell
 cd oatmealfarmnetworkbackend\saige
-py -3.13 apply_control_plane_schema.py   # once
+py -3.13 -m scripts.apply_control_plane_schema   # once
 py -3.13 -m uvicorn api:app --host 127.0.0.1 --port 8002 --reload
 py -3.13 -m pytest tests -q
 ```

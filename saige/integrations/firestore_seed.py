@@ -6,11 +6,11 @@ Seeds the Firestore RAG collection with:
   3. Curated livestock knowledge articles (~60)
 
 Usage:
-  python seed_firestore.py                     # Seed if collection is empty
-  python seed_firestore.py --force-rebuild     # Clear and rebuild
-  python seed_firestore.py --dry-run           # Preview without writing
-  python seed_firestore.py --skip-sql          # Only curated articles
-  python seed_firestore.py --skip-curated      # Only SQL data
+  python -m integrations.firestore_seed                     # Seed if collection is empty
+  python -m integrations.firestore_seed --force-rebuild     # Clear and rebuild
+  python -m integrations.firestore_seed --dry-run           # Preview without writing
+  python -m integrations.firestore_seed --skip-sql          # Only curated articles
+  python -m integrations.firestore_seed --skip-curated      # Only SQL data
 """
 
 import time

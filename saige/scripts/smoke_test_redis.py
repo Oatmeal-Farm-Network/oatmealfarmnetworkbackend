@@ -4,6 +4,12 @@ Quick test script to verify Redis connection and configuration.
 Run this after installing Redis to ensure everything is working.
 """
 import sys
+from pathlib import Path
+
+SAIGE_ROOT = Path(__file__).resolve().parents[1]
+if str(SAIGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SAIGE_ROOT))
+
 from core.config import (
     REDIS_ENABLED, REDIS_HOST, REDIS_PORT, REDIS_PASSWORD,
     REDIS_DB, REDIS_SSL, SHORT_TERM_N, get_redis_url, redis_connection_mode

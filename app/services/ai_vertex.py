@@ -21,7 +21,7 @@ code is identical either way.
 
 Agent usage pattern
 --------------------
-    import ai_vertex as av
+    from app.services import ai_vertex as av
     tools = av.make_tools([{ "name":..., "description":..., "parameters": <openapi dict|None> }, ...])
     model = av.make_model("gemini-2.5-flash", system_instruction=sys,
                           generation_config={"temperature":0.4,"max_output_tokens":4096},

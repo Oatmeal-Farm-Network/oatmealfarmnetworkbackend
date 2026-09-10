@@ -1,11 +1,16 @@
 """SQL Server -> Firestore embedding sync.
 
 Preserves import-time RAG dependency check from the original module.
-Run: python sync_embeddings.py [--once]
+Run from saige/: python -m scripts.sync_embeddings [--once]
 """
 from __future__ import annotations
 
 import sys
+from pathlib import Path
+
+SAIGE_ROOT = Path(__file__).resolve().parents[1]
+if str(SAIGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SAIGE_ROOT))
 
 from core.config import RAG_AVAILABLE
 

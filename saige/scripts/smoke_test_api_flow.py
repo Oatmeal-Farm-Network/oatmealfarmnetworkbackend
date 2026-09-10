@@ -3,6 +3,15 @@ Test script to simulate exact API flow with complete question in first message.
 This mimics what happens when user sends "which animal and breed is suitable for cotton field"
 """
 
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+SAIGE_ROOT = Path(__file__).resolve().parents[1]
+if str(SAIGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SAIGE_ROOT))
+
 try:
     from graph import graph
     from langgraph.types import Command

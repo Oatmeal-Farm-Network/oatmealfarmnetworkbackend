@@ -399,10 +399,10 @@ When running `server_all.py` from the repo root, Saige is served at `/saige/*` (
 
 ```bash
 # Seed initial knowledge data into Firestore
-python seed_firestore.py
+python -m integrations.firestore_seed
 
 # Sync/refresh embeddings in RAG collections
-python sync_embeddings.py
+python -m scripts.sync_embeddings
 ```
 
 ---

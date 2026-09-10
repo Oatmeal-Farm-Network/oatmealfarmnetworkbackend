@@ -684,7 +684,7 @@ def _rag_search(query: str, n: int = RAG_TOP_K) -> str:
         try:
             from google.cloud.firestore_v1.vector import Vector
             from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
-            import ai_vertex as av
+            from app.services import ai_vertex as av
             emb_vec = av.embed_query(query)
             vq = col.find_nearest(
                 vector_field="embedding",
@@ -851,7 +851,7 @@ _JSON_TYPE = {"STRING": "string", "NUMBER": "number", "INTEGER": "integer",
 
 
 def _build_gemini_tools(registry: Dict[str, Dict[str, Any]]):
-    import ai_vertex as av
+    from app.services import ai_vertex as av
     specs = []
     for name, entry in registry.items():
         params_def = entry.get("params") or {}
@@ -875,7 +875,7 @@ def _call_gemini_with_tools(
 ) -> Dict[str, Any]:
     tools_called: List[str] = []
     try:
-        import ai_vertex as av
+        from app.services import ai_vertex as av
         tools = _build_gemini_tools(registry)
         model = av.make_model(
             "gemini-2.5-flash",

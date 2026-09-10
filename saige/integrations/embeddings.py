@@ -6,8 +6,8 @@ Contains:
   - Collection embedding backfill (formerly backfill_embeddings.py)
 
 CLI entrypoints remain via root shims:
-  python sync_embeddings.py [--once]
-  python backfill_embeddings.py [collections...] [--force]
+  python -m scripts.sync_embeddings [--once]
+  python -m scripts.backfill_embeddings [collections...] [--force]
 """
 from __future__ import annotations
 

@@ -1,7 +1,16 @@
 """
 Simple test script for the enhanced farm advisory system.
-Tests that main.py loads correctly and the graph is functional.
+Tests that the farm graph loads correctly and is functional.
 """
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+SAIGE_ROOT = Path(__file__).resolve().parents[1]
+if str(SAIGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SAIGE_ROOT))
+
 from graph import graph
 from schemas.models import FarmState
 from langgraph.types import Command

@@ -1,9 +1,14 @@
 # --- apply_control_plane_schema.py --- (Apply data/sql/schema/saige_supervisor_schema.sql)
-"""Run: py -3.13 apply_control_plane_schema.py"""
+"""Run from saige/: python -m scripts.apply_control_plane_schema"""
 from __future__ import annotations
 
 import re
 import sys
+from pathlib import Path
+
+SAIGE_ROOT = Path(__file__).resolve().parents[1]
+if str(SAIGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SAIGE_ROOT))
 
 from core.config import DB_CONFIG
 from core.paths import sql_schema_path

@@ -106,7 +106,7 @@ def _rag_search(query: str, n: int = 10) -> str:
         try:
             from google.cloud.firestore_v1.vector import Vector
             from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
-            import ai_vertex as av
+            from app.services import ai_vertex as av
             q_vec = av.embed_query(query)
             vq = col.find_nearest(
                 vector_field="embedding",
@@ -4000,7 +4000,7 @@ def _narrate_as_expert(
 ) -> str:
     """Re-render tool output as a senior-designer critique, grounded in the RAG."""
     try:
-        import ai_vertex as av
+        from app.services import ai_vertex as av
 
         # Pull extra design-theory chunks on top of whatever was retrieved for
         # the user's raw query — critique-specific keywords bias retrieval
@@ -4333,7 +4333,7 @@ def _draft_placeholder_post_body(title: str) -> str:
 @router.post("/chat")
 async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
     api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-    import ai_vertex as av
+    from app.services import ai_vertex as av
     if not api_key and not av.use_vertex():
         raise HTTPException(status_code=503, detail="AI service not configured")
 
@@ -4398,7 +4398,7 @@ async def lavendir_chat(body: ChatRequest, db: Session = Depends(get_db)):
         }
 
     try:
-        import ai_vertex as av
+        from app.services import ai_vertex as av
 
         # Build tool declarations for Gemini
         gemini_tools = av.make_tools([

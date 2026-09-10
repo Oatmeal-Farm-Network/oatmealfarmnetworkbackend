@@ -170,7 +170,7 @@ def generate_narrative(
 
 def _call_gemini(prompt: str) -> Optional[str]:
     try:
-        import ai_vertex as av
+        from app.services import ai_vertex as av
         model = av.make_model("gemini-2.0-flash")
         resp = av.generate_content(model, prompt)
         return resp.text.strip() if resp and resp.text else None
