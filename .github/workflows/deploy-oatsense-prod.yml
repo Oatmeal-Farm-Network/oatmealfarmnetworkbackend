@@ -1,11 +1,11 @@
 name: Deploy Oatsense Production
 
-# NOT an official prod surface. Official shared API is oatmealfarmnewtorkbackend.
-# Official Oatsense frontend is oatsense-frontend-usa in Oatsense-america-frontend.
+# main → oatsense-backend-prod in animated-flare-421518 (Oatmeal AI).
+# Fourth backend Cloud Run service (with main API, Saige, livestock).
+# Image-only promote. First deploy creates the service if it does not exist yet.
 on:
   push:
-    branches: [main, GCP/oatsense-prod]
-    tags: ['oatsense-v*']
+    branches: [main]
     paths:
       - 'oatsense/**'
       - 'app/routers/precision_ag.py'
@@ -23,19 +23,16 @@ on:
   workflow_dispatch:
 
 env:
-  PROJECT_ID: ${{ secrets.PROD_GCP_PROJECT_ID }}
+  PROJECT_ID: ${{ secrets.PROD_GCP_PROJECT_ID || 'animated-flare-421518' }}
   REGION: ${{ vars.PROD_REGION || 'us-central1' }}
-  GAR_REPOSITORY: ${{ vars.PROD_ARTIFACT_REGISTRY_REPOSITORY || 'oatmeal-farm-registry' }}
-  SERVICE_NAME: oatmeal-oatsense
-  IMAGE_NAME: oatsense
-  CLOUD_SQL_INSTANCE: ${{ vars.PROD_CLOUD_SQL_INSTANCE }}
-  RUNTIME_SERVICE_ACCOUNT: ${{ vars.PROD_OATSENSE_RUNTIME_SA }}
-  PROD_FRONTEND_URL: ${{ vars.PROD_OATSENSE_FRONTEND_URL }}
-  CROP_MONITOR_URL: ${{ vars.PROD_CROP_MONITOR_URL }}
+  GAR_REPOSITORY: ${{ vars.PROD_ARTIFACT_REGISTRY_REPOSITORY || 'cloud-run-source-deploy' }}
+  SERVICE_NAME: oatsense-backend-prod
+  IMAGE_NAME: oatsense-backend-prod
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: production
     permissions:
       contents: read
       id-token: write
@@ -44,22 +41,30 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Not an official prod surface
+      - name: Require production project and WIF
         shell: bash
         run: |
-          echo "::error::oatmeal-oatsense is not an official production Cloud Run service."
-          echo "Official shared API is oatmealfarmnewtorkbackend (deploy-backend-prod.yml)."
-          echo "Official Oatsense frontend is oatsense-frontend-usa in Oatsense-america-frontend."
-          exit 1
+          project="${{ env.PROJECT_ID }}"
+          if [ "$project" != "animated-flare-421518" ]; then
+            echo "::error::Oatsense API prod must use animated-flare-421518 (Oatmeal AI). Got: $project"
+            exit 1
+          fi
+          if [ -z "${{ secrets.PROD_GCP_WIF_PROVIDER }}${{ secrets.PROD_GCP_WORKLOAD_IDENTITY_PROVIDER }}" ]; then
+            echo "::error::Set PROD_GCP_WIF_PROVIDER or PROD_GCP_WORKLOAD_IDENTITY_PROVIDER plus PROD_GCP_SERVICE_ACCOUNT."
+            exit 1
+          fi
+          if [ -z "${{ secrets.PROD_GCP_SERVICE_ACCOUNT }}" ]; then
+            echo "::error::Missing PROD_GCP_SERVICE_ACCOUNT."
+            exit 1
+          fi
 
-      - name: Derive commit SHA tag
-        shell: bash
+      - name: Set short commit SHA
         run: echo "COMMIT_SHA=${GITHUB_SHA::12}" >> "$GITHUB_ENV"
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.PROD_GCP_WIF_PROVIDER }}
+          workload_identity_provider: ${{ secrets.PROD_GCP_WIF_PROVIDER || secrets.PROD_GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.PROD_GCP_SERVICE_ACCOUNT }}
 
       - name: Set up Cloud SDK
@@ -78,28 +83,17 @@ jobs:
         run: |
           docker push "${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}:${COMMIT_SHA}"
 
-      - name: Deploy to Cloud Run (production)
+      - name: Deploy image to oatsense-backend-prod
         run: |
           gcloud run deploy "${SERVICE_NAME}" \
             --image "${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}:${COMMIT_SHA}" \
-            --region "${REGION}" \
             --project "${PROJECT_ID}" \
-            --platform managed \
-            --allow-unauthenticated \
-            --port 8000 \
-            --memory 2Gi \
-            --cpu 2 \
-            --min-instances 1 \
-            --max-instances 10 \
-            --service-account "${RUNTIME_SERVICE_ACCOUNT}" \
-            --set-cloudsql-instances "${CLOUD_SQL_INSTANCE}" \
-            --update-secrets "DB_SERVER=DB_SERVER:latest,DB_USER=DB_USER:latest,DB_PASSWORD=DB_PASSWORD:latest,DB_NAME=DB_NAME:latest,SECRET_KEY=SECRET_KEY:latest" \
-            --update-env-vars "INSTANCE_CONNECTION_NAME=${CLOUD_SQL_INSTANCE},FRONTEND_URL=${PROD_FRONTEND_URL},OATSENSE_FRONTEND_URL=${PROD_FRONTEND_URL},CROP_MONITOR_URL=${CROP_MONITOR_URL},GOOGLE_CLOUD_PROJECT=${PROJECT_ID},SKIP_SCHEMA_ENSURE=true" \
+            --region "${REGION}" \
             --quiet
 
-      - name: Show deployed URL
+      - name: Print deployed URL
         run: |
           gcloud run services describe "${SERVICE_NAME}" \
-            --region "${REGION}" \
             --project "${PROJECT_ID}" \
-            --format='value(status.url)'
+            --region "${REGION}" \
+            --format="value(status.url)"
