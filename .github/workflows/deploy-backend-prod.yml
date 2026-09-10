@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
 
 env:
-  PROJECT_ID: ${{ secrets.PROD_GCP_PROJECT_ID }}
+  PROJECT_ID: ${{ secrets.PROD_GCP_PROJECT_ID || 'animated-flare-421518' }}
   REGION: ${{ vars.PROD_REGION || 'us-central1' }}
   IMAGE_URI_PREFIX: us-central1-docker.pkg.dev/animated-flare-421518/cloud-run-source-deploy/oatmealfarmnetworkbackend/oatmealfarmnewtorkbackend
   CLOUD_RUN_SERVICE: oatmealfarmnewtorkbackend
@@ -23,6 +23,7 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: production
     permissions:
       contents: read
       id-token: write
@@ -35,19 +36,15 @@ jobs:
         shell: bash
         run: |
           missing=0
-          if [ -z "${{ secrets.PROD_GCP_PROJECT_ID }}" ]; then
-            echo "::error::Missing GitHub Actions secret: PROD_GCP_PROJECT_ID"
-            missing=1
-          fi
-          if [ -z "${{ secrets.PROD_GCP_WIF_PROVIDER }}" ]; then
-            echo "::error::Missing GitHub Actions secret: PROD_GCP_WIF_PROVIDER"
+          if [ -z "${{ secrets.PROD_GCP_WIF_PROVIDER }}${{ secrets.PROD_GCP_WORKLOAD_IDENTITY_PROVIDER }}" ]; then
+            echo "::error::Missing GitHub Actions secret: PROD_GCP_WIF_PROVIDER (or PROD_GCP_WORKLOAD_IDENTITY_PROVIDER)"
             missing=1
           fi
           if [ -z "${{ secrets.PROD_GCP_SERVICE_ACCOUNT }}" ]; then
             echo "::error::Missing GitHub Actions secret: PROD_GCP_SERVICE_ACCOUNT"
             missing=1
           fi
-          project="${{ secrets.PROD_GCP_PROJECT_ID }}"
+          project="${{ env.PROJECT_ID }}"
           if [ -n "$project" ] && [ "$project" != "animated-flare-421518" ]; then
             echo "::error::PROD_GCP_PROJECT_ID must be animated-flare-421518 (Oatmeal AI). Never oatmeal-farm-staging."
             missing=1
@@ -61,7 +58,7 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ secrets.PROD_GCP_WIF_PROVIDER }}
+          workload_identity_provider: ${{ secrets.PROD_GCP_WIF_PROVIDER || secrets.PROD_GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.PROD_GCP_SERVICE_ACCOUNT }}
 
       - name: Set up Cloud SDK
