@@ -119,6 +119,9 @@ pywebpush>=1.14.0
 # PDF generation for ESG audit reports (routers/esg_reports.py)
 reportlab>=4.0.0
 
+# Excel export for Precision Ag field reports (routers/precision_ag_features.py)
+openpyxl>=3.1.0
+
 # Repairs the UTF-8 → Latin-1 → UTF-8 mojibake the news ingestion pipeline
 # leaves in some article descriptions (USDA's, "quotes", etc.)
 ftfy>=6.0
@@ -130,6 +133,16 @@ ftfy>=6.0
 
 python-jose>=3.5.0
 bcrypt>=4.0.0
+
+
+# =========================================================
+# Biomass photo estimator (max accuracy = DINOv2 via torch)
+# =========================================================
+
+Pillow>=10.0.0
+numpy>=1.26.0
+# torch/torchvision: installed in Dockerfile from the PyTorch CPU index
+# (keeps requirements.txt installable without CUDA wheels on Windows)
 
 
 # =========================================================

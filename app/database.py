@@ -113,6 +113,17 @@ def get_db():
         db.close()
 
 
+def blank_to_none(body):
+    """Coerce empty / whitespace-only strings in a request body to None.
+
+    Empty strings from form submissions break INSERT/UPDATEs into numeric, date, and
+    time columns. Only blank strings are nulled (not 0 or other values).
+    """
+    if not isinstance(body, dict):
+        return body
+    return {k: (None if isinstance(v, str) and v.strip() == "" else v) for k, v in body.items()}
+
+
 def get_db_cursor():
     conn = _connect_raw()
     return conn.cursor(as_dict=True)

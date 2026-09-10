@@ -1,17 +1,67 @@
-from fastapi import APIRouter, Depends
+import html
+import os
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database import get_db
+from app.core.auth import get_current_user
+from app.business_access import assert_business_access
+from app.routers.directory_regions import IN_DIRECTORY_REGION_SQL
+from app.image_uploads import upload_image, delete_image
 import httpx
 
 router = APIRouter()
 
-SENDGRID_API_KEY = "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"
+
+# Photo storage and validation now live in image_uploads.py, shared with the
+# business gallery so the magic-byte check is not duplicated.
+MAX_SERVICE_PHOTOS = 6
+
+
+def _as_listed_flag(value, default=1) -> int:
+    """ServiceAvailable is a smallint the public directory filters on (= 1).
+
+    The form used to offer it as a free-text 'Availability' box, so a blank
+    field arrived as '' and became 0 -- a service that was added and then never
+    appeared anywhere. Anything non-numeric would not even convert. Coerced to a
+    strict 0/1 here so the column can only ever hold a usable value.
+    """
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return 1 if value else 0
+    return 1 if str(value).strip().lower() in ("1", "true", "yes", "y") else 0
+
+
+def _require_slot(slot: int) -> int:
+    if slot < 1 or slot > MAX_SERVICE_PHOTOS:
+        raise HTTPException(status_code=400,
+                            detail=f"slot must be 1-{MAX_SERVICE_PHOTOS}")
+    return slot
+
+
+def _require_service_access(db: Session, current_user, services_id: int) -> int:
+    """Caller must hold the business that owns this service."""
+    row = db.execute(
+        text("SELECT BusinessID FROM Services WHERE ServicesID = :sid"),
+        {"sid": services_id},
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Service not found")
+    return assert_business_access(db, row.BusinessID, current_user.PeopleID)
+
+
+# Was a literal API key in this file. Every other module in this service reads
+# the same variable, so it follows that convention now.
+SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY", "")
 SENDGRID_URL = "https://api.sendgrid.com/v3/mail/send"
-FROM_EMAIL = "john@oatmeal-ai.com"
-TO_EMAIL = "livestockoftheworld@gmail.com"
+FROM_EMAIL = os.getenv("FROM_EMAIL", "john@oatmeal-ai.com")
+TO_EMAIL = os.getenv("SERVICES_NOTIFY_EMAIL", "livestockoftheworld@gmail.com")
 
 def send_email(subject: str, body: str):
+    if not SENDGRID_API_KEY:
+        print("SendGrid not configured; skipping notification: %s" % subject)
+        return
     payload = {
         "personalizations": [{"to": [{"email": TO_EMAIL}]}],
         "from": {"email": FROM_EMAIL, "name": "Oatmeal Farm Network"},
@@ -23,7 +73,9 @@ def send_email(subject: str, body: str):
         "Content-Type": "application/json",
     }
     try:
-        httpx.post(SENDGRID_URL, json=payload, headers=headers, timeout=10)
+        resp = httpx.post(SENDGRID_URL, json=payload, headers=headers, timeout=10)
+        if resp.status_code >= 400:
+            print(f"SendGrid rejected the message: {resp.status_code} {resp.text[:200]}")
     except Exception as e:
         print(f"SendGrid error: {e}")
 
@@ -31,10 +83,17 @@ def send_email(subject: str, body: str):
 # List services for a business
 # -------------------------
 @router.get("/api/services")
-def list_services(BusinessID: int, db: Session = Depends(get_db)):
+def list_services(BusinessID: int, db: Session = Depends(get_db),
+                  current_user=Depends(get_current_user)):
+    assert_business_access(db, BusinessID, current_user.PeopleID)
     rows = db.execute(text("""
-        SELECT ServicesID, ServiceTitle, ServiceAvailable, ServicePrice, ServiceContactForPrice
-        FROM Services WHERE BusinessID = :bid ORDER BY ServiceTitle
+        SELECT s.ServicesID, s.ServiceTitle, s.ServiceAvailable, s.ServicePrice,
+               s.ServiceContactForPrice, sc.ServicesCategory, ssc.ServiceSubCategoryName
+        FROM Services s
+        LEFT JOIN servicescategories sc ON s.ServiceCategoryID = sc.ServiceCategoryID
+        LEFT JOIN servicessubcategories ssc
+               ON ssc.ServicesSubcategoryID = s.ServiceSubCategoryID
+        WHERE s.BusinessID = :bid ORDER BY s.ServiceTitle
     """), {"bid": BusinessID}).fetchall()
     return [dict(r._mapping) for r in rows]
 
@@ -55,10 +114,16 @@ def get_categories(db: Session = Depends(get_db)):
 # -------------------------
 @router.get("/api/services/categories/{category_id}/subcategories")
 def get_subcategories(category_id: int, db: Session = Depends(get_db)):
+    # The id column is ServicesSubcategoryID; selecting ServiceSubCategoryID
+    # raised "Invalid column name" on every call, so this 500'd and the
+    # subcategory dropdown — which hides itself when the list is empty — never
+    # appeared. Aliased to the name the client already expects.
+    # ServiceCategoryID is varchar here but int in servicescategories, so it is
+    # converted explicitly rather than left to an implicit cast.
     rows = db.execute(text("""
-        SELECT ServiceSubCategoryID, ServiceSubCategoryName
+        SELECT ServicesSubcategoryID AS ServiceSubCategoryID, ServiceSubCategoryName
         FROM servicessubcategories
-        WHERE ServiceCategoryID = :cid
+        WHERE TRY_CONVERT(int, ServiceCategoryID) = :cid
         ORDER BY ServiceSubCategoryName
     """), {"cid": category_id}).fetchall()
     return [dict(r._mapping) for r in rows]
@@ -67,7 +132,9 @@ def get_subcategories(category_id: int, db: Session = Depends(get_db)):
 # Add a service
 # -------------------------
 @router.post("/api/services/add")
-def add_service(data: dict, db: Session = Depends(get_db)):
+def add_service(data: dict, db: Session = Depends(get_db),
+                current_user=Depends(get_current_user)):
+    assert_business_access(db, data.get("BusinessID"), current_user.PeopleID)
     db.execute(text("""
         INSERT INTO Services (
             BusinessID, ServiceCategoryID, ServiceSubCategoryID, ServiceTitle,
@@ -85,7 +152,7 @@ def add_service(data: dict, db: Session = Depends(get_db)):
         "title": data.get("ServiceTitle"),
         "price": data.get("ServicePrice") or None,
         "cfp": data.get("ServiceContactForPrice", 0),
-        "avail": data.get("ServiceAvailable"),
+        "avail": _as_listed_flag(data.get("ServiceAvailable"), default=1),
         "desc": data.get("ServicesDescription"),
         "phone": data.get("ServicePhone"),
         "web": data.get("Servicewebsite"),
@@ -101,15 +168,18 @@ def add_service(data: dict, db: Session = Depends(get_db)):
 # "subcategories" fall through to their own specific routes.
 # -------------------------
 @router.get("/api/services/{services_id:int}")
-def get_service(services_id: int, db: Session = Depends(get_db)):
+def get_service(services_id: int, db: Session = Depends(get_db),
+                current_user=Depends(get_current_user)):
+    _require_service_access(db, current_user, services_id)
     row = db.execute(text("""
-        SELECT s.*, sc.ServicesCategory
+        SELECT s.*, sc.ServicesCategory, ssc.ServiceSubCategoryName
         FROM Services s
         LEFT JOIN servicescategories sc ON s.ServiceCategoryID = sc.ServiceCategoryID
+        LEFT JOIN servicessubcategories ssc
+               ON ssc.ServicesSubcategoryID = s.ServiceSubCategoryID
         WHERE s.ServicesID = :sid
     """), {"sid": services_id}).fetchone()
     if not row:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Service not found")
     return dict(row._mapping)
 
@@ -117,7 +187,9 @@ def get_service(services_id: int, db: Session = Depends(get_db)):
 # Update a service
 # -------------------------
 @router.post("/api/services/{services_id:int}/update")
-def update_service(services_id: int, data: dict, db: Session = Depends(get_db)):
+def update_service(services_id: int, data: dict, db: Session = Depends(get_db),
+                   current_user=Depends(get_current_user)):
+    _require_service_access(db, current_user, services_id)
     db.execute(text("""
         UPDATE Services SET
             ServiceCategoryID    = :cat,
@@ -138,7 +210,7 @@ def update_service(services_id: int, data: dict, db: Session = Depends(get_db)):
         "title":  data.get("ServiceTitle"),
         "price":  data.get("ServicePrice") or None,
         "cfp":    data.get("ServiceContactForPrice", 0),
-        "avail":  data.get("ServiceAvailable"),
+        "avail":  _as_listed_flag(data.get("ServiceAvailable"), default=1),
         "desc":   data.get("ServicesDescription"),
         "phone":  data.get("ServicePhone"),
         "web":    data.get("Servicewebsite"),
@@ -151,7 +223,9 @@ def update_service(services_id: int, data: dict, db: Session = Depends(get_db)):
 # Delete a service
 # -------------------------
 @router.delete("/api/services/{services_id:int}")
-def delete_service(services_id: int, db: Session = Depends(get_db)):
+def delete_service(services_id: int, db: Session = Depends(get_db),
+                   current_user=Depends(get_current_user)):
+    _require_service_access(db, current_user, services_id)
     db.execute(text("DELETE FROM Services WHERE ServicesID = :sid"), {"sid": services_id})
     db.commit()
     return {"ok": True}
@@ -166,7 +240,8 @@ def all_subcategories(db: Session = Depends(get_db)):
                ssc.ServiceSubCategoryName,
                ssc.ServiceCategoryID, sc.ServicesCategory
         FROM servicessubcategories ssc
-        LEFT JOIN servicescategories sc ON ssc.ServiceCategoryID = sc.ServiceCategoryID
+        LEFT JOIN servicescategories sc
+               ON TRY_CONVERT(int, ssc.ServiceCategoryID) = sc.ServiceCategoryID
         ORDER BY sc.ServicesCategory, ssc.ServiceSubCategoryName
     """)).fetchall()
     return [dict(r._mapping) for r in rows]
@@ -181,11 +256,17 @@ def browse_services(
     q: str = None,
     db: Session = Depends(get_db),
 ):
-    where = ["s.ServiceAvailable = 1"]
+    # The directory only lists organizations in the service area.
+    where = ["s.ServiceAvailable = 1", IN_DIRECTORY_REGION_SQL]
     params = {}
     if category_id:
         where.append("s.ServiceCategoryID = :cid")
         params["cid"] = category_id
+    # subcategory_id was accepted and then never used, so the directory's
+    # subcategory dropdown filtered nothing.
+    if subcategory_id:
+        where.append("s.ServiceSubCategoryID = :subcid")
+        params["subcid"] = subcategory_id
     if q:
         where.append(
             "(s.ServiceTitle LIKE :q OR s.ServicesDescription LIKE :q OR b.BusinessName LIKE :q)"
@@ -197,10 +278,14 @@ def browse_services(
                s.ServicePrice, s.ServiceContactForPrice, s.ServiceAvailable,
                s.Photo1, s.BusinessID,
                b.BusinessName,
-               sc.ServicesCategory, sc.ServiceCategoryID
+               sc.ServicesCategory, sc.ServiceCategoryID,
+               ssc.ServicesSubcategoryID AS ServiceSubCategoryID,
+               ssc.ServiceSubCategoryName
         FROM Services s
         JOIN Business b ON s.BusinessID = b.BusinessID
         LEFT JOIN servicescategories sc ON s.ServiceCategoryID = sc.ServiceCategoryID
+        LEFT JOIN servicessubcategories ssc
+               ON ssc.ServicesSubcategoryID = s.ServiceSubCategoryID
         WHERE {' AND '.join(where)}
         ORDER BY sc.ServicesCategory, s.ServiceTitle
     """
@@ -214,20 +299,25 @@ def browse_services(
 def service_detail(services_id: int, db: Session = Depends(get_db)):
     row = db.execute(text("""
         SELECT s.*, b.BusinessName, b.BusinessID AS BizID,
-               sc.ServicesCategory,
+               sc.ServicesCategory, ssc.ServiceSubCategoryName,
                a.AddressCity, a.AddressState, a.AddressZip, a.AddressCountry
         FROM Services s
         JOIN Business b ON s.BusinessID = b.BusinessID
         LEFT JOIN servicescategories sc ON s.ServiceCategoryID = sc.ServiceCategoryID
+        LEFT JOIN servicessubcategories ssc
+               ON ssc.ServicesSubcategoryID = s.ServiceSubCategoryID
         LEFT JOIN Address a ON b.AddressID = a.AddressID
         WHERE s.ServicesID = :sid
     """), {"sid": services_id}).fetchone()
     if not row:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Service not found")
     d = dict(row._mapping)
     # Collect photos
-    d["photos"] = [d.get(f"Photo{i}") for i in range(1, 9) if d.get(f"Photo{i}")]
+    d["photos"] = [d.get(f"Photo{i}") for i in range(1, MAX_SERVICE_PHOTOS + 1)
+                   if d.get(f"Photo{i}")]
+    d["photo_captions"] = [d.get(f"PhotoCaption{i}") or ""
+                           for i in range(1, MAX_SERVICE_PHOTOS + 1)
+                           if d.get(f"Photo{i}")]
     return d
 
 # -------------------------
@@ -238,9 +328,11 @@ def services_by_business(business_id: int, db: Session = Depends(get_db)):
     rows = db.execute(text("""
         SELECT s.ServicesID, s.ServiceTitle, s.ServicesDescription,
                s.ServicePrice, s.ServiceContactForPrice, s.ServiceAvailable,
-               s.Photo1, sc.ServicesCategory
+               s.Photo1, sc.ServicesCategory, ssc.ServiceSubCategoryName
         FROM Services s
         LEFT JOIN servicescategories sc ON s.ServiceCategoryID = sc.ServiceCategoryID
+        LEFT JOIN servicessubcategories ssc
+               ON ssc.ServicesSubcategoryID = s.ServiceSubCategoryID
         WHERE s.BusinessID = :bid AND s.ServiceAvailable = 1
         ORDER BY s.ServiceTitle
     """), {"bid": business_id}).fetchall()
@@ -250,16 +342,31 @@ def services_by_business(business_id: int, db: Session = Depends(get_db)):
 # Suggest a new category (sends email via SendGrid)
 # -------------------------
 @router.post("/api/services/suggest-category")
-def suggest_category(data: dict):
-    business_name = data.get("BusinessName", "Unknown")
-    categories = data.get("Categories", "")
-    subcategories = data.get("SubCategories", "")
+def suggest_category(data: dict, db: Session = Depends(get_db),
+                     current_user=Depends(get_current_user)):
+    # This took no user and no db: anyone could POST arbitrary HTML and have it
+    # emailed out from our domain. The page always sends a token and a
+    # BusinessID, so the sender is verified here and the business name is read
+    # from the database rather than trusted from the body, which also stops the
+    # notification from being addressed by a name the caller made up.
+    business_id = assert_business_access(db, data.get("BusinessID"), current_user.PeopleID)
+    row = db.execute(text("SELECT BusinessName FROM Business WHERE BusinessID = :bid"),
+                     {"bid": business_id}).fetchone()
+    business_name = (row.BusinessName if row else None) or f"Business #{business_id}"
 
+    categories = str(data.get("Categories", ""))[:2000]
+    subcategories = str(data.get("SubCategories", ""))[:2000]
+    if not categories.strip():
+        raise HTTPException(status_code=400, detail="Categories is required")
+
+    # Everything below is caller-supplied, so it is escaped before being put in
+    # an HTML mail body.
     body = f"""
     <h2>New Service Category Suggestion</h2>
-    <p><b>Business:</b> {business_name}</p>
-    <p><b>Suggested Categories:</b><br>{categories}</p>
-    <p><b>Suggested Sub-Categories:</b><br>{subcategories or 'None provided'}</p>
+    <p><b>Business:</b> {html.escape(business_name)} (#{business_id})</p>
+    <p><b>Submitted by:</b> {html.escape(current_user.PeopleEmail or '')} (PeopleID {current_user.PeopleID})</p>
+    <p><b>Suggested Categories:</b><br>{html.escape(categories)}</p>
+    <p><b>Suggested Sub-Categories:</b><br>{html.escape(subcategories) or 'None provided'}</p>
     """
 
     send_email(
@@ -267,3 +374,67 @@ def suggest_category(data: dict):
         body=body,
     )
     return {"message": "Suggestion sent"}
+
+
+# -------------------------
+# Photos
+#
+# These four lived in produce.py, whose router carries prefix="/api/produce" —
+# so they were actually served at /api/produce/api/services/{id}/photos and the
+# edit page's Photos tab had been 404ing against every one of them. The upload
+# route did not exist at all. Moved here so the paths match what the page calls,
+# and scoped to the owning business like the rest of this router.
+# -------------------------
+# Get photos
+@router.get("/api/services/{services_id}/photos")
+def get_photos(services_id: int, db: Session = Depends(get_db),
+               current_user=Depends(get_current_user)):
+    _require_service_access(db, current_user, services_id)
+    cols = ", ".join(
+        [f"Photo{i}" for i in range(1, MAX_SERVICE_PHOTOS + 1)]
+        + [f"PhotoCaption{i}" for i in range(1, MAX_SERVICE_PHOTOS + 1)])
+    row = db.execute(text(f"SELECT {cols} FROM Services WHERE ServicesID = :id"),
+                     {"id": services_id}).fetchone()
+    if not row:
+        return []
+    d = dict(row._mapping)
+    return [{"slot": i, "url": d.get(f"Photo{i}") or "",
+             "caption": d.get(f"PhotoCaption{i}") or ""}
+            for i in range(1, MAX_SERVICE_PHOTOS + 1)]
+
+# Upload photo into a slot
+@router.post("/api/services/{services_id}/photos/upload")
+async def upload_service_photo(services_id: int, file: UploadFile = File(...),
+                               slot: int = 1, db: Session = Depends(get_db),
+                               current_user=Depends(get_current_user)):
+    _require_slot(slot)
+    _require_service_access(db, current_user, services_id)
+    url = upload_image(await file.read(), "Services")
+    db.execute(text(f"UPDATE Services SET Photo{slot} = :url WHERE ServicesID = :id"),
+               {"url": url, "id": services_id})
+    db.commit()
+    return {"url": url, "slot": slot}
+
+# Remove photo
+@router.post("/api/services/{services_id}/photos/{slot}/remove")
+def remove_photo(services_id: int, slot: int, db: Session = Depends(get_db),
+                 current_user=Depends(get_current_user)):
+    _require_slot(slot)
+    _require_service_access(db, current_user, services_id)
+    url = db.execute(text(f"SELECT Photo{slot} FROM Services WHERE ServicesID = :id"),
+                     {"id": services_id}).scalar()
+    db.execute(text(f"UPDATE Services SET Photo{slot} = '', PhotoCaption{slot} = '' WHERE ServicesID = :id"), {"id": services_id})
+    db.commit()
+    delete_image(url)
+    return {"message": "Removed"}
+
+# Save caption
+@router.post("/api/services/{services_id}/photos/{slot}/caption")
+def save_caption(services_id: int, slot: int, data: dict, db: Session = Depends(get_db),
+                 current_user=Depends(get_current_user)):
+    _require_slot(slot)
+    _require_service_access(db, current_user, services_id)
+    db.execute(text(f"UPDATE Services SET PhotoCaption{slot} = :cap WHERE ServicesID = :id"),
+               {"cap": (data.get("caption") or "")[:256], "id": services_id})
+    db.commit()
+    return {"message": "Saved"}

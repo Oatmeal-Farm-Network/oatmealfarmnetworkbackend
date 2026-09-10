@@ -16,6 +16,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database import get_db
 from app.core.auth import get_current_user
+from app.routers.subscription_limits import (
+    assert_can_publish, business_id_for_animal,
+)
+from app.image_uploads import delete_image
 
 _GCS_BUCKET  = os.getenv("GCS_IMAGES_BUCKET", "oatmeal-farm-network-images")
 _GCS_PREFIX  = f"https://storage.googleapis.com/{_GCS_BUCKET}/"
@@ -306,6 +310,8 @@ async def update_pricing(animal_id: int, request: Request,
     free     = 1 if form.get("Free")    in ("1", "Yes", "True") else 0
 
     # ForSale lives on Animals.PublishForSale, not in the Pricing table
+    if for_sale:
+        assert_can_publish(db, business_id_for_animal(db, animal_id), "for_sale", animal_id)
     db.execute(text("UPDATE Animals SET PublishForSale = :v, LastUpdated = SYSUTCDATETIME() WHERE AnimalID = :aid"),
                {"v": for_sale, "aid": animal_id})
 
@@ -653,9 +659,12 @@ async def delete_photo_slot(animal_id: int, request: Request,
     if slot < 1 or slot > 8:
         raise HTTPException(status_code=400, detail="slot must be 1–8")
     col = f"Photo{slot}"
+    url = db.execute(text(f"SELECT {col} FROM Photos WHERE AnimalID=:aid"),
+                     {"aid": animal_id}).scalar()
     db.execute(text(f"UPDATE Photos SET {col}=NULL WHERE AnimalID=:aid"),
                {"aid": animal_id})
     db.commit()
+    delete_image(url)
     return {"deleted": slot}
 
 
@@ -784,6 +793,8 @@ async def toggle_publish(animal_id: int, request: Request,
                           current_user=Depends(get_current_user)):
     body = await request.json()
     val = 1 if body.get("publish") else 0
+    if val:
+        assert_can_publish(db, business_id_for_animal(db, animal_id), "for_sale", animal_id)
     db.execute(text("UPDATE Animals SET PublishForSale = :v, LastUpdated = SYSUTCDATETIME() WHERE AnimalID = :aid"),
                {"v": val, "aid": animal_id})
     db.commit()
@@ -798,6 +809,8 @@ async def toggle_publish_stud(animal_id: int, request: Request,
                                current_user=Depends(get_current_user)):
     body = await request.json()
     val = 1 if body.get("publish") else 0
+    if val:
+        assert_can_publish(db, business_id_for_animal(db, animal_id), "stud", animal_id)
     db.execute(text("UPDATE Animals SET PublishStud = :v, LastUpdated = SYSUTCDATETIME() WHERE AnimalID = :aid"),
                {"v": val, "aid": animal_id})
     db.commit()
@@ -829,3 +842,58 @@ async def delete_animal(animal_id: int,
     db.execute(text("DELETE FROM Animals WHERE AnimalID = :aid"), {"aid": animal_id})
     db.commit()
     return {"deleted": animal_id}
+
+
+@router.post("/{animal_id}/transfer")
+async def transfer_animal(animal_id: int, request: Request,
+                          db: Session = Depends(get_db),
+                          current_user=Depends(get_current_user)):
+    """Move an animal to another business the caller also has access to.
+
+    Both ends are checked against BusinessAccess, the same way delete_animal
+    verifies ownership, so an animal can only be moved between businesses the
+    caller actually holds. Handing an animal to a third party is a different
+    feature — it needs the receiving side to accept — and is not this endpoint.
+    """
+    body = await request.json()
+    to_business_id = body.get("ToBusinessID")
+    try:
+        to_business_id = int(to_business_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="ToBusinessID is required.")
+
+    # The caller must hold the animal's current business.
+    row = db.execute(
+        text("SELECT a.BusinessID FROM Animals a "
+             "JOIN BusinessAccess ba ON ba.BusinessID = a.BusinessID "
+             "WHERE a.AnimalID = :aid AND ba.PeopleID = :pid AND ba.Active = 1"),
+        {"aid": animal_id, "pid": current_user.PeopleID}
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Animal not found or access denied")
+
+    from_business_id = row.BusinessID
+    if from_business_id == to_business_id:
+        raise HTTPException(status_code=400, detail="That animal is already with this business.")
+
+    # ...and the business it is going to.
+    dest = db.execute(
+        text("SELECT b.BusinessID, b.BusinessName FROM Business b "
+             "JOIN BusinessAccess ba ON ba.BusinessID = b.BusinessID "
+             "WHERE b.BusinessID = :bid AND ba.PeopleID = :pid AND ba.Active = 1"),
+        {"bid": to_business_id, "pid": current_user.PeopleID}
+    ).fetchone()
+    if not dest:
+        raise HTTPException(status_code=403, detail="You do not have access to that business.")
+
+    db.execute(
+        text("UPDATE Animals SET BusinessID = :to WHERE AnimalID = :aid"),
+        {"to": to_business_id, "aid": animal_id}
+    )
+    db.commit()
+    return {
+        "AnimalID": animal_id,
+        "FromBusinessID": from_business_id,
+        "ToBusinessID": to_business_id,
+        "ToBusinessName": dest.BusinessName,
+    }

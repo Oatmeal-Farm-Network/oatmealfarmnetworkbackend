@@ -615,6 +615,12 @@ async def add_animal(
         ), {"bid": business_id}).fetchone()
         people_id = ba_row.PeopleID if ba_row else None
 
+        # Creating an animal already marked for sale counts against the plan's
+        # allowance, same as toggling an existing animal on later.
+        if form.get("ForSale") == "Yes":
+            from app.routers.subscription_limits import assert_can_publish
+            assert_can_publish(db, business_id, "for_sale")
+
         db.execute(text("""
             INSERT INTO Animals (
                 BusinessID, PeopleID, FullName, SpeciesID, NumberofAnimals, SpeciesCategoryID,
@@ -919,6 +925,53 @@ async def add_testimonial(request: Request, db: Session = Depends(get_db)):
     })
     db.commit()
     return {"message": "Testimonial added"}
+
+
+@router.post("/testimonials/request")
+async def request_testimonial(request: Request, db: Session = Depends(get_db)):
+    """Email a customer inviting them to leave a testimonial for the business."""
+    from sqlalchemy import text
+    body = await request.json()
+    business_id = body.get("BusinessID")
+    email = (body.get("email") or "").strip().lower()
+    name  = (body.get("name") or "").strip()
+    if not business_id or not email:
+        raise HTTPException(status_code=400, detail="BusinessID and recipient email are required.")
+
+    biz = db.execute(text("SELECT BusinessName FROM Business WHERE BusinessID = :bid"),
+                     {"bid": business_id}).fetchone()
+    business_name = (biz.BusinessName if biz else None) or "our farm"
+
+    try:
+        from app.routers.services import SENDGRID_API_KEY, SENDGRID_URL, FROM_EMAIL
+        import httpx
+        link = f"https://oatmealfarmnetwork.com/testimonial?BusinessID={business_id}"
+        html = (
+            f"<p>Hi {name or 'there'},</p>"
+            f"<p><strong>{business_name}</strong> would love your feedback! "
+            "Would you take a moment to share a short testimonial about your experience?</p>"
+            f"<p><a href='{link}'>Leave a testimonial</a></p>"
+            "<p>Thank you!</p>"
+            f"<p>— {business_name}, via Oatmeal Farm Network</p>"
+        )
+        payload = {
+            "personalizations": [{"to": [{"email": email}]}],
+            "from": {"email": FROM_EMAIL, "name": business_name},
+            "subject": f"{business_name} would love your feedback",
+            "content": [{"type": "text/html", "value": html}],
+        }
+        headers = {"Authorization": "Bearer " + SENDGRID_API_KEY, "Content-Type": "application/json"}
+        resp = httpx.post(SENDGRID_URL, json=payload, headers=headers, timeout=10)
+        if resp.status_code >= 400:
+            print(f"[testimonials/request] SendGrid returned {resp.status_code}: {resp.text[:300]}")
+            raise HTTPException(status_code=502, detail="Could not send the request email.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[testimonials/request] email error: {e}")
+        raise HTTPException(status_code=502, detail="Could not send the request email.")
+
+    return {"message": "Testimonial request sent"}
 
 
 @router.post("/testimonials/update")

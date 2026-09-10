@@ -34,15 +34,16 @@ def _ensure(db: Session):
     db.execute(text("""
         IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME='AuditLog')
         CREATE TABLE AuditLog (
-            LogID       INT IDENTITY PRIMARY KEY,
+            AuditLogID  INT IDENTITY PRIMARY KEY,
             BusinessID  INT           NOT NULL,
             PeopleID    INT           NULL,
-            ActorName   NVARCHAR(200) NULL,
+            EntityType  NVARCHAR(100) NOT NULL,
+            EntityID    INT           NULL,
             Action      NVARCHAR(50)  NOT NULL,
-            Resource    NVARCHAR(100) NOT NULL,
-            ResourceID  INT           NULL,
-            Details     NVARCHAR(MAX) NULL,
-            IPAddress   NVARCHAR(45)  NULL,
+            OldValues   NVARCHAR(MAX) NULL,
+            NewValues   NVARCHAR(MAX) NULL,
+            IpAddress   NVARCHAR(45)  NULL,
+            UserAgent   NVARCHAR(500) NULL,
             CreatedAt   DATETIME2     DEFAULT GETDATE()
         )
     """))
@@ -91,11 +92,13 @@ def record_audit(db: Session, business_id: int, people_id: Optional[int],
     """Call this from any endpoint to append an audit record. Silently ignores errors."""
     try:
         _ensure(db)
+        # The live AuditLog table uses EntityType/EntityID/NewValues (not
+        # Resource/ResourceID/Details, and it has no ActorName column).
         db.execute(text("""
-            INSERT INTO AuditLog (BusinessID, PeopleID, ActorName, Action, Resource, ResourceID, Details)
-            VALUES (:bid, :pid, :aname, :action, :res, :rid, :det)
+            INSERT INTO AuditLog (BusinessID, PeopleID, Action, EntityType, EntityID, NewValues)
+            VALUES (:bid, :pid, :action, :res, :rid, :det)
         """), {
-            "bid": business_id, "pid": people_id, "aname": actor_name,
+            "bid": business_id, "pid": people_id,
             "action": action, "res": resource, "rid": resource_id,
             "det": json.dumps(details) if details else None,
         })
@@ -115,10 +118,14 @@ def list_audit_logs(
     db: Session = Depends(get_db),
 ):
     _ensure(db)
-    q = "SELECT * FROM AuditLog WHERE BusinessID=:bid"
+    # Alias the live columns to the names the UI expects (Resource/Details).
+    q = ("SELECT AuditLogID, BusinessID, PeopleID, Action, "
+         "EntityType AS Resource, EntityID AS ResourceID, NewValues AS Details, "
+         "IpAddress AS IPAddress, CreatedAt "
+         "FROM AuditLog WHERE BusinessID=:bid")
     params: dict = {"bid": business_id}
     if resource:
-        q += " AND Resource=:res"; params["res"] = resource
+        q += " AND EntityType=:res"; params["res"] = resource
     if action:
         q += " AND Action=:act"; params["act"] = action
     if people_id:
@@ -142,11 +149,11 @@ def list_audit_logs(
 def audit_summary(business_id: int = Query(...), db: Session = Depends(get_db)):
     _ensure(db)
     rows = db.execute(text("""
-        SELECT Resource, Action, COUNT(*) AS Cnt
+        SELECT EntityType AS Resource, Action, COUNT(*) AS Cnt
         FROM AuditLog
         WHERE BusinessID=:bid
           AND CreatedAt >= DATEADD(DAY, -30, GETDATE())
-        GROUP BY Resource, Action
+        GROUP BY EntityType, Action
         ORDER BY Cnt DESC
     """), {"bid": business_id}).fetchall()
     total = db.execute(text("SELECT COUNT(*) FROM AuditLog WHERE BusinessID=:bid"), {"bid": business_id}).scalar()
@@ -278,13 +285,13 @@ def list_members(business_id: int = Query(...), db: Session = Depends(get_db)):
     rows = db.execute(text("""
         SELECT ur.UserRoleID, ur.PeopleID, ur.RoleID, ur.AssignedAt,
                r.RoleName, r.Description,
-               p.FirstName + ' ' + p.LastName AS MemberName,
-               p.Email
+               LTRIM(RTRIM(ISNULL(p.PeopleFirstName,'') + ' ' + ISNULL(p.PeopleLastName,''))) AS MemberName,
+               p.Peopleemail AS Email
         FROM BusinessUserRole ur
         JOIN BusinessRole r ON r.RoleID = ur.RoleID
         LEFT JOIN People p ON p.PeopleID = ur.PeopleID
         WHERE ur.BusinessID=:bid
-        ORDER BY r.RoleName, p.LastName
+        ORDER BY r.RoleName, p.PeopleLastName
     """), {"bid": business_id}).fetchall()
     return [dict(r._mapping) for r in rows]
 
@@ -321,11 +328,12 @@ def people_search(business_id: int = Query(...), q: str = Query(""), db: Session
         return []
     rows = db.execute(text("""
         SELECT TOP 20 p.PeopleID,
-               p.FirstName + ' ' + p.LastName AS FullName,
-               p.Email
+               LTRIM(RTRIM(ISNULL(p.PeopleFirstName,'') + ' ' + ISNULL(p.PeopleLastName,''))) AS FullName,
+               p.Peopleemail AS Email
         FROM People p
-        WHERE (p.FirstName + ' ' + p.LastName LIKE :q OR p.Email LIKE :q)
-        ORDER BY p.FirstName, p.LastName
+        WHERE (ISNULL(p.PeopleFirstName,'') + ' ' + ISNULL(p.PeopleLastName,'') LIKE :q
+               OR p.Peopleemail LIKE :q)
+        ORDER BY p.PeopleFirstName, p.PeopleLastName
     """), {"q": f"%{q}%"}).fetchall()
     return [{"people_id": r.PeopleID, "full_name": r.FullName, "email": r.Email} for r in rows]
 

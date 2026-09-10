@@ -24,8 +24,11 @@ if str(_REPO_ROOT) not in sys.path:
 
 load_dotenv()
 
-from app.routers import animals, auth, herd_health, livestock, ranches  # noqa: E402
+from app.routers import (  # noqa: E402
+    animals, auth, businesses, business_photos, herd_health, livestock, ranches, services,
+)
 from app.routers.marketplace import marketplace_router  # noqa: E402
+from app.routers.platform_subscriptions import platform_subscriptions_router  # noqa: E402
 
 
 def _cors_origins(*env_values: str) -> list[str]:
@@ -65,12 +68,18 @@ app.include_router(livestock.router)
 app.include_router(marketplace_router, prefix="/api/marketplace")
 # Ranch directory
 app.include_router(ranches.router)
+# Business directory + photo pages
+app.include_router(businesses.router)
+app.include_router(business_photos.router)
+app.include_router(services.router)
 # Animal CRUD (seller / herd manager)
 app.include_router(animals.router)
 # Herd health
 app.include_router(herd_health.router)
 # Auth (same JWT SECRET_KEY as main backend when secrets match)
 app.include_router(auth.router)
+# Package listing limits / Stripe package checkout
+app.include_router(platform_subscriptions_router)
 
 
 @app.get("/health")

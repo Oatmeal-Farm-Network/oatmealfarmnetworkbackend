@@ -1,13 +1,13 @@
 # routers/accounting.py
 # Full accounting API for the Oatmeal Farm Network.
-# All routes require a valid JWT (get_current_user) AND BusinessAccess with
-# AccessLevelID >= 3 for the requested BusinessID.
+# All routes require a valid JWT (get_current_user) AND an active BusinessAccess
+# row for the requested BusinessID (any access level).
 # Same tables / logic as oatmeal_main accounting.routes.js — scoped by BusinessID.
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from app.database import get_db
+from app.database import get_db, blank_to_none
 from app.core.auth import get_current_user
 from app import models
 import datetime
@@ -25,14 +25,18 @@ def require_accounting_access(
     current_user: models.People = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Verify the caller has AccessLevelID >= 3 on the requested business."""
+    """Verify the caller has access to the requested business (any access level).
+
+    Accounting is open to anyone with an active BusinessAccess row for this
+    business; only non-members are blocked.
+    """
     access = db.query(models.BusinessAccess).filter(
         models.BusinessAccess.BusinessID == business_id,
         models.BusinessAccess.PeopleID == current_user.PeopleID,
         models.BusinessAccess.Active == 1,
     ).first()
-    if not access or access.AccessLevelID < 3:
-        raise HTTPException(status_code=403, detail="Accounting access requires AccessLevelID >= 3.")
+    if not access:
+        raise HTTPException(status_code=403, detail="You do not have access to this business.")
     return {"business_id": business_id, "people_id": current_user.PeopleID, "access_level": access.AccessLevelID}
 
 
@@ -1327,6 +1331,7 @@ def list_jobs(access=Depends(require_accounting_access), db: Session = Depends(g
 
 @router.post("/jobs")
 def create_job(body: dict, access=Depends(require_accounting_access), db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_job_tables(db)
     bid = access["business_id"]
     r = db.execute(text("""
@@ -1350,6 +1355,7 @@ def create_job(body: dict, access=Depends(require_accounting_access), db: Sessio
 
 @router.put("/jobs/{job_id}")
 def update_job(job_id: int, body: dict, access=Depends(require_accounting_access), db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     bid = access["business_id"]
     db.execute(text("""
         UPDATE CostJob SET JobName=:name, JobType=:jtype, FieldRef=:fref, CropName=:crop,
@@ -1396,6 +1402,7 @@ def list_allocations(job_id: int, access=Depends(require_accounting_access), db:
 
 @router.post("/jobs/{job_id}/allocations")
 def add_allocation(job_id: int, body: dict, access=Depends(require_accounting_access), db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     _ensure_job_tables(db)
     bid = access["business_id"]
     r = db.execute(text("""
@@ -1617,6 +1624,7 @@ def list_currencies(db: Session = Depends(get_db)):
 
 @router.put("/currencies/{code}")
 def update_currency_rate(code: str, body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     """Update the exchange rate for a currency code (rate relative to USD)."""
     _ensure_fx(db)
     code = code.upper()
@@ -1637,6 +1645,7 @@ def update_currency_rate(code: str, body: dict, db: Session = Depends(get_db)):
 
 @router.post("/currencies/convert")
 def convert_currency(body: dict, db: Session = Depends(get_db)):
+    body = blank_to_none(body)
     """Convert an amount between two currencies via USD as pivot.
     body: { amount, from_currency, to_currency }"""
     _ensure_fx(db)

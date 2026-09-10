@@ -66,10 +66,6 @@ Package code lives under **`app/`** (not a top-level `routers/` folder):
 │   ├── api.py               # uvicorn oatsense.api:app
 │   ├── Dockerfile.backend
 │   └── cloudbuild.yaml
-├── otf/                     # Over the Fence Social (livestock-style thin service + CD)
-│   ├── api.py               # uvicorn otf.api:app → mounts app.routers.mill
-│   ├── Dockerfile.backend
-│   └── cloudbuild.yaml
 ├── livestock/               # Livestock microservice (own Dockerfile + CD)
 ├── test/                    # Unit / smoke tests
 ├── docs/                    # Staging, IAM, Cloud Run runbooks
@@ -86,7 +82,6 @@ Package code lives under **`app/`** (not a top-level `routers/` folder):
     ├── deploy-oatsense-prod.yml      # Oatsense → oatmeal-oatsense
     ├── deploy-livestock-staging.yml  # Livestock → oatmeal-livestock-staging
     ├── deploy-livestock-prod.yml     # Livestock → oatmeal-livestock-prod
-    ├── deploy-otf-staging.yml        # OTF → oatmeal-otf-staging
     └── ci.yml
 ```
 
@@ -190,14 +185,12 @@ Push or merge to `GCP/backend-staging` deploys staging. Merge that branch to `ma
 | Saige staging | `GCP/backend-staging` (`saige/**`) | `.github/workflows/deploy-saige-staging.yml` | `oatmeal-saige-staging` | `oatmeal-farm-staging` |
 | Livestock staging | `GCP/backend-staging` (path-filtered) | `.github/workflows/deploy-livestock-staging.yml` | `oatmeal-livestock-staging` | `oatmeal-farm-staging` |
 | Oatsense staging | `GCP/backend-staging` (path-filtered) | `.github/workflows/deploy-oatsense-staging.yml` | `oatmeal-oatsense-staging` | `oatmeal-farm-staging` |
-| OTF Social staging | `GCP/backend-staging` (path-filtered) | `.github/workflows/deploy-otf-staging.yml` | `oatmeal-otf-staging` | `oatmeal-farm-staging` |
 | Main backend prod | `main` (`app/**`, Dockerfile, …) | `.github/workflows/deploy-backend-prod.yml` | `oatmealfarmnewtorkbackend` | `animated-flare-421518` |
 | Saige prod | `main` (`saige/**`) | `.github/workflows/deploy-saige.yml` | `saige-backend` | `animated-flare-421518` |
 | Livestock prod | `main` (path-filtered) / `GCP/livestock-prod` / `livestock-v*` | `.github/workflows/deploy-livestock-prod.yml` | `oatmeal-livestock-prod` | `animated-flare-421518` |
 | Oatsense prod | `main` (path-filtered) / `GCP/oatsense-prod` / `oatsense-v*` | `.github/workflows/deploy-oatsense-prod.yml` | `oatmeal-oatsense` | `animated-flare-421518` |
 
-→ Oatsense runbook: [`docs/oatsense-deploy.md`](docs/oatsense-deploy.md)  
-→ OTF runbook: [`docs/otf-deploy.md`](docs/otf-deploy.md)
+→ Oatsense runbook: [`docs/oatsense-deploy.md`](docs/oatsense-deploy.md)
 
 ### Backend staging (`GCP/backend-staging`)
 
@@ -237,12 +230,10 @@ Push or merge to `GCP/backend-staging` deploys staging. Merge that branch to `ma
 | Saige (`saige/`, Saige staging workflow) | `GCP/backend-staging` | merge to `main` |
 | Livestock (`livestock/**`, livestock routers) | `GCP/backend-staging` | merge to `main` |
 | Oatsense (`oatsense/`, precision-ag routers) | `GCP/backend-staging` | merge to `main` |
-| OTF Social (`otf/`, `app/routers/mill.py`) | `GCP/backend-staging` | (no OTF prod CD) |
 | Docs only (`docs/`) | Either; backend staging CD skips `docs/**` | — |
 
 A Saige-only change on `GCP/backend-staging` deploys `oatmeal-saige-staging`. The same change merged to `main` deploys `saige-backend`.
 Oatsense staging **does** deploy from `GCP/backend-staging` when `oatsense/**` or its precision-ag path filters change.
-OTF staging **does** deploy from `GCP/backend-staging` when `otf/**` or `app/routers/mill.py` change.
 
 ---
 
@@ -270,7 +261,6 @@ Details: [`docs/staging/STAGING_CLOUD_SQL_SETUP.md`](docs/staging/STAGING_CLOUD_
 | [`docs/cloud-run-staging.md`](docs/cloud-run-staging.md) | Staging service URLs / status |
 | [`docs/iam-setup.md`](docs/iam-setup.md) | WIF, runtime SAs, roles |
 | [`docs/oatsense-deploy.md`](docs/oatsense-deploy.md) | Oatsense staging + production CD, cutover |
-| [`docs/otf-deploy.md`](docs/otf-deploy.md) | Over the Fence Social staging CD (livestock-style) |
 | [`saige/README.md`](saige/README.md) | Saige product / API deep dive |
 
 ---

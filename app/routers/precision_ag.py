@@ -134,6 +134,15 @@ def get_fields(business_id: int, db: Session = Depends(get_db)):
 
 @router.post("/fields")
 def create_field(field: FieldCreate, db: Session = Depends(get_db)):
+    # Address/Latitude/Longitude are NOT NULL columns in dbo.Field — the
+    # working add-field flow (Crop Detection) always derives these from a
+    # drawn boundary, but guard here too so a bad/direct API call gets a
+    # clean 400 instead of a raw SQL IntegrityError.
+    if field.latitude is None or field.longitude is None:
+        raise HTTPException(status_code=400, detail="latitude and longitude are required")
+    if not field.address:
+        field.address = field.name
+
     try:
         planting_date = None
         if field.planting_date:
@@ -177,7 +186,11 @@ def create_field(field: FieldCreate, db: Session = Depends(get_db)):
 @router.put("/fields/{field_id}")
 def update_field(field_id: int, field: FieldCreate, db: Session = Depends(get_db)):
     try:
-        existing = db.query(models.Field).filter(models.Field.FieldID == field_id).first()
+        existing = (
+            db.query(models.Field)
+            .filter(models.Field.FieldID == field_id, models.Field.DeletedAt.is_(None))
+            .first()
+        )
         if not existing:
             raise HTTPException(status_code=404, detail="Field not found")
         planting_date = None
@@ -196,7 +209,11 @@ def update_field(field_id: int, field: FieldCreate, db: Session = Depends(get_db
             computed_size if computed_size is not None else field.field_size_hectares
         )
         existing.PlantingDate           = planting_date
-        existing.BoundaryGeoJSON        = field.boundary_geojson
+        # Only overwrite the saved boundary when the caller actually sent a new
+        # one — an empty/omitted value (e.g. the edit form loaded without
+        # re-drawing) must never wipe out a previously drawn polygon.
+        if field.boundary_geojson:
+            existing.BoundaryGeoJSON    = field.boundary_geojson
         existing.MonitoringIntervalDays = field.monitoring_interval_days
         existing.AlertThresholdHealth   = field.alert_threshold_health
         db.commit()
@@ -214,10 +231,19 @@ def update_field(field_id: int, field: FieldCreate, db: Session = Depends(get_db
 @router.delete("/fields/{field_id}")
 def delete_field(field_id: int, db: Session = Depends(get_db)):
     try:
-        field = db.query(models.Field).filter(models.Field.FieldID == field_id).first()
+        field = (
+            db.query(models.Field)
+            .filter(models.Field.FieldID == field_id, models.Field.DeletedAt.is_(None))
+            .first()
+        )
         if not field:
             raise HTTPException(status_code=404, detail="Field not found")
-        db.delete(field)
+        # Soft delete — permanently deleting the row would cascade-orphan (or
+        # foreign-key-fail on) years of Analysis/FieldScout/FieldNote/biomass
+        # history tied to this FieldID. get_fields() already filters on
+        # DeletedAt, so this is enough to make the field disappear from the UI
+        # while keeping the history recoverable/auditable.
+        field.DeletedAt = datetime.utcnow()
         db.commit()
         return {"success": True, "deleted_id": field_id}
     except HTTPException:
@@ -389,7 +415,63 @@ def _fetch_latest_crop_analysis(field_id: int) -> dict | None:
 
 
 def _call_estimator_upload(image_bytes: bytes, filename: str, content_type: str, source: str, field_id: int) -> dict:
-    raise HTTPException(status_code=501, detail="Upload-based biomass estimation not yet implemented")
+    """Local CSIRO-inspired dual-stream estimator (no paid vision APIs)."""
+    try:
+        import sys
+        from pathlib import Path
+        from dotenv import load_dotenv
+
+        # app/routers/precision_ag.py → repo root (biomass_estimator lives there)
+        backend_dir = Path(__file__).resolve().parent.parent.parent
+        if str(backend_dir) not in sys.path:
+            sys.path.insert(0, str(backend_dir))
+        load_dotenv(backend_dir / ".env", override=True)
+
+        # Prefer multi-domain pack, then CSIRO-only DINO pack.
+        multi_pack = backend_dir / "biomass_estimator" / "calibration_multidomain.npz"
+        dino_pack = backend_dir / "biomass_estimator" / "calibration_dino.npz"
+        pack = multi_pack if multi_pack.is_file() else dino_pack
+        if pack.is_file():
+            os.environ["BIOMASS_USE_DINO"] = "true"
+            os.environ["BIOMASS_CALIBRATION_PATH"] = str(pack)
+            os.environ.setdefault("BIOMASS_IMG_SIZE", "518")
+
+        # Drop stale cached calib loads from prior requests / old env
+        try:
+            from biomass_estimator import calibration as _calib
+            _calib._load_npz.cache_clear()
+        except Exception:
+            pass
+
+        from biomass_estimator import estimate_biomass_from_image
+        result = estimate_biomass_from_image(image_bytes, field_id=field_id)
+        if result.get("rejected"):
+            raise HTTPException(
+                status_code=400,
+                detail=result.get("reject_reason")
+                or "Photo rejected: not a pasture/crop canopy image.",
+            )
+        try:
+            dbg = Path(backend_dir) / "biomass_estimator" / "_last_upload_debug.json"
+            import json as _json
+            dbg.write_text(_json.dumps({
+                "model_version": result.get("model_version"),
+                "calibration_mode": (result.get("features") or {}).get("calibration_mode"),
+                "backbone": (result.get("features") or {}).get("backbone"),
+                "stream": (result.get("features") or {}).get("stream"),
+                "calib_env": os.environ.get("BIOMASS_CALIBRATION_PATH"),
+                "dino_env": os.environ.get("BIOMASS_USE_DINO"),
+            }, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Biomass estimation failed: {e}",
+        ) from e
 
 
 @router.get("/fields/{field_id}/biomass")
@@ -548,9 +630,23 @@ async def analyze_upload(
     db: Session = Depends(get_db),
 ):
     """User-uploaded ground-level image → estimator → stored analysis."""
-    field = db.query(models.Field).filter(models.Field.FieldID == field_id).first()
+    from biomass_estimator.table import ensure_biomass_table
+
+    field = (
+        db.query(models.Field)
+        .filter(models.Field.FieldID == field_id, models.Field.DeletedAt.is_(None))
+        .first()
+    )
     if not field:
         raise HTTPException(status_code=404, detail="Field not found")
+
+    try:
+        ensure_biomass_table(db)
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Biomass storage is not ready (FieldBiomassAnalysis): {e}",
+        ) from e
 
     raw = await file.read()
     if not raw:
