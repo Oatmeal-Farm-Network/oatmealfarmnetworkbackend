@@ -2,7 +2,7 @@ name: Deploy Saige Staging
 
 on:
   push:
-    branches: [GCP/backend-staging]
+    branches: ['GCP/backend-staging']
     paths:
       - 'saige/**'
       - '.github/workflows/deploy-saige-staging.yml'
