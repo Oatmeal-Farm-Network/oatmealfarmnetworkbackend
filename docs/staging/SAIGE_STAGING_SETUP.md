@@ -29,7 +29,7 @@ Saige images build from `saige/Dockerfile.backend` with context `./saige`.
 - Must copy the **full package** (`COPY . .`) — not root `*.py` only.
 - Process entry is **`uvicorn app.api:app`**.
 - Workflow: `.github/workflows/deploy-saige.yml`; helper: `saige/deploy.ps1`.
-- Layout notes: [`saige/docs/MIGRATION_RESULTS.md`](../../saige/docs/MIGRATION_RESULTS.md).
+- Layout notes: [`saige/README.md`](../../saige/README.md).
 
 ---
 
