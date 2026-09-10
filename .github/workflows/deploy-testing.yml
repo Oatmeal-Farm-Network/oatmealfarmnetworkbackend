@@ -1,0 +1,106 @@
+name: Deploy to Testing
+
+# Testing-only CD. Do NOT use staging or production DB/secrets.
+# Fails clearly until TESTING_* secrets/vars and isolated Cloud SQL exist.
+on:
+  push:
+    branches: [GCP/backend-testing]
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+  workflow_dispatch:
+
+env:
+  GCP_PROJECT_ID: ${{ secrets.TESTING_GCP_PROJECT_ID }}
+  REGION: ${{ vars.TESTING_REGION || 'us-central1' }}
+  IMAGE_URI_PREFIX: ${{ vars.TESTING_REGION || 'us-central1' }}-docker.pkg.dev/${{ secrets.TESTING_GCP_PROJECT_ID }}/${{ vars.TESTING_ARTIFACT_REGISTRY_REPOSITORY || 'oatmeal-farm-registry' }}/backend
+  CLOUD_RUN_SERVICE: oatmeal-backend-testing
+  CLOUD_SQL_INSTANCE: ${{ vars.TESTING_CLOUD_SQL_INSTANCE }}
+  RUNTIME_SERVICE_ACCOUNT: ${{ vars.TESTING_BACKEND_RUNTIME_SA }}
+  TESTING_FRONTEND_URL: ${{ vars.TESTING_FRONTEND_URL }}
+
+jobs:
+  deploy-testing:
+    runs-on: ubuntu-latest
+    environment: testing
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Require testing secrets and isolated DB
+        shell: bash
+        run: |
+          missing=0
+          require() {
+            local name="$1" value="$2"
+            if [ -z "$value" ]; then
+              echo "::error::Missing required GitHub Actions secret/variable: $name"
+              missing=1
+            fi
+          }
+          require TESTING_GCP_PROJECT_ID "${{ secrets.TESTING_GCP_PROJECT_ID }}"
+          require TESTING_GCP_WORKLOAD_IDENTITY_PROVIDER "${{ secrets.TESTING_GCP_WORKLOAD_IDENTITY_PROVIDER }}"
+          require TESTING_GCP_SERVICE_ACCOUNT "${{ secrets.TESTING_GCP_SERVICE_ACCOUNT }}"
+          require TESTING_BACKEND_RUNTIME_SA "${{ vars.TESTING_BACKEND_RUNTIME_SA }}"
+          require TESTING_CLOUD_SQL_INSTANCE "${{ vars.TESTING_CLOUD_SQL_INSTANCE }}"
+          require TESTING_FRONTEND_URL "${{ vars.TESTING_FRONTEND_URL }}"
+          project="${{ secrets.TESTING_GCP_PROJECT_ID }}"
+          if [ -n "$project" ] && [ "$project" != "oatmeal-farm-staging" ]; then
+            echo "::error::TESTING_GCP_PROJECT_ID must be oatmeal-farm-staging. Never animated-flare-421518 (Oatmeal AI)."
+            missing=1
+          fi
+          if [ "$missing" -ne 0 ]; then
+            echo "Testing deploy blocked. Create oatmeal-backend-testing in oatmeal-farm-staging, isolated Cloud SQL/Firestore, and TESTING_* vars."
+            echo "Do not point testing at production DB or SECRET_KEY."
+            exit 1
+          fi
+
+      - name: Set short commit SHA
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to Google Cloud (Testing)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.TESTING_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.TESTING_GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build Docker image
+        run: |
+          docker build -t "${{ env.IMAGE_URI_PREFIX }}:${{ steps.vars.outputs.sha_short }}" .
+
+      - name: Push Docker image
+        run: |
+          docker push "${{ env.IMAGE_URI_PREFIX }}:${{ steps.vars.outputs.sha_short }}"
+
+      - name: Deploy to Cloud Run (testing)
+        run: |
+          gcloud run deploy ${{ env.CLOUD_RUN_SERVICE }} \
+            --image "${{ env.IMAGE_URI_PREFIX }}:${{ steps.vars.outputs.sha_short }}" \
+            --project ${{ env.GCP_PROJECT_ID }} \
+            --region ${{ env.REGION }} \
+            --service-account "${{ env.RUNTIME_SERVICE_ACCOUNT }}" \
+            --set-cloudsql-instances "${{ env.CLOUD_SQL_INSTANCE }}" \
+            --command=uvicorn \
+            --args=app.main:app,--host,0.0.0.0,--port,8080 \
+            --update-secrets=DB_SERVER=DB_SERVER:latest,DB_USER=DB_USER:latest,DB_PASSWORD=DB_PASSWORD:latest,DB_NAME=DB_NAME:latest,SECRET_KEY=SECRET_KEY:latest \
+            --update-env-vars=SKIP_SCHEMA_ENSURE=false,INSTANCE_CONNECTION_NAME=${{ env.CLOUD_SQL_INSTANCE }},FRONTEND_URL=${{ env.TESTING_FRONTEND_URL }},GOOGLE_CLOUD_PROJECT=${{ env.GCP_PROJECT_ID }},FIRESTORE_DATABASE=${{ vars.TESTING_FIRESTORE_DATABASE || 'testing' }},GCS_IMAGES_BUCKET=${{ vars.TESTING_GCS_IMAGES_BUCKET || 'oatmeal-farm-network-images-staging' }},GCS_LIVESTOCK_IMAGES_BUCKET=${{ vars.TESTING_GCS_LIVESTOCK_IMAGES_BUCKET || 'oatmeal-farm-network-images' }},BIOMASS_GCS_BUCKET=${{ vars.TESTING_BIOMASS_GCS_BUCKET || 'oatmeal-farm-network-images-staging' }} \
+            --min-instances=0 \
+            --quiet
+
+      - name: Print deployed URL
+        run: |
+          gcloud run services describe ${{ env.CLOUD_RUN_SERVICE }} \
+            --project ${{ env.GCP_PROJECT_ID }} \
+            --region ${{ env.REGION }} \
+            --format="value(status.url)"

@@ -1,0 +1,99 @@
+name: Deploy Oatsense Production
+
+# main → oatsense-backend-prod in animated-flare-421518 (Oatmeal AI).
+# Fourth backend Cloud Run service (with main API, Saige, livestock).
+# Image-only promote. First deploy creates the service if it does not exist yet.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'oatsense/**'
+      - 'app/routers/precision_ag.py'
+      - 'app/routers/precision_ag_features.py'
+      - 'app/routers/field_maturity.py'
+      - 'app/routers/field_assessment_report.py'
+      - 'app/routers/field_activity.py'
+      - 'app/routers/field_health.py'
+      - 'app/routers/field_health_alerts.py'
+      - 'app/routers/crop_monitor_proxy.py'
+      - 'app/models/precision_ag.py'
+      - 'app/database.py'
+      - 'requirements.txt'
+      - '.github/workflows/deploy-oatsense-prod.yml'
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: ${{ secrets.PROD_GCP_PROJECT_ID || 'animated-flare-421518' }}
+  REGION: ${{ vars.PROD_REGION || 'us-central1' }}
+  GAR_REPOSITORY: ${{ vars.PROD_ARTIFACT_REGISTRY_REPOSITORY || 'cloud-run-source-deploy' }}
+  SERVICE_NAME: oatsense-backend-prod
+  IMAGE_NAME: oatsense-backend-prod
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Require production project and WIF
+        shell: bash
+        run: |
+          project="${{ env.PROJECT_ID }}"
+          if [ "$project" != "animated-flare-421518" ]; then
+            echo "::error::Oatsense API prod must use animated-flare-421518 (Oatmeal AI). Got: $project"
+            exit 1
+          fi
+          if [ -z "${{ secrets.PROD_GCP_WIF_PROVIDER }}${{ secrets.PROD_GCP_WORKLOAD_IDENTITY_PROVIDER }}" ]; then
+            echo "::error::Set PROD_GCP_WIF_PROVIDER or PROD_GCP_WORKLOAD_IDENTITY_PROVIDER plus PROD_GCP_SERVICE_ACCOUNT."
+            exit 1
+          fi
+          if [ -z "${{ secrets.PROD_GCP_SERVICE_ACCOUNT }}" ]; then
+            echo "::error::Missing PROD_GCP_SERVICE_ACCOUNT."
+            exit 1
+          fi
+
+      - name: Set short commit SHA
+        run: echo "COMMIT_SHA=${GITHUB_SHA::12}" >> "$GITHUB_ENV"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.PROD_GCP_WIF_PROVIDER || secrets.PROD_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.PROD_GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Build Docker image
+        run: |
+          docker build -f oatsense/Dockerfile.backend \
+            -t "${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}:${COMMIT_SHA}" \
+            .
+
+      - name: Push Docker image
+        run: |
+          docker push "${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}:${COMMIT_SHA}"
+
+      - name: Deploy image to oatsense-backend-prod
+        run: |
+          gcloud run deploy "${SERVICE_NAME}" \
+            --image "${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPOSITORY}/${IMAGE_NAME}:${COMMIT_SHA}" \
+            --project "${PROJECT_ID}" \
+            --region "${REGION}" \
+            --quiet
+
+      - name: Print deployed URL
+        run: |
+          gcloud run services describe "${SERVICE_NAME}" \
+            --project "${PROJECT_ID}" \
+            --region "${REGION}" \
+            --format="value(status.url)"

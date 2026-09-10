@@ -3,7 +3,7 @@ name: Deploy Saige Backend to Cloud Run
 # main → saige-backend in animated-flare-421518 (Oatmeal AI) only.
 # Official Saige prod Cloud Run is saige-backend. Staging/testing stay
 # oatmeal-saige-staging / oatmeal-saige-testing in oatmeal-farm-staging.
-# Gated by PROD_SAIGE_DEPLOY_ENABLED — do not set that variable yet.
+# Merge to main deploys saige-backend. Do not deploy Saige into oatmeal-farm-staging from main.
 on:
   push:
     branches:
@@ -33,17 +33,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Gate Saige production until the testing hop is live
+      - name: Require Oatmeal AI project
         shell: bash
         run: |
-          if [ "${{ vars.PROD_SAIGE_DEPLOY_ENABLED }}" != "true" ]; then
-            echo "::error::Saige production deploy is blocked."
-            echo "Official prod target is saige-backend in animated-flare-421518 (Oatmeal AI)."
-            echo "Do not deploy Saige to oatmeal-farm-staging from main."
-            echo "A saige/** push to main must not deploy prod until GCP/backend-testing exists and Environment reviewers are assigned."
-            echo "Set repo variable PROD_SAIGE_DEPLOY_ENABLED=true only after a testing → main promotion path is in use."
-            exit 1
-          fi
           project="${{ env.PROJECT_ID }}"
           if [ -z "$project" ]; then
             echo "::error::Missing PROD_GCP_PROJECT_ID (or GCP_PROJECT_ID). Must be animated-flare-421518."

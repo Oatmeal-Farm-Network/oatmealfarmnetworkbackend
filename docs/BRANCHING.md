@@ -11,17 +11,19 @@ Allowed PRs only: work → staging; staging → testing; testing → `main`.
 
 `tests/backend-staging`, `Live`, and `live` are not environment branches.
 
-Testing CD stays fail-closed until isolated Cloud SQL / Firestore and `TESTING_*` exist in **`oatmeal-farm-staging`**. Never create testing or staging services in `animated-flare-421518`.
+This repo deploys **four Cloud Run services in every environment**.
+
+| Service | Staging (`oatmeal-farm-staging`) | Testing (`oatmeal-farm-staging`) | Production (`animated-flare-421518`) | Workflows |
+|---------|----------------------------------|----------------------------------|--------------------------------------|-----------|
+| Main API | `oatmeal-backend-staging` | `oatmeal-backend-testing` | `oatmealfarmnewtorkbackend` | `deploy-staging.yml` / `deploy-testing.yml` / `deploy-backend-prod.yml` |
+| Saige | `oatmeal-saige-staging` | `oatmeal-saige-testing` | `saige-backend` | `deploy-saige-staging.yml` / `deploy-saige-testing.yml` / `deploy-saige.yml` |
+| Livestock API | `oatmeal-livestock-staging` | `oatmeal-livestock-testing` | `livestock-backend-prod` | `deploy-livestock-*.yml` |
+| Oatsense API | `oatmeal-oatsense-staging` | `oatmeal-oatsense-testing` | `oatsense-backend-prod` | `deploy-oatsense-*.yml` |
+
+Testing CD stays fail-closed until isolated Cloud SQL / Firestore and `TESTING_*` exist in **`oatmeal-farm-staging`**. Never create testing or staging services in Oatmeal AI.
+
+`oatsense-backend-prod` is the production oatsense API name (does not exist yet; first successful `main` deploy creates it). Livestock prod already exists.
 
 **Reconcile:** `GCP/backend-staging` and `main` still diverge. Merge `main` into staging in a pairing session before treating testing as a production release candidate. Do not fast-forward `main` with the full staging delta.
 
-### Official production Cloud Run (`animated-flare-421518` / Oatmeal AI)
-
-| Surface | Service | Workflow |
-|---------|---------|----------|
-| Shared API | `oatmealfarmnewtorkbackend` (typo is the real name) | `deploy-backend-prod.yml` |
-| Saige | `saige-backend` | `deploy-saige.yml` (gated by `PROD_SAIGE_DEPLOY_ENABLED` — do **not** set it yet) |
-
-Do not deploy from `main` into `oatmeal-farm-staging`. Staging/testing Saige are `oatmeal-saige-staging` / `oatmeal-saige-testing` in the staging project only.
-
-`deploy-livestock-prod.yml` (`oatmeal-livestock-prod`) and `deploy-oatsense-prod.yml` (`oatmeal-oatsense`) are **not** official prod surfaces — keep them fail-closed. Official LOA/Oatsense frontends live in their own repos.
+Do not deploy from `main` into `oatmeal-farm-staging`.
