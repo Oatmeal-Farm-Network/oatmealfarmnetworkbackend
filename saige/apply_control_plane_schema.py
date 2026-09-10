@@ -5,9 +5,9 @@ from __future__ import annotations
 import re
 import sys
 
-from config import DB_CONFIG
+from core.config import DB_CONFIG
 from core.paths import sql_schema_path
-from db_control import sql_configured, table_exists
+from data.sql.control import sql_configured, table_exists
 
 
 def main() -> int:

@@ -15,7 +15,7 @@ Usage:
 
 import time
 import argparse
-from config import (
+from core.config import (
     DB_CONFIG, GCP_PROJECT, GCP_LOCATION, GCP_CREDENTIALS,
     EMBEDDING_MODEL, FIRESTORE_DATABASE, FIRESTORE_COLLECTION,
 )

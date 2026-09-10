@@ -57,7 +57,8 @@ os.chdir(CROP_DIR)
 import backend as crop_module  # noqa: E402
 crop_app = crop_module.app
 
-from api import app as saige_app, app_lifespan as saige_lifespan  # noqa: E402
+from app.api import app as saige_app  # noqa: E402
+from app.lifecycle import app_lifespan as saige_lifespan  # noqa: E402
 
 
 @asynccontextmanager

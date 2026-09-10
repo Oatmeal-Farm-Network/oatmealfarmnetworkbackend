@@ -5,7 +5,7 @@ import time
 from difflib import SequenceMatcher
 from typing import Optional, Dict, Any, List
 from langchain_core.tools import tool
-from config import WEATHER_AVAILABLE
+from core.config import WEATHER_AVAILABLE
 from visualizations.pending import viz_emit
 
 try:

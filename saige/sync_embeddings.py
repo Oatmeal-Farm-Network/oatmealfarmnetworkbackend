@@ -1,4 +1,3 @@
-# Compatibility shim — implementation lives in integrations.embeddings (sync)
 """SQL Server -> Firestore embedding sync.
 
 Preserves import-time RAG dependency check from the original module.
@@ -8,7 +7,7 @@ from __future__ import annotations
 
 import sys
 
-from config import RAG_AVAILABLE
+from core.config import RAG_AVAILABLE
 
 if not RAG_AVAILABLE:
     print(

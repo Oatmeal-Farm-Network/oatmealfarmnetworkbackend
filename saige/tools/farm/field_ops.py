@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
-from config import OFN_BACKEND_URL
+from core.config import OFN_BACKEND_URL
 from data.sql.connect import sql_connect
 
 logger = logging.getLogger("farm_advisory.field_ops")

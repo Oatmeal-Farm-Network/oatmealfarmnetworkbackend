@@ -150,7 +150,7 @@ def analyze_business(
 
     # Generate insight
     try:
-        from llm import llm
+        from integrations.gemini import llm
         resp    = llm.invoke(_build_prompt(profile, alerts))
         insight = (getattr(resp, "content", None) or str(resp)).strip()
     except Exception as e:
@@ -170,7 +170,7 @@ def analyze_business(
         push_result = {"status": "dry_run"}
     else:
         try:
-            import push_notifications as push
+            import services.push_notifications as push
             push_result = push.send_to(
                 user_id=str(people_id),
                 title="Saige — Farm Health Update",

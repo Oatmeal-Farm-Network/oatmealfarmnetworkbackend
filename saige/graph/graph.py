@@ -2,7 +2,7 @@
 from langgraph.graph import END, START, StateGraph
 from langgraph.checkpoint.memory import MemorySaver
 
-from config import (
+from core.config import (
     REDIS_ALLOW_MEMORY_FALLBACK,
     REDIS_AVAILABLE,
     REDIS_ENABLED,

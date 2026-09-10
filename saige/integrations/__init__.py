@@ -2,7 +2,7 @@
 """AI and data integrations for Saige.
 
 Public modules:
-  - gemini / llm (shim)
+  - gemini
   - rag
   - embeddings (sync + backfill jobs)
   - firestore_seed

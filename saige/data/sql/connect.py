@@ -11,7 +11,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Sequence
 
-from config import DB_CONFIG
+from core.config import DB_CONFIG
 
 logger = logging.getLogger("farm_advisory.sql")
 

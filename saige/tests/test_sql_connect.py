@@ -1,7 +1,7 @@
 """SQL connection helper: Cloud SQL Connector vs pymssql, no live DB."""
 from types import SimpleNamespace
 
-from config import DB_CONFIG
+from core.config import DB_CONFIG
 from data.sql.connect import rows_as_dicts, sql_configured, sql_connect, _connect_raw
 
 

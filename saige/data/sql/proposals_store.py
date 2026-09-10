@@ -9,9 +9,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from config import SAIGE_CONTROL_PLANE_SQL
+from core.config import SAIGE_CONTROL_PLANE_SQL
 from core.paths import RUNTIME_DATA_DIR, runtime_json_path
-from db_control import sql_configured, sql_execute, sql_fetch_all, sql_fetch_one, table_exists
+from data.sql.control import sql_configured, sql_execute, sql_fetch_all, sql_fetch_one, table_exists
 
 logger = logging.getLogger("farm_advisory.proposals")
 

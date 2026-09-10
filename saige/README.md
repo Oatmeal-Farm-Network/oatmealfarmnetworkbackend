@@ -75,8 +75,7 @@ FastAPI REST API  (app/api.py via root shim api.py)
                 └── Google Gemini AI  (integrations/gemini.py)
 ```
 
-**Entrypoint:** `uvicorn api:app` (root `api.py` re-exports `app` from `app.api`).  
-Root `*.py` modules are **compatibility shims** — prefer editing package implementations.
+**Entrypoint:** `uvicorn app.api:app`.
 
 ---
 
@@ -84,8 +83,7 @@ Root `*.py` modules are **compatibility shims** — prefer editing package imple
 
 ```
 saige/
-├── api.py                  # Shim → app/api.py (ASGI: uvicorn api:app)
-├── app/                    # FastAPI app, lifecycle, dependencies
+├── app/                    # FastAPI app, lifecycle, dependencies (uvicorn app.api:app)
 ├── graph/                  # LangGraph farm graph, nodes, routing, state
 ├── chat/                   # Chat turn handlers, streaming, history, buffer
 ├── core/                   # config, security, policies, logging, paths
@@ -100,7 +98,7 @@ saige/
 └── docs/                   # Migration plan + architecture notes
 ```
 
-Canonical homes (shims still work for flat imports):
+Canonical homes:
 
 | Concern | Implementation |
 |---------|----------------|
@@ -388,7 +386,7 @@ Dependencies are installed from the **repo root** (`pip install -r requirements.
 
 ```bash
 # From the saige/ directory
-uvicorn api:app --reload --port 8000
+uvicorn app.api:app --reload --port 8000
 ```
 
 API available at `http://localhost:8000`. Interactive docs at `http://localhost:8000/docs`.
@@ -1099,7 +1097,7 @@ async def generate_response(prompt: str) -> str:
 # test_main.py
 import pytest
 from fastapi.testclient import TestClient
-from api import app
+from app.api import app
 
 client = TestClient(app)
 

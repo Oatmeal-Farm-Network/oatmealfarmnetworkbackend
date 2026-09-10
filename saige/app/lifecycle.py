@@ -9,9 +9,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from config import IS_PRODUCTION, REDIS_ENABLED
-from message_buffer import message_buffer
-from redis_client import RedisClientManager, get_redis_manager
+from core.config import IS_PRODUCTION, REDIS_ENABLED
+from chat.buffer import message_buffer
+from data.redis.client import RedisClientManager, get_redis_manager
 
 logger = logging.getLogger("farm_advisory")
 logger.setLevel(logging.INFO)
@@ -83,7 +83,7 @@ async def app_lifespan(app: FastAPI):
                 f"[API] Shared Redis manager ready (mode={info.get('mode')}, target={info.get('target', 'n/a')}, latency_ms={latency_ms:.2f})"
             )
         else:
-            from config import REDIS_ALLOW_MEMORY_FALLBACK
+            from core.config import REDIS_ALLOW_MEMORY_FALLBACK
 
             msg = (
                 f"[API] Shared Redis manager unhealthy at startup "
@@ -101,7 +101,7 @@ async def app_lifespan(app: FastAPI):
     # JWT startup canary
     try:
         from jose import jwt as _jwt
-        from config import JWT_SECRET, JWT_ALGORITHM
+        from core.config import JWT_SECRET, JWT_ALGORITHM
         from datetime import datetime, timedelta, timezone
 
         if not JWT_SECRET:

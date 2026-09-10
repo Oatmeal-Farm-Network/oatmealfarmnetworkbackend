@@ -1,4 +1,3 @@
-# Compatibility shim — implementation lives in integrations.embeddings (backfill)
 """One-shot Firestore embedding backfill.
 
 Run: python backfill_embeddings.py [collections...] [--force]

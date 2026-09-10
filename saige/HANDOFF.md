@@ -6,12 +6,12 @@
 
 | Module | Purpose |
 |--------|---------|
-| `chat/history.py` (shim: `chat_history.py`) | Firestore read/write helpers |
-| `data/redis/client.py` (shim: `redis_client.py`) | Redis connection manager with pooling |
-| `chat/buffer.py` (shim: `message_buffer.py`) | Last-N message buffer (Redis) |
+| `chat/history.py` | Firestore read/write helpers |
+| `data/redis/client.py` | Redis connection manager with pooling |
+| `chat/buffer.py` | Last-N message buffer (Redis) |
 | `graph/graph.py` (package: `from graph import graph`) | LangGraph compilation + Redis checkpointing |
-| `core/config.py` (shim: `config.py`) | All environment-driven configuration |
-| `app/api.py` (shim: `api.py` → `uvicorn api:app`) | FastAPI endpoints, request flow, rate limiter |
+| `core/config.py` | All environment-driven configuration |
+| `app/api.py` (`uvicorn app.api:app`) | FastAPI endpoints, request flow, rate limiter |
 
 **Tests:**
 

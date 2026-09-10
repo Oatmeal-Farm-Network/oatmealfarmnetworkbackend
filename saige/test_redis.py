@@ -4,12 +4,12 @@ Quick test script to verify Redis connection and configuration.
 Run this after installing Redis to ensure everything is working.
 """
 import sys
-from config import (
+from core.config import (
     REDIS_ENABLED, REDIS_HOST, REDIS_PORT, REDIS_PASSWORD,
     REDIS_DB, REDIS_SSL, SHORT_TERM_N, get_redis_url, redis_connection_mode
 )
-from redis_client import test_redis_connection, get_redis_client
-from message_buffer import message_buffer
+from data.redis.client import test_redis_connection, get_redis_client
+from chat.buffer import message_buffer
 
 
 def test_checkpoint_redis():

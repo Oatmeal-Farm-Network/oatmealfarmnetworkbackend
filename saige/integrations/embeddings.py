@@ -18,7 +18,7 @@ import datetime
 import os
 from typing import Dict, List, Any, Iterable, Optional
 
-from config import (
+from core.config import (
     ALLOWED_TABLES, FIRESTORE_COLLECTION,
     SYNC_INTERVAL_HOURS, RAG_AVAILABLE,
 )
@@ -68,8 +68,8 @@ def sync_table(table_name: str) -> Dict[str, int]:
     Returns counts: {"synced": N, "skipped": N, "errors": N}
     """
     from google.cloud.firestore_v1.vector import Vector
-    from database import db
-    from rag import rag
+    from data.sql.database import db
+    from integrations.rag import rag
 
     collection = rag.collection
     if not collection:
@@ -94,8 +94,8 @@ def sync_table(table_name: str) -> Dict[str, int]:
             doc_id = make_doc_id(table_name, row)
 
             # Chunk long rows for better retrieval granularity
-            from rag import chunk_text
-            from config import CHUNK_TARGET_CHARS, CHUNK_OVERLAP_CHARS
+            from integrations.rag import chunk_text
+            from core.config import CHUNK_TARGET_CHARS, CHUNK_OVERLAP_CHARS
 
             pieces = chunk_text(text, target_chars=CHUNK_TARGET_CHARS, overlap_chars=CHUNK_OVERLAP_CHARS) or [text]
             for chunk_index, piece in enumerate(pieces):
@@ -180,8 +180,8 @@ def sync_all():
 
 
 def sync_main():
-    from database import db
-    from rag import rag
+    from data.sql.database import db
+    from integrations.rag import rag
 
     once = "--once" in sys.argv
 

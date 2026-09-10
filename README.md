@@ -57,7 +57,7 @@ Package code lives under **`app/`** (not a top-level `routers/` folder):
 │   ├── core/                # JWT / shared auth helpers
 │   └── routers/             # Domain API routers
 ├── saige/                   # AI advisory (own Dockerfile + CD)
-│   ├── api.py               # Shim → app/api.py (uvicorn api:app)
+│   ├── app/api.py           # FastAPI entry (uvicorn app.api:app)
 │   ├── app/ graph/ chat/ core/ tools/ agents/ …
 │   ├── integrations/ workers/ data/ services/ schemas/
 │   ├── Dockerfile.backend
@@ -125,7 +125,7 @@ Open `http://localhost:8000/docs`.
 
 ```bash
 cd saige
-uvicorn api:app --reload --port 8001
+uvicorn app.api:app --reload --port 8001
 ```
 
 See [`saige/README.md`](saige/README.md).

@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import logging
 
-from config import (
+from core.config import (
     RATE_LIMIT_ENABLED,
     RATE_LIMIT_MAX_REQUESTS,
     RATE_LIMIT_WINDOW_SECONDS,
     REDIS_ENABLED,
     REDIS_RATE_LIMIT_KEY_TEMPLATE,
 )
-from jwt_auth import get_current_user, get_current_user_optional  # noqa: F401
-from message_buffer import message_buffer
+from core.security import get_current_user, get_current_user_optional  # noqa: F401
+from chat.buffer import message_buffer
 
 logger = logging.getLogger("farm_advisory")
 

@@ -19,7 +19,7 @@ def run_proactive_digest(*, business_id: str = "", people_id: str = "") -> Dict[
 
     # Plan check-ins
     try:
-        from plans_store import list_plans
+        from data.sql.plans_store import list_plans
 
         plans = list_plans(business_id=business_id or None, limit=5)
         open_items = 0
@@ -40,7 +40,7 @@ def run_proactive_digest(*, business_id: str = "", people_id: str = "") -> Dict[
 
     # Monitoring findings
     try:
-        from monitoring_store import list_runs
+        from data.sql.monitoring_store import list_runs
 
         runs = list_runs(business_id=business_id or None, limit=3)
         if runs:

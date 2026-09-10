@@ -306,5 +306,5 @@ print(f"[Config] LLM provider: {SAIGE_LLM_PROVIDER} (Gemini model: {GEMINI_MODEL
 print(f"[Config] Control-plane SQL preferred: {SAIGE_CONTROL_PLANE_SQL}")
 print(f"[Config] Media GCS bucket: {SAIGE_MEDIA_GCS_BUCKET or '(local fallback)'}")
 
-# Compat: `from config import settings` then settings.GEMINI_MODEL_NAME, etc.
+# Compat: `from core.config import settings` then settings.GEMINI_MODEL_NAME, etc.
 settings = sys.modules[__name__]
