@@ -2,7 +2,7 @@ name: Deploy Livestock Staging
 
 on:
   push:
-    branches: [GCP/backend-staging]
+    branches: ['GCP/backend-staging']
     paths:
       - 'livestock/**'
       - 'app/routers/livestock.py'

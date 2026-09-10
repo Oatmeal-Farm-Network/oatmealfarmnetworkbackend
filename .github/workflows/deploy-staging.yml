@@ -5,7 +5,7 @@ name: Deploy to Staging
 # Docs-only pushes under docs/ do not deploy (paths-ignore).
 on:
   push:
-    branches: [GCP/backend-staging]
+    branches: ['GCP/backend-staging']
     paths-ignore:
       - 'docs/**'
       - 'README.md'

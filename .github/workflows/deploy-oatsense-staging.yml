@@ -2,7 +2,7 @@ name: Deploy Oatsense Staging
 
 on:
   push:
-    branches: [GCP/backend-staging]
+    branches: ['GCP/backend-staging']
     paths:
       - 'oatsense/**'
       - 'app/routers/precision_ag.py'
