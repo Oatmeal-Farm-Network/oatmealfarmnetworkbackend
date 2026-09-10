@@ -3,6 +3,7 @@ name: Deploy Backend Production
 # main → oatmealfarmnewtorkbackend in animated-flare-421518 (Oatmeal AI) only.
 # Official shared API prod Cloud Run is oatmealfarmnewtorkbackend (typo is the real name).
 # Image-only promote. Does not rewrite env, secrets, SQL, or SA.
+# Skips cleanly when prod WIF secrets are unset. Never uses staging.
 on:
   push:
     branches: [main]
@@ -21,7 +22,27 @@ env:
   CLOUD_RUN_SERVICE: oatmealfarmnewtorkbackend
 
 jobs:
+  check-prod-wif:
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - name: Check prod WIF secrets
+        id: check
+        shell: bash
+        run: |
+          provider="${{ secrets.PROD_GCP_WIF_PROVIDER }}${{ secrets.PROD_GCP_WORKLOAD_IDENTITY_PROVIDER }}"
+          sa="${{ secrets.PROD_GCP_SERVICE_ACCOUNT }}"
+          if [ -n "$provider" ] && [ -n "$sa" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Prod WIF is not configured (PROD_GCP_WIF_PROVIDER / PROD_GCP_SERVICE_ACCOUNT). Skipping backend production deploy."
+          fi
+
   deploy:
+    needs: check-prod-wif
+    if: needs.check-prod-wif.outputs.configured == 'true'
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -32,24 +53,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Require production secrets
+      - name: Require Oatmeal AI project
         shell: bash
         run: |
-          missing=0
-          if [ -z "${{ secrets.PROD_GCP_WIF_PROVIDER }}${{ secrets.PROD_GCP_WORKLOAD_IDENTITY_PROVIDER }}" ]; then
-            echo "::error::Missing GitHub Actions secret: PROD_GCP_WIF_PROVIDER (or PROD_GCP_WORKLOAD_IDENTITY_PROVIDER)"
-            missing=1
-          fi
-          if [ -z "${{ secrets.PROD_GCP_SERVICE_ACCOUNT }}" ]; then
-            echo "::error::Missing GitHub Actions secret: PROD_GCP_SERVICE_ACCOUNT"
-            missing=1
-          fi
           project="${{ env.PROJECT_ID }}"
-          if [ -n "$project" ] && [ "$project" != "animated-flare-421518" ]; then
+          if [ "$project" != "animated-flare-421518" ]; then
             echo "::error::PROD_GCP_PROJECT_ID must be animated-flare-421518 (Oatmeal AI). Never oatmeal-farm-staging."
-            missing=1
+            exit 1
           fi
-          if [ "$missing" -ne 0 ]; then exit 1; fi
 
       - name: Set short commit SHA
         id: vars

@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
 
 env:
-  PROJECT_ID: ${{ secrets.PROD_GCP_PROJECT_ID || secrets.GCP_PROJECT_ID }}
+  PROJECT_ID: ${{ secrets.PROD_GCP_PROJECT_ID || secrets.GCP_PROJECT_ID || 'animated-flare-421518' }}
   GAR_LOCATION: us-central1
   GAR_REPOSITORY: docker-repo
   REGION: us-central1
@@ -22,7 +22,34 @@ env:
   MAIN_SERVICE_NAME: oatmealfarmnewtorkbackend
 
 jobs:
+  check-prod-auth:
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+      use_wif: ${{ steps.check.outputs.use_wif }}
+    steps:
+      - name: Check prod WIF or GCP_SA_KEY
+        id: check
+        shell: bash
+        run: |
+          provider="${{ secrets.PROD_GCP_WORKLOAD_IDENTITY_PROVIDER }}${{ secrets.PROD_GCP_WIF_PROVIDER }}"
+          sa="${{ secrets.PROD_GCP_SERVICE_ACCOUNT }}"
+          key="${{ secrets.GCP_SA_KEY }}"
+          if [ -n "$provider" ] && [ -n "$sa" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "use_wif=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$key" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "use_wif=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "use_wif=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No prod WIF or GCP_SA_KEY. Skipping Saige production deploy."
+          fi
+
   deploy:
+    needs: check-prod-auth
+    if: needs.check-prod-auth.outputs.configured == 'true'
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -37,17 +64,21 @@ jobs:
         shell: bash
         run: |
           project="${{ env.PROJECT_ID }}"
-          if [ -z "$project" ]; then
-            echo "::error::Missing PROD_GCP_PROJECT_ID (or GCP_PROJECT_ID). Must be animated-flare-421518."
-            exit 1
-          fi
           if [ "$project" != "animated-flare-421518" ]; then
             echo "::error::Saige prod must use project animated-flare-421518 (Oatmeal AI). Got: $project"
             echo "Never deploy saige-backend into oatmeal-farm-staging from main."
             exit 1
           fi
 
-      - name: Authenticate to Google Cloud
+      - name: Authenticate to Google Cloud (WIF)
+        if: needs.check-prod-auth.outputs.use_wif == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.PROD_GCP_WORKLOAD_IDENTITY_PROVIDER || secrets.PROD_GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.PROD_GCP_SERVICE_ACCOUNT }}
+
+      - name: Authenticate to Google Cloud (SA key)
+        if: needs.check-prod-auth.outputs.use_wif != 'true'
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
