@@ -18,11 +18,12 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11" # matches Dockerfile (python:3.11-slim)
+          python-version: "3.11"
 
       - name: Install ruff
         run: pip install ruff
 
+      # Critical rules only (see ruff.toml). Full style debt is not a merge blocker.
       - name: Lint app/, saige/, livestock/, and oatsense/
         run: ruff check app saige livestock oatsense
 
@@ -35,30 +36,70 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11" # matches Dockerfile (python:3.11-slim)
+          python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install --no-cache-dir -r requirements.txt
+        run: |
+          pip install --no-cache-dir -r requirements.txt
+          pip install --no-cache-dir -r saige/requirements.txt
 
       - name: Boot server_all.py and probe /health
         env:
           PORT: "8000"
+          # Saige imports initialize the Gemini client at module load; CI has no real key.
+          GOOGLE_API_KEY: "ci-boot-check-dummy"
+          REDIS_ENABLED: "false"
         run: |
-          python server_all.py &
+          set -o pipefail
+          python server_all.py > /tmp/server_all.log 2>&1 &
           SERVER_PID=$!
-          # give the app a few seconds to come up
-          sleep 12
+          sleep 15
           if curl --fail --silent --show-error http://127.0.0.1:8000/health; then
             echo "boot OK"
             RESULT=0
           else
-            echo "boot/health check FAILED"
+            echo "boot/health check FAILED — server_all log:"
+            cat /tmp/server_all.log || true
             RESULT=1
           fi
           kill "$SERVER_PID" 2>/dev/null || true
           exit $RESULT
 
-      # TODO: add pytest step (pytest suite is out of scope for this sprint)
+  boot-check-saige:
+    name: Boot check (saige service)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --no-cache-dir -r requirements.txt
+          pip install --no-cache-dir -r saige/requirements.txt
+
+      - name: Boot saige service and probe /health
+        env:
+          PORT: "8000"
+          PYTHONPATH: saige
+          GOOGLE_API_KEY: "ci-boot-check-dummy"
+          REDIS_ENABLED: "false"
+        run: |
+          uvicorn app.api:app --host 127.0.0.1 --port 8000 &
+          SERVER_PID=$!
+          sleep 12
+          if curl --fail --silent --show-error http://127.0.0.1:8000/health; then
+            echo "saige boot OK"
+            RESULT=0
+          else
+            echo "saige boot/health check FAILED"
+            RESULT=1
+          fi
+          kill "$SERVER_PID" 2>/dev/null || true
+          exit $RESULT
 
   boot-check-livestock:
     name: Boot check (livestock service)

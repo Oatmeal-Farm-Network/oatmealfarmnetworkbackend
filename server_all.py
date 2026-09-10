@@ -128,6 +128,18 @@ _remove_path(HERE)
 # ── Phase 3: load Saige ────────────────────────────────────────────────────
 # Saige is cwd-independent. Add saige to sys.path so `from app.api import …`
 # resolves to saige/app, not the main backend app package.
+#
+# Eviction by file path can leave the main `app` package name occupied (or a
+# partial parent package) so `import app.api` resolves to main's app without
+# api.py → ModuleNotFoundError: app.api. Force-clear before Saige loads.
+for _name in [k for k in list(sys.modules) if k == "app" or k.startswith("app.")]:
+    if _name in _KEEP:
+        continue
+    _mod = sys.modules.get(_name)
+    if _mod is not None and not _name.startswith("_oatmeal_"):
+        sys.modules["_oatmeal_" + _name.replace(".", "_")] = _mod
+    sys.modules.pop(_name, None)
+
 _add_path_front(SAIGE_CODE_DIR)
 print("[serve_all] phase 4: loading Saige")
 from app.api import app as saige_app  # noqa: E402

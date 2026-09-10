@@ -1,0 +1,12 @@
+# CI gate for the train. Full style cleanup is out of scope — fail only on
+# syntax-class problems, not thousands of UP/BLE/ANN/F821 nits or notebooks.
+target-version = "py311"
+line-length = 120
+extend-exclude = ["**/*.ipynb", "**/docs/notebooks"]
+
+[lint]
+select = [
+  "E9",   # runtime syntax errors
+  "F63",  # invalid print/star-args
+  "F7",   # syntax errors in statements
+]
