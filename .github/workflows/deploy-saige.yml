@@ -31,14 +31,15 @@ jobs:
       - name: Check prod WIF or GCP_SA_KEY
         id: check
         shell: bash
+        env:
+          HAS_WIF_PROVIDER: ${{ secrets.PROD_GCP_WORKLOAD_IDENTITY_PROVIDER != '' || secrets.PROD_GCP_WIF_PROVIDER != '' }}
+          HAS_WIF_SA: ${{ secrets.PROD_GCP_SERVICE_ACCOUNT != '' }}
+          HAS_SA_KEY: ${{ secrets.GCP_SA_KEY != '' }}
         run: |
-          provider="${{ secrets.PROD_GCP_WORKLOAD_IDENTITY_PROVIDER }}${{ secrets.PROD_GCP_WIF_PROVIDER }}"
-          sa="${{ secrets.PROD_GCP_SERVICE_ACCOUNT }}"
-          key="${{ secrets.GCP_SA_KEY }}"
-          if [ -n "$provider" ] && [ -n "$sa" ]; then
+          if [ "$HAS_WIF_PROVIDER" = "true" ] && [ "$HAS_WIF_SA" = "true" ]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
             echo "use_wif=true" >> "$GITHUB_OUTPUT"
-          elif [ -n "$key" ]; then
+          elif [ "$HAS_SA_KEY" = "true" ]; then
             echo "configured=true" >> "$GITHUB_OUTPUT"
             echo "use_wif=false" >> "$GITHUB_OUTPUT"
           else
