@@ -69,7 +69,7 @@ def _keyword_hit(text: str, keywords: list[str]) -> float:
 
 
 def eval_retrieval(limit: int | None = None) -> dict:
-    from rag import rag_bakasura, rag_livestock, rag_news, rag_plant
+    from integrations.rag import rag_bakasura, rag_livestock, rag_news, rag_plant
 
     mapping = {
         "crop": rag_plant,

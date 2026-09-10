@@ -9,7 +9,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from config import (
+from core.config import (
     BAKASURA_DOCS_COLLECTION,
     EMBEDDING_MODEL,
     FIRESTORE_DATABASE,
@@ -111,7 +111,7 @@ def _get_redis_text_client():
     if not RAG_CACHE_ENABLED:
         return None
     try:
-        from redis_client import get_redis_manager
+        from data.redis.client import get_redis_manager
 
         return get_redis_manager().get_client(decode_responses=True)
     except Exception:

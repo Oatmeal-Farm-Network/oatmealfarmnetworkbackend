@@ -15,17 +15,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from langgraph.types import Command
 
-from config import (
+from core.config import (
     FRONTEND_URL, ALLOW_ALL_ORIGINS, IS_PRODUCTION, REDIS_ENABLED, SHORT_TERM_N,
     MAX_MESSAGE_CHARS, RATE_LIMIT_MAX_REQUESTS, RATE_LIMIT_WINDOW_SECONDS,
     normalize_chat_product,
 )
 from graph import graph
 from chat import run_chat, resume_hitl, iter_chat_events
-from chat_history import chat_history
-from message_buffer import message_buffer, get_last_n, push_message
-from llm import llm
-from saige_models import FollowUpEntityExtraction, MapIntentDetection
+from chat.history import chat_history
+from chat.buffer import message_buffer, get_last_n, push_message
+from integrations.gemini import llm
+from schemas.models import FollowUpEntityExtraction, MapIntentDetection
 from app.dependencies import _check_rate_limit, get_current_user
 from app.lifecycle import (
     _check_redis_health,
@@ -338,7 +338,7 @@ async def root():
 async def health_check(request: Request):
     llm_backend = "unavailable"
     try:
-        from llm import get_farm_llm_backend
+        from integrations.gemini import get_farm_llm_backend
         llm_backend = get_farm_llm_backend()
     except Exception as e:
         llm_backend = f"unavailable:{e}"
@@ -353,13 +353,13 @@ async def health_check(request: Request):
         "media": None,
     }
     try:
-        from config import SAIGE_LLM_PROVIDER, SAIGE_MEDIA_GCS_BUCKET
+        from core.config import SAIGE_LLM_PROVIDER, SAIGE_MEDIA_GCS_BUCKET
         checks["llm_provider"] = SAIGE_LLM_PROVIDER
         checks["media"] = "gcs" if SAIGE_MEDIA_GCS_BUCKET else "local-fallback"
     except Exception:
         pass
     try:
-        from db_control import table_exists
+        from data.sql.control import table_exists
         checks["control_plane"] = "sql" if table_exists("SaigeProposals") else "json-fallback"
     except Exception:
         checks["control_plane"] = "unknown"
@@ -413,7 +413,7 @@ async def readiness_check(request: Request):
     # JWT canary — fail loudly if SECRET_KEY cannot round-trip a token
     try:
         from jose import jwt as _jwt
-        from config import JWT_SECRET, JWT_ALGORITHM
+        from core.config import JWT_SECRET, JWT_ALGORITHM
         from datetime import datetime, timedelta, timezone
 
         if not JWT_SECRET:
@@ -439,7 +439,7 @@ async def readiness_check(request: Request):
         checks["redis"] = _check_redis_health(redis_manager)[0]
     critical = ["graph", "jwt"]
     try:
-        from config import REDIS_ALLOW_MEMORY_FALLBACK
+        from core.config import REDIS_ALLOW_MEMORY_FALLBACK
         redis_required = REDIS_ENABLED and not REDIS_ALLOW_MEMORY_FALLBACK
     except Exception:
         redis_required = REDIS_ENABLED
@@ -544,7 +544,7 @@ async def chat(
     product = normalize_chat_product(request.product)
     if not business_id and people_id:
         try:
-            from user_profile import get_primary_business_id as _get_biz_id
+            from services.user_profile import get_primary_business_id as _get_biz_id
             business_id = _get_biz_id(people_id)
             if business_id:
                 logger.info(f"[API] Auto-resolved business_id={business_id} for people_id={people_id}")
@@ -598,7 +598,7 @@ async def chat_stream(
     product = normalize_chat_product(request.product)
     if not business_id and people_id:
         try:
-            from user_profile import get_primary_business_id as _get_biz_id
+            from services.user_profile import get_primary_business_id as _get_biz_id
             business_id = _get_biz_id(people_id)
         except Exception:
             business_id = None
@@ -746,7 +746,7 @@ async def submit_chat_feedback(
     if payload.rating not in (1, -1):
         return JSONResponse(status_code=400, content={"error": "rating must be +1 or -1"})
     try:
-        from learning import learning_store as _learning_store
+        from services.learning import learning_store as _learning_store
         _learning_store.record_feedback(payload.thread_id, payload.rating)
     except Exception as _fb_err:
         logger.warning("[Feedback] Could not apply rating: %s", _fb_err)
@@ -759,7 +759,7 @@ async def submit_chat_feedback(
 # ============================================================================
 
 try:
-    from companion_planting import (
+    from tools.agriculture.companion_planting import (
         list_known_crops as _cp_list_known_crops,
         full_record as _cp_full_record,
         check_pair as _cp_check_pair,
@@ -804,7 +804,7 @@ async def companion_check_pair(a: str, b: str):
 # ============================================================================
 
 try:
-    from crop_names import lookup as _cn_lookup, list_all as _cn_list_all, resolve as _cn_resolve
+    from tools.agriculture.crop_names import lookup as _cn_lookup, list_all as _cn_list_all, resolve as _cn_resolve
     _CN_AVAILABLE = True
 except Exception as _cn_err:
     print(f"[API] crop_names import failed: {_cn_err}")
@@ -833,7 +833,7 @@ async def crop_names_lookup(name: str):
 # ============================================================================
 
 try:
-    from weather_mitigation import get_plan as _wm_get_plan, list_hazards as _wm_list_hazards
+    from tools.weather.weather_mitigation import get_plan as _wm_get_plan, list_hazards as _wm_list_hazards
     _WM_AVAILABLE = True
 except Exception as _wm_err:
     print(f"[API] weather_mitigation import failed: {_wm_err}")
@@ -862,7 +862,7 @@ async def mitigation_plan(hazard: str, phase: str = "imminent"):
 # ============================================================================
 
 try:
-    from region_crops import recommend as _rc_recommend, list_climates as _rc_list_climates
+    from tools.agriculture.region_crops import recommend as _rc_recommend, list_climates as _rc_list_climates
     _RC_AVAILABLE = True
 except Exception as _rc_err:
     print(f"[API] region_crops import failed: {_rc_err}")
@@ -894,7 +894,7 @@ async def region_recommend(
 # ============================================================================
 
 try:
-    from soil_challenges import assess as _sc_assess
+    from tools.agriculture.soil_challenges import assess as _sc_assess
     _SC_AVAILABLE = True
 except Exception as _sc_err:
     print(f"[API] soil_challenges import failed: {_sc_err}")
@@ -924,13 +924,13 @@ async def soil_assess(payload: SoilTestPayload):
     user_id = body.pop("user_id", None)
     result = _sc_assess(**body)
     try:
-        from cross_links import subsidies_for_soil
+        from services.cross_links import subsidies_for_soil
         result["related_suggestions"] = subsidies_for_soil(result.get("challenges", []))
     except Exception:
         pass
     if user_id and result.get("status") == "ok":
         try:
-            from history_store import record as _hist_record
+            from services.history import record as _hist_record
             entry = _hist_record(user_id, "soil", {
                 "inputs":    body,
                 "headline":  result.get("headline"),
@@ -951,7 +951,7 @@ async def soil_assess(payload: SoilTestPayload):
 # ============================================================================
 
 try:
-    from pest_detection import detect_from_base64 as _pd_detect
+    from tools.agriculture.pest_detection import detect_from_base64 as _pd_detect
     _PD_AVAILABLE = True
 except Exception as _pd_err:
     print(f"[API] pest_detection import failed: {_pd_err}")
@@ -970,7 +970,7 @@ async def pest_detect(payload: PestDetectPayload):
         return {"status": "unavailable"}
     result = _pd_detect(payload.image_base64, payload.notes or "")
     try:
-        from cross_links import companions_for_pest
+        from services.cross_links import companions_for_pest
         if result.get("status") == "ok":
             result["related_suggestions"] = companions_for_pest(
                 result.get("diagnosis", ""), result.get("category", "")
@@ -979,7 +979,7 @@ async def pest_detect(payload: PestDetectPayload):
         pass
     if payload.user_id and result.get("status") == "ok":
         try:
-            from history_store import record as _hist_record
+            from services.history import record as _hist_record
             entry = _hist_record(payload.user_id, "pest", {
                 "diagnosis":  result.get("diagnosis"),
                 "confidence": result.get("confidence"),
@@ -998,7 +998,7 @@ async def pest_detect(payload: PestDetectPayload):
 # ============================================================================
 
 try:
-    from price_forecast import forecast as _pf_forecast, list_commodities as _pf_list
+    from tools.finance.price_forecast import forecast as _pf_forecast, list_commodities as _pf_list
     _PF_AVAILABLE = True
 except Exception as _pf_err:
     print(f"[API] price_forecast import failed: {_pf_err}")
@@ -1019,7 +1019,7 @@ async def price_forecast_endpoint(commodity: str, months_ahead: int = 6,
         return {"status": "unavailable"}
     result = _pf_forecast(commodity, max(1, min(int(months_ahead or 6), 12)))
     try:
-        from cross_links import insurance_for_commodity
+        from services.cross_links import insurance_for_commodity
         if result.get("status") == "ok":
             forecast = result.get("forecast", []) or []
             trend = None
@@ -1037,7 +1037,7 @@ async def price_forecast_endpoint(commodity: str, months_ahead: int = 6,
         pass
     if user_id and result.get("status") == "ok":
         try:
-            from history_store import record as _hist_record
+            from services.history import record as _hist_record
             entry = _hist_record(user_id, "price", {
                 "commodity":      result.get("commodity"),
                 "recent_average": result.get("recent_average"),
@@ -1057,7 +1057,7 @@ async def price_forecast_endpoint(commodity: str, months_ahead: int = 6,
 # ============================================================================
 
 try:
-    from subsidies import (
+    from tools.finance.subsidies import (
         search as _sb_search, get as _sb_get,
         list_categories as _sb_list_categories,
         list_countries as _sb_list_countries,
@@ -1112,7 +1112,7 @@ async def subsidies_detail(program_id: str):
 # ============================================================================
 
 try:
-    from insurance import for_crop as _in_for_crop, list_crops as _in_list_crops, PRODUCTS as _in_products
+    from tools.finance.insurance import for_crop as _in_for_crop, list_crops as _in_list_crops, PRODUCTS as _in_products
     _IN_AVAILABLE = True
 except Exception as _in_err:
     print(f"[API] insurance import failed: {_in_err}")
@@ -1145,7 +1145,7 @@ async def insurance_for_crop(crop: str):
 # ============================================================================
 
 try:
-    from push_notifications import (
+    from services.push_notifications import (
         subscribe as _pn_subscribe, unsubscribe as _pn_unsubscribe,
         list_subscriptions as _pn_list, send_to as _pn_send_to,
         broadcast as _pn_broadcast, public_key as _pn_public_key,
@@ -1228,7 +1228,7 @@ async def push_test(payload: PushTestPayload):
 # ============================================================================
 
 try:
-    import history_store as _hist
+    import services.history as _hist
     _HIST_AVAILABLE = True
 except Exception as _hist_err:
     print(f"[API] history_store import failed: {_hist_err}")
@@ -1257,7 +1257,7 @@ async def history_delete(user_id: str, entry_id: str):
 # ============================================================================
 
 try:
-    from precision_ag import (
+    from tools.agriculture.precision_ag import (
         list_my_fields_tool as _pa_list_fields,
         get_field_analysis_tool as _pa_field_analysis,
         get_field_history_tool as _pa_field_history,
@@ -1331,7 +1331,7 @@ async def precision_ag_dashboard(people_id: str = Depends(get_current_user)):
     if not _PA_AVAILABLE:
         return {"status": "unavailable", "fields": [], "alerts": {}, "irrigation_urgency": None}
     try:
-        from precision_ag import _business_ids_for_people, _query, _BACKEND_URL
+        from tools.agriculture.precision_ag import _business_ids_for_people, _query, _BACKEND_URL
         import requests as _req
 
         biz_ids = _business_ids_for_people(people_id)
@@ -1434,7 +1434,7 @@ async def precision_ag_dashboard(people_id: str = Depends(get_current_user)):
 # ============================================================================
 
 try:
-    import actions as _saige_actions
+    import tools.marketplace.actions as _saige_actions
     _ACTIONS_AVAILABLE = True
 except Exception as _act_err:
     print(f"[API] saige.actions import failed: {_act_err}")
@@ -1645,7 +1645,7 @@ async def saige_proposals_list(
     people_id: str = Depends(get_current_user),
 ):
     """List HITL proposals (local JSON store until SQL DDL applied)."""
-    from proposals_store import list_proposals
+    from data.sql.proposals_store import list_proposals
 
     rows = list_proposals(people_id=people_id, business_id=business_id, status=status)
     return {"status": "ok", "proposals": rows}
@@ -1657,7 +1657,7 @@ async def saige_proposal_events(
     people_id: str = Depends(get_current_user),
 ):
     """HITL audit trail for a proposal."""
-    from proposals_store import get_proposal, list_proposal_events
+    from data.sql.proposals_store import get_proposal, list_proposal_events
 
     row = get_proposal(proposal_id)
     if not row:
@@ -1684,7 +1684,7 @@ async def saige_proposal_decide(
     people_id: str = Depends(get_current_user),
 ):
     """Approve/edit/reject a proposal — aliases resume when thread_id known."""
-    from proposals_store import get_proposal
+    from data.sql.proposals_store import get_proposal
 
     row = get_proposal(proposal_id)
     if not row:
@@ -1708,7 +1708,7 @@ async def saige_plans_list(
     business_id: Optional[str] = None,
     people_id: str = Depends(get_current_user),
 ):
-    from plans_store import list_plans
+    from data.sql.plans_store import list_plans
 
     rows = list_plans(business_id=business_id, people_id=people_id)
     return {"status": "ok", "plans": rows}
@@ -1716,7 +1716,7 @@ async def saige_plans_list(
 
 @app.get("/plans/{plan_id}")
 async def saige_plan_get(plan_id: str, people_id: str = Depends(get_current_user)):
-    from plans_store import get_plan
+    from data.sql.plans_store import get_plan
 
     row = get_plan(plan_id)
     if not row:
@@ -1729,7 +1729,7 @@ async def saige_monitoring_runs(
     business_id: Optional[str] = None,
     people_id: str = Depends(get_current_user),
 ):
-    from monitoring_store import list_runs
+    from data.sql.monitoring_store import list_runs
 
     return {"status": "ok", "runs": list_runs(business_id=business_id)}
 
@@ -1742,7 +1742,7 @@ async def saige_attach(
     """Upload scout/media image to GCS (local fallback only when bucket unset)."""
     import base64
 
-    from media_storage import store_bytes
+    from data.storage.media import store_bytes
 
     try:
         body = await request.json()
@@ -1770,7 +1770,7 @@ async def saige_attach(
         )
         # Optional vision scout analysis
         if (body or {}).get("scout") in (True, "true", "1", 1):
-            from vision_scout import scout_from_bytes
+            from tools.agriculture.vision_scout import scout_from_bytes
 
             result["scout"] = scout_from_bytes(
                 raw,
@@ -1883,7 +1883,7 @@ async def saige_draft_reject(
 # ============================================================================
 
 try:
-    import weather_alerts as _wx_alerts
+    import tools.weather.weather_alerts as _wx_alerts
     _WXA_AVAILABLE = True
 except Exception as _wxa_err:
     print(f"[API] weather_alerts import failed: {_wxa_err}")
@@ -1902,7 +1902,7 @@ async def alerts_proactive_run(
     people_id: str = Depends(get_current_user),
 ):
     """Scheduler-friendly proactive digest (plans / monitoring / weather nudge)."""
-    from proactive import run_proactive_digest
+    from workers.proactive import run_proactive_digest
 
     return run_proactive_digest(business_id=business_id, people_id=people_id)
 
@@ -1912,7 +1912,7 @@ async def alerts_proactive_run(
 # ============================================================================
 
 try:
-    import chef as _chef
+    import agents.sibling.chef as _chef
     _CHEF_AVAILABLE = True
 except Exception as _chef_err:
     print(f"[API] saige.chef import failed: {_chef_err}")
@@ -2109,7 +2109,7 @@ async def chef_restock_draft(
 # ============================================================================
 
 try:
-    import pairsley as _pairsley
+    import agents.sibling.pairsley as _pairsley
     _PAIRSLEY_AVAILABLE = True
 except Exception as _pairsley_err:
     print(f"[API] pairsley import failed: {_pairsley_err}")
@@ -2198,7 +2198,7 @@ async def pairsley_thread_delete(
 # ============================================================================
 
 try:
-    import rosemarie as _rosemarie
+    import agents.sibling.rosemarie as _rosemarie
     _ROSEMARIE_AVAILABLE = True
 except Exception as _rosemarie_err:
     print(f"[API] rosemarie import failed: {_rosemarie_err}")
@@ -2287,7 +2287,7 @@ async def rosemarie_thread_delete(
 # ============================================================================
 
 try:
-    import cassia as _cassia
+    import agents.sibling.cassia as _cassia
     _CASSIA_AVAILABLE = True
 except Exception as _cassia_err:
     print(f"[API] cassia import failed: {_cassia_err}")
@@ -2567,7 +2567,7 @@ async def cassia_thread_delete(
 # ============================================================================
 
 try:
-    from weather_alerts import run as _run_weather_alerts
+    from tools.weather.weather_alerts import run as _run_weather_alerts
     _WEATHER_ALERTS_EP_AVAILABLE = True
 except Exception as _wae_err:
     print(f"[API] weather_alerts endpoint import failed: {_wae_err}")
@@ -2577,7 +2577,7 @@ _CRON_SECRET = os.getenv("CRON_SECRET", "")
 
 _FARM_DIGEST_AVAILABLE = False
 try:
-    from farm_digest import run_digest as _run_farm_digest
+    from workers.farm_digest import run_digest as _run_farm_digest
     _FARM_DIGEST_AVAILABLE = True
 except Exception as _fde:
     print(f"[API] farm_digest unavailable: {_fde}")

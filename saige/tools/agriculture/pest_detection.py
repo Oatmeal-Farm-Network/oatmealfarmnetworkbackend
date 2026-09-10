@@ -20,7 +20,7 @@ from typing import Dict, List, Optional
 from langchain_core.messages import HumanMessage
 
 try:
-    from llm import llm as _shared_llm
+    from integrations.gemini import llm as _shared_llm
 except Exception as _e:
     _shared_llm = None
     print(f"[pest_detection] shared LLM unavailable: {_e}")
@@ -171,7 +171,7 @@ from langchain_core.tools import tool
 from visualizations.pending import viz_emit
 
 try:
-    import history_store as _history
+    import services.history as _history
     _HISTORY_AVAILABLE = True
 except Exception as _e:
     _history = None

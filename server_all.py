@@ -126,11 +126,12 @@ _remove_path(HERE)
 
 
 # ── Phase 3: load Saige ────────────────────────────────────────────────────
-# Saige is cwd-independent. Add saige to sys.path; its `from app.database import …`
-# will now find saige/database.py (no main-backend `database` in sys.modules).
+# Saige is cwd-independent. Add saige to sys.path so `from app.api import …`
+# resolves to saige/app, not the main backend app package.
 _add_path_front(SAIGE_CODE_DIR)
 print("[serve_all] phase 4: loading Saige")
-from api import app as saige_app, app_lifespan as saige_lifespan  # noqa: E402
+from app.api import app as saige_app  # noqa: E402
+from app.lifecycle import app_lifespan as saige_lifespan  # noqa: E402
 print("[serve_all] Saige loaded")
 
 

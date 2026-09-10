@@ -23,11 +23,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.tools import tool
 
-from chat_history import ChatHistory
-from config import SHORT_TERM_N
-from llm import llm
-from message_buffer import get_last_n, push_message
-from rag import RAGSystem
+from chat.history import ChatHistory
+from core.config import SHORT_TERM_N
+from integrations.gemini import llm
+from chat.buffer import get_last_n, push_message
+from integrations.rag import RAGSystem
 from data.sql.connect import sql_connect
 
 logger = logging.getLogger("cassia")

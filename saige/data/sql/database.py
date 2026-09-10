@@ -2,7 +2,7 @@
 import re
 from typing import List, Dict
 
-from config import ALLOWED_TABLES
+from core.config import ALLOWED_TABLES
 from data.sql.connect import sql_connect, sql_configured
 
 

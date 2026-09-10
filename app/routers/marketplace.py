@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text, bindparam
 from app.database import get_db, engine
 from app.core.auth import get_current_user
+from app.business_access import require_business
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import date
@@ -1136,7 +1137,7 @@ def list_orders(buyer_people_id: int, db: Session = Depends(get_db)):
 # SELLER ACTIONS  (frontend-compatible paths)
 # ─────────────────────────────────────────────
 
-@marketplace_router.get("/orders/seller/{business_id}")
+@marketplace_router.get("/orders/seller/{business_id}", dependencies=[Depends(require_business)])
 def get_seller_orders_v2(
     business_id: int,
     status: str = Query(None),
@@ -1206,7 +1207,7 @@ def seller_ship_v2(body: dict, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
-@marketplace_router.get("/seller/analytics")
+@marketplace_router.get("/seller/analytics", dependencies=[Depends(require_business)])
 def seller_analytics(business_id: int, db: Session = Depends(get_db)):
     """Revenue, top buyers, repeat order rate for the seller dashboard."""
     # Overall KPIs
@@ -1287,7 +1288,7 @@ def seller_analytics(business_id: int, db: Session = Depends(get_db)):
     }
 
 
-@marketplace_router.get("/seller/orders")
+@marketplace_router.get("/seller/orders", dependencies=[Depends(require_business)])
 def get_seller_orders(business_id: int, db: Session = Depends(get_db)):
     items = db.execute(text("""
         SELECT oi.*, o.OrderNumber, o.BuyerName, o.BuyerEmail,
@@ -1407,7 +1408,7 @@ def ship_item(order_item_id: int, req: ShipItemRequest, db: Session = Depends(ge
 # SELLER LISTINGS  (read-only view of their inventory)
 # ─────────────────────────────────────────────
 
-@marketplace_router.get("/seller/listings")
+@marketplace_router.get("/seller/listings", dependencies=[Depends(require_business)])
 def get_seller_listings(business_id: int, db: Session = Depends(get_db)):
     """Returns unified produce + meat + processed food for a seller."""
     results = []
@@ -1917,7 +1918,7 @@ def list_product_categories(db: Session = Depends(get_db)):
     return [r[0] for r in rows]
 
 
-@marketplace_router.get("/products/seller")
+@marketplace_router.get("/products/seller", dependencies=[Depends(require_business)])
 def seller_products(business_id: int, db: Session = Depends(get_db)):
     rows = db.execute(text("""
         SELECT pr.*, b.BusinessName AS SellerName, NULL AS SellerCity, NULL AS SellerState
@@ -2499,6 +2500,146 @@ def remove_livestock_saved(
     return {"saved": False}
 
 
+_TAG_RE = _re.compile(r'<[^>]+>')
+
+
+def _plain_text(raw, limit: int = 420) -> str:
+    """Flatten a stored HTML description into plain card copy."""
+    if not raw:
+        return ''
+    import html as _html
+    txt = _re.sub(r'<\s*br\s*/?\s*>', ' ', str(raw), flags=_re.IGNORECASE)
+    txt = _re.sub(r'</\s*(p|div|li)\s*>', ' ', txt, flags=_re.IGNORECASE)
+    txt = _TAG_RE.sub('', txt)
+    txt = _html.unescape(_unescape(txt))
+    txt = _re.sub(r'\s+', ' ', txt).strip()
+    if limit and len(txt) > limit:
+        txt = txt[:limit].rsplit(' ', 1)[0].rstrip(' ,;:.') + '…'
+    return txt
+
+
+def _usable_photo(row) -> str | None:
+    url = _animal_photo(row)
+    if not url:
+        return None
+    filename = url.rstrip('/').split('/')[-1].split('?')[0]
+    return url if len(filename) > 4 and '.' in filename else None
+
+
+def _featured_dict(row, studs: bool) -> dict:
+    breeds = [_unescape(b) for b in (
+        getattr(row, 'Breed1', None) or '',
+        getattr(row, 'Breed2', None) or '',
+    ) if b]
+
+    def money(value):
+        try:
+            v = float(value)
+            return v if v > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    species_id = getattr(row, 'SpeciesID', None)
+    description = _plain_text(
+        getattr(row, 'StudDescription', None) if studs else None
+    ) or _plain_text(getattr(row, 'Description', None))
+
+    return {
+        "animal_id":    row.AnimalID,
+        "full_name":    _unescape(getattr(row, 'FullName', '') or '').strip(),
+        "photo":        _usable_photo(row),
+        "description":  description,
+        "price":        None if studs else money(getattr(row, 'Price', None)),
+        "stud_fee":     money(getattr(row, 'StudFee', None)) if studs else None,
+        "breeds":       breeds,
+        "category":     (getattr(row, 'Category', '') or '').strip(),
+        "location":     getattr(row, 'AddressState', '') or '',
+        "seller":       _unescape(getattr(row, 'BusinessName', '') or ''),
+        "business_id":  getattr(row, 'BusinessID', None),
+        "species_id":   species_id,
+        "species_slug": next((k for k, v in SLUG_TO_SPECIES_ID.items() if v == species_id), None),
+        "last_updated": row.LastUpdated.isoformat() if getattr(row, 'LastUpdated', None) else None,
+    }
+
+
+_FEATURED_SQL = """
+    SELECT TOP 24
+        a.AnimalID, a.FullName, a.SpeciesID, a.Category, a.LastUpdated,
+        a.Description, a.StudDescription,
+        ph.ListPageImage, ph.Photo1, ph.Photo2, ph.Photo3, ph.Photo4,
+        ph.Photo5, ph.Photo6, ph.Photo7, ph.Photo8,
+        p.Price, p.StudFee,
+        b1.Breed AS Breed1, b2.Breed AS Breed2,
+        biz.BusinessID, biz.BusinessName, addr.AddressState
+    FROM Animals a
+    OUTER APPLY (
+        SELECT TOP 1 * FROM Pricing x WHERE x.AnimalID = a.AnimalID
+    ) p
+    OUTER APPLY (
+        SELECT TOP 1 * FROM Photos x WHERE x.AnimalID = a.AnimalID
+    ) ph
+    LEFT JOIN SpeciesBreedLookupTable b1 ON b1.BreedLookupID = a.BreedID
+    LEFT JOIN SpeciesBreedLookupTable b2 ON b2.BreedLookupID = a.BreedID2
+    OUTER APPLY (
+        SELECT TOP 1 b.BusinessID, b.BusinessName, b.AddressID
+        FROM Business b
+        WHERE b.BusinessID = COALESCE(a.BusinessID, (
+            SELECT TOP 1 ba.BusinessID FROM BusinessAccess ba
+            WHERE ba.PeopleID = a.PeopleID AND ba.Active = 1
+            ORDER BY ba.BusinessID
+        ))
+    ) biz
+    LEFT JOIN Address addr ON addr.AddressID = biz.AddressID
+    WHERE {publish_flag}
+    ORDER BY a.LastUpdated DESC
+"""
+
+
+@marketplace_router.get("/homepage-featured")
+def livestock_homepage_featured(db: Session = Depends(get_db)):
+    """Homepage feature cards: newest for-sale animal, newest stud, plus heritage row."""
+    cached = _livestock_cache.get("homepage_featured")
+    if cached and _time.time() - cached["ts"] < _CACHE_TTL:
+        return cached["data"]
+
+    def candidates(studs: bool, flag: str) -> list:
+        try:
+            rows = db.execute(text(_FEATURED_SQL.format(publish_flag=flag))).fetchall()
+            return [_featured_dict(r, studs) for r in rows]
+        except Exception:
+            import traceback; traceback.print_exc()
+            return []
+
+    def lead_of(picks: list):
+        if not picks:
+            return None
+        return next((p for p in picks if p["photo"]), picks[0])
+
+    for_sale_picks = candidates(False, "a.PublishForSale = 1")
+    stud_picks     = candidates(True,  "a.PublishStud = 1")
+    for_sale = lead_of(for_sale_picks)
+    stud     = lead_of(stud_picks)
+
+    used_ids = {p["animal_id"] for p in (for_sale, stud) if p}
+    rest = [p for p in for_sale_picks if p["animal_id"] not in used_ids and p["photo"]]
+    heritage: list = []
+    seen_sellers = {p["seller"] for p in (for_sale, stud) if p and p["seller"]}
+    for unique_seller_pass in (True, False):
+        for p in rest:
+            if len(heritage) >= 3:
+                break
+            if p["animal_id"] in {h["animal_id"] for h in heritage}:
+                continue
+            if unique_seller_pass and p["seller"] in seen_sellers:
+                continue
+            seen_sellers.add(p["seller"])
+            heritage.append(p)
+
+    result = {"for_sale": for_sale, "stud": stud, "heritage": heritage}
+    _livestock_cache["homepage_featured"] = {"data": result, "ts": _time.time()}
+    return result
+
+
 @marketplace_router.get("/species/{slug}")
 def livestock_species_info(slug: str):
     """Return singular term and label for a species slug."""
@@ -2576,6 +2717,10 @@ def livestock_filters(slug: str, db: Session = Depends(get_db)):
         return {"breeds": [], "states": [], "ranches": []}
 
 
+# Sentinel "no upper bound" used by the listing endpoints' query defaults.
+_PRICE_CEILING = 100_000_000
+
+
 def _livestock_listing(
     slug: str, studs: bool, page: int,
     breed_id: int, state_index: int,
@@ -2601,21 +2746,20 @@ def _livestock_listing(
     order_sql  = sort_map.get(sort_by, "a.LastUpdated")
     dir_sql    = "ASC" if order_by == "asc" else "DESC"
 
-    # NULL Price/StudFee means "Call for Price". Include those only when the
-    # caller is using the default open range; exclude them when filtering by fee.
-    if min_price <= 0 and max_price >= 100_000_000:
-        price_clause = (
-            f"({price_col} IS NULL OR "
-            f"({price_col} >= :min_price AND {price_col} <= :max_price))"
-        )
-    else:
-        price_clause = (
-            f"({price_col} IS NOT NULL AND "
-            f"{price_col} >= :min_price AND {price_col} <= :max_price)"
-        )
+    filters = [f"a.SpeciesID = :sid", publish_flag]
+    params: dict = {"sid": species_id}
 
-    filters = [f"a.SpeciesID = :sid", publish_flag, price_clause]
-    params: dict = {"sid": species_id, "min_price": min_price, "max_price": max_price}
+    # Price/StudFee is NULL on most legacy rows (every published stud has a NULL
+    # StudFee). A bare `col >= :min AND col <= :max` drops all of them, because
+    # any comparison with NULL is never true — that hid 100% of stud listings.
+    # Only constrain rows that carry a value, and apply each bound solely when
+    # the caller actually asked for it.
+    if min_price is not None and min_price > 0:
+        filters.append(f"{price_col} >= :min_price")
+        params["min_price"] = min_price
+    if max_price is not None and max_price < _PRICE_CEILING:
+        filters.append(f"({price_col} IS NULL OR {price_col} <= :max_price)")
+        params["max_price"] = max_price
 
     if breed_id and breed_id != 0:
         filters.append("(a.BreedID = :breed_id OR a.BreedID2 = :breed_id)")
@@ -2626,28 +2770,34 @@ def _livestock_listing(
         params["state_index"] = state_index
 
     if business_id and business_id != 0:
-        filters.append("biz.BusinessID = :business_id")
+        filters.append("""(
+            a.BusinessID = :business_id
+            OR EXISTS (
+                SELECT 1 FROM BusinessAccess ba2
+                WHERE ba2.PeopleID = a.PeopleID
+                  AND ba2.Active = 1
+                  AND ba2.BusinessID = :business_id
+            )
+        )""")
         params["business_id"] = business_id
 
     where = " AND ".join(filters)
 
-    # Resolve seller via Animals.BusinessID first; fall back to a single
-    # BusinessAccess row. Joining all active BusinessAccess rows multiplied
-    # one animal into many and inflated COUNT(*) / page totals.
+    # OUTER APPLY so animals without a Pricing row still appear (Call for Price).
     join_block = """
-        JOIN Pricing p          ON p.AnimalID      = a.AnimalID
-        LEFT JOIN Photos ph     ON ph.AnimalID     = a.AnimalID
+        OUTER APPLY (SELECT TOP 1 * FROM Pricing x WHERE x.AnimalID = a.AnimalID) p
+        OUTER APPLY (SELECT TOP 1 * FROM Photos  x WHERE x.AnimalID = a.AnimalID) ph
         LEFT JOIN SpeciesBreedLookupTable b1 ON b1.BreedLookupID = a.BreedID
         LEFT JOIN SpeciesBreedLookupTable b2 ON b2.BreedLookupID = a.BreedID2
-        LEFT JOIN Business biz  ON biz.BusinessID  = COALESCE(
-            NULLIF(a.BusinessID, 0),
-            (
-                SELECT TOP 1 ba.BusinessID
-                FROM BusinessAccess ba
+        OUTER APPLY (
+            SELECT TOP 1 b.BusinessID, b.BusinessName, b.AddressID
+            FROM Business b
+            WHERE b.BusinessID = COALESCE(a.BusinessID, (
+                SELECT TOP 1 ba.BusinessID FROM BusinessAccess ba
                 WHERE ba.PeopleID = a.PeopleID AND ba.Active = 1
                 ORDER BY ba.BusinessID
-            )
-        )
+            ))
+        ) biz
         LEFT JOIN Address addr  ON addr.AddressID  = biz.AddressID
     """
 
@@ -2732,7 +2882,7 @@ def livestock_for_sale(
     state_index: int   = Query(0),
     business_id: int   = Query(0),
     min_price:   float = Query(0),
-    max_price:   float = Query(100_000_000),
+    max_price:   float = Query(_PRICE_CEILING),
     ancestry:    str   = Query("Any"),
     sort_by:     str   = Query("lastupdated"),
     order_by:    str   = Query("desc"),
@@ -2755,7 +2905,7 @@ def livestock_studs(
     state_index: int   = Query(0),
     business_id: int   = Query(0),
     min_stud_fee:  float = Query(0),
-    max_stud_fee:  float = Query(100_000_000),
+    max_stud_fee:  float = Query(_PRICE_CEILING),
     ancestry:    str   = Query("Any"),
     sort_by:     str   = Query("lastupdated"),
     order_by:    str   = Query("desc"),
@@ -3043,7 +3193,28 @@ def _get_animal_detail_impl(animal_id: int, lang: str, db: Session):
         FROM Fiber WHERE AnimalID = :aid
         ORDER BY SampleDateYear DESC, Average DESC
     """), {"aid": animal_id}).fetchall()
-    fiber_stats = [_jsonable_row(dict(r._mapping)) for r in fiber_rows]
+    _FIBER_FIELDS = (
+        "SampleDateMonth", "SampleDateDay", "SampleDateYear",
+        "Average", "StandardDev", "COV", "GreaterThan30",
+        "BlanketWeight", "ShearWeight", "CF", "Length", "Curve", "CrimpPerInch",
+    )
+
+    def _fiber_row_has_value(row: dict) -> bool:
+        """True when a Fiber row has anything the detail table would actually show."""
+        for field in _FIBER_FIELDS:
+            value = row.get(field)
+            if value is None:
+                continue
+            text_value = str(value).strip()
+            if text_value and text_value not in ("0", "0.0", "0.00"):
+                return True
+        return False
+
+    fiber_stats = [
+        _jsonable_row(d)
+        for d in (dict(r._mapping) for r in fiber_rows)
+        if _fiber_row_has_value(d)
+    ]
 
     # ── species slug ──────────────────────────────────────────────────────────
     species_slug     = SPECIES_ID_TO_SLUG.get(species_id)
@@ -3255,7 +3426,7 @@ def list_standing_orders(
     return [dict(r._mapping) for r in rows]
 
 
-@marketplace_router.get("/standing-orders/activity")
+@marketplace_router.get("/standing-orders/activity", dependencies=[Depends(require_business)])
 def standing_order_activity(
     business_id: int,
     role: str = "farm",

@@ -6,12 +6,12 @@
 
 | Module | Purpose |
 |--------|---------|
-| `chat/history.py` (shim: `chat_history.py`) | Firestore read/write helpers |
-| `data/redis/client.py` (shim: `redis_client.py`) | Redis connection manager with pooling |
-| `chat/buffer.py` (shim: `message_buffer.py`) | Last-N message buffer (Redis) |
+| `chat/history.py` | Firestore read/write helpers |
+| `data/redis/client.py` | Redis connection manager with pooling |
+| `chat/buffer.py` | Last-N message buffer (Redis) |
 | `graph/graph.py` (package: `from graph import graph`) | LangGraph compilation + Redis checkpointing |
-| `core/config.py` (shim: `config.py`) | All environment-driven configuration |
-| `app/api.py` (shim: `api.py` → `uvicorn api:app`) | FastAPI endpoints, request flow, rate limiter |
+| `core/config.py` | All environment-driven configuration |
+| `app/api.py` (`uvicorn app.api:app`) | FastAPI endpoints, request flow, rate limiter |
 
 **Tests:**
 
@@ -20,7 +20,7 @@
 | `tests/test_chat_history.py` | Firestore helpers (unit, mocked) |
 | `tests/test_message_buffer.py` | Redis buffer (unit, real Redis) |
 | `tests/test_integration.py` | Health endpoints, rate limiter, input validation |
-| `test_redis.py` | Quick Redis connection + checkpoint smoke test |
+| `scripts/smoke_test_redis.py` | Quick Redis connection + checkpoint smoke test |
 
 ---
 
@@ -267,7 +267,7 @@ Falls back to `MemorySaver` if:
 **Quick verification:**
 
 ```bash
-python test_redis.py
+python -m scripts.smoke_test_redis
 ```
 
 ### Troubleshooting

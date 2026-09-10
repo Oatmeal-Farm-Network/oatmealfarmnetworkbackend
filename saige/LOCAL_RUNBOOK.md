@@ -27,9 +27,9 @@ cd oatmealfarmnetworkbackend
 
 # 2) Saige standalone (:8001)
 cd oatmealfarmnetworkbackend\saige
-..\..\.venv\Scripts\python.exe -m uvicorn api:app --reload --host 127.0.0.1 --port 8001
+..\..\.venv\Scripts\python.exe -m uvicorn app.api:app --reload --host 127.0.0.1 --port 8001
 # Prefer absolute venv path if relative fails:
-# C:\...\oatmealfarmnetworkbackend\.venv\Scripts\python.exe -m uvicorn api:app --reload --host 127.0.0.1 --port 8001
+# C:\...\oatmealfarmnetworkbackend\.venv\Scripts\python.exe -m uvicorn app.api:app --reload --host 127.0.0.1 --port 8001
 
 # 3) Frontend (:5173)
 cd oatmealfarmnetwork

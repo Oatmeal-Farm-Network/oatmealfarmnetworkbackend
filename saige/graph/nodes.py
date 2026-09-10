@@ -28,10 +28,10 @@ def _get_stream_queue(thread_id: str):
     with _stream_lock:
         return _stream_queues.get(thread_id)
 
-from config import RAG_AVAILABLE, WEATHER_AVAILABLE, MAX_QUESTIONS
+from core.config import RAG_AVAILABLE, WEATHER_AVAILABLE, MAX_QUESTIONS
 from visualizations.mapper import drain_pending, merge_visualizations
 from visualizations.pending import viz_reset
-from saige_models import (
+from schemas.models import (
     FarmState,
     SaigeState,
     AccountIntent,
@@ -41,15 +41,15 @@ from saige_models import (
     WeatherQueryParsed,
     FollowUpEntityExtraction,
 )
-from llm import llm, get_llm_farm
-from graph.routing import route_after_policy, route_after_supervisor  # re-export for shims
+from integrations.gemini import llm, get_llm_farm
+from graph.routing import route_after_policy, route_after_supervisor
 from graph.farm_viz_intents import farm_viz_intent, pinned_routes, prefetch_farm_viz
 
 logger = logging.getLogger("farm_advisory.nodes")
-from rag import rag_livestock, rag_plant, rag_bakasura, rag_news, rag_hitl_charlie
-from weather import weather_service, get_weather_tool, weather_tools, emit_weather_visualizations
+from integrations.rag import rag_livestock, rag_plant, rag_bakasura, rag_news, rag_hitl_charlie
+from tools.weather.weather import weather_service, get_weather_tool, weather_tools, emit_weather_visualizations
 try:
-    from companion_planting import companion_tools, companion_planting_tool, check_companion_pair_tool
+    from tools.agriculture.companion_planting import companion_tools, companion_planting_tool, check_companion_pair_tool
     COMPANION_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] companion_planting unavailable: {_e}")
@@ -59,7 +59,7 @@ except Exception as _e:
     COMPANION_AVAILABLE = False
 
 try:
-    from crop_names import crop_name_tools, crop_name_tool
+    from tools.agriculture.crop_names import crop_name_tools, crop_name_tool
     CROP_NAMES_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] crop_names unavailable: {_e}")
@@ -68,7 +68,7 @@ except Exception as _e:
     CROP_NAMES_AVAILABLE = False
 
 try:
-    from weather_mitigation import weather_mitigation_tools, weather_mitigation_tool
+    from tools.weather.weather_mitigation import weather_mitigation_tools, weather_mitigation_tool
     WEATHER_MITIGATION_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] weather_mitigation unavailable: {_e}")
@@ -77,7 +77,7 @@ except Exception as _e:
     WEATHER_MITIGATION_AVAILABLE = False
 
 try:
-    from region_crops import region_crops_tools, region_crops_tool
+    from tools.agriculture.region_crops import region_crops_tools, region_crops_tool
     REGION_CROPS_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] region_crops unavailable: {_e}")
@@ -86,7 +86,7 @@ except Exception as _e:
     REGION_CROPS_AVAILABLE = False
 
 try:
-    from soil_challenges import soil_challenge_tools, soil_challenge_tool
+    from tools.agriculture.soil_challenges import soil_challenge_tools, soil_challenge_tool
     SOIL_CHALLENGE_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] soil_challenges unavailable: {_e}")
@@ -95,7 +95,7 @@ except Exception as _e:
     SOIL_CHALLENGE_AVAILABLE = False
 
 try:
-    from price_forecast import price_forecast_tools, price_forecast_tool
+    from tools.finance.price_forecast import price_forecast_tools, price_forecast_tool
     PRICE_FORECAST_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] price_forecast unavailable: {_e}")
@@ -104,7 +104,7 @@ except Exception as _e:
     PRICE_FORECAST_AVAILABLE = False
 
 try:
-    from subsidies import subsidies_tools, subsidies_tool
+    from tools.finance.subsidies import subsidies_tools, subsidies_tool
     SUBSIDIES_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] subsidies unavailable: {_e}")
@@ -113,7 +113,7 @@ except Exception as _e:
     SUBSIDIES_AVAILABLE = False
 
 try:
-    from insurance import insurance_tools, insurance_tool
+    from tools.finance.insurance import insurance_tools, insurance_tool
     INSURANCE_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] insurance unavailable: {_e}")
@@ -122,7 +122,7 @@ except Exception as _e:
     INSURANCE_AVAILABLE = False
 
 try:
-    from events import (
+    from tools.marketplace.events import (
         event_tools,
         list_upcoming_events_tool,
         get_event_details_tool,
@@ -138,7 +138,7 @@ except Exception as _e:
     EVENTS_AVAILABLE = False
 
 try:
-    from precision_ag import (
+    from tools.agriculture.precision_ag import (
         precision_ag_tools,
         list_my_fields_tool,
         resolve_field_by_name_tool,
@@ -208,7 +208,7 @@ except Exception as _e:
     PRECISION_AG_AVAILABLE = False
 
 try:
-    from business_ops import (
+    from tools.farm.business_ops import (
         business_ops_tools,
         get_tracked_grants_tool,
         calculate_shelf_life_tool,
@@ -220,7 +220,7 @@ except Exception as _e:
     BUSINESS_OPS_AVAILABLE = False
 
 try:
-    from farm_data import (
+    from tools.farm.farm_data import (
         farm_data_tools,
         list_my_animals_tool,
         list_my_listings_tool,
@@ -240,7 +240,7 @@ except Exception as _e:
     FARM_DATA_AVAILABLE = False
 
 try:
-    from business_data import (
+    from tools.farm.business_data import (
         business_data_tools,
         get_business_profile_tool,
         update_business_profile_tool,
@@ -296,7 +296,7 @@ except Exception as _e:
     BUSINESS_DATA_AVAILABLE = False
 
 try:
-    from knowledge_base import (
+    from services.knowledge_base import (
         knowledge_base_tools,
         search_plants_tool,
         get_plant_detail_tool,
@@ -316,7 +316,7 @@ except Exception as _e:
     KNOWLEDGE_BASE_AVAILABLE = False
 
 try:
-    from actions import (
+    from tools.marketplace.actions import (
         actions_tools,
         draft_produce_listing_tool,
         draft_meat_listing_tool,
@@ -336,7 +336,7 @@ except Exception as _e:
     ACTIONS_AVAILABLE = False
 
 try:
-    from agronomy import (
+    from tools.agriculture.agronomy import (
         agronomy_tools,
         planting_calendar_tool,
         irrigation_schedule_tool,
@@ -352,7 +352,7 @@ except Exception as _e:
     AGRONOMY_AVAILABLE = False
 
 try:
-    from chef import (
+    from agents.sibling.chef import (
         chef_tools,
         save_recipe_tool,
         cost_recipe_tool,
@@ -376,7 +376,7 @@ except Exception as _e:
     CHEF_AVAILABLE = False
 
 try:
-    from pest_detection import pest_detection_tools, get_recent_pest_detections_tool
+    from tools.agriculture.pest_detection import pest_detection_tools, get_recent_pest_detections_tool
     PEST_DETECTION_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] pest_detection unavailable: {_e}")
@@ -385,7 +385,7 @@ except Exception as _e:
     PEST_DETECTION_AVAILABLE = False
 
 try:
-    from push_notifications import push_notification_tools, send_push_notification_tool
+    from services.push_notifications import push_notification_tools, send_push_notification_tool
     PUSH_NOTIFICATIONS_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] push_notifications unavailable: {_e}")
@@ -394,7 +394,7 @@ except Exception as _e:
     PUSH_NOTIFICATIONS_AVAILABLE = False
 
 try:
-    from weather_alerts import weather_alert_tools, check_my_weather_alerts_tool
+    from tools.weather.weather_alerts import weather_alert_tools, check_my_weather_alerts_tool
     WEATHER_ALERTS_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] weather_alerts unavailable: {_e}")
@@ -403,7 +403,7 @@ except Exception as _e:
     WEATHER_ALERTS_AVAILABLE = False
 
 try:
-    from history_store import history_tools, get_my_recent_history_tool
+    from services.history import history_tools, get_my_recent_history_tool
     HISTORY_STORE_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] history_store unavailable: {_e}")
@@ -412,7 +412,7 @@ except Exception as _e:
     HISTORY_STORE_AVAILABLE = False
 
 try:
-    from jokes import joke_tools, tell_joke_tool
+    from services.jokes import joke_tools, tell_joke_tool
     JOKES_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] jokes unavailable: {_e}")
@@ -647,7 +647,7 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
         ):
             _profile = {}
             try:
-                from user_profile import get_account_profile
+                from services.user_profile import get_account_profile
                 _profile = get_account_profile(str(_pid or ""), state.get("business_id")) or {}
             except Exception:
                 pass
@@ -901,7 +901,7 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
     _community_section = ""
     if not (_INTENT_MAP or _INTENT_PRECISION_AG or _INTENT_ACCOUNTING or _INTENT_BUSINESS):
         try:
-            from learning import get_community_context as _get_community_ctx
+            from services.learning import get_community_context as _get_community_ctx
             _community_section = _get_community_ctx(latest_user_message, n=3)
         except Exception as _lrn_err:
             pass  # flywheel unavailable — degrade silently
@@ -914,7 +914,7 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
     _business_name_ctx = ""
     if _business_id_ctx:
         try:
-            from user_profile import get_business_name as _get_bname_ctx
+            from services.user_profile import get_business_name as _get_bname_ctx
             _business_name_ctx = _get_bname_ctx(_business_id_ctx) or ""
         except Exception:
             pass
@@ -1387,7 +1387,7 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
     # ── end tool pruning ──────────────────────────────────────────────────────
 
     # Production: specialists are read-only — writes only via HITL → Execute
-    from tool_policy import filter_read_only_tools, is_write_tool, write_tool_refusal
+    from tools.tool_policy import filter_read_only_tools, is_write_tool, write_tool_refusal
 
     before = len(bound_tools)
     bound_tools = filter_read_only_tools(bound_tools)
@@ -1429,7 +1429,7 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
     except (TypeError, ValueError):
         business_id_for_tools = 0
     try:
-        from precision_ag import set_session_business_id
+        from tools.agriculture.precision_ag import set_session_business_id
         set_session_business_id(str(business_id_for_tools) if business_id_for_tools else None)
     except Exception:
         pass
@@ -3304,7 +3304,7 @@ def user_agent_node(state: SaigeState) -> Dict[str, Any]:
     # Account profile (never password)
     account_profile: Dict[str, Any] = {}
     try:
-        from user_profile import get_account_profile, get_user_name, get_primary_business_id
+        from services.user_profile import get_account_profile, get_user_name, get_primary_business_id
 
         if people_id and not state.get("user_name"):
             updates["user_name"] = get_user_name(people_id)
@@ -3320,7 +3320,7 @@ def user_agent_node(state: SaigeState) -> Dict[str, Any]:
     # Farm profile snapshot (business)
     if business_id:
         try:
-            from business_data import get_business_profile_tool
+            from tools.farm.business_data import get_business_profile_tool
 
             farm_txt = get_business_profile_tool.invoke({"business_id": int(business_id)})
             updates["farm_profile"] = {"summary": farm_txt}
@@ -3470,7 +3470,7 @@ def user_agent_node(state: SaigeState) -> Dict[str, Any]:
         else:
             if not payload:
                 payload = {"raw_request": norm_text}
-            from field_ops import parse_field_create_args
+            from tools.farm.field_ops import parse_field_create_args
 
             if action == "create_field":
                 parsed = parse_field_create_args({
@@ -3660,7 +3660,7 @@ def joke_route_node(state: SaigeState) -> Dict[str, Any]:
 def specialist_dispatch_node(state: SaigeState) -> Dict[str, Any]:
     """Run selected specialists concurrently; accumulate packets. Does not write to farm DB."""
     import concurrent.futures
-    from config import SPECIALIST_TIMEOUT_SECONDS
+    from core.config import SPECIALIST_TIMEOUT_SECONDS
 
     print("[Specialists] start (parallel)")
     routes = [r for r in (state.get("route") or []) if r != "joke"]
@@ -3739,7 +3739,7 @@ def specialist_dispatch_node(state: SaigeState) -> Dict[str, Any]:
         "frost" in text_lower and any(k in text_lower for k in ("protect", "plan", "livestock", "cattle"))
     ):
         try:
-            from weather_mitigation import format_for_llm, resolve_hazard
+            from tools.weather.weather_mitigation import format_for_llm, resolve_hazard
             hazard = resolve_hazard(text_lower) or "frost"
             phase = "imminent"
             if any(k in text_lower for k in ("planning", "prepare", "before")):
@@ -3783,7 +3783,7 @@ def _run_monitoring_agent(state: SaigeState) -> Dict[str, Any]:
 
     intent = farm_viz_intent(text_q)
     try:
-        from precision_ag import (
+        from tools.agriculture.precision_ag import (
             list_my_fields_tool,
             get_field_alerts_tool,
             get_field_analysis_tool,
@@ -3866,7 +3866,7 @@ def _run_monitoring_agent(state: SaigeState) -> Dict[str, Any]:
 
     summary = "\n".join(lines)
     try:
-        from monitoring_store import save_run
+        from data.sql.monitoring_store import save_run
 
         save_run(
             business_id=business_id,
@@ -4074,7 +4074,7 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
 def policy_gate_node(state: SaigeState) -> Dict[str, Any]:
     """Non-LLM hard checks (password, chemicals, organic prefs, risk class)."""
     print("[PolicyGate] start")
-    from policy import filter_proposals
+    from core.policies import filter_proposals
 
     proposals = list(state.get("proposals") or [])
     # Attach user preferences if present for organic_only checks
@@ -4091,7 +4091,7 @@ def policy_gate_node(state: SaigeState) -> Dict[str, Any]:
 
 def hitl_gate_node(state: SaigeState) -> Dict[str, Any]:
     """Persist proposals and interrupt for human approve/edit/reject."""
-    from proposals_store import create_proposals
+    from data.sql.proposals_store import create_proposals
 
     print("[HITL] interrupt")
     drafts = list(state.get("proposals") or [])
@@ -4163,8 +4163,8 @@ def execute_node(state: SaigeState) -> Dict[str, Any]:
                 }
             ]
 
-    from proposals_store import decide_proposal, mark_executed
-    from execute_registry import run_approved_tool
+    from data.sql.proposals_store import decide_proposal, mark_executed
+    from tools.execute_registry import run_approved_tool
 
     for d in decisions:
         pid = d.get("proposal_id")

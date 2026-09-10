@@ -19,7 +19,7 @@ def _fail(msg: str) -> Tuple[bool, str]:
 
 
 def exec_update_business_profile(args: Dict[str, Any]) -> Tuple[bool, str]:
-    from business_data import update_business_profile_tool
+    from tools.farm.business_data import update_business_profile_tool
 
     bid = int(args.get("business_id") or 0)
     phone = args.get("phone") or args.get("business_phone") or args.get("BusinessPhone") or ""
@@ -45,7 +45,7 @@ def exec_update_business_profile(args: Dict[str, Any]) -> Tuple[bool, str]:
 
 
 def exec_update_animal(args: Dict[str, Any]) -> Tuple[bool, str]:
-    from business_data import update_animal_tool
+    from tools.farm.business_data import update_animal_tool
 
     def _num(v, default=-1.0):
         if v is None or v == "":
@@ -81,7 +81,7 @@ def exec_update_animal(args: Dict[str, Any]) -> Tuple[bool, str]:
 
 
 def exec_create_field(args: Dict[str, Any]) -> Tuple[bool, str]:
-    from field_ops import create_field, parse_field_create_args
+    from tools.farm.field_ops import create_field, parse_field_create_args
 
     kwargs = parse_field_create_args(args)
     msg = create_field(**kwargs)
@@ -89,7 +89,7 @@ def exec_create_field(args: Dict[str, Any]) -> Tuple[bool, str]:
 
 
 def exec_update_field(args: Dict[str, Any]) -> Tuple[bool, str]:
-    from field_ops import update_field
+    from tools.farm.field_ops import update_field
 
     msg = update_field(
         business_id=int(args.get("business_id") or 0),
@@ -107,7 +107,7 @@ def exec_update_field(args: Dict[str, Any]) -> Tuple[bool, str]:
 
 
 def exec_toggle_monitoring(args: Dict[str, Any]) -> Tuple[bool, str]:
-    from field_ops import toggle_monitoring
+    from tools.farm.field_ops import toggle_monitoring
 
     enabled = args.get("enabled")
     if enabled is None:
@@ -124,7 +124,7 @@ def exec_toggle_monitoring(args: Dict[str, Any]) -> Tuple[bool, str]:
 
 
 def exec_save_plan(args: Dict[str, Any]) -> Tuple[bool, str]:
-    from plans_store import save_plan
+    from data.sql.plans_store import save_plan
 
     plan_id = save_plan(
         business_id=str(args.get("business_id") or ""),
@@ -137,7 +137,7 @@ def exec_save_plan(args: Dict[str, Any]) -> Tuple[bool, str]:
 
 
 def exec_add_scout(args: Dict[str, Any]) -> Tuple[bool, str]:
-    from precision_ag import add_scout_observation_tool
+    from tools.agriculture.precision_ag import add_scout_observation_tool
 
     msg = add_scout_observation_tool.invoke(
         {
@@ -152,7 +152,7 @@ def exec_add_scout(args: Dict[str, Any]) -> Tuple[bool, str]:
 
 
 def exec_log_activity(args: Dict[str, Any]) -> Tuple[bool, str]:
-    from precision_ag import log_field_activity_tool
+    from tools.agriculture.precision_ag import log_field_activity_tool
 
     msg = log_field_activity_tool.invoke(
         {
@@ -170,15 +170,15 @@ def exec_draft_bridge(args: Dict[str, Any]) -> Tuple[bool, str]:
     draft_type = (args.get("draft_type") or args.get("type") or "").lower()
     try:
         if draft_type == "produce_listing":
-            from actions import draft_produce_listing_tool
+            from tools.marketplace.actions import draft_produce_listing_tool
 
             return True, str(draft_produce_listing_tool.invoke(args))
         if draft_type == "event":
-            from actions import draft_event_tool
+            from tools.marketplace.actions import draft_event_tool
 
             return True, str(draft_event_tool.invoke(args))
         if draft_type == "blog_post":
-            from actions import draft_blog_post_tool
+            from tools.marketplace.actions import draft_blog_post_tool
 
             return True, str(draft_blog_post_tool.invoke(args))
     except Exception as e:

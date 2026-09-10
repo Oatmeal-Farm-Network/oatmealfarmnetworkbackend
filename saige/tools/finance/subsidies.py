@@ -294,7 +294,7 @@ CATEGORY_ALIASES = {
 
 
 try:
-    from subsidies_intl import PROGRAMS as _INTL_PROGRAMS
+    from tools.finance.subsidies_intl import PROGRAMS as _INTL_PROGRAMS
 except Exception as _e:
     print(f"[subsidies] international pack unavailable: {_e}")
     _INTL_PROGRAMS = []

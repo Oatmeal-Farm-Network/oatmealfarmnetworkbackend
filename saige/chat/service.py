@@ -12,11 +12,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from langgraph.types import Command
 
-from config import SHORT_TERM_N, normalize_chat_product
+from core.config import SHORT_TERM_N, normalize_chat_product
 from graph import builder, graph
 from chat.buffer import get_last_n, push_message
 from chat.history import chat_history
-from observability import log_event, new_trace_id
+from core.logging import log_event, new_trace_id
 from visualizations.pending import viz_reset
 
 logger = logging.getLogger("farm_advisory.chat")
@@ -185,7 +185,7 @@ def _prepare_turn(
     long_term_memory: Dict[str, Any] = {}
     org_memory: Dict[str, Any] = {}
     try:
-        from user_profile import get_user_name, get_primary_business_id
+        from services.user_profile import get_user_name, get_primary_business_id
 
         user_name = get_user_name(people_id) if people_id else None
         if not business_id and people_id:

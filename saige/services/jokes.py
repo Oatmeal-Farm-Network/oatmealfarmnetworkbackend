@@ -17,7 +17,7 @@ from typing import List, Optional
 
 from langchain_core.tools import tool
 
-from config import (
+from core.config import (
     FIRESTORE_AVAILABLE,
     CHAT_HISTORY_DATABASE,
     GCP_CREDENTIALS,
