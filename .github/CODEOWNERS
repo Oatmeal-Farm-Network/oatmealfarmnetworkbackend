@@ -1,7 +1,9 @@
-# Fill GitHub usernames or org teams once the branching-strategy plan §1.1
-# names are assigned. Until then this file documents what must be reviewed;
-# uncomment and replace the examples so GitHub can auto-request reviewers.
-#
-# .github/workflows/ @platform-lead
-# saige/ @saige-lead
-# * @backend-lead
+# CODEOWNERS — Oatmeal AI / Oatmeal Farm Network
+# Filled 14 Sep 2026 from branching plan §1.1.
+# GitHub auto-requests reviews from these users on matching paths.
+
+.github/workflows/ @dbanoth @OatmealAIJohn
+saige/ @dbanoth @OatmealAIJohn
+oatsense/ @dbanoth @OatmealAIJohn
+livestock/ @dbanoth @OatmealAIJohn
+* @OatmealAIJohn @dbanoth
