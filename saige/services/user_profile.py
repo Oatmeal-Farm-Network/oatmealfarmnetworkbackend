@@ -13,13 +13,7 @@ import logging
 from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
-from config import DB_CONFIG
-
-try:
-    import pymssql
-    _PYMSSQL_OK = True
-except ImportError:
-    _PYMSSQL_OK = False
+from data.sql.connect import sql_connect
 
 logger = logging.getLogger("farm_advisory.user_profile")
 
@@ -39,22 +33,7 @@ def _row_get(row: Optional[Dict], *keys: str, default: Any = None) -> Any:
 
 
 def _connect():
-    if not _PYMSSQL_OK or not all([
-        DB_CONFIG.get("host"), DB_CONFIG.get("user"), DB_CONFIG.get("database")
-    ]):
-        return None
-    try:
-        return pymssql.connect(
-            server=DB_CONFIG["host"],
-            user=DB_CONFIG["user"],
-            password=DB_CONFIG["password"],
-            database=DB_CONFIG["database"],
-            timeout=8,
-            login_timeout=8,
-        )
-    except Exception as e:
-        logger.debug("[user_profile] DB connect failed: %s", e)
-        return None
+    return sql_connect(timeout=8, login_timeout=8)
 
 
 def _query(sql: str, params: tuple) -> List[Dict]:

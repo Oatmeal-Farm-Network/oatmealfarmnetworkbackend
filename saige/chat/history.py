@@ -35,7 +35,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from config import (
+from core.config import (
     FIRESTORE_AVAILABLE,
     CHAT_HISTORY_DATABASE,
     GCP_CREDENTIALS,

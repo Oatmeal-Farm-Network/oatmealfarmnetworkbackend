@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 import redis
 
-from config import (
+from core.config import (
     REDIS_AVAILABLE,
     REDIS_ENABLED,
     REDIS_SSL_CERT_REQS,

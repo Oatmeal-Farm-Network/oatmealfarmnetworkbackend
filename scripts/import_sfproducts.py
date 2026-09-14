@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from sqlalchemy import text  # noqa: E402
-from database import engine  # noqa: E402
+from app.database import engine  # noqa: E402
 
 
 SOURCE_PATH = (

@@ -22,6 +22,8 @@ google-cloud-firestore>=2.0.0
 
 #sql
 pymssql
+# Cloud Run / Cloud SQL (SQL Server) — Connector uses pytds, not localhost Auth Proxy
+cloud-sql-python-connector[pytds]
 
 # Weather API
 requests>=2.31.0

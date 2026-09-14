@@ -21,6 +21,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from data.sql.connect import sql_connect
+
 logger = logging.getLogger("farm_digest")
 
 MIN_INTERVAL_HOURS = 20   # minimum hours between digests for any one business
@@ -29,33 +31,9 @@ PUSH_CHAR_LIMIT    = 220  # body text cap for push notifications
 
 # ── DB helpers (same MSSQL connection pattern as cassia.py) ─────────────────
 
-try:
-    import pymssql as _pymssql
-    _PMS = True
-except ImportError:
-    _pymssql = None  # type: ignore[assignment]
-    _PMS = False
-
-from config import DB_CONFIG
-
 
 def _connect():
-    if not _PMS or not all([
-        DB_CONFIG.get("host"), DB_CONFIG.get("user"), DB_CONFIG.get("database")
-    ]):
-        return None
-    try:
-        return _pymssql.connect(
-            server=DB_CONFIG["host"],
-            port=DB_CONFIG["port"],
-            user=DB_CONFIG["user"],
-            password=DB_CONFIG["password"],
-            database=DB_CONFIG["database"],
-            as_dict=True,
-        )
-    except Exception as e:
-        logger.error("[FarmDigest] DB connect failed: %s", e)
-        return None
+    return sql_connect(as_dict=True)
 
 
 def _query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
@@ -172,7 +150,7 @@ def analyze_business(
 
     # Generate insight
     try:
-        from llm import llm
+        from integrations.gemini import llm
         resp    = llm.invoke(_build_prompt(profile, alerts))
         insight = (getattr(resp, "content", None) or str(resp)).strip()
     except Exception as e:
@@ -192,7 +170,7 @@ def analyze_business(
         push_result = {"status": "dry_run"}
     else:
         try:
-            import push_notifications as push
+            import services.push_notifications as push
             push_result = push.send_to(
                 user_id=str(people_id),
                 title="Saige — Farm Health Update",

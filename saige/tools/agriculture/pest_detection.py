@@ -20,7 +20,7 @@ from typing import Dict, List, Optional
 from langchain_core.messages import HumanMessage
 
 try:
-    from llm import llm as _shared_llm
+    from integrations.gemini import llm as _shared_llm
 except Exception as _e:
     _shared_llm = None
     print(f"[pest_detection] shared LLM unavailable: {_e}")
@@ -168,9 +168,10 @@ def format_for_llm(image_b64: str, notes: str = "") -> str:
 # which reads back the most recent diagnoses.
 
 from langchain_core.tools import tool
+from visualizations.pending import viz_emit
 
 try:
-    import history_store as _history
+    import services.history as _history
     _HISTORY_AVAILABLE = True
 except Exception as _e:
     _history = None
@@ -198,6 +199,7 @@ def get_recent_pest_detections_tool(limit: int = 3, people_id: str = "") -> str:
         return ("No pest detections yet. Upload a crop photo from the "
                 "Pest Detection page and I can read back the diagnosis.")
     out = [f"Your last {len(rows)} pest detection(s):"]
+    emitted = 0
     for r in rows:
         p = r.get("payload") or {}
         when = (r.get("created_at") or "")[:10]
@@ -211,6 +213,31 @@ def get_recent_pest_detections_tool(limit: int = 3, people_id: str = "") -> str:
         out.append(line)
         if p.get("notes"):
             out.append(f"      note: {p['notes'][:160]}")
+        if emitted >= 3:
+            continue
+        conf_l = str(conf).strip().lower()
+        if conf_l == "high":
+            severity = "high"
+        elif conf_l == "medium":
+            severity = "medium"
+        else:
+            severity = "low"
+        msg = f"{diag} ({cat}, {conf} confidence)"
+        if crop and crop != "unknown":
+            msg += f" on {crop}"
+        viz_emit({
+            "id": f"pest_photo_{r.get('id') or when or emitted}",
+            "type": "alert_card",
+            "title": str(diag),
+            "source_tool": "get_recent_pest_detections_tool",
+            "data": {
+                "severity": severity,
+                "message": msg,
+                "field_name": crop if crop and crop != "unknown" else None,
+            },
+            "actions": [{"label": "Pest Detection", "href": "/precision-ag/crop-detection"}],
+        })
+        emitted += 1
     return "\n".join(out)
 
 

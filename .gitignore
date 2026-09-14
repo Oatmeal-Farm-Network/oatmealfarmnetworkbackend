@@ -102,6 +102,8 @@ Desktop.ini
 
 # Logs
 *.log
+*.err
+*.out
 logs/
 
 # Temporary files
@@ -120,6 +122,10 @@ htmlcov/
 .coverage.*
 coverage.xml
 *.cover
+
+# Local inventory snapshots (do not commit)
+docs/LIVESTOCK_INVENTORY.local.md
+*.local.md
 
 # Note: This .gitignore protects your secrets:
 # - .env files (API keys)

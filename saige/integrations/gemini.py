@@ -20,8 +20,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Load centralized model / provider config before initializing clients
-import config as _saige_config  # noqa: F401
-from config import GEMINI_MODEL_NAME, SAIGE_LLM_PROVIDER
+import core.config as _saige_config  # noqa: F401
+from core.config import GEMINI_MODEL_NAME, SAIGE_LLM_PROVIDER
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 

@@ -1,7 +1,6 @@
 ﻿# Saige FastAPI application package.
 #
-# Prefer: ``from api import app`` (root shim) or ``uvicorn api:app``.
-# Implementation: app.api / app.lifecycle / app.dependencies.
+# Prefer: ``from app.api import app`` or ``uvicorn app.api:app``.
 from __future__ import annotations
 
 from typing import Any

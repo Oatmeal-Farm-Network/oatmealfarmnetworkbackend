@@ -1,5 +1,5 @@
 """Unit tests for tool write policy."""
-from tool_policy import filter_read_only_tools, is_write_tool
+from tools.tool_policy import filter_read_only_tools, is_write_tool
 
 
 class _T:

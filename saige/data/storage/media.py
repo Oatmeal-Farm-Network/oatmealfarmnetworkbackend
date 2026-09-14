@@ -6,7 +6,7 @@ import os
 import uuid
 from typing import Any, Dict, Optional, Tuple
 
-from config import (
+from core.config import (
     GCP_PROJECT,
     SAIGE_MEDIA_GCS_BUCKET,
     SAIGE_MEDIA_GCS_PREFIX,

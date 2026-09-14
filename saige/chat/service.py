@@ -12,11 +12,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from langgraph.types import Command
 
-from config import SHORT_TERM_N, normalize_chat_product
+from core.config import SHORT_TERM_N, normalize_chat_product
 from graph import builder, graph
 from chat.buffer import get_last_n, push_message
 from chat.history import chat_history
-from observability import log_event, new_trace_id
+from core.logging import log_event, new_trace_id
+from visualizations.pending import viz_reset
 
 logger = logging.getLogger("farm_advisory.chat")
 
@@ -24,6 +25,15 @@ logger = logging.getLogger("farm_advisory.chat")
 def _scoped_thread_id(product: str, thread_id: str) -> str:
     """Isolate Redis buffers / LangGraph checkpoints per product."""
     return f"{normalize_chat_product(product)}:{thread_id}"
+
+
+def _visualizations_from_state(values: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Copy visualizations off graph state. Always a list (empty until D3/D5 emit)."""
+    raw = (values or {}).get("visualizations")
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
 
 _STAGE_LABELS = {
     "user_agent": "Understanding your account & request…",
@@ -138,6 +148,7 @@ def _prepare_turn(
     product: Optional[str] = "ofn",
 ) -> Tuple[dict, Any, Optional[str]]:
     """Returns (langgraph_config, stream_input, trace_id)."""
+    viz_reset()
     product = normalize_chat_product(product)
     scoped_id = _scoped_thread_id(product, thread_id)
     trace_id = new_trace_id()
@@ -174,7 +185,7 @@ def _prepare_turn(
     long_term_memory: Dict[str, Any] = {}
     org_memory: Dict[str, Any] = {}
     try:
-        from user_profile import get_user_name, get_primary_business_id
+        from services.user_profile import get_user_name, get_primary_business_id
 
         user_name = get_user_name(people_id) if people_id else None
         if not business_id and people_id:
@@ -213,6 +224,7 @@ def _prepare_turn(
         "org_memory": org_memory or {},
         "image_data": image_data,
         "proposals": [],
+        "visualizations": [],
         "route": [],
         "diagnosis": None,
         "recommendations": [],
@@ -267,6 +279,7 @@ def _finalize_result(
             "processing_stage": "hitl",
             "advisory_type": final_values.get("advisory_type"),
             "citations": final_values.get("citations") or [],
+            "visualizations": _visualizations_from_state(final_values),
             "processing_time_ms": int((time.time() - turn_start) * 1000),
             "trace_id": trace_id,
         }
@@ -274,6 +287,7 @@ def _finalize_result(
         return result
 
     response_text = final_values.get("diagnosis") or "I'm here - ask me about your farm."
+    visualizations = _visualizations_from_state(final_values)
     if not skip_history:
         try:
             chat_history.save_message(
@@ -283,11 +297,27 @@ def _finalize_result(
                 content=response_text,
                 business_id=str(business_id) if business_id else None,
                 product=product,
-                metadata={"type": "advisory", "advisory_type": final_values.get("advisory_type"), "trace_id": trace_id},
+                metadata={
+                    "type": "advisory",
+                    "advisory_type": final_values.get("advisory_type"),
+                    "trace_id": trace_id,
+                    "visualizations": visualizations,
+                },
             )
         except Exception as e:
             logger.debug("[chat] save assistant message failed: %s", e)
-        push_message(thread_id=scoped_id, message={"role": "assistant", "content": response_text})
+        push_message(
+            thread_id=scoped_id,
+            message={
+                "role": "assistant",
+                "content": response_text,
+                "metadata": {
+                    "type": "advisory",
+                    "advisory_type": final_values.get("advisory_type"),
+                    "visualizations": visualizations,
+                },
+            },
+        )
 
     result = {
         "status": "success",
@@ -296,6 +326,7 @@ def _finalize_result(
         "diagnosis": response_text,
         "recommendations": final_values.get("recommendations") or [],
         "proposals": final_values.get("proposals") or [],
+        "visualizations": visualizations,
         "policy_violations": final_values.get("policy_violations") or [],
         "citations": final_values.get("citations") or [],
         "processing_stage": "complete",
@@ -372,6 +403,7 @@ def run_chat(
         return {
             "status": "error",
             "message": "Saige encountered an error processing your request. Please try again.",
+            "visualizations": [],
             "trace_id": trace_id,
         }
     return _finalize_result(
@@ -397,6 +429,7 @@ def resume_hitl(
     business_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """POST /resume helper - Command(resume=...) into the interrupted farm graph."""
+    viz_reset()
     product = normalize_chat_product(product)
     scoped_id = _scoped_thread_id(product, thread_id)
     config = {"configurable": {"thread_id": f"sup:{scoped_id}"}}
@@ -428,6 +461,7 @@ def resume_hitl(
                     "response": response_text,
                     "diagnosis": response_text,
                     "proposals": final_values.get("proposals") or [],
+                    "visualizations": _visualizations_from_state(final_values),
                     "hitl": _extract_interrupt_payload(final_state),
                     "hitl_decision": final_values.get("hitl_decision"),
                     "events_count": 0,
@@ -439,10 +473,12 @@ def resume_hitl(
             "status": "error",
             "message": "Saige encountered an error processing your request. Please try again.",
             "thread_id": thread_id,
+            "visualizations": [],
         }
     final_state = _get_state(graph, config)
     final_values = final_state.values if final_state.values else {}
     response_text = final_values.get("diagnosis") or "Done."
+    visualizations = _visualizations_from_state(final_values)
     try:
         chat_history.save_message(
             user_id=people_id,
@@ -451,17 +487,25 @@ def resume_hitl(
             content=response_text,
             business_id=str(business_id) if business_id else None,
             product=product,
-            metadata={"type": "hitl_result"},
+            metadata={"type": "hitl_result", "visualizations": visualizations},
         )
     except Exception:
         pass
-    push_message(thread_id=scoped_id, message={"role": "assistant", "content": response_text})
+    push_message(
+        thread_id=scoped_id,
+        message={
+            "role": "assistant",
+            "content": response_text,
+            "metadata": {"type": "hitl_result", "visualizations": visualizations},
+        },
+    )
     return {
         "status": "success" if not final_state.next else "interrupted",
         "thread_id": thread_id,
         "response": response_text,
         "diagnosis": response_text,
         "proposals": final_values.get("proposals") or [],
+        "visualizations": visualizations,
         "hitl_decision": final_values.get("hitl_decision"),
         "events_count": len(events_list),
     }

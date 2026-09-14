@@ -14,7 +14,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from config import (
+from core.config import (
     SHORT_TERM_N,
     SHORT_TERM_TTL_SECONDS,
     REDIS_ENABLED,
@@ -23,7 +23,7 @@ from config import (
     METADATA_ALLOWED_KEYS,
     MAX_METADATA_BYTES,
 )
-from redis_client import get_redis_client
+from data.redis.client import get_redis_client
 
 logger = logging.getLogger("farm_advisory")
 

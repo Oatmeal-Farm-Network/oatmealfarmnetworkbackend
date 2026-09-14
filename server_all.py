@@ -1,10 +1,9 @@
 """
-Unified launcher — runs main backend + Saige + CropMonitor in one FastAPI process.
+Unified launcher — runs main backend + Saige in one FastAPI process.
 
 Routes:
   /             -> main backend (auth, marketplace, events, notifications, ...)
   /saige/*      -> Saige (LangGraph chat + push + agent endpoints)
-  /cm/*         -> CropMonitor (fields, analyses, weather, raster, zones, ...)
 
 Run from Backend/oatmealfarmnetworkbackend/:
     ../venv/Scripts/python.exe -m uvicorn server_all:app --reload --port 8000
@@ -12,7 +11,7 @@ Run from Backend/oatmealfarmnetworkbackend/:
 Tricky bit: saige and the main backend each have their own top-level Python
 files with overlapping names (`database.py`, `models.py`, `main.py`, `events.py`,
 `auth.py`, `jwt_auth.py`). Once one of them lands in sys.modules under the
-generic name, the other backend's `from database import …` finds the wrong
+generic name, the other backend's `from app.database import …` finds the wrong
 module. The fix is to load each backend in its own phase and evict the
 conflicting names from sys.modules between phases. Already-resolved references
 inside each backend remain valid (Python keeps the module object alive via the
@@ -31,37 +30,19 @@ from fastapi import FastAPI
 
 # ── Path resolution ─────────────────────────────────────────────────────────
 HERE        = Path(__file__).resolve().parent                  # .../Backend/oatmealfarmnetworkbackend
-BACKEND_DIR = HERE.parent                                       # .../Backend  (or oatmeal/)
+BACKEND_DIR = HERE.parent                                       # .../Backend
 REPO_ROOT   = BACKEND_DIR.parent                                # .../OatmealFarmNetwork Repo
 SAIGE_CODE_DIR = HERE / "saige"
 SAIGE_ENV_DIR  = BACKEND_DIR / "saige"                          # legacy env location
-# Prefer sibling of this backend (oatmeal/CropMonitoringBackend), then repo-root layout.
-CROP_DIR = next(
-    (
-        p
-        for p in (
-            BACKEND_DIR / "CropMonitoringBackend",
-            REPO_ROOT / "CropMonitoringBackend",
-        )
-        if p.is_dir()
-    ),
-    None,
-)
 
-if CROP_DIR is None:
-    raise RuntimeError(
-        "CropMonitoringBackend not found at "
-        f"{BACKEND_DIR / 'CropMonitoringBackend'} or {REPO_ROOT / 'CropMonitoringBackend'}"
-    )
 
 print("[serve_all] paths:")
 print(f"  HERE       = {HERE}")
-print(f"  CROP_DIR   = {CROP_DIR}")
 print(f"  SAIGE_CODE = {SAIGE_CODE_DIR}")
 
 
 # ── Load all .env files (later overrides) ───────────────────────────────────
-for env_path in [CROP_DIR / ".env", SAIGE_ENV_DIR / ".env", BACKEND_DIR / ".env", HERE / ".env"]:
+for env_path in [SAIGE_ENV_DIR / ".env", BACKEND_DIR / ".env"]:
     if env_path.is_file():
         load_dotenv(env_path, override=True)
         print(f"[serve_all] loaded env: {env_path}")
@@ -122,7 +103,7 @@ def _remove_path(p: Path) -> None:
 _add_path_front(HERE)
 
 print("[serve_all] phase 1: loading main backend")
-_main_spec = importlib.util.spec_from_file_location("oatmeal_main_app", str(HERE / "main.py"))
+_main_spec = importlib.util.spec_from_file_location("oatmeal_main_app", str(HERE /"app" / "main.py"))
 _main_module = importlib.util.module_from_spec(_main_spec)
 sys.modules["oatmeal_main_app"] = _main_module
 _main_spec.loader.exec_module(_main_module)
@@ -131,7 +112,7 @@ print("[serve_all] main backend loaded")
 
 
 # ── Phase 2: evict main backend's top-level modules ────────────────────────
-# After this, saige's `from database import Database` and `from models import …`
+# After this, saige's `from app.database from app.database import` and `from app.models import …`
 # will not find main's database/models in sys.modules and will fall through
 # to the file system (which we'll point at saige in a moment).
 # Keep server_all (this file — uvicorn needs to find it) + the explicitly-
@@ -143,39 +124,33 @@ print(f"[serve_all] phase 2: evicted {_evicted} main-backend modules from sys.mo
 _remove_path(HERE)
 
 
-# ── Phase 3: chdir + load CropMonitor ──────────────────────────────────
-# CropMonitor uses cwd-relative paths (`StaticFiles(directory="static")` and
-# `FileResponse("static/index.html")`). We chdir into its dir and stay there
-# for the rest of the process lifetime — main backend has no cwd dependencies.
-# Soft-fail so a broken local Python/stdlib (or missing CropMonitor deps)
-# does not take down the main backend + Saige.
-crop_app = None
-_add_path_front(CROP_DIR)
-os.chdir(CROP_DIR)
-print(f"[serve_all] phase 3: chdir -> {CROP_DIR}, loading CropMonitor")
-try:
-    import backend as _crop_module                                # noqa: E402
-    crop_app = _crop_module.app
-    print("[serve_all] CropMonitor loaded")
-except Exception as e:
-    print(f"[serve_all] CropMonitor FAILED to load ({type(e).__name__}: {e})")
-    print("[serve_all] continuing without /cm mount")
-    _remove_path(CROP_DIR)
 
+# ── Phase 3: load Saige ────────────────────────────────────────────────────
+# Saige is cwd-independent. Add saige to sys.path so `from app.api import …`
+# resolves to saige/app, not the main backend app package.
+#
+# Eviction by file path can leave the main `app` package name occupied (or a
+# partial parent package) so `import app.api` resolves to main's app without
+# api.py → ModuleNotFoundError: app.api. Force-clear before Saige loads.
+for _name in [k for k in list(sys.modules) if k == "app" or k.startswith("app.")]:
+    if _name in _KEEP:
+        continue
+    _mod = sys.modules.get(_name)
+    if _mod is not None and not _name.startswith("_oatmeal_"):
+        sys.modules["_oatmeal_" + _name.replace(".", "_")] = _mod
+    sys.modules.pop(_name, None)
 
-# ── Phase 4: load Saige ────────────────────────────────────────────────────
-# Saige is cwd-independent. Add saige to sys.path; its `from database import …`
-# will now find saige/database.py (no main-backend `database` in sys.modules).
 _add_path_front(SAIGE_CODE_DIR)
 print("[serve_all] phase 4: loading Saige")
-from api import app as saige_app, app_lifespan as saige_lifespan  # noqa: E402
+from app.api import app as saige_app  # noqa: E402
+from app.lifecycle import app_lifespan as saige_lifespan  # noqa: E402
 print("[serve_all] Saige loaded")
 
 
-# ── Phase 5: restore main-backend 'database' and 'models' for hot-reload safety
+# ── Phase 4: restore main-backend 'database' and 'models' for hot-reload safety
 # Saige is fully loaded — all its imports have already resolved and bound into
 # each module's namespace.  We re-point sys.modules for the names that the main
-# backend uses lazily at request time so those `import models` / `import database`
+# backend uses lazily at request time so those `from app import models` / `from app.database import`
 # calls inside request handlers find the SQLAlchemy versions, not saige's.
 _main_db_mod = sys.modules.get("_oatmeal_database")
 if _main_db_mod is not None:
@@ -196,10 +171,7 @@ else:
 @asynccontextmanager
 async def unified_lifespan(app: FastAPI):
     async with AsyncExitStack() as stack:
-        subs = [("main", main_app)]
-        if crop_app is not None:
-            subs.append(("crop", crop_app))
-        for label, sub in subs:
+        for label, sub in [("main", main_app)]:
             for handler in sub.router.on_startup:
                 try:
                     result = handler()
@@ -215,11 +187,7 @@ async def unified_lifespan(app: FastAPI):
         try:
             yield
         finally:
-            shutdown_subs = []
-            if crop_app is not None:
-                shutdown_subs.append(("crop", crop_app))
-            shutdown_subs.append(("main", main_app))
-            for label, sub in shutdown_subs:
+            for label, sub in [("main", main_app)]:
                 for handler in sub.router.on_shutdown:
                     try:
                         result = handler()
@@ -233,11 +201,9 @@ async def unified_lifespan(app: FastAPI):
 app = main_app
 app.router.lifespan_context = unified_lifespan
 app.mount("/saige", saige_app)
-if crop_app is not None:
-    app.mount("/cm", crop_app)
-    print("[serve_all] mounted: /saige (Saige), /cm (CropMonitor)")
-else:
-    print("[serve_all] mounted: /saige (Saige); /cm skipped (CropMonitor unavailable)")
+
+
+print("[serve_all] mounted: /saige (Saige)")
 print("[serve_all] main backend at root with all original routes")
 print("[serve_all] ready.")
 

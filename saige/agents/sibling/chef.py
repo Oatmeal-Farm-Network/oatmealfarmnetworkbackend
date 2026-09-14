@@ -27,13 +27,7 @@ import json
 from typing import Optional, List, Dict, Any
 from langchain_core.tools import tool
 
-from config import DB_CONFIG
-
-try:
-    import pymssql
-    _PMS_AVAILABLE = True
-except ImportError:
-    _PMS_AVAILABLE = False
+from data.sql.connect import sql_connect
 
 
 # ---------------------------------------------------------------------------
@@ -41,17 +35,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 def _connect():
-    if not _PMS_AVAILABLE or not all([DB_CONFIG.get("host"), DB_CONFIG.get("user"), DB_CONFIG.get("database")]):
-        return None
-    try:
-        return pymssql.connect(
-            server=DB_CONFIG["host"], port=DB_CONFIG["port"],
-            user=DB_CONFIG["user"], password=DB_CONFIG["password"],
-            database=DB_CONFIG["database"], as_dict=True,
-        )
-    except Exception as e:
-        print(f"[saige.chef] connect failed: {e}")
-        return None
+    return sql_connect(as_dict=True)
 
 
 def _query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:

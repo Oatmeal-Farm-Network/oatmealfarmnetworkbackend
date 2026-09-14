@@ -1,5 +1,5 @@
 """API route presence smoke (no server)."""
-from api import app
+from app.api import app
 
 
 def test_critical_routes_present():

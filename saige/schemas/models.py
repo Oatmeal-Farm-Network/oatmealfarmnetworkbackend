@@ -153,6 +153,7 @@ class SaigeState(TypedDict, total=False):
 
     citations: Optional[List[Dict[str, Any]]]
     proposals: Optional[List[Dict[str, Any]]]
+    visualizations: Optional[List[Dict[str, Any]]]
     policy_violations: Optional[List[Dict[str, Any]]]
     hitl_decision: Optional[Dict[str, Any]]
     confidence: Optional[str]

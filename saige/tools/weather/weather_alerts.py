@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
-    from weather import weather_service
+    from tools.weather.weather import weather_service
     _WEATHER_AVAILABLE = True
 except Exception as _e:
     print(f"[weather_alerts] weather unavailable: {_e}")
@@ -23,7 +23,7 @@ except Exception as _e:
     _WEATHER_AVAILABLE = False
 
 try:
-    import push_notifications as push
+    import services.push_notifications as push
 except Exception as _e:
     print(f"[weather_alerts] push unavailable: {_e}")
     push = None

@@ -22,17 +22,13 @@ so a user cannot ask about a field belonging to another business.
 from __future__ import annotations
 
 import os
+import re
 from contextvars import ContextVar
 from typing import List, Optional, Dict, Any
 from langchain_core.tools import tool
 
-from config import DB_CONFIG, RAG_AVAILABLE
-
-try:
-    import pymssql
-    _PMS_AVAILABLE = True
-except ImportError:
-    _PMS_AVAILABLE = False
+from visualizations.pending import viz_emit
+from data.sql.connect import sql_connect
 
 # Session business context injected by advisory/monitoring nodes so tools that
 # only receive people_id still resolve the active farm.
@@ -54,20 +50,7 @@ def set_session_business_id(business_id: Optional[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def _connect():
-    if not _PMS_AVAILABLE or not all([DB_CONFIG.get("host"), DB_CONFIG.get("user"), DB_CONFIG.get("database")]):
-        return None
-    try:
-        return pymssql.connect(
-            server=DB_CONFIG["host"],
-            port=DB_CONFIG["port"],
-            user=DB_CONFIG["user"],
-            password=DB_CONFIG["password"],
-            database=DB_CONFIG["database"],
-            as_dict=True,
-        )
-    except Exception as e:
-        print(f"[precision_ag] DB connect failed: {e}")
-        return None
+    return sql_connect(as_dict=True)
 
 
 def _query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
@@ -144,6 +127,121 @@ def _field_accessible(field_id: int, business_ids: List[int]) -> Optional[Dict[s
     return rows[0] if rows else None
 
 
+def _spec_business_id(field: Optional[Dict[str, Any]], biz_ids: List[int]) -> Optional[int]:
+    """BusinessID for map specs so /saige can load outlines without AccountContext."""
+    if field:
+        for key in ("businessid", "BusinessID", "business_id"):
+            raw = field.get(key)
+            if raw in (None, "", 0, "0"):
+                continue
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                continue
+    if biz_ids:
+        try:
+            return int(biz_ids[0])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _fields_dashboard_href(biz_ids: Optional[List[int]] = None) -> str:
+    bid = _spec_business_id(None, biz_ids or [])
+    if bid:
+        return f"/precision-ag/fields?BusinessID={bid}"
+    return "/precision-ag/fields"
+
+
+def _field_page_href(
+    field_id: int,
+    field: Optional[Dict[str, Any]] = None,
+    biz_ids: Optional[List[int]] = None,
+) -> str:
+    """SPA field page is query-string, not `/precision-ag/fields/:id`."""
+    bid = _spec_business_id(field, biz_ids or [])
+    fid = int(field_id)
+    if bid:
+        return f"/precision-ag/analyses?BusinessID={bid}&FieldID={fid}"
+    return f"/precision-ag/analyses?FieldID={fid}"
+
+
+def _map_page_href(
+    field_id: Optional[int] = None,
+    layer: str = "NDVI",
+    field: Optional[Dict[str, Any]] = None,
+    biz_ids: Optional[List[int]] = None,
+) -> str:
+    bid = _spec_business_id(field, biz_ids or [])
+    parts: List[str] = []
+    if bid:
+        parts.append(f"BusinessID={bid}")
+    if field_id is not None:
+        fid = int(field_id)
+        parts.append(f"FieldID={fid}")
+        parts.append(f"field_id={fid}")
+    if layer:
+        parts.append(f"layer={layer}")
+    return "/precision-ag/analysis/maps" + (("?" + "&".join(parts)) if parts else "")
+
+
+def _open_field_action(
+    field_id: int,
+    field: Optional[Dict[str, Any]] = None,
+    biz_ids: Optional[List[int]] = None,
+    label: str = "Open field",
+) -> List[Dict[str, str]]:
+    return [{"label": label, "href": _field_page_href(field_id, field, biz_ids)}]
+
+
+_COMMODITY_HINTS = (
+    ("soybean", "Nat'l Soybeans"),
+    ("soy", "Nat'l Soybeans"),
+    ("cattle", "Live Cattle"),
+    ("hog", "Nat'l Pork Loin"),
+    ("pork", "Nat'l Pork Loin"),
+    ("chicken", "Nat'l Chicken Breast"),
+    ("wheat", "Wheat"),
+    ("tomato", "Roma Tomatoes"),
+    ("corn", "Corn"),
+)
+
+
+def resolve_commodity_name(text: str) -> str:
+    """Map a farmer phrase like 'corn price trend' onto a CommodityPriceHistory name."""
+    t = (text or "").strip().lower()
+    if not t:
+        return ""
+    for hint, canonical in _COMMODITY_HINTS:
+        if re.search(rf"\b{re.escape(hint)}\b", t):
+            return canonical
+    return ""
+
+
+def _commodity_candidates(name: str) -> List[str]:
+    raw = (name or "").strip()
+    if not raw:
+        return []
+    out: List[str] = [raw]
+    hinted = resolve_commodity_name(raw)
+    if hinted:
+        out.append(hinted)
+    lower = raw.lower()
+    if "corn" in lower:
+        out.extend(["Corn", "Nat'l Corn"])
+    if "soy" in lower:
+        out.extend(["Nat'l Soybeans", "Soybeans"])
+    seen = set()
+    uniq: List[str] = []
+    for item in out:
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(item)
+    return uniq
+
+
 # ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
@@ -153,6 +251,23 @@ def _fmt_date(val) -> str:
         return "—"
     s = str(val)
     return s.split(" ")[0].split("T")[0]
+
+
+def _activity_kind(activity_type: str) -> str:
+    t = (activity_type or "").strip().lower()
+    if t in ("planting", "plant"):
+        return "plant"
+    if t == "harvest":
+        return "harvest"
+    return "activity"
+
+
+def _activity_calendar_focus(events: List[Dict[str, Any]]) -> tuple:
+    """Always open the grid on the current month; other dates list below."""
+    from datetime import date as _date
+
+    today = _date.today()
+    return today.year, today.month
 
 
 def _fmt_num(v, digits: int = 2) -> str:
@@ -297,6 +412,27 @@ def list_my_fields_tool(people_id: str = "", business_id: str = "") -> str:
         if addr:
             parts.append(addr)
         lines.append("  • " + " · ".join(parts))
+    field_ids: List[int] = []
+    for f in rows:
+        try:
+            field_ids.append(int(f.get("fieldid") or f.get("FieldID")))
+        except (TypeError, ValueError):
+            continue
+    if field_ids:
+        viz_emit({
+            "id": "farm_map",
+            "type": "farm_map",
+            "title": "Farm fields",
+            "source_tool": "list_my_fields_tool",
+            "data": {
+                "field_ids": field_ids[:50],
+                "business_id": int(biz_ids[0]) if biz_ids else None,
+            },
+            "actions": [
+                {"label": "Open dashboard", "href": _fields_dashboard_href(biz_ids)},
+                {"label": "Open map", "href": _map_page_href(biz_ids=biz_ids)},
+            ],
+        })
     return "\n".join(lines)
 
 
@@ -368,23 +504,55 @@ def get_field_analysis_tool(field_id: int, people_id: str = "", business_id: str
                 f"  • {itype}: mean {_fmt_num(mean_f, 3)} "
                 f"(range {_fmt_num(idx.get('minvalue'), 3)}–{_fmt_num(idx.get('maxvalue'), 3)}){descriptor}{trend}"
             )
+    fname = field.get("name") or str(field_id)
+    try:
+        analysis_id = int(latest.get("analysisid") or latest.get("AnalysisID"))
+    except (TypeError, ValueError):
+        analysis_id = None
+    map_data: Dict[str, Any] = {"field_id": int(field_id), "layer": "NDVI"}
+    if analysis_id is not None:
+        map_data["analysis_id"] = analysis_id
+    bid = _spec_business_id(field, biz_ids)
+    if bid:
+        map_data["business_id"] = bid
+    viz_emit({
+        "id": f"field_map_{field_id}",
+        "type": "field_map",
+        "title": f"NDVI map — {fname}",
+        "source_tool": "get_field_analysis_tool",
+        "data": map_data,
+        "actions": [{
+            "label": "Open map",
+            "href": _map_page_href(int(field_id), "NDVI", field, biz_ids),
+        }],
+    })
     return "\n".join(lines)
 
 
-@tool
-def get_field_history_tool(field_id: int, months: int = 6, people_id: str = "") -> str:
-    """Get the NDVI / vegetation-index time series for a field over the last N
-    months (default 6). Use when the user asks "show trend", "how has field X
-    changed", "is my crop getting better or worse over time", or anything that
-    needs history rather than a single snapshot. people_id is injected from
-    session state."""
-    biz_ids = _business_ids_for_people(people_id)
-    if not biz_ids:
-        return "Cannot look up field history — your account is not linked to any business."
+def _field_ndvi_history(field_id: int, months: int, biz_ids: List[int]) -> Dict[str, Any]:
+    """Load NDVI series + LLM text for one field. Does not emit visualizations."""
+    out: Dict[str, Any] = {
+        "accessible": False,
+        "no_rows": False,
+        "field": None,
+        "field_id": int(field_id),
+        "name": str(field_id),
+        "series": [],
+        "latest": None,
+        "lines": [],
+        "error": "",
+        "months": max(1, min(int(months or 6), 24)),
+    }
     field = _field_accessible(int(field_id), biz_ids)
     if not field:
-        return f"Field {field_id} does not exist or is not accessible on your account."
-    months = max(1, min(int(months or 6), 24))
+        out["error"] = (
+            f"Field {field_id} does not exist or is not accessible on your account."
+        )
+        return out
+    out["accessible"] = True
+    out["field"] = field
+    out["name"] = field.get("name") or str(field_id)
+    months = out["months"]
     rows = _query(
         "SELECT a.AnalysisID, a.AnalysisDate, a.CloudPercent, "
         "       v.IndexType, v.MeanValue "
@@ -396,9 +564,12 @@ def get_field_history_tool(field_id: int, months: int = 6, people_id: str = "") 
         (int(field_id),),
     )
     if not rows:
-        return (f"No analyses in the last {months} months for field #{field_id} "
-                f"({field.get('name') or 'Unnamed'}).")
-    # Group by AnalysisDate → index map
+        out["no_rows"] = True
+        out["error"] = (
+            f"No analyses in the last {months} months for field #{field_id} "
+            f"({field.get('name') or 'Unnamed'})."
+        )
+        return out
     by_date: Dict[str, Dict[str, Any]] = {}
     for r in rows:
         d = _fmt_date(r.get("analysisdate"))
@@ -427,9 +598,169 @@ def get_field_history_tool(field_id: int, months: int = 6, people_id: str = "") 
             last = float(ndvi_trend[0])
             delta = last - first
             direction = "rising" if delta > 0.05 else ("falling" if delta < -0.05 else "steady")
-            lines.append(f"NDVI trend over window: {direction} ({first:.3f} → {last:.3f}, Δ {delta:+.3f})")
+            lines.append(
+                f"NDVI trend over window: {direction} ({first:.3f} → {last:.3f}, Δ {delta:+.3f})"
+            )
         except ValueError:
             pass
+    ndvi_series: List[Dict[str, Any]] = []
+    for date, info in sorted(by_date.items()):
+        raw_ndvi = info["idx"].get("NDVI")
+        if raw_ndvi is None:
+            continue
+        try:
+            ndvi_series.append({"date": date, "value": round(float(raw_ndvi), 3)})
+        except (TypeError, ValueError):
+            continue
+    out["lines"] = lines
+    out["series"] = ndvi_series
+    if ndvi_series:
+        out["latest"] = ndvi_series[-1]["value"]
+    return out
+
+
+def _emit_field_ndvi_line(
+    field_id: int,
+    fname: str,
+    series: List[Dict[str, Any]],
+    source_tool: str,
+    field: Optional[Dict[str, Any]] = None,
+    biz_ids: Optional[List[int]] = None,
+) -> None:
+    if not series:
+        return
+    actions = _open_field_action(field_id, field, biz_ids)
+    if len(series) == 1 and series[0].get("value") is not None:
+        viz_emit({
+            "id": f"hist_ndvi_kpi_{field_id}",
+            "type": "kpi",
+            "title": f"Latest NDVI — {fname}",
+            "source_tool": source_tool,
+            "data": {
+                "value": series[0]["value"],
+                "unit": "",
+                "hint": str(series[0].get("date") or ""),
+            },
+            "actions": actions,
+        })
+    viz_emit({
+        "id": f"hist_ndvi_{field_id}",
+        "type": "line_chart",
+        "title": f"NDVI — {fname}",
+        "source_tool": source_tool,
+        "data": {
+            "xKey": "date",
+            "yKey": "value",
+            "unit": "",
+            "series": series[-90:],
+        },
+        "actions": actions,
+    })
+
+
+@tool
+def get_field_history_tool(field_id: int, months: int = 6, people_id: str = "") -> str:
+    """Get the NDVI / vegetation-index time series for a field over the last N
+    months (default 6). Use when the user asks "show trend", "how has field X
+    changed", "is my crop getting better or worse over time", or anything that
+    needs history rather than a single snapshot. people_id is injected from
+    session state."""
+    biz_ids = _business_ids_for_people(people_id)
+    if not biz_ids:
+        return "Cannot look up field history — your account is not linked to any business."
+    bundle = _field_ndvi_history(int(field_id), months, biz_ids)
+    if not bundle["accessible"] or bundle["no_rows"]:
+        return bundle["error"]
+    if bundle["series"]:
+        _emit_field_ndvi_line(
+            int(field_id),
+            bundle["name"],
+            bundle["series"],
+            "get_field_history_tool",
+            bundle.get("field"),
+            biz_ids,
+        )
+    return "\n".join(bundle["lines"])
+
+
+@tool
+def compare_two_fields_tool(
+    field_id_a: int,
+    field_id_b: int,
+    months: int = 6,
+    people_id: str = "",
+) -> str:
+    """Compare NDVI time series for two specific fields (KPI of latest NDVI
+    plus one line chart per field). Use when the user names two fields —
+    "compare North 40 vs West 20", "Field A vs Field B", "how does the north
+    field stack up against the west". Resolve both names to IDs first. For a
+    ranking of every field on the farm, use get_farm_benchmark_tool instead.
+    people_id is injected from session state."""
+    try:
+        id_a = int(field_id_a)
+        id_b = int(field_id_b)
+    except (TypeError, ValueError):
+        return "Need two field IDs to compare."
+    if id_a == id_b:
+        return (
+            "Need two different fields to compare. Name both fields "
+            "(for example North 40 vs West 20) or pass two field IDs."
+        )
+    biz_ids = _business_ids_for_people(people_id)
+    if not biz_ids:
+        return "Cannot compare fields — your account is not linked to any business."
+    a = _field_ndvi_history(id_a, months, biz_ids)
+    if not a["accessible"]:
+        return a["error"]
+    b = _field_ndvi_history(id_b, months, biz_ids)
+    if not b["accessible"]:
+        return b["error"]
+    name_a = a["name"]
+    name_b = b["name"]
+    window = a["months"]
+    lines = [f"Comparing {name_a} vs {name_b} (last {window} months)", ""]
+    if a["no_rows"]:
+        lines.append(a["error"])
+    else:
+        lines.extend(a["lines"])
+    lines.append("")
+    if b["no_rows"]:
+        lines.append(b["error"])
+    else:
+        lines.extend(b["lines"])
+    latest_a = a["latest"]
+    latest_b = b["latest"]
+    if latest_a is not None and latest_b is not None:
+        delta = round(float(latest_a) - float(latest_b), 3)
+        lines.append("")
+        lines.append(
+            f"Latest NDVI: {name_a} {_fmt_num(latest_a, 3)} vs "
+            f"{name_b} {_fmt_num(latest_b, 3)} (Δ {delta:+.3f})"
+        )
+        viz_emit({
+            "id": f"cmp_ndvi_{id_a}_{id_b}",
+            "type": "kpi",
+            "title": f"NDVI — {name_a} vs {name_b}",
+            "source_tool": "compare_two_fields_tool",
+            "data": {
+                "value": latest_a,
+                "unit": "",
+                "delta": delta,
+                "hint": f"{name_a} {_fmt_num(latest_a, 2)} · {name_b} {_fmt_num(latest_b, 2)}",
+            },
+            "actions": [
+                {"label": f"Open {name_a}", "href": _field_page_href(id_a, a.get("field"), biz_ids)},
+                {"label": f"Open {name_b}", "href": _field_page_href(id_b, b.get("field"), biz_ids)},
+            ],
+        })
+    if a["series"]:
+        _emit_field_ndvi_line(
+            id_a, name_a, a["series"], "compare_two_fields_tool", a.get("field"), biz_ids
+        )
+    if b["series"]:
+        _emit_field_ndvi_line(
+            id_b, name_b, b["series"], "compare_two_fields_tool", b.get("field"), biz_ids
+        )
     return "\n".join(lines)
 
 
@@ -452,8 +783,10 @@ def get_field_alerts_tool(field_id: int = 0, people_id: str = "") -> str:
         rows = _query(
             "SELECT TOP 20 a.AlertID, a.AlertType, a.Severity, a.Message, a.Status, "
             "       a.CreatedAt, f.Name as FieldName, a.FieldID "
-            "FROM dbo.Alert a LEFT JOIN dbo.Field f ON f.FieldID = a.FieldID "
+            "FROM dbo.Alert a "
+            "INNER JOIN dbo.Field f ON f.FieldID = a.FieldID "
             "WHERE a.FieldID = %s AND (a.Status IS NULL OR a.Status <> 'resolved') "
+            "  AND f.DeletedAt IS NULL "
             "ORDER BY a.CreatedAt DESC",
             (int(field_id),),
         )
@@ -462,8 +795,10 @@ def get_field_alerts_tool(field_id: int = 0, people_id: str = "") -> str:
         rows = _query(
             "SELECT TOP 20 a.AlertID, a.AlertType, a.Severity, a.Message, a.Status, "
             "       a.CreatedAt, f.Name as FieldName, a.FieldID "
-            "FROM dbo.Alert a LEFT JOIN dbo.Field f ON f.FieldID = a.FieldID "
-            f"WHERE a.BusinessID IN ({placeholders}) "
+            "FROM dbo.Alert a "
+            "INNER JOIN dbo.Field f ON f.FieldID = a.FieldID "
+            f"WHERE f.BusinessID IN ({placeholders}) "
+            "  AND f.DeletedAt IS NULL "
             "  AND (a.Status IS NULL OR a.Status <> 'resolved') "
             "ORDER BY a.CreatedAt DESC",
             tuple(biz_ids),
@@ -482,6 +817,32 @@ def get_field_alerts_tool(field_id: int = 0, people_id: str = "") -> str:
             f"{atype} · {_fmt_date(a.get('createdat'))}"
             + (f" — {short_msg}" if short_msg else "")
         )
+    for a in rows[:3]:
+        fid = a.get("fieldid")
+        fname = a.get("fieldname") or "Unnamed"
+        sev_raw = str(a.get("severity") or "").strip().lower()
+        if sev_raw in ("critical", "high", "error", "severe"):
+            severity = "high"
+        elif sev_raw in ("medium", "warn", "warning", "moderate"):
+            severity = "medium"
+        else:
+            severity = "low"
+        msg = (a.get("message") or a.get("alerttype") or "Alert").strip()
+        aid = a.get("alertid") or fid or "x"
+        viz_emit({
+            "id": f"alert_{aid}",
+            "type": "alert_card",
+            "title": a.get("alerttype") or "Field alert",
+            "source_tool": "get_field_alerts_tool",
+            "data": {
+                "severity": severity,
+                "message": msg,
+                "field_name": fname,
+            },
+            "actions": (
+                _open_field_action(int(fid), None, biz_ids) if fid else []
+            ),
+        })
     return "\n".join(lines)
 
 
@@ -592,6 +953,38 @@ def get_field_soil_samples_tool(field_id: int, people_id: str = "") -> str:
 _SCOUTING_CATEGORIES = ("Scouting", "Pest", "Disease", "Weed", "Nutrient", "Irrigation", "Weather", "General")
 
 
+def _scout_geo_points(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Lat/lon pins only — never GeoJSON or rasters."""
+    points: List[Dict[str, Any]] = []
+    for r in rows or []:
+        try:
+            lat = float(r.get("latitude") if r.get("latitude") is not None else r.get("Latitude"))
+            lon = float(r.get("longitude") if r.get("longitude") is not None else r.get("Longitude"))
+        except (TypeError, ValueError):
+            continue
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            continue
+        sev = str(r.get("severity") or r.get("Severity") or "").strip().lower()
+        if sev in ("critical", "high"):
+            weight = 3
+        elif sev in ("medium", "moderate", "warn", "warning"):
+            weight = 2
+        else:
+            weight = 1
+        label = str(
+            r.get("title") or r.get("Title") or r.get("category") or r.get("Category") or "Scout"
+        ).strip()[:80]
+        points.append({
+            "lat": round(lat, 5),
+            "lon": round(lon, 5),
+            "label": label,
+            "weight": weight,
+        })
+        if len(points) >= 50:
+            break
+    return points
+
+
 @tool
 def get_field_scouting_tool(field_id: int, people_id: str = "") -> str:
     """Get recent field scouting observations — pest sightings, disease, weed
@@ -637,6 +1030,41 @@ def get_field_scouting_tool(field_id: int, people_id: str = "") -> str:
         if snippet:
             line += f": {snippet[:120]}"
         lines.append(line)
+    fname = field.get("name") or str(field_id)
+    items: List[Dict[str, Any]] = []
+    for r in rows:
+        date = _fmt_date(r.get("notedate") or r.get("NoteDate"))
+        cat = str(r.get("category") or r.get("Category") or "Scouting").strip() or "Scouting"
+        snippet = str(r.get("title") or r.get("content") or r.get("Title") or r.get("Content") or "").strip()
+        sev = str(r.get("severity") or r.get("Severity") or "").strip()
+        action = f"{cat} ({sev})" if sev else cat
+        if snippet:
+            action = f"{action}: {snippet[:80]}"
+        items.append({"date": date, "action": action, "field": fname})
+    field_action = _open_field_action(int(field_id), field, biz_ids)
+    if items:
+        viz_emit({
+            "id": f"scout_timeline_{field_id}",
+            "type": "timeline",
+            "title": f"Scouting — {fname}",
+            "source_tool": "get_field_scouting_tool",
+            "data": {"items": items[:20]},
+            "actions": field_action,
+        })
+    points = _scout_geo_points(rows)
+    if points:
+        viz_emit({
+            "id": f"scout_heat_{field_id}",
+            "type": "heatmap",
+            "title": f"Scout locations — {fname}",
+            "source_tool": "get_field_scouting_tool",
+            "data": {
+                "kind": "geo",
+                "field_id": int(field_id),
+                "points": points,
+            },
+            "actions": field_action,
+        })
     return "\n".join(lines)
 
 
@@ -702,11 +1130,27 @@ def get_field_activity_log_tool(field_id: int, people_id: str = "") -> str:
         "FROM dbo.FieldActivityLog WHERE FieldID = %s ORDER BY ActivityDate DESC",
         (int(field_id),),
     )
+    fname = field.get("name") or str(field_id)
+    field_action = _open_field_action(int(field_id), field, biz_ids)
     if not rows:
+        viz_emit({
+            "id": f"activity_tl_{field_id}",
+            "type": "timeline",
+            "title": f"Field activity — {fname}",
+            "source_tool": "get_field_activity_log_tool",
+            "data": {
+                "items": [{
+                    "date": "—",
+                    "action": "No activities logged yet",
+                    "field": fname,
+                }],
+            },
+            "actions": field_action,
+        })
         return (f"No activities logged yet for field #{field_id} "
-                f"({field.get('name') or 'Unnamed'}). "
+                f"({fname}). "
                 "Log operations in Precision Ag → Activity Log.")
-    lines = [f"Activity log for field #{field_id} ({field.get('name') or 'Unnamed'}) — {len(rows)} record(s):"]
+    lines = [f"Activity log for field #{field_id} ({fname}) — {len(rows)} record(s):"]
     for r in rows:
         date  = _fmt_date(r.get("activitydate"))
         atype = r.get("activitytype") or "Activity"
@@ -721,6 +1165,45 @@ def get_field_activity_log_tool(field_id: int, people_id: str = "") -> str:
         if notes:
             line += f" ({notes[:80]})"
         lines.append(line)
+    events: List[Dict[str, Any]] = []
+    items: List[Dict[str, Any]] = []
+    for r in rows:
+        d = _fmt_date(r.get("activitydate") or r.get("ActivityDate"))
+        atype = str(r.get("activitytype") or r.get("ActivityType") or "Activity").strip() or "Activity"
+        product = str(r.get("product") or r.get("Product") or "").strip()
+        label = f"{atype}: {product}" if product else atype
+        items.append({"date": d if d != "—" else "", "action": label, "field": fname})
+        if not d or d == "—":
+            continue
+        events.append({
+            "date": d,
+            "kind": _activity_kind(atype),
+            "label": label,
+            "field": fname,
+        })
+    if items:
+        viz_emit({
+            "id": f"activity_tl_{field_id}",
+            "type": "timeline",
+            "title": f"Field activity — {fname}",
+            "source_tool": "get_field_activity_log_tool",
+            "data": {"items": items[:20]},
+            "actions": field_action,
+        })
+    if events:
+        year, month = _activity_calendar_focus(events)
+        viz_emit({
+            "id": f"activity_cal_{field_id}",
+            "type": "calendar",
+            "title": f"Field calendar — {fname}",
+            "source_tool": "get_field_activity_log_tool",
+            "data": {
+                "year": year,
+                "month": month,
+                "events": events[:50],
+            },
+            "actions": field_action,
+        })
     return "\n".join(lines)
 
 
@@ -855,6 +1338,49 @@ def get_field_gdd_tool(field_id: int, days: int = 180, people_id: str = "") -> s
         recent = daily[-7:] if len(daily) >= 7 else daily
         recent_total = sum(d.get("gdd", 0) for d in recent)
         lines.append(f"Last 7 days: {recent_total:.0f} GDD ({recent_total/7:.1f}/day avg)")
+    try:
+        gdd_value = int(round(float(total)))
+    except (TypeError, ValueError):
+        gdd_value = None
+    if gdd_value is not None:
+        fname = field.get("name") or str(field_id)
+        viz_emit({
+            "id": f"gdd_{field_id}",
+            "type": "kpi",
+            "title": f"Growing degree days — {fname}",
+            "source_tool": "get_field_gdd_tool",
+            "data": {
+                "value": gdd_value,
+                "unit": "GDD",
+                "hint": f"{crop} · base {base}°F",
+            },
+            "actions": _open_field_action(field_id, field, biz_ids),
+        })
+        crop_key = str(crop or "").lower().split()[0]
+        maturity_gdd = {
+            "corn": 2700,
+            "maize": 2700,
+            "alfalfa": 700,
+            "wheat": 2400,
+            "soy": 2500,
+            "soybean": 2500,
+            "tomato": 1600,
+            "cotton": 2200,
+        }.get(crop_key, 2000)
+        if maturity_gdd > 0:
+            pct = max(0, min(100, int(round(100.0 * gdd_value / maturity_gdd))))
+            viz_emit({
+                "id": f"gdd_progress_{field_id}",
+                "type": "progress",
+                "title": f"Crop growth stage — {fname}",
+                "source_tool": "get_field_gdd_tool",
+                "data": {
+                    "label": str(crop or "Crop"),
+                    "percent": pct,
+                    "hint": f"{gdd_value} / {maturity_gdd} GDD to typical maturity",
+                },
+                "actions": _open_field_action(field_id, field, biz_ids),
+            })
     return "\n".join(lines)
 
 
@@ -898,6 +1424,52 @@ def get_field_irrigation_tool(field_id: int, days: int = 30, people_id: str = ""
         tp = sum(d.get("precip_in", 0) for d in last7)
         te = sum(d.get("etc_in", 0)   for d in last7)
         lines.append(f"Last 7 days: {tp:.2f}\" precip, {te:.2f}\" crop water use (ETc)")
+    fname = field.get("name") or str(field_id)
+    field_action = _open_field_action(field_id, field, biz_ids)
+    try:
+        deficit_value = round(float(deficit), 2)
+    except (TypeError, ValueError):
+        deficit_value = None
+    if deficit_value is not None:
+        viz_emit({
+            "id": f"irrig_kpi_{field_id}",
+            "type": "kpi",
+            "title": f"Water deficit — {fname}",
+            "source_tool": "get_field_irrigation_tool",
+            "data": {
+                "value": deficit_value,
+                "unit": "in",
+                "hint": rec,
+            },
+            "actions": field_action,
+        })
+    series: List[Dict[str, Any]] = []
+    for d in daily or []:
+        if not isinstance(d, dict) or not d.get("date"):
+            continue
+        try:
+            series.append({
+                "date": str(d.get("date")),
+                "precip_in": float(d.get("precip_in") or 0),
+                "etc_in": float(d.get("etc_in") or 0),
+                "deficit_in": float(d.get("deficit_in") or 0),
+            })
+        except (TypeError, ValueError):
+            continue
+    if series:
+        viz_emit({
+            "id": f"irrig_{field_id}",
+            "type": "line_chart",
+            "title": f"ET vs rainfall — {fname}",
+            "source_tool": "get_field_irrigation_tool",
+            "data": {
+                "xKey": "date",
+                "yKey": "deficit_in",
+                "unit": "in",
+                "series": series[-90:],
+            },
+            "actions": field_action,
+        })
     return "\n".join(lines)
 
 
@@ -1008,9 +1580,11 @@ def get_field_carbon_tool(field_id: int, people_id: str = "") -> str:
 def get_farm_benchmark_tool(people_id: str = "") -> str:
     """Compare all fields on the farm by NDVI, health score, and trend — a
     ranking that shows which fields are performing best and which need attention.
-    Use when the user asks "which of my fields is doing best", "compare my
-    fields", "which field needs the most work", "show me a farm overview".
-    people_id is injected from session state."""
+    Use when the user asks "which of my fields is doing best", "farm overview",
+    "how's the farm", "which field needs the most work", or a whole-farm
+    ranking. Emits a farm snapshot and links to Precision Ag — do not rebuild
+    the dashboard in chat. When the user names two specific fields, use
+    compare_two_fields_tool instead. people_id is injected from session state."""
     biz_ids = _business_ids_for_people(people_id)
     if not biz_ids:
         return "Cannot run benchmark — account not linked to any business."
@@ -1051,6 +1625,68 @@ def get_farm_benchmark_tool(people_id: str = "") -> str:
         lines.append("")
         lines.append(f"Best performer: {best.get('name') or 'Unnamed'} (NDVI {best['ndvi']:.3f})")
         lines.append(f"Needs most attention: {worst.get('name') or 'Unnamed'} (NDVI {worst['ndvi']:.3f})")
+    overview_actions = [
+        {"label": "Open dashboard", "href": _fields_dashboard_href(biz_ids)},
+        {"label": "Open benchmark", "href": "/precision-ag/benchmark"},
+    ]
+    avg_rounded = round(float(avg_ndvi), 3)
+    best_name = with_ndvi[0].get("name") or "Unnamed"
+    viz_emit({
+        "id": "farm_overview_kpi",
+        "type": "kpi",
+        "title": "Farm NDVI",
+        "source_tool": "get_farm_benchmark_tool",
+        "data": {
+            "value": avg_rounded,
+            "unit": "",
+            "hint": f"{len(with_ndvi)} fields · best {best_name}",
+        },
+        "actions": overview_actions,
+    })
+    bar_series: List[Dict[str, Any]] = []
+    for f in with_ndvi[:20]:
+        try:
+            bar_series.append({
+                "field": f.get("name") or str(f.get("field_id") or f.get("fieldid") or "Field"),
+                "ndvi": round(float(f["ndvi"]), 3),
+            })
+        except (TypeError, ValueError):
+            continue
+    if bar_series:
+        viz_emit({
+            "id": "farm_overview_ndvi",
+            "type": "bar_chart",
+            "title": "NDVI by field",
+            "source_tool": "get_farm_benchmark_tool",
+            "data": {
+                "xKey": "field",
+                "yKey": "ndvi",
+                "unit": "",
+                "series": bar_series,
+            },
+            "actions": overview_actions,
+        })
+    field_ids: List[int] = []
+    for f in fields:
+        try:
+            field_ids.append(int(f.get("field_id") or f.get("fieldid")))
+        except (TypeError, ValueError):
+            continue
+    if field_ids:
+        map_data: Dict[str, Any] = {"field_ids": field_ids[:50]}
+        bid = _spec_business_id(None, biz_ids)
+        if bid:
+            map_data["business_id"] = bid
+        viz_emit({
+            "id": "farm_map",
+            "type": "farm_map",
+            "title": "Farm fields",
+            "source_tool": "get_farm_benchmark_tool",
+            "data": map_data,
+            "actions": overview_actions + [
+                {"label": "Open map", "href": _map_page_href(biz_ids=biz_ids)},
+            ],
+        })
     return "\n".join(lines)
 
 
@@ -1557,6 +2193,30 @@ def get_field_agronomy_tool(field_id: int, people_id: str = "") -> str:
             lines.append(f"    [{sev}] {name} ({atype}): {a.get('action', '')}")
             if why:
                 lines.append(f"        why: {why}")
+        for a in pda[:3]:
+            if not isinstance(a, dict):
+                continue
+            name = str(a.get("name") or "").strip() or "Pest alert"
+            sev_raw = str(a.get("severity") or "").strip().lower()
+            if sev_raw in ("critical", "high", "error", "severe"):
+                severity = "high"
+            elif sev_raw in ("medium", "warn", "warning", "moderate"):
+                severity = "medium"
+            else:
+                severity = "low"
+            msg = str(a.get("action") or a.get("why") or a.get("type") or name).strip()
+            viz_emit({
+                "id": f"agro_pest_{field_id}_{name[:40]}",
+                "type": "alert_card",
+                "title": name,
+                "source_tool": "get_field_agronomy_tool",
+                "data": {
+                    "severity": severity,
+                    "message": msg,
+                    "field_name": field_name,
+                },
+                "actions": _open_field_action(int(field_id), field, biz_ids),
+            })
 
     # Provider visibility — flag when running on fallback so Saige can caveat
     wps = agro.get("weather_provider_status") or {}
@@ -1653,6 +2313,26 @@ def get_field_zones_tool(field_id: int, num_zones: int = 4, index: str = "NDVI",
             lines.append(f"  Stressed zone (#{(worst.get('zone') or 0) + 1}) covers ≥{worst.get('area_pct'):.0f}% — scout that area.")
 
     lines.append("  Variable-rate Rx export: `/api/fields/{id}/zones/prescription?fmt=geojson` (or fmt=csv).".replace("{id}", str(field_id)))
+    if zones:
+        heat_data: Dict[str, Any] = {
+            "kind": "raster",
+            "field_id": int(field_id),
+            "layer": idx,
+        }
+        bid = _spec_business_id(field, biz_ids)
+        if bid:
+            heat_data["business_id"] = bid
+        viz_emit({
+            "id": f"zone_heat_{field_id}_{idx}",
+            "type": "heatmap",
+            "title": f"{idx} zones — {field_name}",
+            "source_tool": "get_field_zones_tool",
+            "data": heat_data,
+            "actions": [{
+                "label": "Open map",
+                "href": _map_page_href(int(field_id), idx, field, biz_ids),
+            }],
+        })
     return "\n".join(lines)
 
 
@@ -1866,15 +2546,32 @@ def get_price_trends_tool(commodity: str = "", days: int = 30, people_id: str = 
     Commodity names match the Market Intelligence panel labels, e.g. 'Nat\\'l Chicken Breast'
     or 'Nat\\'l Pork Loin'. people_id is not needed for this tool."""
     if not commodity:
-        return "Please specify a commodity name (e.g. \"Nat'l Chicken Breast\" or \"Nat'l Pork Loin\")."
+        return "Please specify a commodity name (e.g. \"Corn\" or \"Nat'l Chicken Breast\")."
     days = max(7, min(int(days or 30), 365))
-    rows = _query(
-        "SELECT TOP 200 Commodity, PriceUSD, FetchedAt "
-        "FROM CommodityPriceHistory "
-        "WHERE Commodity = %s AND FetchedAt >= DATEADD(day, -%s, GETDATE()) "
-        "ORDER BY FetchedAt ASC",
-        (str(commodity), days),
-    )
+    rows: List[Dict[str, Any]] = []
+    matched = commodity
+    for candidate in _commodity_candidates(commodity):
+        rows = _query(
+            "SELECT TOP 200 Commodity, PriceUSD, FetchedAt "
+            "FROM CommodityPriceHistory "
+            "WHERE Commodity = %s AND FetchedAt >= DATEADD(day, -%s, GETDATE()) "
+            "ORDER BY FetchedAt ASC",
+            (str(candidate), days),
+        )
+        if rows:
+            matched = candidate
+            break
+    if not rows:
+        like = f"%{(commodity or '').strip()}%"
+        rows = _query(
+            "SELECT TOP 200 Commodity, PriceUSD, FetchedAt "
+            "FROM CommodityPriceHistory "
+            "WHERE Commodity LIKE %s AND FetchedAt >= DATEADD(day, -%s, GETDATE()) "
+            "ORDER BY FetchedAt ASC",
+            (like, days),
+        )
+        if rows:
+            matched = str(rows[0].get("commodity") or rows[0].get("Commodity") or commodity)
     if not rows:
         return (
             f"No historical price data found for '{commodity}'. "
@@ -1896,7 +2593,7 @@ def get_price_trends_tool(commodity: str = "", days: int = 30, people_id: str = 
     pct   = (last - first) / first * 100 if first else 0
     trend = "rising" if pct > 2 else ("falling" if pct < -2 else "stable")
     lines = [
-        f"Price trend for {commodity} (last {days} days, {len(prices)} observations):",
+        f"Price trend for {matched} (last {days} days, {len(prices)} observations):",
         f"  Start:   ${first:.2f}  ({dates[0]})",
         f"  Latest:  ${last:.2f}  ({dates[-1]})",
         f"  Average: ${avg:.2f}",
@@ -1906,6 +2603,25 @@ def get_price_trends_tool(commodity: str = "", days: int = 30, people_id: str = 
         lines.append("Recent readings:")
         for p, d in zip(prices[-6:], dates[-6:]):
             lines.append(f"  • {d}: ${p:.2f}")
+    series: List[Dict[str, Any]] = []
+    for d, p in zip(dates, prices):
+        if not d:
+            continue
+        series.append({"date": d, "value": round(p, 2)})
+    if len(series) >= 2:
+        viz_emit({
+            "id": f"price_trend_{matched[:40]}",
+            "type": "line_chart",
+            "title": f"Price trend — {matched}",
+            "source_tool": "get_price_trends_tool",
+            "data": {
+                "xKey": "date",
+                "yKey": "value",
+                "unit": "$",
+                "series": series[-90:],
+            },
+            "actions": [],
+        })
     return "\n".join(lines)
 
 
@@ -1914,6 +2630,7 @@ precision_ag_tools = [
     resolve_field_by_name_tool,
     get_field_analysis_tool,
     get_field_history_tool,
+    compare_two_fields_tool,
     get_field_alerts_tool,
     get_field_soil_samples_tool,
     get_field_scouting_tool,

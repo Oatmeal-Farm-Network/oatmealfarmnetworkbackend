@@ -111,3 +111,4 @@ def test_finalize_interrupted_status(monkeypatch):
     )
     assert result["status"] == "interrupted"
     assert result["proposals"][0]["proposal_id"] == "z"
+    assert result["visualizations"] == []

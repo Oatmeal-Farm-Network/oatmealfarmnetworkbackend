@@ -63,8 +63,12 @@ except ImportError:
 # DATABASE CONFIGURATION
 # ============================================================================
 
+# Cloud Run SQL Server: use the Python Connector (see data/sql/connect.py).
+# DB_SERVER is the Secret Manager name OFN backend already mounts.
+INSTANCE_CONNECTION_NAME = (os.getenv("INSTANCE_CONNECTION_NAME") or "").strip()
+
 DB_CONFIG = {
-    "host": os.getenv("DB_HOST", "").strip(),
+    "host": (os.getenv("DB_HOST") or os.getenv("DB_SERVER") or "").strip(),
     "port": int(os.getenv("DB_PORT", "1433").strip()) if os.getenv("DB_PORT") else 1433,
     "user": os.getenv("DB_USER", "").strip(),
     "password": os.getenv("DB_PASSWORD", ""),
@@ -202,7 +206,7 @@ MAX_MESSAGE_CHARS = int(os.getenv("MAX_MESSAGE_CHARS", "4000"))
 MAX_STORED_CONTENT_CHARS = int(os.getenv("MAX_STORED_CONTENT_CHARS", "2000"))
 
 # Metadata whitelist — only these keys are kept when storing messages.
-METADATA_ALLOWED_KEYS = {"type", "options", "advisory_type", "recommendations"}
+METADATA_ALLOWED_KEYS = {"type", "options", "advisory_type", "recommendations", "visualizations"}
 # Max serialized size (bytes) for the metadata dict after filtering.
 MAX_METADATA_BYTES = int(os.getenv("MAX_METADATA_BYTES", "2048"))
 
@@ -302,5 +306,5 @@ print(f"[Config] LLM provider: {SAIGE_LLM_PROVIDER} (Gemini model: {GEMINI_MODEL
 print(f"[Config] Control-plane SQL preferred: {SAIGE_CONTROL_PLANE_SQL}")
 print(f"[Config] Media GCS bucket: {SAIGE_MEDIA_GCS_BUCKET or '(local fallback)'}")
 
-# Compat: `from config import settings` then settings.GEMINI_MODEL_NAME, etc.
+# Compat: `from core.config import settings` then settings.GEMINI_MODEL_NAME, etc.
 settings = sys.modules[__name__]

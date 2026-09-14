@@ -28,8 +28,10 @@ def _get_stream_queue(thread_id: str):
     with _stream_lock:
         return _stream_queues.get(thread_id)
 
-from config import RAG_AVAILABLE, WEATHER_AVAILABLE, MAX_QUESTIONS
-from saige_models import (
+from core.config import RAG_AVAILABLE, WEATHER_AVAILABLE, MAX_QUESTIONS
+from visualizations.mapper import drain_pending, merge_visualizations
+from visualizations.pending import viz_reset
+from schemas.models import (
     FarmState,
     SaigeState,
     AccountIntent,
@@ -39,14 +41,15 @@ from saige_models import (
     WeatherQueryParsed,
     FollowUpEntityExtraction,
 )
-from llm import llm, get_llm_farm
-from graph.routing import route_after_policy, route_after_supervisor  # re-export for shims
+from integrations.gemini import llm, get_llm_farm
+from graph.routing import route_after_policy, route_after_supervisor
+from graph.farm_viz_intents import farm_viz_intent, pinned_routes, prefetch_farm_viz
 
 logger = logging.getLogger("farm_advisory.nodes")
-from rag import rag_livestock, rag_plant, rag_bakasura, rag_news, rag_hitl_charlie
-from weather import weather_service, get_weather_tool, weather_tools
+from integrations.rag import rag_livestock, rag_plant, rag_bakasura, rag_news, rag_hitl_charlie
+from tools.weather.weather import weather_service, get_weather_tool, weather_tools, emit_weather_visualizations
 try:
-    from companion_planting import companion_tools, companion_planting_tool, check_companion_pair_tool
+    from tools.agriculture.companion_planting import companion_tools, companion_planting_tool, check_companion_pair_tool
     COMPANION_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] companion_planting unavailable: {_e}")
@@ -56,7 +59,7 @@ except Exception as _e:
     COMPANION_AVAILABLE = False
 
 try:
-    from crop_names import crop_name_tools, crop_name_tool
+    from tools.agriculture.crop_names import crop_name_tools, crop_name_tool
     CROP_NAMES_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] crop_names unavailable: {_e}")
@@ -65,7 +68,7 @@ except Exception as _e:
     CROP_NAMES_AVAILABLE = False
 
 try:
-    from weather_mitigation import weather_mitigation_tools, weather_mitigation_tool
+    from tools.weather.weather_mitigation import weather_mitigation_tools, weather_mitigation_tool
     WEATHER_MITIGATION_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] weather_mitigation unavailable: {_e}")
@@ -74,7 +77,7 @@ except Exception as _e:
     WEATHER_MITIGATION_AVAILABLE = False
 
 try:
-    from region_crops import region_crops_tools, region_crops_tool
+    from tools.agriculture.region_crops import region_crops_tools, region_crops_tool
     REGION_CROPS_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] region_crops unavailable: {_e}")
@@ -83,7 +86,7 @@ except Exception as _e:
     REGION_CROPS_AVAILABLE = False
 
 try:
-    from soil_challenges import soil_challenge_tools, soil_challenge_tool
+    from tools.agriculture.soil_challenges import soil_challenge_tools, soil_challenge_tool
     SOIL_CHALLENGE_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] soil_challenges unavailable: {_e}")
@@ -92,7 +95,7 @@ except Exception as _e:
     SOIL_CHALLENGE_AVAILABLE = False
 
 try:
-    from price_forecast import price_forecast_tools, price_forecast_tool
+    from tools.finance.price_forecast import price_forecast_tools, price_forecast_tool
     PRICE_FORECAST_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] price_forecast unavailable: {_e}")
@@ -101,7 +104,7 @@ except Exception as _e:
     PRICE_FORECAST_AVAILABLE = False
 
 try:
-    from subsidies import subsidies_tools, subsidies_tool
+    from tools.finance.subsidies import subsidies_tools, subsidies_tool
     SUBSIDIES_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] subsidies unavailable: {_e}")
@@ -110,7 +113,7 @@ except Exception as _e:
     SUBSIDIES_AVAILABLE = False
 
 try:
-    from insurance import insurance_tools, insurance_tool
+    from tools.finance.insurance import insurance_tools, insurance_tool
     INSURANCE_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] insurance unavailable: {_e}")
@@ -119,7 +122,7 @@ except Exception as _e:
     INSURANCE_AVAILABLE = False
 
 try:
-    from events import (
+    from tools.marketplace.events import (
         event_tools,
         list_upcoming_events_tool,
         get_event_details_tool,
@@ -135,13 +138,14 @@ except Exception as _e:
     EVENTS_AVAILABLE = False
 
 try:
-    from precision_ag import (
+    from tools.agriculture.precision_ag import (
         precision_ag_tools,
         list_my_fields_tool,
         resolve_field_by_name_tool,
         resolve_field_by_name,
         get_field_analysis_tool,
         get_field_history_tool,
+        compare_two_fields_tool,
         get_field_alerts_tool,
         get_field_soil_samples_tool,
         get_field_scouting_tool,
@@ -164,6 +168,8 @@ try:
         get_field_agronomy_tool,
         get_field_zones_tool,
         get_field_assessment_history_tool,
+        get_price_trends_tool,
+        resolve_commodity_name,
     )
     PRECISION_AG_AVAILABLE = True
 except Exception as _e:
@@ -175,6 +181,7 @@ except Exception as _e:
     resolve_field_by_name = None
     get_field_analysis_tool = None
     get_field_history_tool = None
+    compare_two_fields_tool = None
     get_field_alerts_tool = None
     get_field_soil_samples_tool = None
     get_field_scouting_tool = None
@@ -196,10 +203,12 @@ except Exception as _e:
     get_field_water_use_tool = None
     get_field_agronomy_tool = None
     get_field_assessment_history_tool = None
+    get_price_trends_tool = None
+    resolve_commodity_name = lambda *_a, **_k: ""
     PRECISION_AG_AVAILABLE = False
 
 try:
-    from business_ops import (
+    from tools.farm.business_ops import (
         business_ops_tools,
         get_tracked_grants_tool,
         calculate_shelf_life_tool,
@@ -211,7 +220,7 @@ except Exception as _e:
     BUSINESS_OPS_AVAILABLE = False
 
 try:
-    from farm_data import (
+    from tools.farm.farm_data import (
         farm_data_tools,
         list_my_animals_tool,
         list_my_listings_tool,
@@ -231,7 +240,7 @@ except Exception as _e:
     FARM_DATA_AVAILABLE = False
 
 try:
-    from business_data import (
+    from tools.farm.business_data import (
         business_data_tools,
         get_business_profile_tool,
         update_business_profile_tool,
@@ -287,7 +296,7 @@ except Exception as _e:
     BUSINESS_DATA_AVAILABLE = False
 
 try:
-    from knowledge_base import (
+    from services.knowledge_base import (
         knowledge_base_tools,
         search_plants_tool,
         get_plant_detail_tool,
@@ -307,7 +316,7 @@ except Exception as _e:
     KNOWLEDGE_BASE_AVAILABLE = False
 
 try:
-    from actions import (
+    from tools.marketplace.actions import (
         actions_tools,
         draft_produce_listing_tool,
         draft_meat_listing_tool,
@@ -327,7 +336,7 @@ except Exception as _e:
     ACTIONS_AVAILABLE = False
 
 try:
-    from agronomy import (
+    from tools.agriculture.agronomy import (
         agronomy_tools,
         planting_calendar_tool,
         irrigation_schedule_tool,
@@ -343,7 +352,7 @@ except Exception as _e:
     AGRONOMY_AVAILABLE = False
 
 try:
-    from chef import (
+    from agents.sibling.chef import (
         chef_tools,
         save_recipe_tool,
         cost_recipe_tool,
@@ -367,7 +376,7 @@ except Exception as _e:
     CHEF_AVAILABLE = False
 
 try:
-    from pest_detection import pest_detection_tools, get_recent_pest_detections_tool
+    from tools.agriculture.pest_detection import pest_detection_tools, get_recent_pest_detections_tool
     PEST_DETECTION_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] pest_detection unavailable: {_e}")
@@ -376,7 +385,7 @@ except Exception as _e:
     PEST_DETECTION_AVAILABLE = False
 
 try:
-    from push_notifications import push_notification_tools, send_push_notification_tool
+    from services.push_notifications import push_notification_tools, send_push_notification_tool
     PUSH_NOTIFICATIONS_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] push_notifications unavailable: {_e}")
@@ -385,7 +394,7 @@ except Exception as _e:
     PUSH_NOTIFICATIONS_AVAILABLE = False
 
 try:
-    from weather_alerts import weather_alert_tools, check_my_weather_alerts_tool
+    from tools.weather.weather_alerts import weather_alert_tools, check_my_weather_alerts_tool
     WEATHER_ALERTS_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] weather_alerts unavailable: {_e}")
@@ -394,7 +403,7 @@ except Exception as _e:
     WEATHER_ALERTS_AVAILABLE = False
 
 try:
-    from history_store import history_tools, get_my_recent_history_tool
+    from services.history import history_tools, get_my_recent_history_tool
     HISTORY_STORE_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] history_store unavailable: {_e}")
@@ -403,7 +412,7 @@ except Exception as _e:
     HISTORY_STORE_AVAILABLE = False
 
 try:
-    from jokes import joke_tools, tell_joke_tool
+    from services.jokes import joke_tools, tell_joke_tool
     JOKES_AVAILABLE = True
 except Exception as _e:
     print(f"[nodes] jokes unavailable: {_e}")
@@ -573,6 +582,7 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
     Handles context gathering, RAG retrieval, and the Tool-Calling Loop.
     """
     print(f"\n[Advisory Agent] Processing with role: {role_prompt[:50]}...")
+    viz_reset()
 
     # Handle general questions directly without RAG or farming prompts
     _assessment = state.get("assessment_summary", "")
@@ -637,7 +647,7 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
         ):
             _profile = {}
             try:
-                from user_profile import get_account_profile
+                from services.user_profile import get_account_profile
                 _profile = get_account_profile(str(_pid or ""), state.get("business_id")) or {}
             except Exception:
                 pass
@@ -712,8 +722,10 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
     ))
     _INTENT_MAP = _MAP_KW_MATCH or _MAP_ADDR_MATCH
 
-    _INTENT_BUSINESS = any(k in _rl for k in (
-        "my animal", "my listing", "my inventory", "my order", "my service",
+    _farm_viz = farm_viz_intent(_rl)
+
+    _INTENT_BUSINESS = _farm_viz != "animals" and any(k in _rl for k in (
+        "my listing", "my inventory", "my order", "my service",
         "my blog", "my cert", "my profile", "my account", "my vehicle",
         "my truck", "my fleet", "my ranch info", "my business",
         "cold chain vehicle", "list vehicle", "fleet vehicle",
@@ -726,14 +738,17 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
         "cold chain sla", "sla impact", "degradation",
     ))
 
-    _INTENT_PRECISION_AG = any(k in _rl for k in (
+    _INTENT_PRECISION_AG = _farm_viz in (
+        "irrigate", "ndvi_history", "field_alerts", "growth_stage",
+        "farm_benchmark", "field_activity", "field_zones", "price_trend", "farm_map",
+    ) or any(k in _rl for k in (
         "my field", "ndvi", "evi", "savi", "my crop monitoring",
         "field analysis", "field alert", "field health", "field soil",
         "biomass confidence", "improve confidence", "field zones",
         "management zone", "yield forecast", "gdd", "growing degree",
-        "irrigation recom", "field weather", "scouting report",
+        "irrigation recom", "irrigat", "field weather", "scouting report",
         "field activity", "field assessment", "log scouting",
-        "log field", "add soil sample",
+        "log field", "add soil sample", "growth stage",
     ))
 
     # Pure agronomy / plant-knowledge questions (no "my field") — keep KB + agronomy tools only
@@ -886,7 +901,7 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
     _community_section = ""
     if not (_INTENT_MAP or _INTENT_PRECISION_AG or _INTENT_ACCOUNTING or _INTENT_BUSINESS):
         try:
-            from learning import get_community_context as _get_community_ctx
+            from services.learning import get_community_context as _get_community_ctx
             _community_section = _get_community_ctx(latest_user_message, n=3)
         except Exception as _lrn_err:
             pass  # flywheel unavailable — degrade silently
@@ -899,7 +914,7 @@ def run_advisory_agent(state: FarmState, role_prompt: str, rag_systems: list = N
     _business_name_ctx = ""
     if _business_id_ctx:
         try:
-            from user_profile import get_business_name as _get_bname_ctx
+            from services.user_profile import get_business_name as _get_bname_ctx
             _business_name_ctx = _get_bname_ctx(_business_id_ctx) or ""
         except Exception:
             pass
@@ -1128,7 +1143,8 @@ PRECISION AG — Field Data (resolve names before asking for IDs):
 - resolve_field_by_name_tool(name): map a field name like "test field 4" to FieldID. ALWAYS call this when the user names a field instead of giving a numeric ID. NEVER ask the user for a field ID if a name is present — resolve it.
 - get_field_analysis_tool(field_id): latest NDVI/EVI analysis. Call after resolving the name to an ID.
 - get_field_analysis_tool(field_id): latest NDVI/EVI/SAVI vegetation indices + trend. Use for "how is field X doing", "is my crop healthy", NDVI questions.
-- get_field_history_tool(field_id, months): NDVI time series over last N months. Use for trend, improvement/decline questions.
+- get_field_history_tool(field_id, months): NDVI time series over last N months. Use for trend, improvement/decline questions on a single field.
+- compare_two_fields_tool(field_id_a, field_id_b, months): NDVI time series for two named fields plus a latest-NDVI KPI. Use for "compare North 40 vs West 20", "Field A vs Field B", two specific fields. Resolve both names first. Do not use this for a whole-farm ranking.
 - get_field_alerts_tool(field_id): precision-ag alerts across fields (field_id=0 = all fields). Use for "any issues", "what needs attention", "are there problems".
 - get_field_soil_samples_tool(field_id): soil test results — pH, organic matter, NPK with deficiency/excess flags and amendment recommendations. Use for "soil health", "fertilizer", "what nutrients does my field need", soil questions.
 - get_field_scouting_tool(field_id): in-field scout observations — pests, disease, weeds, nutrient deficiency symptoms with severity. Use for "what's been found in the field", "any pest issues", "scouting reports".
@@ -1140,7 +1156,7 @@ PRECISION AG — Field Data (resolve names before asking for IDs):
 - get_field_irrigation_tool(field_id, days): irrigation recommendation from ET₀ vs precipitation — "irrigate now / soon / not needed" + water deficit in inches. Use for "should I irrigate", "when to water", "water stress", irrigation scheduling.
 - get_field_yield_forecast_tool(field_id): NDVI-based yield estimate vs crop-type baseline with trend. Use for "expected yield", "will this be a good harvest", "am I above or below average yield".
 - get_field_carbon_tool(field_id): soil OM trends, SOC stock estimates, cover crop history, rotation diversity, sustainability score. Use for "carbon sequestration", "soil health trend", "regenerative ag score", "how sustainable is my farm".
-- get_farm_benchmark_tool(): compare all fields by NDVI/health/trend — ranks best-to-worst. Use for "which field is doing best", "farm overview", "compare my fields", "which field needs most attention".
+- get_farm_benchmark_tool(): compare all fields by NDVI/health/trend — ranks best-to-worst and links to Precision Ag. Use for "which field is doing best", "farm overview", "how's the farm", "which field needs most attention". Do not embed a dashboard; the charts plus Open dashboard / Open benchmark links are enough. When the user names two specific fields, use compare_two_fields_tool instead.
 - get_field_weather_tool(field_id, days): recent temp/precipitation/ET₀ at the field location. Use for "recent weather on my farm", "how much rain", when weather context helps agronomic advice.
 - get_field_biomass_tool(field_id): current dry-matter biomass estimate (kg DM/ha) for a field with confidence and capture date. If confidence is low, the response automatically explains WHY and how to fix it. Use for "what's my biomass", "how much forage", "what does this biomass number mean", or any biomass / dry-matter question. ALSO use whenever the user asks why biomass confidence is low.
 - improve_field_biomass_confidence_tool(field_id): trigger a fresh satellite biomass run and average it with recent passes to raise confidence. Use when the user asks to "improve confidence", "fix the biomass confidence", "average the biomass passes", or follows up on a low-confidence biomass result. PROACTIVELY OFFER this any time get_field_biomass_tool returns confidence < 0.4.
@@ -1361,11 +1377,17 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
         _acct_tool_names = {t.name for t in business_ops_tools if BUSINESS_OPS_AVAILABLE}
         bound_tools = [t for t in bound_tools if t.name in _acct_tool_names]
         print(f"[Intent Router] Tool list pruned to accounting/events tools ({len(bound_tools)} tools)")
+    if _farm_viz in (
+        "irrigate", "ndvi_history", "field_alerts", "growth_stage", "animals",
+        "farm_benchmark", "field_activity", "field_zones", "price_trend", "farm_map",
+    ):
+        bound_tools = [t for t in bound_tools if getattr(t, "name", "") != "get_weather_tool"]
+        print(f"[Intent Router] Weather tool stripped for farm-viz intent={_farm_viz}")
     # _INTENT_KNOWLEDGE_ONLY: full tool list kept as-is
     # ── end tool pruning ──────────────────────────────────────────────────────
 
     # Production: specialists are read-only — writes only via HITL → Execute
-    from tool_policy import filter_read_only_tools, is_write_tool, write_tool_refusal
+    from tools.tool_policy import filter_read_only_tools, is_write_tool, write_tool_refusal
 
     before = len(bound_tools)
     bound_tools = filter_read_only_tools(bound_tools)
@@ -1407,10 +1429,27 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
     except (TypeError, ValueError):
         business_id_for_tools = 0
     try:
-        from precision_ag import set_session_business_id
+        from tools.agriculture.precision_ag import set_session_business_id
         set_session_business_id(str(business_id_for_tools) if business_id_for_tools else None)
     except Exception:
         pass
+
+    _viz_prefetch = ""
+    if _farm_viz in (
+        "irrigate", "growth_stage", "animals",
+        "farm_benchmark", "field_activity", "price_trend", "farm_map",
+    ):
+        _viz_prefetch = prefetch_farm_viz(
+            latest_user_message,
+            people_id=str(people_id_for_tools or ""),
+            business_id=business_id_for_tools,
+        )
+        if _viz_prefetch:
+            print(f"[Advisory Agent] Prefetched farm-viz intent={_farm_viz} chars={len(_viz_prefetch)}")
+            if _farm_viz == "animals":
+                farm_data_context = _viz_prefetch
+            else:
+                precision_ag_context = _viz_prefetch
 
     def _safe_int(val, default: int = 0) -> int:
         try:
@@ -1474,6 +1513,12 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
                     "\n\n⚠ MAP ALREADY UPDATED — geocode_location_tool has already run and the "
                     "map has moved. Do NOT call it again. Respond in one short sentence confirming "
                     "the place name shown in [Farm Data] above."
+                )
+            if _viz_prefetch:
+                current_input += (
+                    "\n\nFarm data for this question is already loaded in the context above. "
+                    "Do not ask for a city or location. Do not call get_weather_tool. "
+                    "Write a short practical caption — charts will render separately."
                 )
             _thread_id = state.get("thread_id", "")
             _stream_q = _get_stream_queue(_thread_id) if _thread_id else None
@@ -1665,6 +1710,21 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
                                 "people_id": people_id_for_tools,
                             })
                             precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'compare_two_fields_tool' and PRECISION_AG_AVAILABLE:
+                            fid_a = _safe_int(tc_args.get('field_id_a', 0) or 0)
+                            fid_b = _safe_int(tc_args.get('field_id_b', 0) or 0)
+                            months = _safe_int(tc_args.get('months', 6) or 6)
+                            print(
+                                f"[Advisory Agent] Executing Compare Two Fields: "
+                                f"field_id_a={fid_a}, field_id_b={fid_b}, months={months}"
+                            )
+                            tool_result = compare_two_fields_tool.invoke({
+                                "field_id_a": fid_a,
+                                "field_id_b": fid_b,
+                                "months": months,
+                                "people_id": people_id_for_tools,
+                            })
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
                         elif tc_name == 'get_field_alerts_tool' and PRECISION_AG_AVAILABLE:
                             fid = _safe_int(tc_args.get('field_id', 0) or 0)
                             print(f"[Advisory Agent] Executing Get Field Alerts Tool: field_id={fid}")
@@ -1756,6 +1816,28 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
                         elif tc_name == 'get_farm_benchmark_tool' and PRECISION_AG_AVAILABLE:
                             print(f"[Advisory Agent] Executing Farm Benchmark")
                             tool_result = get_farm_benchmark_tool.invoke({"people_id": people_id_for_tools})
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_field_zones_tool' and PRECISION_AG_AVAILABLE:
+                            fid = _safe_int(tc_args.get('field_id', 0) or 0)
+                            nz = _safe_int(tc_args.get('num_zones', 4) or 4)
+                            idx = str(tc_args.get('index') or 'NDVI')
+                            print(f"[Advisory Agent] Executing Field Zones: field_id={fid}")
+                            tool_result = get_field_zones_tool.invoke({
+                                "field_id": fid,
+                                "num_zones": nz,
+                                "index": idx,
+                                "people_id": people_id_for_tools,
+                            })
+                            precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
+                        elif tc_name == 'get_price_trends_tool' and PRECISION_AG_AVAILABLE:
+                            commodity = tc_args.get('commodity') or resolve_commodity_name(latest_user_message) or "Corn"
+                            days = _safe_int(tc_args.get('days', 30) or 30)
+                            print(f"[Advisory Agent] Executing Price Trends: commodity={commodity}")
+                            tool_result = get_price_trends_tool.invoke({
+                                "commodity": commodity,
+                                "days": days,
+                                "people_id": people_id_for_tools,
+                            })
                             precision_ag_context = (precision_ag_context + "\n\n" if precision_ag_context else "") + tool_result
                         elif tc_name == 'get_field_weather_tool' and PRECISION_AG_AVAILABLE:
                             fid = _safe_int(tc_args.get('field_id', 0) or 0)
@@ -2313,7 +2395,8 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
         print(f"[Advisory Agent] Error: {e}")
         return {
             "diagnosis": "I'm having trouble generating advice right now. Please try again.",
-            "recommendations": ["Consult a local expert"]
+            "recommendations": ["Consult a local expert"],
+            "visualizations": drain_pending(),
         }
 
     # Append any captured [MAP_CMD] marker so the widget can fire the map event.
@@ -2346,6 +2429,7 @@ If the farmer seems worried, acknowledge it briefly before diving into solutions
         "recommendations": recommendations[:5] if recommendations else ["Consider consulting a local expert"],
         "citations": rag_citations[:12],
         "timings": rag_timings,
+        "visualizations": drain_pending(),
     }
 
     if weather_data:
@@ -2500,15 +2584,20 @@ def weather_advisory_node(state: FarmState):
     issues = state.get("current_issues") or []
     assessment = state.get("assessment_summary", "")
     history = state.get("history") or []
-    
-    # Build user query from multiple sources
-    user_query = ' '.join(issues) if issues else assessment
+
+    # This turn wins over farm/session location so weather works for any US place.
+    latest = _latest_user_text(state)
+    user_query = latest or (" ".join(issues) if issues else assessment)
     if not user_query or len(user_query.strip()) < 5:
-        # Try to get from history
         for msg in reversed(history):
-            if msg.startswith("User:"):
-                user_query = msg.replace("User:", "").strip()
+            if isinstance(msg, str) and msg.startswith("User:"):
+                user_query = msg.replace("User:", "", 1).strip()
                 break
+
+    mentioned_place = weather_service.extract_us_place_query(user_query)
+    if mentioned_place:
+        location = mentioned_place
+        print(f"[Weather Advisory] Place from this turn: {location}")
     
     print(f"[Weather Advisory] User query: {user_query[:100] if user_query else 'None'}...")
     print(f"[Weather Advisory] Location from state: {location}")
@@ -2549,10 +2638,11 @@ Extract:
 - Confidence score between 0.0 and 1.0
 
 Examples:
-- "weather in Hayward, California" -> is_weather_query: true, location: "Hayward, California", is_forecast: false, forecast_days: null, confidence: 0.95
-- "150 day forecast for New York" -> is_weather_query: true, location: "New York", is_forecast: true, forecast_days: 150, confidence: 0.93
+- "weather in Miami, Florida" -> is_weather_query: true, location: "Miami, Florida", is_forecast: false, forecast_days: null, confidence: 0.95
+- "150 day forecast for Des Moines, Iowa" -> is_weather_query: true, location: "Des Moines, Iowa", is_forecast: true, forecast_days: 150, confidence: 0.93
 - "weather for my tomato farm in Boston" -> is_weather_query: true, location: "Boston", is_forecast: false, has_farm_context: true, confidence: 0.90
-- "im in sanjose, can you check the weather in the coming days" -> is_weather_query: true, location: "Sanjose", is_forecast: true, forecast_days: 7, confidence: 0.90"""
+- "im in sanjose, can you check the weather in the coming days" -> is_weather_query: true, location: "San Jose, California", is_forecast: true, forecast_days: 7, confidence: 0.90
+- "Portland, ME" -> is_weather_query: true, location: "Portland, ME", is_forecast: false, forecast_days: null, confidence: 0.95"""
                     parsed_query_result[0] = weather_parser.invoke(parse_prompt)
                 except Exception as e:
                     exception_result[0] = e
@@ -2581,9 +2671,10 @@ Examples:
                 f"is_forecast: {parsed_query.is_forecast}, days: {parsed_query.forecast_days}, confidence: {llm_confidence:.2f}"
             )
 
-            if parsed_query.is_weather_query and parsed_location and (not location or location == "Unknown") and llm_confidence >= 0.55:
-                location = parsed_location
-                print(f"[Weather Advisory] Accepted LLM location: {location}")
+            if parsed_query.is_weather_query and parsed_location and llm_confidence >= 0.55:
+                if not mentioned_place:
+                    location = parsed_location
+                    print(f"[Weather Advisory] Accepted LLM location: {location}")
 
             if not forecast_days:
                 if parsed_query.is_forecast and parsed_query.forecast_days and parsed_query.forecast_days > 0:
@@ -2701,9 +2792,10 @@ Extract:
 - Confidence score between 0.0 and 1.0
 
 Examples:
-- "weather in Hayward, California" → location: "Hayward, California", is_forecast: false, forecast_days: null
-- "150 day forecast for New York" → location: "New York", is_forecast: true, forecast_days: 150
-- "weather for my tomato farm in Boston" → location: "Boston", is_forecast: false, has_farm_context: true"""
+- "weather in Miami, Florida" → location: "Miami, Florida", is_forecast: false, forecast_days: null
+- "150 day forecast for Des Moines, Iowa" → location: "Des Moines, Iowa", is_forecast: true, forecast_days: 150
+- "weather for my tomato farm in Boston" → location: "Boston", is_forecast: false, has_farm_context: true
+- "Portland, ME" → location: "Portland, ME", is_forecast: false, forecast_days: null"""
                         parsed_query_result[0] = weather_parser.invoke(parse_prompt)
                     except Exception as e:
                         exception_result[0] = e
@@ -2768,7 +2860,13 @@ Examples:
                 resolved_lon = resolution.get("lon")
             elif resolution and resolution.get("status") == "ambiguous":
                 candidates = resolution.get("candidates", [])[:3]
-                options = [c.get("display_name") for c in candidates if c.get("display_name")]
+                options = []
+                seen = set()
+                for c in candidates:
+                    name = (c.get("display_name") or "").strip()
+                    if name and name.lower() not in seen:
+                        seen.add(name.lower())
+                        options.append(name)
                 pretty_options = ", ".join(options) if options else "a more specific city/region"
                 return {
                     "diagnosis": (
@@ -2822,11 +2920,12 @@ Examples:
                     formatted_weather = weather_service.format_forecast_for_llm(weather_data)
                     response = f"Here's the {forecast_days}-day weather forecast for {weather_data.get('location', location)}:\n\n{formatted_weather}"
                     print(f"[Weather Advisory] Successfully fetched forecast, response length: {len(response)}")
-
+                    emit_weather_visualizations(weather_data, source_tool="get_weather_tool")
                     return {
                         "diagnosis": response,
                         "recommendations": [],
-                        "weather_conditions": weather_data
+                        "weather_conditions": weather_data,
+                        "visualizations": drain_pending(),
                     }
                 else:
                     print(f"[Weather Advisory] Forecast failed, falling back to current weather")
@@ -2841,13 +2940,27 @@ Examples:
 
             if weather_data:
                 formatted_weather = weather_service.format_for_llm(weather_data)
-                response = f"Here's the current weather for {weather_data.get('location', location)}:\n\n{formatted_weather}"
+                loc_label = weather_data.get("location", location)
+                response = f"Here's the current weather for {loc_label}:\n\n{formatted_weather}"
                 print(f"[Weather Advisory] Successfully fetched weather, response length: {len(response)}")
-
+                try:
+                    forecast = weather_service.get_forecast(
+                        location, 7, lat=resolved_lat, lon=resolved_lon
+                    )
+                    emit_weather_visualizations(forecast, source_tool="get_weather_tool")
+                    forecast_text = weather_service.format_forecast_for_llm(forecast)
+                    if forecast_text:
+                        response = (
+                            f"Here's the weather for {loc_label}:\n\n"
+                            f"{formatted_weather}\n\n{forecast_text}"
+                        )
+                except Exception:
+                    pass
                 return {
                     "diagnosis": response,
                     "recommendations": [],
-                    "weather_conditions": weather_data
+                    "weather_conditions": weather_data,
+                    "visualizations": drain_pending(),
                 }
             else:
                 error_msg = f"I couldn't fetch weather data for '{location}'. Please check the location name and try again."
@@ -2926,6 +3039,52 @@ def _as_farm_state(state: SaigeState) -> Dict[str, Any]:
     }
 
 
+_ROUTE_TO_PACKET = {
+    "user": "user_packet",
+    "weather": "weather_packet",
+    "crop": "crop_packet",
+    "livestock": "livestock_packet",
+    "monitoring": "monitoring_packet",
+    "bakasura": "bakasura_packet",
+    "news": "news_packet",
+}
+
+SPECIALIST_PACKET_KEYS = tuple(_ROUTE_TO_PACKET.values())
+
+
+def _packet_keys_for_routes(routes: Optional[List[str]]) -> List[str]:
+    keys: List[str] = []
+    for route in routes or []:
+        key = _ROUTE_TO_PACKET.get(route)
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def _packets_for_routes(state: SaigeState, *, require_text: bool = False) -> List[Dict[str, Any]]:
+    """Packets for this turn's supervisor routes only — never leftover checkpoint text."""
+    packets: List[Dict[str, Any]] = []
+    for key in _packet_keys_for_routes(state.get("route")):
+        pkt = state.get(key)
+        if not isinstance(pkt, dict):
+            continue
+        if require_text and not pkt.get("text"):
+            continue
+        packets.append(pkt)
+    return packets
+
+
+def _active_packets(state: SaigeState) -> List[Dict[str, Any]]:
+    return _packets_for_routes(state, require_text=True)
+
+
+def _cleared_specialist_packets() -> Dict[str, Any]:
+    """LangGraph LastValue keeps omitted keys; unused packets must be written as None."""
+    cleared: Dict[str, Any] = {key: None for key in SPECIALIST_PACKET_KEYS}
+    cleared["joke_text"] = None
+    return cleared
+
+
 def _packet_from_advisory(result: Dict[str, Any], source: str) -> Dict[str, Any]:
     return {
         "source": source,
@@ -2933,12 +3092,21 @@ def _packet_from_advisory(result: Dict[str, Any], source: str) -> Dict[str, Any]
         "recommendations": list((result or {}).get("recommendations") or []),
         "citations": list((result or {}).get("citations") or []),
         "latency_ms": (result or {}).get("latency_ms"),
+        "visualizations": list((result or {}).get("visualizations") or []),
         "meta": {
             k: (result or {}).get(k)
             for k in ("weather_conditions", "advisory_type", "soil_info", "timings")
             if (result or {}).get(k) is not None
         },
     }
+
+
+def _visualizations_for_turn(state: SaigeState) -> List[Dict[str, Any]]:
+    """Concat this-turn packet + state viz, then recap (multi-specialist)."""
+    chunks: List[Any] = [state.get("visualizations")]
+    for pkt in _packets_for_routes(state, require_text=False):
+        chunks.append(pkt.get("visualizations"))
+    return merge_visualizations(*chunks)
 
 
 def _is_account_identity_query(text: str) -> bool:
@@ -3067,6 +3235,9 @@ def _is_field_manage_request(text: str) -> bool:
 
 def _keyword_routes(text: str) -> List[str]:
     t = _normalize_field_typos(text or "").lower()
+    pinned = pinned_routes(text)
+    if pinned:
+        return list(pinned)
     routes: List[str] = []
     if _is_account_identity_query(t):
         return ["user"]
@@ -3091,9 +3262,12 @@ def _keyword_routes(text: str) -> List[str]:
         routes.append("livestock")
     if any(k in t for k in ("crop", "plant", "soil", "tomato", "corn", "wheat", "pest", "disease", "irrigat", "spray")):
         routes.append("crop")
+    if any(k in t for k in ("farm overview", "whole farm", "how's the farm", "how is the farm", "how is my farm")):
+        routes.append("crop")
+    if any(k in t for k in ("compare ", " vs ", "versus")):
+        routes.append("crop")
     if any(k in t for k in (
-        "ndvi", "monitor", "satellite", "zone", "precision", "field health", "got worse",
-        "how is my", "how's my", "how is field", "field doing", "my field", "test field",
+        "ndvi", "monitor", "satellite", "precision", "field health", "heatmap", "got worse",
     )):
         routes.append("monitoring")
     if any(k in t for k in (
@@ -3124,12 +3298,13 @@ def user_agent_node(state: SaigeState) -> Dict[str, Any]:
         "proposals": list(state.get("proposals") or []),
         "policy_violations": [],
         "mode": state.get("mode") or "farm",
+        "user_packet": None,
     }
 
     # Account profile (never password)
     account_profile: Dict[str, Any] = {}
     try:
-        from user_profile import get_account_profile, get_user_name, get_primary_business_id
+        from services.user_profile import get_account_profile, get_user_name, get_primary_business_id
 
         if people_id and not state.get("user_name"):
             updates["user_name"] = get_user_name(people_id)
@@ -3145,7 +3320,7 @@ def user_agent_node(state: SaigeState) -> Dict[str, Any]:
     # Farm profile snapshot (business)
     if business_id:
         try:
-            from business_data import get_business_profile_tool
+            from tools.farm.business_data import get_business_profile_tool
 
             farm_txt = get_business_profile_tool.invoke({"business_id": int(business_id)})
             updates["farm_profile"] = {"summary": farm_txt}
@@ -3295,7 +3470,7 @@ def user_agent_node(state: SaigeState) -> Dict[str, Any]:
         else:
             if not payload:
                 payload = {"raw_request": norm_text}
-            from field_ops import parse_field_create_args
+            from tools.farm.field_ops import parse_field_create_args
 
             if action == "create_field":
                 parsed = parse_field_create_args({
@@ -3383,6 +3558,20 @@ def supervisor_node(state: SaigeState) -> Dict[str, Any]:
             "route_ms": route_ms,
         }
 
+    pinned = pinned_routes(text)
+    if pinned:
+        routes = pinned
+        reasoning = f"farm-viz:{farm_viz_intent(text)}"
+        route_ms = (time.perf_counter() - t0) * 1000
+        print(f"[Supervisor] routes={routes} handoff=none route_ms={route_ms:.0f} ({reasoning})")
+        return {
+            "route": routes,
+            "supervisor_reasoning": reasoning,
+            "handoff": "none",
+            "advisory_type": ",".join(routes),
+            "route_ms": route_ms,
+        }
+
     # If user packet already answered password/account fully and no farm ask, keep user route
     if state.get("user_packet") and not any(
         k in _normalize_field_typos(text).lower() for k in ("weather", "crop", "cattle", "field", "news", "joke", "frost", "soil")
@@ -3455,12 +3644,14 @@ def joke_route_node(state: SaigeState) -> Dict[str, Any]:
     history = list(state.get("history") or [])
     history.append(f"AI: {joke}")
     return {
+        **_cleared_specialist_packets(),
         "joke_text": joke,
         "diagnosis": joke,
         "recommendations": [],
         "assessment_summary": _latest_user_text(state),
         "history": history[-40:],
         "advisory_type": "joke",
+        "visualizations": [],
     }
 
 
@@ -3469,17 +3660,18 @@ def joke_route_node(state: SaigeState) -> Dict[str, Any]:
 def specialist_dispatch_node(state: SaigeState) -> Dict[str, Any]:
     """Run selected specialists concurrently; accumulate packets. Does not write to farm DB."""
     import concurrent.futures
-    from config import SPECIALIST_TIMEOUT_SECONDS
+    from core.config import SPECIALIST_TIMEOUT_SECONDS
 
     print("[Specialists] start (parallel)")
     routes = [r for r in (state.get("route") or []) if r != "joke"]
     knowledge = [r for r in routes if r in ("weather", "livestock", "crop", "bakasura", "news")]
     farm = _as_farm_state(state)
-    updates: Dict[str, Any] = {}
+    updates: Dict[str, Any] = _cleared_specialist_packets()
     t0 = time.perf_counter()
     deadline = SPECIALIST_TIMEOUT_SECONDS
 
     def _safe(name: str, fn):
+        viz_reset()
         try:
             print(f"[Specialists] -> {name}")
             return fn(farm)
@@ -3534,6 +3726,8 @@ def specialist_dispatch_node(state: SaigeState) -> Dict[str, Any]:
 
     if "user" in routes and state.get("user_packet"):
         updates["user_packet"] = state.get("user_packet")
+    else:
+        updates["user_packet"] = None
 
     # Monitoring — lightweight only when requested
     if "monitoring" in routes:
@@ -3545,7 +3739,7 @@ def specialist_dispatch_node(state: SaigeState) -> Dict[str, Any]:
         "frost" in text_lower and any(k in text_lower for k in ("protect", "plan", "livestock", "cattle"))
     ):
         try:
-            from weather_mitigation import format_for_llm, resolve_hazard
+            from tools.weather.weather_mitigation import format_for_llm, resolve_hazard
             hazard = resolve_hazard(text_lower) or "frost"
             phase = "imminent"
             if any(k in text_lower for k in ("planning", "prepare", "before")):
@@ -3570,6 +3764,9 @@ def specialist_dispatch_node(state: SaigeState) -> Dict[str, Any]:
         except Exception as e:
             logger.debug("[Specialists] mitigation inject failed: %s", e)
 
+    updates["visualizations"] = merge_visualizations(
+        *(pkt.get("visualizations") for pkt in updates.values() if isinstance(pkt, dict))
+    )
     elapsed = (time.perf_counter() - t0) * 1000
     print(f"[Specialists] packets={[k for k in updates if k.endswith('_packet')]} specialist_ms={elapsed:.0f}")
     updates["specialist_ms"] = elapsed
@@ -3584,46 +3781,77 @@ def _run_monitoring_agent(state: SaigeState) -> Dict[str, Any]:
     lines = ["Crop Monitoring Agent investigation:"]
     text_q = _latest_user_text(state)
 
+    intent = farm_viz_intent(text_q)
     try:
-        from precision_ag import (
+        from tools.agriculture.precision_ag import (
             list_my_fields_tool,
             get_field_alerts_tool,
             get_field_analysis_tool,
+            get_field_scouting_tool,
             resolve_field_by_name,
             set_session_business_id,
         )
         set_session_business_id(business_id or None)
 
-        fields_txt = list_my_fields_tool.invoke({
-            "people_id": people_id,
-            "business_id": business_id,
-        }) if people_id else "No people_id"
-        lines.append(str(fields_txt)[:2000])
-        alerts_txt = get_field_alerts_tool.invoke({"field_id": 0, "people_id": people_id}) if people_id else ""
-        if alerts_txt:
-            lines.append("Alerts:\n" + str(alerts_txt)[:1500])
-            findings.append({"rank": 1, "text": str(alerts_txt)[:500], "field_id": None})
-
-        # Resolve named field from the user question and pull latest analysis
-        resolved = resolve_field_by_name(text_q, people_id, business_id or None) if people_id else None
-        if resolved:
-            fid = int(resolved.get("fieldid") or resolved.get("FieldID") or 0)
-            fname = resolved.get("name") or resolved.get("Name") or f"#{fid}"
-            if fid:
-                analysis = get_field_analysis_tool.invoke({
-                    "field_id": fid,
-                    "people_id": people_id,
-                    "business_id": business_id,
-                })
-                lines.append(f"Resolved field '{fname}' → analysis:\n{analysis}")
-                findings.append({"rank": 0, "text": str(analysis)[:800], "field_id": fid})
-            else:
-                lines.append(f"Matched field name '{fname}' but could not read FieldID.")
-        elif any(k in text_q.lower() for k in ("how is", "how's", "doing", "status", "health")):
-            lines.append(
-                "No field name matched the question. Use a name from the field list above "
-                "(never ask the farmer for a raw FieldID if a name is available)."
+        if intent in ("field_alerts", "ndvi_history", "field_zones"):
+            pre = prefetch_farm_viz(
+                text_q,
+                people_id=people_id,
+                business_id=int(business_id or 0) if str(business_id).isdigit() else 0,
             )
+            if pre:
+                lines.append(pre[:4000])
+                findings.append({"rank": 0, "text": pre[:500], "field_id": None})
+            if intent == "ndvi_history":
+                resolved = resolve_field_by_name(text_q, people_id, business_id or None) if people_id else None
+                if resolved:
+                    try:
+                        fid = int(resolved.get("fieldid") or resolved.get("FieldID") or 0)
+                    except (TypeError, ValueError):
+                        fid = 0
+                    if fid:
+                        if findings:
+                            findings[0]["field_id"] = fid
+                        else:
+                            findings.append({"rank": 0, "text": (pre or "")[:500], "field_id": fid})
+        else:
+            fields_txt = list_my_fields_tool.invoke({
+                "people_id": people_id,
+                "business_id": business_id,
+            }) if people_id else "No people_id"
+            lines.append(str(fields_txt)[:2000])
+            alerts_txt = get_field_alerts_tool.invoke({"field_id": 0, "people_id": people_id}) if people_id else ""
+            if alerts_txt:
+                lines.append("Alerts:\n" + str(alerts_txt)[:1500])
+                findings.append({"rank": 1, "text": str(alerts_txt)[:500], "field_id": None})
+
+            resolved = resolve_field_by_name(text_q, people_id, business_id or None) if people_id else None
+            if resolved:
+                fid = int(resolved.get("fieldid") or resolved.get("FieldID") or 0)
+                fname = resolved.get("name") or resolved.get("Name") or f"#{fid}"
+                if fid:
+                    analysis = get_field_analysis_tool.invoke({
+                        "field_id": fid,
+                        "people_id": people_id,
+                        "business_id": business_id,
+                    })
+                    lines.append(f"Resolved field '{fname}' → analysis:\n{analysis}")
+                    findings.append({"rank": 0, "text": str(analysis)[:800], "field_id": fid})
+                    try:
+                        scout = get_field_scouting_tool.invoke({
+                            "field_id": fid,
+                            "people_id": people_id,
+                        })
+                        lines.append(f"Scouting:\n{scout}")
+                    except Exception:
+                        pass
+                else:
+                    lines.append(f"Matched field name '{fname}' but could not read FieldID.")
+            elif any(k in text_q.lower() for k in ("how is", "how's", "doing", "status", "health")):
+                lines.append(
+                    "No field name matched the question. Use a name from the field list above "
+                    "(never ask the farmer for a raw FieldID if a name is available)."
+                )
     except Exception as e:
         lines.append(f"Field list failed: {e}")
 
@@ -3638,7 +3866,7 @@ def _run_monitoring_agent(state: SaigeState) -> Dict[str, Any]:
 
     summary = "\n".join(lines)
     try:
-        from monitoring_store import save_run
+        from data.sql.monitoring_store import save_run
 
         save_run(
             business_id=business_id,
@@ -3662,6 +3890,7 @@ def _run_monitoring_agent(state: SaigeState) -> Dict[str, Any]:
         "text": summary,
         "recommendations": recs,
         "findings": findings,
+        "visualizations": drain_pending(),
     }
 
 
@@ -3690,6 +3919,7 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
             "assessment_summary": user_q,
             "synth_ms": synth_ms,
             "advisory_type": state.get("advisory_type") or "user",
+            "visualizations": [],
         }
 
     # Field create/edit HITL — prefer User Agent copy; never let weekly-plan steal the turn.
@@ -3716,27 +3946,15 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
             "assessment_summary": user_q,
             "synth_ms": synth_ms,
             "advisory_type": state.get("advisory_type") or "user",
+            "visualizations": [],
         }
 
-    packets = []
+    packets = _active_packets(state)
     citations = []
-    for key in (
-        "user_packet",
-        "weather_packet",
-        "crop_packet",
-        "livestock_packet",
-        "monitoring_packet",
-        "bakasura_packet",
-        "news_packet",
-    ):
-        pkt = state.get(key)
-        if pkt and pkt.get("text"):
-            packets.append(pkt)
-            # Prefer document-level RAG citations from specialists
-            for c in (pkt.get("citations") or []):
-                if isinstance(c, dict) and (c.get("doc_id") or c.get("chunk_id") or c.get("quote") or c.get("url")):
-                    citations.append(c)
-            # Do not invent citations from packet text — only real retrieval hits.
+    for pkt in packets:
+        for c in (pkt.get("citations") or []):
+            if isinstance(c, dict) and (c.get("doc_id") or c.get("chunk_id") or c.get("quote") or c.get("url")):
+                citations.append(c)
 
     if state.get("joke_text") and not packets:
         return {
@@ -3745,6 +3963,7 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
             "citations": [],
             "assessment_summary": _latest_user_text(state),
             "synth_ms": (time.perf_counter() - t0) * 1000,
+            "visualizations": [],
         }
 
     if not packets:
@@ -3767,6 +3986,7 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
                 "coherent, practical answer for the farmer. Keep concrete actions. Cite domains inline "
                 "(e.g. Weather:, Crop:). When farm facts come from knowledge base citations, keep claims "
                 "grounded — if retrieval was empty, say so rather than inventing sources. "
+                "If charts will be shown, describe them in one sentence. Do not paste tables of numbers or ASCII charts. "
                 f"User asked: {_latest_user_text(state)!r}\n\n{blob}"
             )
             resp = llm.invoke(prompt)
@@ -3845,6 +4065,7 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
         "handoff": handoff,
         "synth_ms": synth_ms,
         "specialist_ms": state.get("specialist_ms"),
+        "visualizations": _visualizations_for_turn(state),
     }
 
 
@@ -3853,7 +4074,7 @@ def synthesizer_node(state: SaigeState) -> Dict[str, Any]:
 def policy_gate_node(state: SaigeState) -> Dict[str, Any]:
     """Non-LLM hard checks (password, chemicals, organic prefs, risk class)."""
     print("[PolicyGate] start")
-    from policy import filter_proposals
+    from core.policies import filter_proposals
 
     proposals = list(state.get("proposals") or [])
     # Attach user preferences if present for organic_only checks
@@ -3870,7 +4091,7 @@ def policy_gate_node(state: SaigeState) -> Dict[str, Any]:
 
 def hitl_gate_node(state: SaigeState) -> Dict[str, Any]:
     """Persist proposals and interrupt for human approve/edit/reject."""
-    from proposals_store import create_proposals
+    from data.sql.proposals_store import create_proposals
 
     print("[HITL] interrupt")
     drafts = list(state.get("proposals") or [])
@@ -3942,8 +4163,8 @@ def execute_node(state: SaigeState) -> Dict[str, Any]:
                 }
             ]
 
-    from proposals_store import decide_proposal, mark_executed
-    from execute_registry import run_approved_tool
+    from data.sql.proposals_store import decide_proposal, mark_executed
+    from tools.execute_registry import run_approved_tool
 
     for d in decisions:
         pid = d.get("proposal_id")

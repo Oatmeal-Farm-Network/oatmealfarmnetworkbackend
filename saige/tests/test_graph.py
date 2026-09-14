@@ -20,3 +20,4 @@ def test_joke_turn():
     list(graph.stream(payload, config, stream_mode="values"))
     values = graph.get_state(config).values or {}
     assert values.get("diagnosis") or values.get("joke_text")
+    assert values.get("visualizations") in (None, [])

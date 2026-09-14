@@ -19,7 +19,7 @@ import threading
 import uuid
 from typing import Any, Dict, List, Optional
 
-from config import (
+from core.config import (
     FIRESTORE_AVAILABLE,
     FIRESTORE_DATABASE,
     GCP_CREDENTIALS,

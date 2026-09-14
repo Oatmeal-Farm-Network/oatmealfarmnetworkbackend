@@ -5,33 +5,25 @@ import logging
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-from config import DB_CONFIG
+from data.sql.connect import sql_configured, sql_connect
 
 logger = logging.getLogger("farm_advisory.db_control")
 
-
-def sql_configured() -> bool:
-    try:
-        import pymssql  # noqa: F401
-    except ImportError:
-        return False
-    return bool(DB_CONFIG.get("host") and DB_CONFIG.get("user") and DB_CONFIG.get("database"))
+__all__ = [
+    "sql_configured",
+    "sql_conn",
+    "sql_execute",
+    "sql_fetch_all",
+    "sql_fetch_one",
+    "table_exists",
+]
 
 
 @contextmanager
-def sql_conn():
-    import pymssql
-
-    conn = pymssql.connect(
-        server=DB_CONFIG["host"],
-        port=int(DB_CONFIG.get("port") or 1433),
-        user=DB_CONFIG["user"],
-        password=DB_CONFIG["password"],
-        database=DB_CONFIG["database"],
-        as_dict=True,
-        login_timeout=8,
-        timeout=30,
-    )
+def sql_conn() -> Iterator[Any]:
+    conn = sql_connect(as_dict=True, timeout=30, login_timeout=8)
+    if conn is None:
+        raise RuntimeError("SQL is not configured")
     try:
         yield conn
         conn.commit()

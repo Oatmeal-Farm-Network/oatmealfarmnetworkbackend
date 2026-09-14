@@ -20,13 +20,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 from langchain_core.tools import tool
-from config import DB_CONFIG
-
-try:
-    import pymssql
-    _PMS_AVAILABLE = True
-except ImportError:
-    _PMS_AVAILABLE = False
+from visualizations.pending import viz_emit
+from data.sql.connect import sql_connect
 
 logger = logging.getLogger("business_data")
 
@@ -34,16 +29,7 @@ logger = logging.getLogger("business_data")
 # ── DB helpers ───────────────────────────────────────────────────────────────
 
 def _connect():
-    if not _PMS_AVAILABLE or not all([DB_CONFIG.get("host"), DB_CONFIG.get("user"), DB_CONFIG.get("database")]):
-        return None
-    try:
-        return pymssql.connect(
-            server=DB_CONFIG["host"], user=DB_CONFIG["user"],
-            password=DB_CONFIG["password"], database=DB_CONFIG["database"],
-            timeout=10, login_timeout=10,
-        )
-    except Exception:
-        return None
+    return sql_connect(timeout=10, login_timeout=10)
 
 
 def _query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
@@ -199,26 +185,80 @@ def list_my_animals_detail_tool(business_id: int = 0) -> str:
     rows = _query("""
         SELECT TOP 50 a.AnimalID, a.FullName, a.Sex, a.DOB,
                a.ForSale, a.ForStud, a.Price, a.StudPrice,
-               a.IsActive, a.ShowOnWebsite
+               a.IsActive, a.ShowOnWebsite, s.Species
         FROM Animals a
+        LEFT JOIN Speciesavailable s ON a.SpeciesID = s.SpeciesID
         WHERE a.BusinessID = %s AND a.IsActive = 1
         ORDER BY a.FullName
     """, (int(business_id),))
     if not rows:
+        viz_emit({
+            "id": f"animals_table_{business_id}",
+            "type": "table",
+            "title": "Livestock inventory",
+            "source_tool": "list_my_animals_detail_tool",
+            "data": {
+                "columns": ["Name", "Sex", "DOB", "Status"],
+                "rows": [["—", "—", "—", "none on file"]],
+            },
+            "actions": [{"label": "View all animals", "href": "/livestock"}],
+        })
         return f"No animals found for business #{business_id}."
     lines = [f"Animals — business #{business_id} ({len(rows)} shown):"]
+    table_rows: List[List[str]] = []
     for a in rows:
         status = []
         if a.get("ForSale"): status.append("for-sale")
         if a.get("ForStud"): status.append("at-stud")
         if not status: status.append("not-listed")
+        status_label = ", ".join(status)
         lines.append(
             f"  #{a.get('AnimalID')} {a.get('FullName') or '—'} · "
             f"{a.get('Sex') or '?'} · DOB {_fmt_date(a.get('DOB'))} · "
             f"price {_fmt_money(a.get('Price'))} · stud {_fmt_money(a.get('StudPrice'))} · "
-            f"[{', '.join(status)}]"
+            f"[{status_label}]"
             + (" · hidden" if not a.get("ShowOnWebsite") else "")
         )
+        table_rows.append([
+            str(a.get("FullName") or "—"),
+            str(a.get("Sex") or "?"),
+            _fmt_date(a.get("DOB")),
+            status_label,
+        ])
+    if table_rows:
+        viz_emit({
+            "id": f"animals_table_{business_id}",
+            "type": "table",
+            "title": "Livestock inventory",
+            "source_tool": "list_my_animals_detail_tool",
+            "data": {
+                "columns": ["Name", "Sex", "DOB", "Status"],
+                "rows": table_rows[:50],
+            },
+            "actions": [{"label": "View all animals", "href": "/livestock"}],
+        })
+    species_counts: Dict[str, int] = {}
+    for a in rows:
+        label = str(a.get("Species") or a.get("species") or "").strip() or "Unknown"
+        species_counts[label] = species_counts.get(label, 0) + 1
+    herd_series = [
+        {"species": name, "count": n}
+        for name, n in sorted(species_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+    if len(herd_series) >= 2:
+        viz_emit({
+            "id": f"herd_bar_{business_id}",
+            "type": "bar_chart",
+            "title": "Herd by species",
+            "source_tool": "list_my_animals_detail_tool",
+            "data": {
+                "xKey": "species",
+                "yKey": "count",
+                "unit": "head",
+                "series": herd_series[:20],
+            },
+            "actions": [{"label": "View all animals", "href": "/livestock"}],
+        })
     return "\n".join(lines)
 
 

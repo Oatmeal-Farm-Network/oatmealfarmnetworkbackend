@@ -1,8 +1,7 @@
 ﻿# Compatibility surface for ``from graph import graph``.
 #
-# Keep this module light: importing ``graph.nodes`` (via the root nodes shim)
-# must NOT compile the LangGraph. The compiled ``graph`` / ``builder`` objects
-# are loaded lazily on first access.
+# Keep this module light: importing ``graph.nodes`` must NOT compile the
+# LangGraph. The compiled ``graph`` / ``builder`` objects are loaded lazily.
 from __future__ import annotations
 
 from typing import Any

@@ -24,7 +24,7 @@ def scout_image_b64(
         raw_b64 = raw_b64.split(",", 1)[1]
 
     try:
-        from llm import get_llm_farm
+        from integrations.gemini import get_llm_farm
         from langchain_core.messages import HumanMessage
 
         llm = get_llm_farm()

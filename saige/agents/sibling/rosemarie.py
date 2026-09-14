@@ -38,17 +38,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.tools import tool
 
-from chat_history import ChatHistory
-from config import DB_CONFIG, SHORT_TERM_N
-from llm import llm
-from message_buffer import get_last_n, push_message
-from rag import RAGSystem
-
-try:
-    import pymssql
-    _PMS_AVAILABLE = True
-except ImportError:
-    _PMS_AVAILABLE = False
+from chat.history import ChatHistory
+from core.config import SHORT_TERM_N
+from integrations.gemini import llm
+from chat.buffer import get_last_n, push_message
+from integrations.rag import RAGSystem
+from data.sql.connect import sql_connect
 
 logger = logging.getLogger("rosemarie")
 
@@ -94,17 +89,7 @@ rag_rosemarie = RAGSystem(ROSEMARIE_CHUNKS_COLLECTION, label="rosemarie")
 # ---------------------------------------------------------------------------
 
 def _connect():
-    if not _PMS_AVAILABLE or not all([DB_CONFIG.get("host"), DB_CONFIG.get("user"), DB_CONFIG.get("database")]):
-        return None
-    try:
-        return pymssql.connect(
-            server=DB_CONFIG["host"], port=DB_CONFIG["port"],
-            user=DB_CONFIG["user"], password=DB_CONFIG["password"],
-            database=DB_CONFIG["database"], as_dict=True,
-        )
-    except Exception as e:
-        logger.error("[Rosemarie] DB connect failed: %s", e)
-        return None
+    return sql_connect(as_dict=True)
 
 
 def _query(sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
@@ -1007,7 +992,7 @@ def _load_chef_tools():
     Rosemarie start-up. Rosemarie reuses the chef buyer tools for her
     raw-ingredient workflows."""
     try:
-        from chef import seasonal_menu_tool, set_par_tool, \
+        from agents.sibling.chef import seasonal_menu_tool, set_par_tool, \
             check_par_levels_tool, draft_restock_order_tool, \
             provenance_cards_tool
         return {

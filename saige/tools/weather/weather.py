@@ -5,7 +5,8 @@ import time
 from difflib import SequenceMatcher
 from typing import Optional, Dict, Any, List
 from langchain_core.tools import tool
-from config import WEATHER_AVAILABLE
+from core.config import WEATHER_AVAILABLE
+from visualizations.pending import viz_emit
 
 try:
     import requests
@@ -13,6 +14,125 @@ try:
 except ImportError:
     requests = None  # type: ignore
     _REQUESTS_OK = False
+
+# USPS abbreviations → state names (50 states + DC).
+_US_STATE_ABBREV = {
+    "al": "alabama", "ak": "alaska", "az": "arizona", "ar": "arkansas",
+    "ca": "california", "co": "colorado", "ct": "connecticut",
+    "dc": "district of columbia", "de": "delaware", "fl": "florida",
+    "ga": "georgia", "hi": "hawaii", "id": "idaho", "il": "illinois",
+    "in": "indiana", "ia": "iowa", "ks": "kansas", "ky": "kentucky",
+    "la": "louisiana", "me": "maine", "md": "maryland", "ma": "massachusetts",
+    "mi": "michigan", "mn": "minnesota", "ms": "mississippi", "mo": "missouri",
+    "mt": "montana", "ne": "nebraska", "nv": "nevada", "nh": "new hampshire",
+    "nj": "new jersey", "nm": "new mexico", "ny": "new york",
+    "nc": "north carolina", "nd": "north dakota", "oh": "ohio", "ok": "oklahoma",
+    "or": "oregon", "pa": "pennsylvania", "ri": "rhode island",
+    "sc": "south carolina", "sd": "south dakota", "tn": "tennessee",
+    "tx": "texas", "ut": "utah", "vt": "vermont", "va": "virginia",
+    "wa": "washington", "wv": "west virginia", "wi": "wisconsin", "wy": "wyoming",
+}
+_US_STATE_NAMES = set(_US_STATE_ABBREV.values())
+_COUNTRY_TOKENS = {"us", "usa", "united states", "unitedstates"}
+_ZIP_RE = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
+_PLACE_NOISE = frozenset({
+    "weather", "forecast", "temperature", "rain", "climate", "report", "today",
+    "todays", "what's", "whats", "the", "a", "an", "my", "our", "your", "this",
+    "coming", "days", "day", "week", "weeks", "month", "months", "please",
+    "check", "can", "you", "in", "at", "near", "for", "about", "current",
+})
+_US_STATE_PATTERN = "(?:%s|%s)" % (
+    "|".join(re.escape(name) for name in sorted(_US_STATE_NAMES, key=len, reverse=True)),
+    "|".join(re.escape(abbr) for abbr in sorted(_US_STATE_ABBREV, key=len, reverse=True)),
+)
+_OPEN_METEO_CODES = {
+    0: "Clear", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+    45: "Fog", 48: "Depositing rime fog",
+    51: "Light drizzle", 53: "Drizzle", 55: "Dense drizzle",
+    61: "Light rain", 63: "Rain", 65: "Heavy rain",
+    71: "Light snow", 73: "Snow", 75: "Heavy snow",
+    80: "Rain showers", 81: "Rain showers", 82: "Violent rain showers",
+    95: "Thunderstorm", 96: "Thunderstorm with hail", 99: "Thunderstorm with hail",
+}
+_STUB_CONDITIONS = frozenset({"", "current conditions", "unknown", "varying conditions"})
+
+
+def _open_meteo_condition(code: Any) -> str:
+    try:
+        return _OPEN_METEO_CODES.get(int(code), "Varying conditions")
+    except (TypeError, ValueError):
+        return "Varying conditions"
+
+
+def _round_or_none(value: Any, digits: int = 0) -> Optional[Any]:
+    if value is None:
+        return None
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(n, digits) if digits else round(n)
+
+
+def _open_meteo_current(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse Open-Meteo `current` (preferred) or legacy `current_weather`."""
+    block = data.get("current") if isinstance(data.get("current"), dict) else {}
+    legacy = data.get("current_weather") if isinstance(data.get("current_weather"), dict) else {}
+    temp = block.get("temperature_2m")
+    if temp is None:
+        temp = legacy.get("temperature")
+    feels = block.get("apparent_temperature")
+    if feels is None:
+        feels = temp
+    code = block.get("weather_code")
+    if code is None:
+        code = legacy.get("weathercode")
+    humidity = block.get("relative_humidity_2m")
+    wind = block.get("wind_speed_10m")
+    if wind is None:
+        wind = legacy.get("windspeed")
+    pressure = block.get("surface_pressure")
+    clouds = block.get("cloud_cover")
+    return {
+        "temperature": _round_or_none(temp),
+        "feels_like": _round_or_none(feels),
+        "condition": _open_meteo_condition(code),
+        "humidity": _round_or_none(humidity),
+        "wind_speed": _round_or_none(wind, 1),
+        "pressure": _round_or_none(pressure),
+        "clouds": _round_or_none(clouds),
+        "visibility": None,
+    }
+
+
+def _current_from_forecast(forecast: Dict[str, Any], location: str) -> Dict[str, Any]:
+    current = forecast.get("current") if isinstance(forecast.get("current"), dict) else {}
+    temp = current.get("temperature")
+    feels = current.get("feels_like")
+    if feels is None:
+        feels = temp
+    return {
+        "location": forecast.get("location") or location,
+        "temperature": temp,
+        "feels_like": feels,
+        "condition": current.get("condition") or "Varying conditions",
+        "humidity": current.get("humidity"),
+        "wind_speed": current.get("wind_speed"),
+        "pressure": current.get("pressure"),
+        "clouds": current.get("clouds") or 0,
+        "visibility": current.get("visibility"),
+    }
+
+
+def _is_stub_current(data: Optional[Dict[str, Any]]) -> bool:
+    """True when humidity/wind/pressure were never filled (legacy Open-Meteo zeros)."""
+    if not isinstance(data, dict):
+        return True
+    cond = str(data.get("condition") or "").strip().lower()
+    missing_details = all(
+        data.get(k) in (None, 0, 0.0) for k in ("humidity", "wind_speed", "pressure")
+    )
+    return missing_details and cond in _STUB_CONDITIONS
 
 
 class WeatherService:
@@ -59,15 +179,128 @@ class WeatherService:
         parts = [part for part in [city, state, country] if part]
         return ", ".join(parts)
 
+    @staticmethod
+    def _extract_us_zip(text: str) -> Optional[str]:
+        match = _ZIP_RE.search(text or "")
+        return match.group(1) if match else None
+
+    @classmethod
+    def extract_us_place_query(cls, text: str) -> Optional[str]:
+        """Pull a US city/state/ZIP from free text. Works for any US place, not one city."""
+        raw = (text or "").strip()
+        if not raw:
+            return None
+        zip_code = cls._extract_us_zip(raw)
+        matches = []
+        pattern = re.compile(
+            rf"(?i)\b(?P<city>[A-Za-z][A-Za-z.'\-]+(?:\s+[A-Za-z][A-Za-z.'\-]+){{0,3}})"
+            rf"\s*,?\s+(?P<state>{_US_STATE_PATTERN})\b"
+            rf"(?:\s+(?P<zip>\d{{5}}))?"
+        )
+        for match in pattern.finditer(raw):
+            city_parts = [
+                part for part in re.split(r"\s+", (match.group("city") or "").strip())
+                if part and part.lower() not in _PLACE_NOISE
+            ]
+            if not city_parts:
+                continue
+            city = " ".join(city_parts)
+            if city.lower() in _US_STATE_NAMES or city.lower() in _US_STATE_ABBREV:
+                continue
+            matches.append((city, match.group("state"), match.group("zip") or zip_code))
+        chosen = None
+        for item in matches:
+            if item[2]:
+                chosen = item
+                break
+        if not chosen and matches:
+            chosen = matches[-1]
+        if chosen:
+            city, state, zipp = chosen
+            state_fmt = state.upper() if len(state) == 2 else state.title()
+            city_fmt = " ".join(
+                w.capitalize() if w.lower() != "of" else w.lower() for w in city.split()
+            )
+            out = f"{city_fmt}, {state_fmt}"
+            if zipp:
+                out = f"{out} {zipp}"
+            return out
+        if zip_code:
+            return zip_code
+        return None
+
+    @staticmethod
+    def _expand_us_tokens(tokens: List[str]) -> List[str]:
+        expanded: List[str] = []
+        for tok in tokens:
+            low = tok.lower()
+            if low in _US_STATE_ABBREV:
+                expanded.append(_US_STATE_ABBREV[low])
+            elif low in ("usa", "unitedstates"):
+                expanded.append("us")
+            else:
+                expanded.append(low)
+        return expanded
+
+    @classmethod
+    def _canonical_location_text(cls, text: str) -> str:
+        tokens = [tok for tok in re.split(r"[\s,]+", cls._normalize_location_text(text)) if tok]
+        return " ".join(cls._expand_us_tokens(tokens))
+
+    @classmethod
+    def _canonical_state(cls, state: str) -> str:
+        low = (state or "").strip().lower()
+        return _US_STATE_ABBREV.get(low, low)
+
+    @staticmethod
+    def _canonical_country(country: str) -> str:
+        low = (country or "").strip().lower()
+        if low in _COUNTRY_TOKENS or low == "united states of america":
+            return "us"
+        return low
+
+    @classmethod
+    def _state_from_query(cls, text: str) -> Optional[str]:
+        tokens = cls._expand_us_tokens(
+            [tok for tok in re.split(r"[\s,]+", cls._normalize_location_text(text)) if tok]
+        )
+        for tok in tokens:
+            if tok in _US_STATE_NAMES:
+                return tok
+        return None
+
+    @classmethod
+    def _states_match(cls, candidate_state: str, wanted_state: str) -> bool:
+        return cls._canonical_state(candidate_state) == cls._canonical_state(wanted_state)
+
+    @classmethod
+    def _place_key(cls, candidate: Dict[str, Any]) -> str:
+        city = cls._collapse_location_text(candidate.get("city") or "")
+        state = cls._collapse_location_text(cls._canonical_state(candidate.get("state") or ""))
+        country = cls._collapse_location_text(cls._canonical_country(candidate.get("country") or ""))
+        return f"{city}|{state}|{country}"
+
     def _generate_location_queries(self, location_query: str, max_queries: int = 5) -> List[str]:
-        """
-        Generate normalized location query variants without word-block lists.
-        Skips tiny fragments (e.g. "des") that pollute geocoding.
-        """
-        normalized = self._normalize_location_text(location_query)
-        tokens = [tok for tok in re.split(r"[\s,]+", normalized) if tok]
-        if not tokens:
-            return [location_query.strip()]
+        """Name variants for geocoders. Never drop a stated state/ZIP down to city-only."""
+        zip_code = self._extract_us_zip(location_query)
+        raw_tokens = [
+            tok for tok in re.split(r"[\s,]+", self._normalize_location_text(location_query)) if tok
+        ]
+        tokens = self._expand_us_tokens(raw_tokens)
+        name_tokens = [
+            tok for tok in tokens
+            if not (tok.isdigit() and len(tok) == 5) and tok not in _COUNTRY_TOKENS
+        ]
+        state_idx = None
+        for i, tok in enumerate(name_tokens):
+            if tok in _US_STATE_NAMES:
+                state_idx = i
+        if state_idx is not None and state_idx > 0:
+            city_tokens = name_tokens[:state_idx]
+            state_name = name_tokens[state_idx]
+        else:
+            city_tokens = [tok for tok in name_tokens if tok not in _US_STATE_NAMES]
+            state_name = next((tok for tok in name_tokens if tok in _US_STATE_NAMES), None)
 
         queries: List[str] = []
 
@@ -75,27 +308,58 @@ class WeatherService:
             q = q.strip(" ,")
             if not q or q in queries:
                 return
-            # Avoid single short tokens that geocode poorly ("des", "ia")
             parts = [p for p in re.split(r"[\s,]+", q) if p]
             if len(parts) == 1 and len(parts[0]) < 4:
                 return
             queries.append(q)
 
-        _push(" ".join(tokens))
-        # Prefer city + state form with commas for APIs ("Des Moines, Iowa")
-        if len(tokens) >= 3:
-            _push(f"{' '.join(tokens[:-1])}, {tokens[-1]}")
-        elif len(tokens) == 2:
-            _push(f"{tokens[0]}, {tokens[1]}")
-        if len(tokens) > 1:
-            for end in range(len(tokens) - 1, 0, -1):
-                _push(" ".join(tokens[:end]))
-            for start in range(1, len(tokens)):
-                chunk = " ".join(tokens[start:])
-                if len(chunk) >= 4:
-                    _push(chunk)
+        if city_tokens and state_name:
+            city = " ".join(city_tokens)
+            _push(f"{city}, {state_name}")
+            _push(f"{city}, {state_name}, US")
+            _push(f"{city} {state_name}")
+        elif name_tokens:
+            _push(" ".join(name_tokens))
+            if len(name_tokens) >= 2:
+                _push(f"{name_tokens[0]}, {' '.join(name_tokens[1:])}")
+            # City-only / suffix variants only when the user did not name a state or ZIP.
+            if not state_name and not zip_code and len(name_tokens) > 1:
+                for end in range(len(name_tokens) - 1, 0, -1):
+                    _push(" ".join(name_tokens[:end]))
+                for start in range(1, len(name_tokens)):
+                    chunk = " ".join(name_tokens[start:])
+                    if len(chunk) >= 4:
+                        _push(chunk)
 
         return queries[:max_queries] or [location_query.strip()]
+
+    def _fetch_zip_location(self, zip_code: str) -> Optional[Dict[str, Any]]:
+        """Resolve a US ZIP via Zippopotam (no API key)."""
+        if not _REQUESTS_OK or not zip_code:
+            return None
+        try:
+            response = requests.get(f"https://api.zippopotam.us/us/{zip_code}", timeout=5)
+            if response.status_code != 200:
+                return None
+            data = response.json() or {}
+            places = data.get("places") or []
+            if not places:
+                return None
+            place = places[0]
+            city = place.get("place name") or ""
+            state = place.get("state") or ""
+            country = data.get("country abbreviation") or "US"
+            return {
+                "city": city,
+                "state": state,
+                "country": country,
+                "display_name": self._build_display_name(city, state, country),
+                "lat": float(place.get("latitude")),
+                "lon": float(place.get("longitude")),
+            }
+        except Exception as e:
+            print(f"[Weather] ZIP geocode error: {e}")
+            return None
 
     def _fetch_openweathermap_geocode(self, location_query: str, limit: int = 5) -> List[Dict[str, Any]]:
         if not self._api_key or not _REQUESTS_OK:
@@ -136,6 +400,8 @@ class WeatherService:
         try:
             url = "https://geocoding-api.open-meteo.com/v1/search"
             params = {"name": location_query, "count": limit, "language": "en", "format": "json"}
+            if WeatherService._state_from_query(location_query) or WeatherService._extract_us_zip(location_query):
+                params["countryCode"] = "US"
             response = requests.get(url, params=params, timeout=8)
             if response.status_code != 200:
                 print(f"[Weather] Open-Meteo geocode error: {response.status_code}")
@@ -200,8 +466,8 @@ class WeatherService:
         result: Dict[str, Any],
         variant_rank: int,
     ) -> float:
-        candidate_norm = self._normalize_location_text(candidate_query)
-        original_norm = self._normalize_location_text(original_query)
+        candidate_norm = self._canonical_location_text(candidate_query)
+        original_norm = self._canonical_location_text(original_query)
         candidate_compact = self._collapse_location_text(candidate_norm)
         original_compact = self._collapse_location_text(original_norm)
 
@@ -264,6 +530,20 @@ class WeatherService:
         if not normalized_query or normalized_query == "Unknown":
             return {"status": "not_found", "query": location_query}
 
+        zip_code = self._extract_us_zip(normalized_query)
+        if zip_code:
+            zipped = self._fetch_zip_location(zip_code)
+            if zipped:
+                return {
+                    "status": "resolved",
+                    "query": location_query,
+                    "canonical_location": zipped["display_name"],
+                    "confidence": 0.99,
+                    "lat": zipped.get("lat"),
+                    "lon": zipped.get("lon"),
+                    "candidates": [zipped],
+                }
+
         query_variants = self._generate_location_queries(normalized_query)
         scored_candidates: List[Dict[str, Any]] = []
 
@@ -296,20 +576,28 @@ class WeatherService:
 
         deduped: Dict[str, Dict[str, Any]] = {}
         for candidate in scored_candidates:
-            key = f"{round(candidate.get('lat') or 0, 4)}:{round(candidate.get('lon') or 0, 4)}:{candidate.get('display_name', '').lower()}"
+            key = self._place_key(candidate)
+            if key == "||":
+                key = f"{round(candidate.get('lat') or 0, 4)}:{round(candidate.get('lon') or 0, 4)}"
             existing = deduped.get(key)
             if not existing or candidate["confidence"] > existing["confidence"]:
                 deduped[key] = candidate
 
         ranked = sorted(deduped.values(), key=lambda x: x["confidence"], reverse=True)
+        wanted_state = self._state_from_query(original_query or normalized_query)
+        if wanted_state:
+            matching = [c for c in ranked if self._states_match(c.get("state") or "", wanted_state)]
+            if matching:
+                ranked = matching
+
         best = ranked[0]
         second = ranked[1] if len(ranked) > 1 else None
 
         # Prefer unique state/region match from the original query text
-        orig_norm = self._normalize_location_text(original_query or normalized_query)
+        orig_norm = self._canonical_location_text(original_query or normalized_query)
         state_hits = []
         for c in ranked:
-            st = (c.get("state") or "").strip().lower()
+            st = self._canonical_state(c.get("state") or "")
             if st and st in orig_norm:
                 state_hits.append(c)
         if len(state_hits) == 1:
@@ -602,8 +890,14 @@ class WeatherService:
             params = {
                 "latitude": lat,
                 "longitude": lon,
-                "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,weathercode",
-                "current_weather": "true",
+                "daily": (
+                    "temperature_2m_max,temperature_2m_min,"
+                    "precipitation_probability_max,weather_code,wind_speed_10m_max"
+                ),
+                "current": (
+                    "temperature_2m,relative_humidity_2m,apparent_temperature,"
+                    "weather_code,wind_speed_10m,surface_pressure,cloud_cover"
+                ),
                 "forecast_days": days,
                 "timezone": "auto",
             }
@@ -617,33 +911,26 @@ class WeatherService:
             tmax = daily.get("temperature_2m_max") or []
             tmin = daily.get("temperature_2m_min") or []
             rain = daily.get("precipitation_probability_max") or []
-            codes = daily.get("weathercode") or []
-            code_map = {
-                0: "Clear", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
-                45: "Fog", 48: "Depositing rime fog",
-                51: "Light drizzle", 61: "Light rain", 63: "Rain", 65: "Heavy rain",
-                71: "Light snow", 73: "Snow", 75: "Heavy snow",
-                80: "Rain showers", 95: "Thunderstorm",
-            }
+            codes = daily.get("weather_code") or daily.get("weathercode") or []
+            winds = daily.get("wind_speed_10m_max") or []
             forecast_days = []
             for i, day in enumerate(dates[:days]):
+                wind = winds[i] if i < len(winds) and winds[i] is not None else None
                 forecast_days.append(
                     {
                         "date": day,
                         "min_temp": round(tmin[i]) if i < len(tmin) and tmin[i] is not None else None,
                         "max_temp": round(tmax[i]) if i < len(tmax) and tmax[i] is not None else None,
-                        "condition": code_map.get(int(codes[i]) if i < len(codes) and codes[i] is not None else -1, "Varying conditions"),
+                        "condition": _open_meteo_condition(
+                            codes[i] if i < len(codes) else None
+                        ),
                         "rain_chance": int(rain[i]) if i < len(rain) and rain[i] is not None else 0,
-                        "max_wind": 0,
+                        "max_wind": round(float(wind), 1) if wind is not None else None,
                     }
                 )
-            current = data.get("current_weather") or {}
             return {
                 "location": location_label,
-                "current": {
-                    "temperature": round(current.get("temperature") or 0),
-                    "condition": code_map.get(int(current.get("weathercode") or -1), "Current conditions"),
-                },
+                "current": _open_meteo_current(data),
                 "forecast": forecast_days,
                 "forecast_days": len(forecast_days),
             }
@@ -658,13 +945,30 @@ class WeatherService:
 
         parts = [f"Weather forecast for {forecast_data['location']}:\n"]
 
-        if forecast_data.get("current"):
-            parts.append(f"Current: {forecast_data['current']['temperature']}C, {forecast_data['current']['condition']}\n")
+        current = forecast_data.get("current") or {}
+        if current:
+            cur_bits = []
+            if current.get("temperature") is not None:
+                cur_bits.append(f"{current['temperature']}C")
+            if current.get("condition") and str(current.get("condition")).lower() not in _STUB_CONDITIONS:
+                cur_bits.append(str(current["condition"]))
+            if current.get("humidity") is not None:
+                cur_bits.append(f"humidity {current['humidity']}%")
+            if current.get("wind_speed") is not None:
+                cur_bits.append(f"wind {current['wind_speed']} km/h")
+            if current.get("pressure") is not None:
+                cur_bits.append(f"{current['pressure']} hPa")
+            if cur_bits:
+                parts.append("Current: " + ", ".join(cur_bits) + "\n")
 
         parts.append("Forecast:")
         for day in forecast_data["forecast"]:
             rain_str = f", {day['rain_chance']}% rain" if day.get('rain_chance', 0) > 0 else ""
-            parts.append(f"  {day['date']}: {day['min_temp']}C - {day['max_temp']}C, {day['condition']}{rain_str}")
+            wind_str = f", wind {day['max_wind']} km/h" if day.get("max_wind") else ""
+            parts.append(
+                f"  {day['date']}: {day['min_temp']}C - {day['max_temp']}C, "
+                f"{day['condition']}{rain_str}{wind_str}"
+            )
 
         return "\n".join(parts)
 
@@ -680,7 +984,7 @@ class WeatherService:
 
         cache_key = location if location and location != "Unknown" else f"{lat},{lon}"
         cached = self._get_from_cache(cache_key)
-        if cached:
+        if cached and not _is_stub_current(cached):
             print(f"[Weather] Using cached data for {cache_key}")
             return cached
 
@@ -695,24 +999,23 @@ class WeatherService:
             else:
                 data = self._fetch_openweathermap(location)
 
-        if not data and lat is not None and lon is not None:
-            forecast = self._fetch_open_meteo_forecast(float(lat), float(lon), 1, location or cache_key)
+        om_lat, om_lon, om_label = lat, lon, location or cache_key
+        if not data and (om_lat is None or om_lon is None) and location and location != "Unknown":
+            resolved = self.resolve_location(location)
+            if resolved and resolved.get("status") == "resolved" and resolved.get("lat") is not None:
+                om_lat = resolved.get("lat")
+                om_lon = resolved.get("lon")
+                om_label = resolved.get("canonical_location") or om_label
+        if not data and om_lat is not None and om_lon is not None:
+            forecast = self._fetch_open_meteo_forecast(float(om_lat), float(om_lon), 1, om_label)
             if forecast and forecast.get("current"):
-                data = {
-                    "location": forecast.get("location") or location or cache_key,
-                    "temperature": forecast["current"]["temperature"],
-                    "feels_like": forecast["current"]["temperature"],
-                    "condition": forecast["current"]["condition"],
-                    "humidity": 0,
-                    "wind_speed": 0,
-                    "pressure": 0,
-                    "clouds": 0,
-                    "visibility": None,
-                }
+                data = _current_from_forecast(forecast, om_label)
 
-        if data:
+        if data and not _is_stub_current(data):
             self._save_to_cache(cache_key, data)
             print(f"[Weather] Weather data retrieved")
+        elif data:
+            print(f"[Weather] Weather data retrieved (incomplete current; not cached)")
 
         return data
 
@@ -752,16 +1055,101 @@ class WeatherService:
         if not weather_data:
             return ""
 
-        parts = ["Current weather conditions:\n"]
-        parts.append(f"Temperature: {weather_data['temperature']}C (feels like {weather_data['feels_like']}C)")
-        parts.append(f"Condition: {weather_data['condition']}")
-        parts.append(f"Humidity: {weather_data['humidity']}%")
-        parts.append(f"Wind Speed: {weather_data['wind_speed']} km/h")
-        parts.append(f"Pressure: {weather_data['pressure']} hPa")
-        if weather_data.get('visibility'):
+        parts = ["Current weather conditions:"]
+        temp = weather_data.get("temperature")
+        feels = weather_data.get("feels_like")
+        if temp is not None:
+            if feels is not None and feels != temp:
+                parts.append(f"Temperature: {temp}C (feels like {feels}C)")
+            else:
+                parts.append(f"Temperature: {temp}C")
+        cond = str(weather_data.get("condition") or "").strip()
+        if cond and cond.lower() not in _STUB_CONDITIONS:
+            parts.append(f"Condition: {cond}")
+        if weather_data.get("humidity") is not None:
+            parts.append(f"Humidity: {weather_data['humidity']}%")
+        if weather_data.get("wind_speed") is not None:
+            parts.append(f"Wind Speed: {weather_data['wind_speed']} km/h")
+        if weather_data.get("pressure") is not None:
+            parts.append(f"Pressure: {weather_data['pressure']} hPa")
+        if weather_data.get("visibility"):
             parts.append(f"Visibility: {weather_data['visibility']} km")
 
         return "\n".join(parts)
+
+
+def emit_weather_visualizations(
+    forecast_data: Optional[Dict[str, Any]],
+    source_tool: str = "get_weather_tool",
+) -> None:
+    """Emit line_chart specs from forecast daily arrays. No-op if too few points.
+
+    Keeps format_for_llm / format_forecast_for_llm as the spoken text. LineChartViz
+    plots one yKey, so high temp and rain chance are two line_chart specs (not a
+    new type). min_temp is included on the temp series for later dual-line chrome.
+    """
+    if not isinstance(forecast_data, dict):
+        return
+    days = forecast_data.get("forecast")
+    if not isinstance(days, list):
+        return
+
+    temp_series: List[Dict[str, Any]] = []
+    rain_series: List[Dict[str, Any]] = []
+    for day in days:
+        if not isinstance(day, dict) or not day.get("date"):
+            continue
+        date = str(day.get("date"))
+        try:
+            if day.get("max_temp") is not None:
+                point: Dict[str, Any] = {
+                    "date": date,
+                    "max_temp": float(day.get("max_temp")),
+                }
+                if day.get("min_temp") is not None:
+                    point["min_temp"] = float(day.get("min_temp"))
+                temp_series.append(point)
+        except (TypeError, ValueError):
+            pass
+        try:
+            if day.get("rain_chance") is not None:
+                rain_series.append({
+                    "date": date,
+                    "rain_chance": float(day.get("rain_chance")),
+                })
+        except (TypeError, ValueError):
+            pass
+
+    loc = str(forecast_data.get("location") or "").strip() or "forecast"
+
+    if len(temp_series) >= 2:
+        viz_emit({
+            "id": "weather_high",
+            "type": "line_chart",
+            "title": f"Forecast high — {loc}",
+            "source_tool": source_tool,
+            "data": {
+                "xKey": "date",
+                "yKey": "max_temp",
+                "unit": "°C",
+                "series": temp_series[-90:],
+            },
+            "actions": [],
+        })
+    if len(rain_series) >= 2:
+        viz_emit({
+            "id": "weather_rain",
+            "type": "line_chart",
+            "title": f"Rain chance — {loc}",
+            "source_tool": source_tool,
+            "data": {
+                "xKey": "date",
+                "yKey": "rain_chance",
+                "unit": "%",
+                "series": rain_series[-90:],
+            },
+            "actions": [],
+        })
 
 
 weather_service = WeatherService()
@@ -785,7 +1173,17 @@ def get_weather_tool(location: str) -> str:
     if not weather_data:
         return f"Unable to fetch weather data for {location}. Please check the location name or try again later."
 
-    return weather_service.format_for_llm(weather_data)
+    pieces = [weather_service.format_for_llm(weather_data)]
+    try:
+        forecast = weather_service.get_forecast(location, days=7)
+        emit_weather_visualizations(forecast, source_tool="get_weather_tool")
+        forecast_text = weather_service.format_forecast_for_llm(forecast)
+        if forecast_text:
+            pieces.append(forecast_text)
+    except Exception:
+        pass
+
+    return "\n\n".join(p for p in pieces if p)
 
 
 weather_tools = [get_weather_tool]
