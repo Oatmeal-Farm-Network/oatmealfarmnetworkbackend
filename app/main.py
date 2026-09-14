@@ -175,6 +175,8 @@ ALLOWED_ORIGINS = [
     # Staging frontend (oatmeal-farm-staging)
     "https://oatmeal-frontend-staging-1087130530284.us-central1.run.app",
     "https://oatmeal-frontend-staging-lrviw4iujq-uc.a.run.app",
+    "https://oatsense-frontend-staging-1087130530284.us-central1.run.app",
+    "https://oatsense-frontend-staging-lrviw4iujq-uc.a.run.app",
     # Testing frontend (oatmeal-farm-staging)
     "https://oatmeal-frontend-testing-1087130530284.us-central1.run.app",
     "https://oatmeal-frontend-testing-lrviw4iujq-uc.a.run.app",
