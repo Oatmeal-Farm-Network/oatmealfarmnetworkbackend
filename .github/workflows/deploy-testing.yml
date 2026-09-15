@@ -1,4 +1,6 @@
 name: Deploy to Testing
+# RETIRED_TESTING: use deploy-development instead. Kept for rollback.
+if: false  # retired — testing env cut over to development
 
 # Testing-only CD. Deploy oatmeal-backend-testing in oatmeal-farm-staging.
 # TESTING_* secrets/vars are optional; fall back to staging WIF, registry, SQL, and URLs.
