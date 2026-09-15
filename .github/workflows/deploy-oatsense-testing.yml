@@ -1,22 +1,7 @@
 name: Deploy Oatsense Testing
 
 on:
-  push:
-    branches: ['GCP/backend-testing']
-    paths:
-      - 'oatsense/**'
-      - 'app/routers/precision_ag.py'
-      - 'app/routers/precision_ag_features.py'
-      - 'app/routers/field_maturity.py'
-      - 'app/routers/field_assessment_report.py'
-      - 'app/routers/field_activity.py'
-      - 'app/routers/field_health.py'
-      - 'app/routers/field_health_alerts.py'
-      - 'app/routers/crop_monitor_proxy.py'
-      - 'app/models/precision_ag.py'
-      - 'app/database.py'
-      - 'requirements.txt'
-      - '.github/workflows/deploy-oatsense-testing.yml'
+  # RETIRED_NO_PUSH: testing CD replaced by deploy-development
   workflow_dispatch:
 
 env:

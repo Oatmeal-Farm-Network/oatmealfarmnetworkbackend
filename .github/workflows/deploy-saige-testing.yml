@@ -1,11 +1,7 @@
 name: Deploy Saige Testing
 
 on:
-  push:
-    branches: ['GCP/backend-testing']
-    paths:
-      - 'saige/**'
-      - '.github/workflows/deploy-saige-testing.yml'
+  # RETIRED_NO_PUSH: testing CD replaced by deploy-development
   workflow_dispatch:
 
 env:

@@ -4,11 +4,7 @@ name: Deploy to Testing
 # TESTING_* secrets/vars are optional; fall back to staging WIF, registry, SQL, and URLs.
 # Never use animated-flare-421518 or production SECRET_KEY / oatmealailive.
 on:
-  push:
-    branches: ['GCP/backend-testing']
-    paths-ignore:
-      - 'docs/**'
-      - 'README.md'
+  # RETIRED_NO_PUSH: testing CD replaced by deploy-development
   workflow_dispatch:
 
 env:
