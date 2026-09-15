@@ -4,15 +4,10 @@ name: Deploy Backend Production
 # Official shared API prod Cloud Run is oatmealfarmnewtorkbackend (typo is the real name).
 # Image-only promote. Does not rewrite env, secrets, SQL, or SA.
 # Skips cleanly when prod WIF secrets are unset. Never uses staging.
+# Runs on every push to main (no path filter) so staging→main promotions always deploy.
 on:
   push:
     branches: [main]
-    paths:
-      - 'app/**'
-      - 'Dockerfile'
-      - 'requirements.txt'
-      - 'server_all.py'
-      - '.github/workflows/deploy-backend-prod.yml'
   workflow_dispatch:
 
 env:
