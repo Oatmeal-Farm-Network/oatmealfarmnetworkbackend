@@ -82,10 +82,12 @@ jobs:
           pip install --no-cache-dir -r requirements.txt
           pip install --no-cache-dir -r saige/requirements.txt
 
+      # Run from saige/ so repo-root app/ does not shadow saige/app (uvicorn app.api).
       - name: Boot saige service and probe /health
+        working-directory: saige
         env:
           PORT: "8000"
-          PYTHONPATH: saige
+          PYTHONPATH: .
           GOOGLE_API_KEY: "ci-boot-check-dummy"
           REDIS_ENABLED: "false"
         run: |

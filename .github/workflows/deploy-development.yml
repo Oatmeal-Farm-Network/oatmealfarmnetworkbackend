@@ -1,0 +1,116 @@
+name: Deploy to Development
+
+# Testing-only CD. Deploy oatmeal-backend-development in oatmeal-farm-staging.
+# DEVELOPMENT_* secrets/vars are optional; fall back to staging WIF, registry, SQL, and URLs.
+# Never use animated-flare-421518 or production SECRET_KEY / oatmealailive.
+on:
+  push:
+    branches: ['GCP/backend-development']
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+  workflow_dispatch:
+
+env:
+  GCP_PROJECT_ID: ${{ secrets.DEVELOPMENT_GCP_PROJECT_ID || secrets.STAGING_GCP_PROJECT_ID || 'oatmeal-farm-staging' }}
+  REGION: ${{ vars.DEVELOPMENT_REGION || vars.STAGING_REGION || 'us-central1' }}
+  IMAGE_URI_PREFIX: ${{ vars.DEVELOPMENT_REGION || vars.STAGING_REGION || 'us-central1' }}-docker.pkg.dev/${{ secrets.DEVELOPMENT_GCP_PROJECT_ID || secrets.STAGING_GCP_PROJECT_ID || 'oatmeal-farm-staging' }}/${{ vars.DEVELOPMENT_ARTIFACT_REGISTRY_REPOSITORY || vars.STAGING_ARTIFACT_REGISTRY_REPOSITORY || 'oatmeal-farm-registry' }}/backend
+  CLOUD_RUN_SERVICE: oatmeal-backend-development
+  CLOUD_SQL_INSTANCE: ${{ vars.DEVELOPMENT_CLOUD_SQL_INSTANCE || vars.STAGING_CLOUD_SQL_INSTANCE || 'oatmeal-farm-staging:us-central1:oatmeal-staging-sqlserver' }}
+  RUNTIME_SERVICE_ACCOUNT: ${{ vars.DEVELOPMENT_BACKEND_RUNTIME_SA || vars.STAGING_BACKEND_RUNTIME_SA || 'stg-to-prod-db-ro-dev-project@oatmeal-farm-staging.iam.gserviceaccount.com' }}
+  DEVELOPMENT_FRONTEND_URL: ${{ vars.DEVELOPMENT_FRONTEND_URL || vars.STAGING_FRONTEND_URL || 'https://oatmeal-frontend-staging-1087130530284.us-central1.run.app' }}
+
+jobs:
+  check-development-wif:
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - name: Check development or staging WIF
+        id: check
+        shell: bash
+        run: |
+          provider="${{ secrets.DEVELOPMENT_GCP_WORKLOAD_IDENTITY_PROVIDER }}${{ secrets.STAGING_GCP_WORKLOAD_IDENTITY_PROVIDER }}"
+          sa="${{ secrets.DEVELOPMENT_GCP_SERVICE_ACCOUNT }}${{ secrets.STAGING_GCP_SERVICE_ACCOUNT }}"
+          if [ -n "$provider" ] && [ -n "$sa" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No DEVELOPMENT_* or STAGING_* WIF secrets. Skipping development deploy."
+          fi
+
+  deploy-development:
+    needs: check-development-wif
+    if: needs.check-development-wif.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    environment: development
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Guard development project
+        shell: bash
+        run: |
+          project="${GCP_PROJECT_ID}"
+          if [ "$project" = "animated-flare-421518" ]; then
+            echo "::error::DEVELOPMENT_GCP_PROJECT_ID must be oatmeal-farm-staging. Never animated-flare-421518 (Oatmeal AI)."
+            exit 1
+          fi
+          echo "Development deploy project=${project} service=${CLOUD_RUN_SERVICE}"
+          echo "Auth uses DEVELOPMENT_GCP_* if set, otherwise STAGING_GCP_* WIF."
+
+      - name: Set short commit SHA
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to Google Cloud (Development)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.DEVELOPMENT_GCP_WORKLOAD_IDENTITY_PROVIDER || secrets.STAGING_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.DEVELOPMENT_GCP_SERVICE_ACCOUNT || secrets.STAGING_GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build Docker image
+        run: |
+          docker build -t "${{ env.IMAGE_URI_PREFIX }}:${{ steps.vars.outputs.sha_short }}" .
+
+      - name: Push Docker image
+        run: |
+          docker push "${{ env.IMAGE_URI_PREFIX }}:${{ steps.vars.outputs.sha_short }}"
+
+      - name: Deploy to Cloud Run (testing)
+        run: |
+          extra=()
+          if [ -n "${RUNTIME_SERVICE_ACCOUNT}" ]; then
+            extra+=(--service-account "${RUNTIME_SERVICE_ACCOUNT}")
+          fi
+          if [ -n "${CLOUD_SQL_INSTANCE}" ]; then
+            extra+=(--set-cloudsql-instances "${CLOUD_SQL_INSTANCE}")
+          fi
+          gcloud run deploy "${CLOUD_RUN_SERVICE}" \
+            --image "${IMAGE_URI_PREFIX}:${{ steps.vars.outputs.sha_short }}" \
+            --project "${GCP_PROJECT_ID}" \
+            --region "${REGION}" \
+            --command=uvicorn \
+            --args=app.main:app,--host,0.0.0.0,--port,8080 \
+            --update-secrets=DB_SERVER=DB_SERVER:latest,DB_USER=DB_USER:latest,DB_PASSWORD=DB_PASSWORD:latest,DB_NAME=DB_NAME:latest,SECRET_KEY=SECRET_KEY:latest \
+            --update-env-vars=SKIP_SCHEMA_ENSURE=false,INSTANCE_CONNECTION_NAME=${CLOUD_SQL_INSTANCE},FRONTEND_URL=${DEVELOPMENT_FRONTEND_URL},GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID},FIRESTORE_DATABASE=${{ vars.DEVELOPMENT_FIRESTORE_DATABASE || vars.STAGING_FIRESTORE_DATABASE || 'charlie' }},GCS_IMAGES_BUCKET=${{ vars.DEVELOPMENT_GCS_IMAGES_BUCKET || 'oatmeal-farm-network-images-staging' }},GCS_LIVESTOCK_IMAGES_BUCKET=${{ vars.DEVELOPMENT_GCS_LIVESTOCK_IMAGES_BUCKET || 'oatmeal-farm-network-images' }},BIOMASS_GCS_BUCKET=${{ vars.DEVELOPMENT_BIOMASS_GCS_BUCKET || 'oatmeal-farm-network-images-staging' }} \
+            --min-instances=0 \
+            "${extra[@]}" \
+            --quiet
+
+      - name: Print deployed URL
+        run: |
+          gcloud run services describe "${CLOUD_RUN_SERVICE}" \
+            --project "${GCP_PROJECT_ID}" \
+            --region "${REGION}" \
+            --format="value(status.url)"
