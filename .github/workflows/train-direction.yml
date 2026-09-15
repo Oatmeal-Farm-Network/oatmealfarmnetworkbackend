@@ -1,13 +1,14 @@
 name: Train direction
 
 # Enforce allowed PR hops only:
-#   work → GCP/*-staging → GCP/*-testing → main
+#   work → GCP/*-development → GCP/*-staging → main
 # Native GitHub rulesets cannot restrict head→base pairs; this check does.
 on:
   pull_request:
     branches:
       - main
       - 'GCP/*-staging'
+      - 'GCP/*-development'
       - 'GCP/*-testing'
 
 jobs:
@@ -23,34 +24,42 @@ jobs:
           set -euo pipefail
           echo "PR: ${HEAD} → ${BASE}"
 
+          is_development=0
           is_staging=0
           is_testing=0
           is_main=0
           case "$BASE" in
+            GCP/*-development) is_development=1 ;;
             GCP/*-staging) is_staging=1 ;;
             GCP/*-testing) is_testing=1 ;;
             main) is_main=1 ;;
           esac
 
-          if [[ "$is_staging" -eq 1 ]]; then
+          # Temporary: testing still protected during cutover — block new landings.
+          if [[ "$is_testing" -eq 1 ]]; then
+            echo "::error::GCP/*-testing is retiring. Open PRs against GCP/*-development instead (train: work → development → staging → main)."
+            exit 1
+          fi
+
+          if [[ "$is_development" -eq 1 ]]; then
             case "$HEAD" in
-              GCP/*-testing)
-                echo "::error::Forbidden hop: ${HEAD} → ${BASE}. Testing cannot merge into staging. Train is work → staging → testing → main."
+              GCP/*-staging|GCP/*-testing|main)
+                echo "::error::Forbidden hop: ${HEAD} → ${BASE}. Development accepts work/feature branches only (not staging/testing/main)."
                 exit 1
                 ;;
             esac
-            echo "OK: work/sync → staging (${HEAD} → ${BASE})"
+            echo "OK: work/sync → development (${HEAD} → ${BASE})"
             exit 0
           fi
 
-          if [[ "$is_testing" -eq 1 ]]; then
+          if [[ "$is_staging" -eq 1 ]]; then
             case "$HEAD" in
-              GCP/*-staging)
-                echo "OK: staging → testing (${HEAD} → ${BASE})"
+              GCP/*-development)
+                echo "OK: development → staging (${HEAD} → ${BASE})"
                 exit 0
                 ;;
               *)
-                echo "::error::Forbidden hop: ${HEAD} → ${BASE}. Testing accepts PRs only from staging (GCP/*-staging)."
+                echo "::error::Forbidden hop: ${HEAD} → ${BASE}. Staging (QA/UAT/pre-prod) accepts PRs only from development (GCP/*-development)."
                 exit 1
                 ;;
             esac
@@ -58,12 +67,12 @@ jobs:
 
           if [[ "$is_main" -eq 1 ]]; then
             case "$HEAD" in
-              GCP/*-testing)
-                echo "OK: testing → main (${HEAD} → ${BASE})"
+              GCP/*-staging)
+                echo "OK: staging → main (${HEAD} → ${BASE})"
                 exit 0
                 ;;
               *)
-                echo "::error::Forbidden hop: ${HEAD} → ${BASE}. main accepts PRs only from testing (GCP/*-testing)."
+                echo "::error::Forbidden hop: ${HEAD} → ${BASE}. main accepts PRs only from staging (GCP/*-staging)."
                 exit 1
                 ;;
             esac
