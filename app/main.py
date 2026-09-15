@@ -175,25 +175,29 @@ ALLOWED_ORIGINS = [
     # Staging frontend (oatmeal-farm-staging)
     "https://oatmeal-frontend-staging-1087130530284.us-central1.run.app",
     "https://oatmeal-frontend-staging-lrviw4iujq-uc.a.run.app",
+    "https://livestock-frontend-staging-1087130530284.us-central1.run.app",
+    "https://livestock-frontend-staging-lrviw4iujq-uc.a.run.app",
     "https://oatsense-frontend-staging-1087130530284.us-central1.run.app",
     "https://oatsense-frontend-staging-lrviw4iujq-uc.a.run.app",
-    # Testing frontend (oatmeal-farm-staging)
-    "https://oatmeal-frontend-testing-1087130530284.us-central1.run.app",
-    "https://oatmeal-frontend-testing-lrviw4iujq-uc.a.run.app",
-    "https://livestock-frontend-testing-1087130530284.us-central1.run.app",
-    "https://livestock-frontend-testing-lrviw4iujq-uc.a.run.app",
-    "https://oatsense-frontend-testing-1087130530284.us-central1.run.app",
-    "https://oatsense-frontend-testing-lrviw4iujq-uc.a.run.app",
+    # Development frontend (oatmeal-farm-staging)
+    "https://oatmeal-frontend-development-1087130530284.us-central1.run.app",
+    "https://oatmeal-frontend-development-lrviw4iujq-uc.a.run.app",
+    "https://livestock-frontend-development-1087130530284.us-central1.run.app",
+    "https://livestock-frontend-development-lrviw4iujq-uc.a.run.app",
+    "https://oatsense-frontend-development-1087130530284.us-central1.run.app",
+    "https://oatsense-frontend-development-lrviw4iujq-uc.a.run.app",
 ]
 
 # FRONTEND_URL / LOA / Oatsense env (set per Cloud Run service) also allow CORS.
-for _env_origin in (
+# Values may be comma-separated when both *.run.app URL forms are configured.
+for _env_raw in (
     os.getenv("FRONTEND_URL", "").strip(),
     os.getenv("LOA_FRONTEND_URL", "").strip(),
     os.getenv("OATSENSE_FRONTEND_URL", "").strip(),
 ):
-    if _env_origin and _env_origin not in ALLOWED_ORIGINS:
-        ALLOWED_ORIGINS.append(_env_origin)
+    for _env_origin in (p.strip() for p in _env_raw.split(",") if p.strip()):
+        if _env_origin not in ALLOWED_ORIGINS:
+            ALLOWED_ORIGINS.append(_env_origin)
 
 def _is_allowed_origin(origin: str) -> bool:
     """Return True if origin is in the static list or matches a registered custom domain in the DB."""
