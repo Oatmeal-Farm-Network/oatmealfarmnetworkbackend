@@ -1,4 +1,6 @@
 name: Deploy Oatsense Testing
+# RETIRED_TESTING: use deploy-development instead. Kept for rollback.
+if: false  # retired — testing env cut over to development
 
 on:
   push:
