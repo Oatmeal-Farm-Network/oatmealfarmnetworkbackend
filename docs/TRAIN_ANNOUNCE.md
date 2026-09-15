@@ -1,19 +1,13 @@
-# Git train announce (paste to Slack / email)
+# Train announce — development → staging → prod
 
-**Oatmeal AI promotion train is live (14 Sep 2026).**
+Effective now:
 
-```text
-feature/*  →  PR  →  GCP/*-staging  →  PR  →  GCP/*-testing  →  PR  →  main
-                   staging Cloud Run         testing Cloud Run          production
-```
+`feature/* → GCP/*-development → GCP/*-staging → main`
 
-**Rules**
-1. Cut work from **current staging**, not from `main`.
-2. Feature / fix / chore PRs go **only into staging**.
-3. Promote with staging → testing, then testing → `main` (never skip testing).
-4. Do **not** dump staging into `main`.
-5. Production deploys use GitHub Environment `production` — requires reviewer approval (`@dbanoth` or `@OatmealAIJohn`).
+- **development** = where development happens (`GCP/*-development`, `*-development` Cloud Run)
+- **staging** = QA / UAT / pre-prod (`GCP/*-staging`)
+- **main** = production
 
-**Repos:** OFN (`oatmealfarmnetwork`), LOA (`livestock-of-america`), Oatsense (`Oatsense-america-frontend`), backend (`oatmealfarmnetworkbackend`).
+`GCP/*-testing` is retiring. Open new work against **development**, then promote development → staging → main.
 
-**Docs:** each repo `docs/BRANCHING.md` · Desktop `Oatmeal-AI-Branching-Strategy.md`.
+Questions: @dbanoth / @OatmealAIJohn
