@@ -171,6 +171,7 @@ ALLOWED_ORIGINS = [
     "https://lkm-frontend-802455386518.us-central1.run.app",
     "https://lkm-frontend-mt7mh6zhoa-uc.a.run.app",
     "https://www.lkmcpa.com", "https://lkmcpa.com",
+    "https://www.islandcpas.com", "https://islandcpas.com",
     "https://oatsense-frontend-usa-802455386518.us-central1.run.app",
     # Staging frontend (oatmeal-farm-staging)
     "https://oatmeal-frontend-staging-1087130530284.us-central1.run.app",
