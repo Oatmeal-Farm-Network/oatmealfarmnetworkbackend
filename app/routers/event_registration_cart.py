@@ -11,9 +11,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from app.database import get_db, SessionLocal
+from app.schema_ensure import run_schema_ensure, skip_schema_ensure
 
 def _ensure_schema() -> None:
-    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
     if skip_schema_ensure():
         return
 

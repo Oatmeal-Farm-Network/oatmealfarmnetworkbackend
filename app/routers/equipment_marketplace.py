@@ -11,6 +11,7 @@ from app.database import get_db, engine
 from app.core.auth import get_current_user
 from pydantic import BaseModel
 from typing import Optional
+from app.schema_ensure import run_schema_ensure, skip_schema_ensure
 
 GCS_BUCKET = os.getenv("GCS_IMAGES_BUCKET", "oatmeal-farm-network-images")
 
@@ -22,7 +23,6 @@ def _ensure_schema() -> None:
     global _schema_ready
     if _schema_ready:
         return
-    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
     if skip_schema_ensure():
         return
 

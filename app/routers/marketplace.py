@@ -16,6 +16,7 @@ import os
 from app.services.image_service import ensure_images_for_catalog
 from app.routers.translation import translate_fields, translate_list
 from app.routers.notifications import notify_business
+from app.schema_ensure import run_schema_ensure, skip_schema_ensure
 
 _schema_ready = False
 
@@ -25,7 +26,6 @@ def _ensure_schema() -> None:
     global _schema_ready
     if _schema_ready:
         return
-    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
     if skip_schema_ensure():
         return
 

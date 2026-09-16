@@ -16,6 +16,7 @@ from typing import Optional
 from datetime import datetime
 import os
 import logging
+from app.schema_ensure import run_schema_ensure, skip_schema_ensure
 
 _log = logging.getLogger(__name__)
 _SCHEDULER_SECRET = os.getenv("SCHEDULER_SECRET", "")
@@ -28,7 +29,6 @@ def _ensure_schema() -> None:
     global _schema_ready
     if _schema_ready:
         return
-    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
     if skip_schema_ensure():
         return
 

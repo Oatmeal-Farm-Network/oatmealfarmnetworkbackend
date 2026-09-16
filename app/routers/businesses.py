@@ -7,6 +7,7 @@ from app.routers.directory_regions import IN_DIRECTORY_REGION_SQL, DIRECTORY_COU
 from app import models
 import datetime
 import os
+from app.schema_ensure import run_schema_ensure, skip_schema_ensure
 
 GCS_IMAGES_BUCKET = os.getenv("GCS_IMAGES_BUCKET", "oatmeal-farm-network-images")
 
@@ -31,7 +32,6 @@ def _ensure_schema() -> None:
     global _schema_ready
     if _schema_ready:
         return
-    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
     if skip_schema_ensure():
         return
 

@@ -12,6 +12,7 @@ from app.core.auth import get_current_user
 from pydantic import BaseModel
 from typing import Optional
 import os
+from app.schema_ensure import run_schema_ensure, skip_schema_ensure
 
 _schema_ready = False
 
@@ -21,7 +22,6 @@ def _ensure_schema() -> None:
     global _schema_ready
     if _schema_ready:
         return
-    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
     if skip_schema_ensure():
         return
 

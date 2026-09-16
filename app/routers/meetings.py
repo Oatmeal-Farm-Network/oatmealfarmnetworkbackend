@@ -5,6 +5,7 @@ from app.database import get_db, SessionLocal
 from app.core.auth import get_current_user
 import app.models as models
 import datetime
+from app.schema_ensure import run_schema_ensure, skip_schema_ensure
 
 _schema_ready = False
 
@@ -12,7 +13,6 @@ _schema_ready = False
 # ── One-time table creation ──────────────────────────────────────────────────
 
 def _ensure_tables():
-    from app.schema_ensure import skip_schema_ensure
     if skip_schema_ensure():
         return
     ddl = [
@@ -92,7 +92,6 @@ def _ensure_schema() -> None:
     global _schema_ready
     if _schema_ready:
         return
-    from app.schema_ensure import run_schema_ensure
 
     def _run() -> None:
         global _schema_ready

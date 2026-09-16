@@ -6,6 +6,7 @@ from sqlalchemy import text
 from app.routers.translation import translate_fields, translate_list
 from app.database import get_db, SessionLocal
 from datetime import datetime, timedelta
+from app.schema_ensure import run_schema_ensure, skip_schema_ensure
 
 _schema_ready = False
 
@@ -14,7 +15,6 @@ def _ensure_schema() -> None:
     global _schema_ready
     if _schema_ready:
         return
-    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
     if skip_schema_ensure():
         return
 

@@ -11,6 +11,8 @@ from app.database import get_db, engine, Base
 from datetime import datetime, date
 from typing import Optional, List
 from pydantic import BaseModel
+from app.schema_ensure import run_schema_ensure, skip_schema_ensure
+from app.utils import page_templates
 
 _schema_ready = False
 
@@ -19,7 +21,6 @@ def _ensure_schema() -> None:
     global _schema_ready
     if _schema_ready:
         return
-    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
     if skip_schema_ensure():
         return
 
@@ -921,7 +922,6 @@ def _unique_slug(db: Session, website_id: int, base: str) -> str:
 @router.get("/templates")
 def list_page_templates(business_id: int, db: Session = Depends(get_db)):
     """Return page templates applicable to this business's BusinessTypeID."""
-    from app.utils import page_templates
     biz = db.query(models.Business).filter(models.Business.BusinessID == business_id).first()
     if not biz:
         raise HTTPException(status_code=404, detail="Business not found")
@@ -934,7 +934,6 @@ def list_page_templates(business_id: int, db: Session = Depends(get_db)):
 @router.post("/pages/from-template")
 def create_page_from_template(body: PageFromTemplate, db: Session = Depends(get_db)):
     """Create a page + seed blocks from a named template."""
-    from app.utils import page_templates
     tpl = page_templates.get_template(body.template_key)
     if not tpl:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -998,7 +997,6 @@ def create_pages_from_templates_bulk(body: PagesFromTemplatesBulk, db: Session =
     """Apply a batch of templates to a site in one call. Best-effort: skips invalid
     keys and templates the business type isn't entitled to, returns what was created
     plus what was skipped and why."""
-    from app.utils import page_templates
 
     biz = db.query(models.Business).filter(models.Business.BusinessID == body.business_id).first()
     if not biz:

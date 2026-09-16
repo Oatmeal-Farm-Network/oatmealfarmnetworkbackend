@@ -14,6 +14,7 @@ from requests.adapters import HTTPAdapter
 import ssl
 import urllib3
 import logging
+from app.schema_ensure import run_schema_ensure, skip_schema_ensure
 
 _log = logging.getLogger(__name__)
 
@@ -145,7 +146,6 @@ def _ensure_schema() -> None:
     global _schema_ready
     if _schema_ready:
         return
-    from app.schema_ensure import run_schema_ensure, skip_schema_ensure
     if skip_schema_ensure():
         return
 
